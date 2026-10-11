@@ -5,7 +5,7 @@
 #include "../crypto/sha256.h"
 #include "../crypto/aead.h"
 
-#define ITERATIONS 10000
+#define ITERATIONS 100000   /* (older hashes, 10000, are redone at the next good login) */
 #define HEADER "# Banana OS password hashes (PBKDF2-HMAC-SHA256) - set with `passwd`.\n"
 
 static void to_hex(const uint8_t* d, int n, char* out) {
@@ -68,5 +68,7 @@ int passwd_check(const char* user, const char* password) {
     if (!from_hex(p, salt, 16) || p[32] != '$') return 0;
     if (!from_hex(p + 33, want, 32)) return 0;
     pbkdf2_sha256((const uint8_t*)password, (uint32_t)strlen(password), salt, 16, iters, got);
-    return ct_memcmp(got, want, 32) == 0;
+    int ok = ct_memcmp(got, want, 32) == 0;
+    if (ok && iters < ITERATIONS) passwd_set(user, password);   /* a stronger hash from now on */
+    return ok;
 }

@@ -60,6 +60,7 @@ typedef struct {
     tcp_conn_t* c;
     int      slot, tty;
     char     peer[16];
+    ip4_t    peer_ip;
     uint32_t start_ms;
     int      dead;
 
@@ -546,6 +547,43 @@ static void on_newkeys(ssh_t* s) {
 
 /* ── authentication ───────────────────────────────────────────────── */
 
+/* Password guessing across connections: an address with LOCK_FAILS failed
+ * passwords within LOCK_WINDOW_MS is refused for LOCK_MS (a reconnect
+ * gets no new chances). */
+#define LOCK_SLOTS     32
+#define LOCK_FAILS     10
+#define LOCK_WINDOW_MS (10u * 60u * 1000u)
+#define LOCK_MS        (15u * 60u * 1000u)
+static struct { ip4_t ip; uint32_t first_ms, until_ms; int fails; } g_lock[LOCK_SLOTS];
+
+static int locked_out(ip4_t ip) {
+    for (int i = 0; i < LOCK_SLOTS; i++)
+        if (g_lock[i].ip == ip && g_lock[i].until_ms && (int32_t)(g_lock[i].until_ms - timer_ms()) > 0) return 1;
+    return 0;
+}
+
+static void note_failure(ip4_t ip) {
+    int k = -1, oldest = 0;
+    for (int i = 0; i < LOCK_SLOTS; i++) {
+        if (g_lock[i].ip == ip) { k = i; break; }
+        if (g_lock[i].first_ms < g_lock[oldest].first_ms) oldest = i;
+    }
+    uint32_t now = timer_ms();
+    if (k < 0 || now - g_lock[k].first_ms > LOCK_WINDOW_MS) {
+        if (k < 0) k = oldest;
+        g_lock[k].ip = ip;
+        g_lock[k].first_ms = now;
+        g_lock[k].fails = 0;
+        g_lock[k].until_ms = 0;
+    }
+    if (++g_lock[k].fails >= LOCK_FAILS) {
+        g_lock[k].until_ms = now + LOCK_MS;
+        char t[16];
+        ip4_to_str(ip, t);
+        klog("sshd: %s: %d failed passwords - refused for 15 minutes\n", t, g_lock[k].fails);
+    }
+}
+
 static void auth_failure(ssh_t* s) {
     wbuf_t w = { s->pl, 0, BUF_SIZE };
     w_u8(&w, MSG_USERAUTH_FAILURE);
@@ -580,6 +618,8 @@ static void on_userauth(ssh_t* s, const uint8_t* p, uint32_t n) {
     }
     s->failures++;
     klog("sshd: %s: failed password for %s\n", s->peer, user);
+    note_failure(s->peer_ip);
+    if (locked_out(s->peer_ip)) { disconnect(s, DISC_NO_MORE_AUTH, "too many authentication failures"); return; }
     task_sleep_ms(1500);                           /* slows down password guessing */
     if (s->failures >= MAX_AUTH_FAIL) {
         disconnect(s, DISC_NO_MORE_AUTH, "too many authentication failures");
@@ -845,14 +885,16 @@ static void run_session(int slot, tcp_conn_t* c) {
     s->start_ms = timer_ms();
     ip4_t pip;
     tcp_peer(c, &pip, NULL);
+    s->peer_ip = pip;
     ip4_to_str(pip, s->peer);
     kstrlcpy(g_info[slot].peer, s->peer, sizeof(g_info[slot].peer));
     g_info[slot].user[0] = '\0';
     g_info[slot].since = timer_ms();
     klog("sshd: connection from %s\n", s->peer);
 
+    if (locked_out(pip)) { klog("sshd: %s: refused (too many failed passwords)\n", s->peer); s->dead = 1; }
     static const char banner[] = SERVER_VERSION "\r\n";
-    if (tcp_send(c, banner, sizeof(banner) - 1, 10000) != (int)(sizeof(banner) - 1)) s->dead = 1;
+    if (!s->dead && tcp_send(c, banner, sizeof(banner) - 1, 10000) != (int)(sizeof(banner) - 1)) s->dead = 1;
     if (!s->dead) send_kexinit(s);
 
     while (!s->dead) {
