@@ -267,6 +267,17 @@ static uint8_t mouse_pkt[6];
 static int mouse_pkt_i = 0;
 static int mouse_pkt_size = 3;
 
+int ps2_controller_present(void) {
+    static int present = -1;
+    if (present < 0) {
+        int ff = 0;
+        for (int i = 0; i < 4; i++) if (inb(PS2_STATUS) == 0xFF) ff++;
+        present = ff < 4;
+        if (!present) klog("ps2: no PS/2 controller (a Mac, or a PC without one) - USB keyboards and mice only\n");
+    }
+    return present;
+}
+
 static void ps2_wait_write(void) {
     int t = 100000;
     while ((inb(PS2_STATUS) & 0x02) && t--);
@@ -417,6 +428,7 @@ void touchpad_describe(char* out, int cap) {
 }
 
 void mouse_init(void) {
+    if (!ps2_controller_present()) return;     /* (mouse_enabled stays 0) */
     /* Enable AUX port */
     ps2_wait_write();
     outb(PS2_CMD, 0xA8);
@@ -434,7 +446,7 @@ void mouse_init(void) {
     outb(PS2_DATA, cb);
 
     /* Reset mouse (a touchpad's self test can take most of a second) */
-    while (inb(PS2_STATUS) & 0x01) inb(PS2_DATA);
+    for (int i = 0; i < 64 && (inb(PS2_STATUS) & 0x01); i++) inb(PS2_DATA);
     ps2_mouse_write(0xFF);
     ps2_mouse_read_long(100);  /* ACK */
     ps2_mouse_read_long(1000); /* 0xAA */
@@ -672,7 +684,7 @@ static void scale_motion(int* dx, int* dy) {
 
 int mouse_irq_motion(int* dx, int* dy) {
     if (!mouse_enabled || syn_detected) return 0;
-    for (;;) {
+    for (int n = 0; n < 64; n++) {             /* (bounded: never stuck in the timer interrupt) */
         uint8_t st = inb(PS2_STATUS);
         if (!((st & 0x01) && (st & 0x20))) break;
         mouse_on_aux_byte(inb(PS2_DATA));
@@ -719,7 +731,7 @@ mouse_state_t mouse_read(void) {
 static mouse_state_t mouse_read_locked(void) {
     if (mouse_enabled && syn_detected) {
         /* the touchpad's packets become motion / clicks (mouse_inject) */
-        for (;;) {
+        for (int n = 0; n < 64; n++) {
             uint8_t st = inb(PS2_STATUS);
             if (!((st & 0x01) && (st & 0x20))) break;
             mouse_on_aux_byte(inb(PS2_DATA));
@@ -757,7 +769,7 @@ static mouse_state_t mouse_read_locked(void) {
 
     /* Drain the AUX bytes waiting in the controller (status: bit 0 =
      * data available, bit 5 = from the mouse) into the packet queue */
-    for (;;) {
+    for (int n = 0; mouse_enabled && n < 64; n++) {
         uint8_t st = inb(PS2_STATUS);
         if (!((st & 0x01) && (st & 0x20))) break;
         mouse_on_aux_byte(inb(PS2_DATA));

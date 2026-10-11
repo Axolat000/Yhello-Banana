@@ -36,6 +36,9 @@ typedef struct {
 } mouse_state_t;
 
 void         mouse_init(void);
+/* a PS/2 (8042) controller is there - Macs and some new PCs have none: its
+ * ports then read 0xFF, which looks like a byte waiting forever */
+int          ps2_controller_present(void);
 mouse_state_t mouse_read(void);   /* non-blocking, returns last known state */
 /* timer interrupt only (kernel/gui.c): the motion of the waiting PS/2
  * packets that change no button; 1 if there was any */

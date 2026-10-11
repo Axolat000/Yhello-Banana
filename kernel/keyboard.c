@@ -191,6 +191,7 @@ static uint32_t caps_flip(uint32_t v) {
 /* the PS/2 keyboard's lights: command 0xED, then the mask (bit 2 = Caps Lock),
  * each answered by an ACK before the next byte is sent */
 static void kb_set_leds(void) {
+    if (!ps2_controller_present()) return;
     uint8_t leds = caps_lock ? 0x04 : 0;
     for (int step = 0; step < 2; step++) {
         kb_wait_write();
@@ -815,6 +816,7 @@ char keyboard_try_getchar(void) {
 
     /* the timer interrupt takes mouse bytes from the controller too
      * (mouse_irq_motion): status and data are read in one go */
+    if (!ps2_controller_present()) return 0;    /* (USB keyboards come through usb_poll) */
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
     uint8_t st = inb(KB_STATUS_PORT);
@@ -837,6 +839,13 @@ char keyboard_try_getchar(void) {
 }
 
 void keyboard_init(void) {
+    shift_held = 0; ctrl_held = 0; alt_held = 0; altgr_held = 0;
+    if (!ps2_controller_present()) {           /* a Mac: nothing to set up (it would hang reading 0xFF) */
+        g_dead = 0; g_rest_n = 0;
+        caps_lock = 0; caps_down = 0;
+        q_head = 0; q_tail = 0;
+        return;
+    }
     /*
      * Re-enable the first PS/2 port and translation.
      * USB legacy emulation in VMs/BIOS often depends on this state.
@@ -846,7 +855,7 @@ void keyboard_init(void) {
     /* Do NOT disable second port (mouse). It breaks PS/2 mouse in VMs. */
 
     /* drain output buffer */
-    while (inb(KB_STATUS_PORT) & 0x01) inb(KB_DATA_PORT);
+    for (int i = 0; i < 64 && (inb(KB_STATUS_PORT) & 0x01); i++) inb(KB_DATA_PORT);
 
     kb_wait_write();
     outb(KB_CMD_PORT, 0x20); /* read command byte */
