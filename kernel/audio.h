@@ -7,7 +7,8 @@
  * Sound. Drivers: Intel HD Audio (HDA: ICH6+ chipsets, QEMU
  * `-device intel-hda -device hda-output`, VirtualBox "Intel HD Audio"),
  * Intel AC'97 (ICH/ICH2-ICH7, QEMU `-device AC97`, VirtualBox's default
- * "ICH AC97"), and the PC speaker for beeps.
+ * "ICH AC97"), USB audio devices (usb/uaudio.c: headsets, USB speakers and
+ * DACs - they take over while plugged in), and the PC speaker for beeps.
  *
  * Whatever the source format, sound is converted to the card's 16-bit
  * stereo stream (48 kHz) and queued in a ring the card plays from by DMA;
@@ -39,5 +40,23 @@ int  audio_play_wav(const char* path, char* err, int ecap);
 
 /* lsaudio */
 void audio_list(void);
+
+/* A sound card: it plays the ring (audio_ring(), audio_ring_bytes() long,
+ * 48 kHz 16-bit stereo) round and round; position() is the byte it plays
+ * now. tick() runs from the timer interrupt every 2 ms (it must not sleep). */
+typedef struct {
+    const char* name;
+    int      (*start)(void);              /* the ring is ready (silence): go */
+    uint32_t (*position)(void);           /* 0..audio_ring_bytes()-1 */
+    void     (*tick)(void);               /* or NULL */
+    void     (*stop)(void);               /* or NULL */
+} audio_card_t;
+
+uint8_t* audio_ring(void);
+uint32_t audio_ring_bytes(void);
+/* a card plugged in (USB): sound goes to it from now on (the computer's
+ * own card stops) - and back to that one when it is unplugged */
+void audio_card_plug(const audio_card_t* c, const char* name);
+void audio_card_unplug(const audio_card_t* c);
 
 #endif

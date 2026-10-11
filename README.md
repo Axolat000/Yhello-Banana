@@ -55,7 +55,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **Game controllers** - USB gamepads and joysticks (HID: PlayStation, Logitech...), Xbox 360 and Xbox One / Series controllers, in one layout for apps (API 12, `banana_gamepad`); `gamepad` shows them
 - **CPU temperature** - `sensors` and Task Manager show the processor's temperature (Intel digital thermal sensor, AMD Tctl; not in virtual machines)
 - **Power button** - the ACPI power button (and VirtualBox's ACPI Shutdown, QEMU's `system_powerdown`) saves the files and shuts down
-- **Sound** - Intel HD Audio (any codec: Realtek ALC, IDT/SigmaTel, Conexant, VIA... - every analog output, speakers and headphones together) and AC'97 drivers (QEMU, VirtualBox, real PCs) and the PC speaker: `play file.wav`, `beep`, `volume`, and sound for apps
+- **Sound** - Intel HD Audio (any codec: Realtek ALC, IDT/SigmaTel, Conexant, VIA... - every analog output, speakers and headphones together), AC'97 and USB audio (headsets, USB speakers, DACs) drivers (QEMU, VirtualBox, real PCs) and the PC speaker: `play file.wav`, `beep`, `volume`, and sound for apps
 - **Windows-like taskbar** - a button per open window (click: focus, click again: minimize), minimize buttons, *Show the desktop*
 - **Task Manager** - windows and apps (Switch to / End task), the kernel's tasks with their CPU use, live CPU and memory graphs; from the desktop, the Start menu or a right-click on the taskbar
 - **Settings** - wallpaper, fonts and text size, screen resolution, sound volume, keyboard layout, mouse pointer speed, network, date & time and information about the computer (`settings` in a terminal); volume, layout and pointer speed are kept in `/etc/settings.conf`
@@ -137,7 +137,7 @@ Banana-OS/
 │   ├── sensors.c       # CPU temperature (Intel DTS, AMD Tctl)
 │   ├── gamepad.c       # game controllers (the common layout)
 │   ├── paging.c        # Maps device memory above 4 GiB (64-bit, UEFI)
-│   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback
+│   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback (USB audio: usb/uaudio.c)
 │   ├── app.c, appcall*.asm # App loader (PIE ELF) + the app API table
 │   ├── appwin.c        # Windows of apps
 │   ├── pkg.c           # .bpk packages (pkg install / remove / run)
@@ -418,7 +418,9 @@ Banana OS 0.6 has its own USB stack: **xHCI** (USB 3.x) and **EHCI** (USB 2.0) h
 |---|---|
 | `r8152` | **Realtek RTL8152 / RTL8152B** USB 2.0 Fast Ethernet (`0bda:8152`): **Lanberg NC-0100-01**, TP-Link UE200 and most "USB 2.0 to RJ45" dongles |
 | `cdc_ecm` | Class-compliant USB Ethernet (CDC-ECM): QEMU `usb-net`, many adapters, phone USB tethering |
-| `usbhid` | USB keyboards and mice (boot protocol) |
+| `usbhid` | USB keyboards and mice (boot protocol), tablets and touchscreens, HID gamepads and joysticks |
+| `xpad` | Xbox 360 controllers (and the pads that copy them), Xbox One / Series controllers |
+| `uaudio` | USB Audio Class 1 headsets, speakers and DACs (48 kHz 16-bit stereo, on xHCI): sound goes to them while they are plugged in |
 | `usb-storage` | USB sticks and disks (Bulk-Only, SCSI): FAT32 volumes are mounted at `/mnt/usb` (whole-disk, MBR or GPT partitioned) |
 
 A USB network adapter shows up as **`usb0`** next to the PCI card (`eth0`). When one is plugged in it becomes the active interface and gets an address by DHCP; `ifconfig eth0 up` / `ifconfig usb0 up` switch between them (Banana OS uses one interface at a time).
@@ -595,6 +597,7 @@ The signing key never goes in the served folder - keep a copy somewhere safe: wh
 |---|---|
 | Intel HD Audio | ICH6 and newer chipsets, QEMU `-device intel-hda -device hda-output`, VirtualBox "Intel HD Audio"; any codec - Realtek ALC, IDT/SigmaTel, Conexant, VIA, Analog Devices |
 | Intel AC'97 | ICH - ICH7, QEMU `-device AC97`, VirtualBox "ICH AC97" (its default) |
+| USB audio | class-compliant (UAC1) headsets, USB speakers and sound cards, QEMU `-device usb-audio` - they take over while plugged in, the computer's own card plays again when they are unplugged |
 | PC speaker | always: `beep` uses it when there is no sound card |
 
 Sound is mixed into one 48 kHz 16-bit stereo stream; WAV files (PCM, 8/16-bit, mono/stereo, any rate) are converted on the fly. `play file.wav` plays in the background (`play -s` stops), `volume 60` sets the volume, `lsaudio` shows the card. Apps get sound through the SDK (`banana_play`, `banana_tone`). In Files, double-click a `.wav` to hear it.
@@ -755,6 +758,8 @@ include /path/to/banana-sdk/driver/driver.mk
 | `renice [-n] N pid...` | Set the nice value (-20 .. 19) of running tasks |
 | `kptest <picture> <svg> [s]` | Checks kernel preemption: tasks decode the picture and draw the SVG at once, preempted inside that code; every result must match |
 | `lscpu` | Processors: physical cores, hardware threads (Hyper-Threading), packages, performance / efficient cores, each one's load |
+| `sensors` | The processor's temperature (Intel and AMD, real hardware) |
+| `gamepad` | The game controllers plugged in: sticks, triggers, buttons held |
 | `sched` | The scheduler's view: load average, and per task its nice value, weight, switches, wait for the processor, longest run |
 | `top` | Live CPU/RAM/process monitor (`q` to quit) |
 | `htop` | Colour monitor: a meter per CPU core, memory and disk, the tasks (`P`/`N`/`T` sort by CPU, PID, time; `q` quits) |

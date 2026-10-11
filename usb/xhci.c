@@ -22,6 +22,7 @@ void net_irq_notify(void);   /* net/net.c: wakes netd + blocked waiters */
 #define TRB_SETUP         2
 #define TRB_DATA          3
 #define TRB_STATUS        4
+#define TRB_ISOCH         5
 #define TRB_LINK          6
 #define TRB_ENABLE_SLOT   9
 #define TRB_DISABLE_SLOT  10
@@ -39,6 +40,7 @@ void net_irq_notify(void);   /* net/net.c: wakes netd + blocked waiters */
 #define TRB_ISP   (1u << 2)
 #define TRB_IOC   (1u << 5)
 #define TRB_IDT   (1u << 6)
+#define TRB_SIA   (1u << 31)       /* isochronous: as soon as possible */
 
 #define CC_SUCCESS  1
 #define CC_STALL    6
@@ -90,6 +92,7 @@ typedef struct {
     uint32_t        enq;
     uint32_t        cycle;
     usb_xfer_t*     owner[RING_TRBS];
+    uint32_t        deq;               /* isochronous: the oldest TRB not finished */
 } ring_t;
 
 typedef struct {
@@ -99,6 +102,7 @@ typedef struct {
     uint8_t*      in_ctx;
     ring_t*       ep[32];              /* by DCI */
     volatile int  halted[32];          /* endpoint stalled: reset in poll */
+    uint8_t       isoch[32];           /* isochronous endpoints */
     uint8_t*      ctrl_buf;            /* control data bounce buffer */
     volatile int      ctrl_done;
     volatile uint32_t ctrl_code, ctrl_residual;
@@ -119,6 +123,7 @@ typedef struct {
     uint32_t          evt_deq, evt_cycle;
     volatile int      cmd_done;
     volatile uint32_t cmd_code, cmd_slot, cmd_trb;
+    volatile int      evt_busy;        /* the event ring is being read (tasks / the timer) */
     xdev_t*           slots[256];
     xdev_t*           port_dev[256];
 } xhci_t;
@@ -207,6 +212,27 @@ static void handle_transfer_event(xhci_t* x, volatile trb_t* e) {
         return;
     }
 
+    if (xd->isoch[dci]) {
+        /* isochronous: never halts; a TD the controller skipped (missed
+         * service) is finished too - everything up to this one is done */
+        if (!r->owner[idx]) return;                /* (already accounted for) */
+        uint32_t i = r->deq;
+        for (int guard = 0; guard < RING_TRBS; guard++) {
+            usb_xfer_t* o = r->owner[i];
+            if (o) {
+                r->owner[i] = NULL;
+                o->actual = (i == idx && (code == CC_SUCCESS || code == CC_SHORT))
+                          ? o->len - (residual <= o->len ? residual : o->len) : 0;
+                o->status = USB_XFER_OK;
+            }
+            int last = (i == idx);
+            if (++i == RING_TRBS - 1) i = 0;
+            if (last) break;
+        }
+        r->deq = i;
+        return;
+    }
+
     usb_xfer_t* xf = r->owner[idx];
     if (!xf) return;
     r->owner[idx] = NULL;
@@ -223,7 +249,7 @@ static void handle_transfer_event(xhci_t* x, volatile trb_t* e) {
     }
 }
 
-static void process_events(xhci_t* x) {
+static void process_events_locked(xhci_t* x) {
     int n = 0;
     for (;;) {
         volatile trb_t* e = &x->evt[x->evt_deq];
@@ -252,6 +278,14 @@ static void process_events(xhci_t* x) {
         wr(x->rt, 0x38, (uint32_t)(uintptr_t)&x->evt[x->evt_deq] | (1u << 3));
         wr(x->rt, 0x3C, 0);
     }
+}
+
+/* tasks and the timer interrupt both read the event ring: one at a time
+ * (whoever finds it busy leaves the events to the other) */
+static void process_events(xhci_t* x) {
+    if (__sync_lock_test_and_set(&x->evt_busy, 1)) return;
+    process_events_locked(x);
+    __sync_lock_release(&x->evt_busy);
 }
 
 static uint32_t command(xhci_t* x, uint32_t param_lo, uint32_t status, uint32_t control) {
@@ -384,7 +418,8 @@ static int xhci_open_endpoint(usb_device_t* d, const usb_ep_desc_t* ep) {
     uint32_t type;
     if (kind == USB_EP_BULK) type = in ? 6 : 2;
     else if (kind == USB_EP_INTERRUPT) type = in ? 7 : 3;
-    else return -1;                                          /* no isochronous */
+    else if (kind == USB_EP_ISOCH) type = in ? 5 : 1;
+    else return -1;
 
     uint32_t mps = ep->wMaxPacketSize & 0x7FF;
     uint32_t burst = 0, interval = 0;
@@ -400,6 +435,13 @@ static int xhci_open_endpoint(usb_device_t* d, const usb_ep_desc_t* ep) {
             if (interval < 3) interval = 3;
             if (interval > 10) interval = 10;
         }
+        if (interval > 15) interval = 15;
+    } else if (kind == USB_EP_ISOCH) {
+        /* 2^(bInterval-1) frames (full speed) or microframes (high speed) */
+        uint32_t b = ep->bInterval ? ep->bInterval : 1;
+        if (b > 16) b = 16;
+        interval = (b - 1) + ((d->speed == USB_SPEED_HIGH || d->speed == USB_SPEED_SUPER) ? 0 : 3);
+        if (d->speed == USB_SPEED_HIGH) burst = (ep->wMaxPacketSize >> 11) & 3;   /* (as Mult) */
         if (interval > 15) interval = 15;
     }
 
@@ -417,12 +459,19 @@ static int xhci_open_endpoint(usb_device_t* d, const usb_ep_desc_t* ep) {
     slot[3] = 0;
 
     uint32_t* e = in_ctx(x, xd, (int)dci + 1);
-    e[0] = interval << 16;
-    e[1] = (3u << 1) | (type << 3) | (burst << 8) | (mps << 16);
+    if (kind == USB_EP_ISOCH) {
+        e[0] = (interval << 16) | (burst << 8);                    /* Mult */
+        e[1] = (type << 3) | (mps << 16);                          /* CErr 0: no retries */
+    } else {
+        e[0] = interval << 16;
+        e[1] = (3u << 1) | (type << 3) | (burst << 8) | (mps << 16);
+    }
     e[2] = (uint32_t)(uintptr_t)r->trbs | r->cycle;
     e[3] = 0;
     uint32_t esit = mps * (burst + 1);
-    e[4] = (kind == USB_EP_INTERRUPT) ? (esit | (esit << 16)) : (mps ? mps : 512);
+    e[4] = (kind != USB_EP_BULK) ? (esit | (esit << 16)) : (mps ? mps : 512);
+    r->deq = r->enq;
+    xd->isoch[dci] = (kind == USB_EP_ISOCH);
 
     uint32_t cc = command(x, (uint32_t)(uintptr_t)xd->in_ctx, 0,
                           (TRB_CONFIG_EP << 10) | ((uint32_t)xd->slot << 24));
@@ -448,6 +497,12 @@ static int xhci_submit(usb_xfer_t* xf) {
     }
     if (ring_full(r)) { xf->status = USB_XFER_ERROR; return -1; }
     xf->hcpriv = x;
+    if (xd->isoch[dci]) {                                    /* one service interval's packet */
+        xf->status = USB_XFER_PENDING;
+        ring_push(r, start, 0, xf->len & 0x1FFFF, (TRB_ISOCH << 10) | TRB_IOC | TRB_SIA | (in ? TRB_ISP : 0), xf);
+        x->db[xd->slot] = dci;
+        return 0;
+    }
     ring_push(r, start, 0, xf->len & 0x1FFFF, (TRB_NORMAL << 10) | TRB_IOC | (in ? TRB_ISP : 0), xf);
     x->db[xd->slot] = dci;
     return 0;
@@ -566,9 +621,12 @@ static void xhci_poll(usb_hc_t* hc) {
     }
 }
 
+static void xhci_events(usb_hc_t* hc) { process_events((xhci_t*)hc->priv); }
+
 static const usb_hc_ops_t g_ops = {
     xhci_control, xhci_set_ep0_mps, xhci_open_endpoint, xhci_submit, xhci_poll, xhci_rescan,
     NULL, NULL,                       /* (hubs: not on xHCI yet) */
+    xhci_events,
 };
 
 /* ── bring-up ───────────────────────────────────────────────────── */

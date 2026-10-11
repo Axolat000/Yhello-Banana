@@ -149,6 +149,10 @@ typedef struct usb_hc_ops {
     usb_device_t* (*attach_child)(struct usb_hc* hc, usb_device_t* hub, int port, int speed);
     /* that device was unplugged (after usb_device_gone): free its state */
     void (*detach_child)(usb_device_t* d);
+    /* finished transfers only (no recovery, no enumeration): safe from an
+     * interrupt - isochronous streams (USB audio) keep themselves fed from
+     * the timer; NULL if the controller has no isochronous support */
+    void (*events)(struct usb_hc* hc);
 } usb_hc_ops_t;
 
 typedef struct usb_hc {

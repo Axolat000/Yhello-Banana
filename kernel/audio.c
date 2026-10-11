@@ -38,15 +38,12 @@
 #define AHEAD       57344u                  /* how far ahead of the card we write (~300 ms) */
 #define CLEAR_AHEAD 32768u                  /* played sound turned to silence past our writes */
 
-typedef struct {
-    const char* name;
-    int      (*start)(void);                /* ring set up: go */
-    uint32_t (*position)(void);             /* byte the card plays now, 0..RING-1 */
-    void     (*tick)(void);                 /* keep the stream running (AC'97: LVI) */
-} card_t;
+typedef audio_card_t card_t;              /* (audio.h) */
 
 static const card_t* g_card;
 static char          g_card_name[112] = "none";
+static const card_t* g_builtin;             /* the computer's own card (while a USB one plays) */
+static char          g_builtin_name[112];
 static uint8_t*      g_ring;                /* RING bytes, DMA-able */
 static uint8_t*      g_queue;               /* QUEUE bytes of frames waiting */
 static volatile uint32_t g_qhead, g_qtail, g_qcount;
@@ -230,7 +227,9 @@ static int ac97_start(void) {
     return 0;
 }
 
-static const card_t g_ac97 = { "AC'97", ac97_start, ac97_position, ac97_tick };
+static void ac97_stop(void) { outb(g_nabm + 0x1B, 0x00); }
+
+static const card_t g_ac97 = { "AC'97", ac97_start, ac97_position, ac97_tick, ac97_stop };
 
 static int ac97_init(const pci_dev_t* pd) {
     int io0, io1;
@@ -421,7 +420,9 @@ static void hda_irq(void) {
     if (g_running) feed();
 }
 
-static const card_t g_hdac = { "HDA", hda_start, hda_position, NULL };
+static void hda_stop(void) { hw8(g_sd + 0x00, hr8(g_sd) & ~(2 | 4)); }
+
+static const card_t g_hdac = { "HDA", hda_start, hda_position, NULL, hda_stop };
 
 /* ── any codec ────────────────────────────────────────────────────────
  * A codec is a graph of widgets: pins (the jacks and speakers), mixers,
@@ -645,6 +646,47 @@ void audio_init(void) {
 
 int audio_available(void) { return g_card != NULL; }
 const char* audio_device_name(void) { return g_card_name; }
+
+uint8_t* audio_ring(void) { return g_ring; }
+uint32_t audio_ring_bytes(void) { return RING; }
+
+/* another card takes over the ring: it starts on silence, the queue goes on */
+static void switch_card(const card_t* c, const char* name) {
+    uintptr_t f = irq_off();
+    g_running = 0;
+    irq_on(f);
+    if (g_card && g_card->stop) g_card->stop();
+    g_card = c;
+    kstrlcpy(g_card_name, name, sizeof(g_card_name));
+    if (!c || !g_ring) return;
+    memset(g_ring, 0, RING);
+    flush(g_ring, RING);
+    if (c->start() != 0) { g_card = NULL; kstrlcpy(g_card_name, "none", sizeof(g_card_name)); return; }
+    f = irq_off();
+    g_last_hw = c->position() % RING;
+    g_wp = g_last_hw;
+    g_wr_abs = g_hw_abs;                    /* (what was in the ring for the old card is dropped) */
+    g_zero_abs = g_wr_abs;
+    g_running = 1;
+    irq_on(f);
+    klog("audio: now %s\n", g_card_name);
+}
+
+void audio_card_plug(const audio_card_t* c, const char* name) {
+    if (!c) return;
+    if (!g_builtin && g_card && g_card != c) {
+        g_builtin = g_card;
+        kstrlcpy(g_builtin_name, g_card_name, sizeof(g_builtin_name));
+    }
+    switch_card(c, name);
+}
+
+void audio_card_unplug(const audio_card_t* c) {
+    if (g_card != c) return;
+    const card_t* back = g_builtin;
+    g_builtin = NULL;
+    switch_card(back, back ? g_builtin_name : "none (PC speaker only)");
+}
 
 /* ══ playing ══════════════════════════════════════════════════════════ */
 
