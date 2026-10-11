@@ -11,6 +11,7 @@
 int xhci_init_controller(const pci_dev_t* pd);
 int ehci_init_controller(const pci_dev_t* pd);
 int uhci_init_controller(const pci_dev_t* pd);
+int ohci_init_controller(const pci_dev_t* pd);
 
 /* device drivers, tried in this order */
 extern const usb_driver_t r8152_driver;
@@ -312,6 +313,10 @@ void usb_stack_init(void) {
     s.n = 0; s.prog_if = 0x00;
     pci_scan(scan_cb, &s);
     for (int i = 0; i < s.n; i++) uhci_init_controller(&s.list[i]);
+    /* OHCI: the USB 1.1 controllers of non-Intel chipsets (and VirtualBox's default) */
+    s.n = 0; s.prog_if = 0x10;
+    pci_scan(scan_cb, &s);
+    for (int i = 0; i < s.n; i++) ohci_init_controller(&s.list[i]);
     s.n = 0; s.prog_if = 0x20;
     pci_scan(scan_cb, &s);
     for (int i = 0; i < s.n; i++) ehci_init_controller(&s.list[i]);
@@ -325,7 +330,7 @@ void usb_stack_init(void) {
 void usb_list(void) {
     char line[160];
     if (g_hc_count == 0) {
-        terminal_writeln("no USB host controller in use (xHCI and EHCI are supported)");
+        terminal_writeln("no USB host controller in use (xHCI, EHCI, UHCI and OHCI are supported)");
         return;
     }
     for (int h = 0; h < g_hc_count; h++) {

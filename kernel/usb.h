@@ -31,6 +31,8 @@ typedef struct {
     int btn_right;
     int btn_middle;
     int dz;                 /* wheel notches since the last read: + = toward the user (scroll down) */
+    int abs;                /* 1: ax, ay are where the pointer is (a tablet: VirtualBox / QEMU USB tablet, touchscreens) */
+    int ax, ay;             /* 0..65535 across / down the screen */
 } mouse_state_t;
 
 void         mouse_init(void);
@@ -44,6 +46,8 @@ int          mouse_get_speed(void);
 /* USB mice report here (dy positive = up, buttons bit0 left/1 right/2 middle) */
 void         mouse_inject(int dx, int dy, int buttons);
 void         mouse_inject_wheel(int dz);      /* + = scroll down */
+/* absolute pointers (tablets): x, y 0..65535 across the screen, top-left 0 */
+void         mouse_inject_abs(int x, int y, int buttons);
 /* " | Touchpad: Synaptics ClickPad (firmware 8.1)" and the like, for usb_status() */
 void         touchpad_describe(char* out, int cap);
 int          mouse_is_touchpad(void); /* 1 if a Synaptics PS/2 touchpad was detected */

@@ -2186,6 +2186,10 @@ static void gui_poll_body(void) {
         __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
         mouse_state_t ms = mouse_read();
         g_mouse_from_lock = 0;               /* (the lock screen moved g_cur_mx/my itself) */
+        if (ms.abs) {                        /* a tablet says where the pointer is */
+            g_cur_mx = (int)((int64_t)ms.ax * ((int)fi->width - 1) / 65535);
+            g_cur_my = (int)((int64_t)ms.ay * ((int)fi->height - 1) / 65535);
+        }
         g_cur_mx += ms.dx;
         g_cur_my -= ms.dy;
         if (g_cur_mx < 0) g_cur_mx = 0;

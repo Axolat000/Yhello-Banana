@@ -5,19 +5,27 @@
 #include "serial.h"
 #include "keyboard.h"
 #include "usb.h"
+#include "hidparse.h"
 
 /*
- * USB HID boot-protocol keyboards and mice.
+ * USB HID keyboards, mice, tablets and touchscreens.
  *
  * Once Banana OS drives a USB controller itself, the BIOS stops faking
  * USB keyboards/mice as PS/2 devices - so this driver takes over: key
  * reports become set-1 scancodes fed through the PS/2 decoder
  * (keyboard_feed_scancode), mouse reports become mouse_inject() motion.
- * Boot protocol only (every keyboard and mouse supports it).
+ * Keyboards and boot mice use the boot protocol (every one supports it);
+ * other pointers are read through their report descriptor (hidparse.c):
+ * absolute X / Y - a tablet (VirtualBox's and QEMU's "USB tablet", the
+ * pointer that follows the host's mouse) or a touchscreen - move the
+ * pointer to a place (mouse_inject_abs), relative ones move it by.
  */
 
 #define HID_SET_IDLE     0x0A
 #define HID_SET_PROTOCOL 0x0B
+#define HID_DT_HID       0x21
+#define HID_DT_REPORT    0x22
+#define MAX_FIELDS       96
 
 #define MAX_IFACES 2
 #define REPEAT_DELAY_MS 500
@@ -51,11 +59,18 @@ static const uint16_t g_mod_sc[8] = { 0x1D, 0x2A, 0x38, 0xE05B, 0xE01D, 0x36, 0x
 
 typedef struct {
     int        is_kbd;
+    int        report_mode;      /* a pointer read through its report descriptor */
+    int        absolute;         /* ... with absolute X / Y */
     uint8_t    ep;
     usb_xfer_t xfer;
     uint8_t    prev[8];          /* keyboard: previous report */
     uint8_t    repeat_usage;
     uint32_t   repeat_at;
+    /* report mode: where X, Y, the buttons, the wheel are */
+    hid_field_t* fields;
+    int        nfields;
+    int        uses_rid;
+    int        fx, fy, fwheel, ftip, fbtn[3];
 } hid_iface_t;
 
 typedef struct {
@@ -99,40 +114,111 @@ static void keyboard_report(hid_iface_t* h, const uint8_t* r) {
 typedef struct {
     hid_t*  hid;          /* NULL while probing */
     int     found;
-    int     cur_boot;     /* current interface: 1 kbd, 2 mouse, 0 other */
+    int     cur_boot;     /* current interface: 1 kbd, 2 mouse, 3 another HID (a pointer?), 0 not HID */
     uint8_t cur_num;
+    uint16_t cur_rlen;    /* its report descriptor's length (HID descriptor) */
     usb_device_t* dev;
 } walk_t;
+
+/* the fields of a pointer's report descriptor: 0 if it is one we can read */
+static int pointer_setup(usb_device_t* d, hid_iface_t* h, uint8_t iface, uint16_t rlen) {
+    if (rlen == 0 || rlen > 4096) return -1;
+    uint8_t* desc = (uint8_t*)kmalloc(rlen);
+    if (!desc) return -1;
+    int got = usb_control(d, USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_IFACE, USB_REQ_GET_DESCRIPTOR,
+                          (uint16_t)(HID_DT_REPORT << 8), iface, desc, rlen);
+    if (got <= 0) { kfree(desc); return -1; }
+    hid_field_t* f = (hid_field_t*)kmalloc(sizeof(hid_field_t) * MAX_FIELDS);
+    int n = f ? hid_parse(desc, got, f, MAX_FIELDS) : -1;
+    kfree(desc);
+    if (n <= 0) { if (f) kfree(f); return -1; }
+    h->fx = h->fy = h->fwheel = h->ftip = -1;
+    h->fbtn[0] = h->fbtn[1] = h->fbtn[2] = -1;
+    for (int i = 0; i < n; i++) {
+        if (f[i].type != HID_INPUT || (f[i].flags & 1)) continue;          /* inputs, not padding */
+        if (f[i].rid) h->uses_rid = 1;
+        uint32_t u = f[i].usage;
+        if (u == HID_U(1, 0x30) && h->fx < 0) h->fx = i;
+        else if (u == HID_U(1, 0x31) && h->fy < 0) h->fy = i;
+        else if (u == HID_U(1, 0x38) && h->fwheel < 0) h->fwheel = i;
+        else if (u == HID_U(0x0D, 0x42) && h->ftip < 0) h->ftip = i;       /* a touchscreen's finger down */
+        else if (u >= HID_U(9, 1) && u <= HID_U(9, 3) && h->fbtn[u - HID_U(9, 1)] < 0) h->fbtn[u - HID_U(9, 1)] = i;
+    }
+    if (h->fx < 0 || h->fy < 0 || f[h->fx].rid != f[h->fy].rid) { kfree(f); return -1; }
+    h->absolute = !(f[h->fx].flags & 4);
+    h->fields = f;
+    h->nfields = n;
+    h->report_mode = 1;
+    return 0;
+}
+
+static int field_val(hid_iface_t* h, int i, const uint8_t* r, int len, uint8_t rid) {
+    if (i < 0 || h->fields[i].rid != rid) return 0;
+    return (int)hid_value(r, len, &h->fields[i]);
+}
+
+/* a report of a pointer read through its descriptor */
+static void pointer_report(hid_iface_t* h, const uint8_t* buf, int len) {
+    uint8_t rid = 0;
+    if (h->uses_rid) { if (len < 1) return; rid = buf[0]; buf++; len--; }
+    if (h->fields[h->fx].rid != rid) return;       /* (another report of the device) */
+    int b = 0;
+    for (int k = 0; k < 3; k++) if (field_val(h, h->fbtn[k], buf, len, rid)) b |= 1 << k;
+    if (h->ftip >= 0 && h->fbtn[0] < 0 && field_val(h, h->ftip, buf, len, rid)) b |= 1;
+    int x = field_val(h, h->fx, buf, len, rid), y = field_val(h, h->fy, buf, len, rid);
+    if (h->absolute) {
+        const hid_field_t* fx = &h->fields[h->fx];
+        const hid_field_t* fy = &h->fields[h->fy];
+        int32_t wx = fx->lmax > fx->lmin ? fx->lmax - fx->lmin : 1, wy = fy->lmax > fy->lmin ? fy->lmax - fy->lmin : 1;
+        mouse_inject_abs((int)((int64_t)(x - fx->lmin) * 65535 / wx), (int)((int64_t)(y - fy->lmin) * 65535 / wy), b);
+    } else mouse_inject(x, -y, b);
+    int wheel = field_val(h, h->fwheel, buf, len, rid);
+    if (wheel) mouse_inject_wheel(-wheel);
+}
 
 static int walk_cb(const uint8_t* desc, void* ctx) {
     walk_t* w = (walk_t*)ctx;
     if (desc[1] == USB_DT_INTERFACE) {
         const usb_iface_desc_t* id = (const usb_iface_desc_t*)desc;
         w->cur_boot = 0;
-        if (id->bAlternateSetting == 0 && id->bInterfaceClass == 3 && id->bInterfaceSubClass == 1 &&
-            (id->bInterfaceProtocol == 1 || id->bInterfaceProtocol == 2)) {
-            w->cur_boot = id->bInterfaceProtocol;
+        w->cur_rlen = 0;
+        if (id->bAlternateSetting == 0 && id->bInterfaceClass == 3) {
+            if (id->bInterfaceSubClass == 1 && (id->bInterfaceProtocol == 1 || id->bInterfaceProtocol == 2))
+                w->cur_boot = id->bInterfaceProtocol;
+            else if (id->bInterfaceProtocol != 1)
+                w->cur_boot = 3;                   /* maybe a pointer: its report descriptor says */
             w->cur_num = id->bInterfaceNumber;
         }
+    } else if (desc[1] == HID_DT_HID && desc[0] >= 9 && w->cur_boot) {
+        w->cur_rlen = (uint16_t)(desc[7] | desc[8] << 8);   /* the report descriptor's length */
     } else if (desc[1] == USB_DT_ENDPOINT && w->cur_boot) {
         const usb_ep_desc_t* ep = (const usb_ep_desc_t*)desc;
         if ((ep->bmAttributes & 3) != USB_EP_INTERRUPT || !(ep->bEndpointAddress & 0x80)) return 0;
         w->found++;
         if (w->hid && w->hid->count < MAX_IFACES) {
             usb_device_t* d = w->dev;
-            /* boot protocol, and only report on change */
-            usb_control(d, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_SET_PROTOCOL, 0, w->cur_num, NULL, 0);
+            hid_iface_t* h = &w->hid->ifs[w->hid->count];
+            memset(h, 0, sizeof(*h));
+            /* a mouse may really be a tablet: its descriptor tells (absolute X / Y) */
+            int report = 0;
+            if (w->cur_boot >= 2 && pointer_setup(d, h, w->cur_num, w->cur_rlen) == 0)
+                report = h->absolute || w->cur_boot == 3;   /* (relative boot mice stay on the boot protocol) */
+            if (!report && h->fields) { kfree(h->fields); h->fields = NULL; h->report_mode = 0; }
+            if (w->cur_boot == 3 && !report) { w->cur_boot = 0; return 0; }   /* not a pointer */
+            /* boot protocol (or the report protocol), and only report on change */
+            usb_control(d, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_SET_PROTOCOL, report ? 1 : 0, w->cur_num, NULL, 0);
             usb_control(d, USB_TYPE_CLASS | USB_RECIP_IFACE, HID_SET_IDLE, 0, w->cur_num, NULL, 0);
             if (usb_open_endpoint(d, ep) == 0) {
-                hid_iface_t* h = &w->hid->ifs[w->hid->count++];
+                w->hid->count++;
                 h->is_kbd = (w->cur_boot == 1);
                 h->ep = ep->bEndpointAddress;
                 h->xfer.dev = d;
                 h->xfer.ep = h->ep;
                 h->xfer.buf = (uint8_t*)usb_dma_alloc(64);
-                h->xfer.len = 8;
+                uint16_t mps = ep->wMaxPacketSize & 0x7FF;
+                h->xfer.len = report ? (mps > 64 ? 64 : mps ? mps : 8) : 8;
                 if (h->xfer.buf) usb_submit(&h->xfer);
-            }
+            } else if (h->fields) { kfree(h->fields); h->fields = NULL; }
         }
         w->cur_boot = 0;
     }
@@ -157,7 +243,9 @@ static int hid_attach(usb_device_t* d) {
     if (!hid->count) { kfree(hid); return -1; }
     d->drvdata = hid;
     for (int i = 0; i < hid->count; i++)
-        klog("usbhid: %s on endpoint %02x\n", hid->ifs[i].is_kbd ? "keyboard" : "mouse", hid->ifs[i].ep);
+        klog("usbhid: %s on endpoint %02x\n", hid->ifs[i].is_kbd ? "keyboard" :
+             hid->ifs[i].report_mode ? (hid->ifs[i].absolute ? "tablet (absolute pointer)" : "mouse (report protocol)") : "mouse",
+             hid->ifs[i].ep);
     return 0;
 }
 
@@ -174,6 +262,8 @@ static void hid_poll(usb_device_t* d) {
         if (h->xfer.status == USB_XFER_OK) {
             if (h->is_kbd && h->xfer.actual >= 8) {
                 keyboard_report(h, h->xfer.buf);
+            } else if (h->report_mode) {
+                pointer_report(h, h->xfer.buf, (int)h->xfer.actual);
             } else if (!h->is_kbd && h->xfer.actual >= 3) {
                 int dx = (int8_t)h->xfer.buf[1], dy = (int8_t)h->xfer.buf[2];
                 mouse_inject(dx, -dy, h->xfer.buf[0] & 7);   /* USB: +y is down */
@@ -190,6 +280,7 @@ static void hid_detach(usb_device_t* d) {
     if (!hid) return;
     /* release anything still held down */
     for (int i = 0; i < hid->count; i++) {
+        if (hid->ifs[i].fields) { kfree(hid->ifs[i].fields); hid->ifs[i].fields = NULL; }
         if (!hid->ifs[i].is_kbd) continue;
         static const uint8_t none[8] = { 0 };
         keyboard_report(&hid->ifs[i], none);

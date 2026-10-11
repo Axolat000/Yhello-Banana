@@ -472,7 +472,7 @@ int mouse_is_touchpad(void) {
     return syn_detected;
 }
 
-static mouse_state_t last_mouse = {0,0,0,0,0,0};
+static mouse_state_t last_mouse = {0,0,0,0,0,0,0,0,0};
 
 
 
@@ -605,6 +605,22 @@ static int g_usb_btnq[USB_BTNQ], g_usb_btnq_n, g_usb_btn_last = -1;
 
 void mouse_inject_wheel(int dz) { g_usb_dz += dz; }
 
+static int g_abs_x, g_abs_y, g_abs_new;
+
+void mouse_inject_abs(int x, int y, int buttons) {
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    g_abs_x = x < 0 ? 0 : x > 65535 ? 65535 : x;
+    g_abs_y = y < 0 ? 0 : y > 65535 ? 65535 : y;
+    g_abs_new = 1;
+    if (buttons != g_usb_btn_last) {
+        if (g_usb_btnq_n < USB_BTNQ) g_usb_btnq[g_usb_btnq_n++] = buttons;
+        else g_usb_btnq[USB_BTNQ - 1] = buttons;
+        g_usb_btn_last = buttons;
+    }
+    if (f & 0x200) __asm__ volatile("sti" ::: "memory");
+}
+
 void mouse_inject(int dx, int dy, int buttons) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
@@ -711,12 +727,13 @@ static mouse_state_t mouse_read_locked(void) {
         while (mouse_pkt_ready()) { mouse_pop(); synaptics_consume_ready(); }
         tp_tick(&g_syn_tp);
     }
-    if (g_usb_dx || g_usb_dy || g_usb_btnq_n || g_usb_dz) {
+    if (g_usb_dx || g_usb_dy || g_usb_btnq_n || g_usb_dz || g_abs_new) {
         mouse_state_t m = last_mouse;
         m.dx = g_usb_dx;
         m.dy = g_usb_dy;
         m.dz = g_usb_dz;
         g_usb_dz = 0;
+        if (g_abs_new) { m.abs = 1; m.ax = g_abs_x; m.ay = g_abs_y; m.dx = m.dy = 0; g_abs_new = 0; }
         if (g_usb_btnq_n) {                       /* the oldest change; the others next time */
             int b = g_usb_btnq[0];
             for (int i = 1; i < g_usb_btnq_n; i++) g_usb_btnq[i - 1] = g_usb_btnq[i];
