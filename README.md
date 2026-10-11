@@ -52,6 +52,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **NVMe SSDs** - a polled NVMe driver: NVMe disks are install targets (and boot on UEFI), FAT32 partitions are mounted at `/mnt/nvme`
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
+- **Game controllers** - USB gamepads and joysticks (HID: PlayStation, Logitech...), Xbox 360 and Xbox One / Series controllers, in one layout for apps (API 12, `banana_gamepad`); `gamepad` shows them
 - **CPU temperature** - `sensors` and Task Manager show the processor's temperature (Intel digital thermal sensor, AMD Tctl; not in virtual machines)
 - **Power button** - the ACPI power button (and VirtualBox's ACPI Shutdown, QEMU's `system_powerdown`) saves the files and shuts down
 - **Sound** - Intel HD Audio (any codec: Realtek ALC, IDT/SigmaTel, Conexant, VIA... - every analog output, speakers and headphones together) and AC'97 drivers (QEMU, VirtualBox, real PCs) and the PC speaker: `play file.wav`, `beep`, `volume`, and sound for apps
@@ -134,6 +135,7 @@ Banana-OS/
 │   ├── virtio_pci.c    # the virtio PCI transport (legacy and modern)
 │   ├── sdhci.c         # SD card readers
 │   ├── sensors.c       # CPU temperature (Intel DTS, AMD Tctl)
+│   ├── gamepad.c       # game controllers (the common layout)
 │   ├── paging.c        # Maps device memory above 4 GiB (64-bit, UEFI)
 │   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback
 │   ├── app.c, appcall*.asm # App loader (PIE ELF) + the app API table

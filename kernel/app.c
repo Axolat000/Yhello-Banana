@@ -24,6 +24,7 @@
 #include "repo.h"
 #include "wallpaper.h"
 #include "image.h"
+#include "gamepad.h"
 
 #define APP_MAX     8
 #define APP_FD_MAX  16
@@ -876,6 +877,20 @@ static int a_repo_upgrade(char* msg, int mcap) {
     return repo_upgrade(NULL, NULL, msg, mcap);
 }
 
+static int a_gamepad(int index, banana_gamepad_t* out) {
+    gamepad_t g;
+    int r = gamepad_get(index, &g);
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->connected = r;
+        kstrlcpy(out->name, g.name, sizeof(out->name));
+        out->lx = g.lx; out->ly = g.ly; out->rx = g.rx; out->ry = g.ry;
+        out->lt = g.lt; out->rt = g.rt;
+        out->buttons = g.buttons;
+    }
+    return r;
+}
+
 static int a_app_run(const char* name, int argc, char** argv, char* err, int ecap) {
     char e[128];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
@@ -1194,6 +1209,7 @@ static void api_init(void) {
     g_api.repo_status = G(a_repo_status);
     g_api.repo_icon = G(a_repo_icon);
     g_api.repo_upgrade = G(a_repo_upgrade);
+    g_api.gamepad = G(a_gamepad);
 }
 
 /* ── the ELF loader ────────────────────────────────────────────────── */

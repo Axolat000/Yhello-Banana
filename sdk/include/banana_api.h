@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 11u
+#define BANANA_API_VERSION 12u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -49,6 +49,33 @@ typedef struct {
     unsigned int size;             /* download size */
     int          flags;            /* BANANA_PKG_* */
 } banana_pkg_t;
+
+/* a game controller (version 12): the Xbox layout whatever the device */
+#define BANANA_PAD_A      0x0001u
+#define BANANA_PAD_B      0x0002u
+#define BANANA_PAD_X      0x0004u
+#define BANANA_PAD_Y      0x0008u
+#define BANANA_PAD_LB     0x0010u
+#define BANANA_PAD_RB     0x0020u
+#define BANANA_PAD_BACK   0x0040u
+#define BANANA_PAD_START  0x0080u
+#define BANANA_PAD_LS     0x0100u    /* the sticks pressed in */
+#define BANANA_PAD_RS     0x0200u
+#define BANANA_PAD_UP     0x0400u    /* the d-pad */
+#define BANANA_PAD_DOWN   0x0800u
+#define BANANA_PAD_LEFT   0x1000u
+#define BANANA_PAD_RIGHT  0x2000u
+#define BANANA_PAD_GUIDE  0x4000u    /* the Xbox / PS / Home button */
+#define BANANA_PAD_LT     0x8000u    /* the triggers pressed past half */
+#define BANANA_PAD_RT     0x10000u
+
+typedef struct {
+    int          connected;
+    char         name[40];
+    int          lx, ly, rx, ry;     /* sticks: -32767..32767, + = right / down */
+    int          lt, rt;             /* triggers: 0..32767 */
+    unsigned int buttons;            /* BANANA_PAD_* */
+} banana_gamepad_t;
 
 /* window events */
 #define BANANA_EV_NONE        0
@@ -329,6 +356,11 @@ typedef struct banana_api {
     int   (*repo_icon)(const char* name, char* path, int pcap);
     /* upgrades every package that has a newer version: how many, or -1 */
     int   (*repo_upgrade)(char* msg, int mcap);
+
+    /* ── version 12: game controllers ──────────────────────── */
+    /* controller `index` (0-3, in the order they were plugged in): 1 and
+     * its state now, or 0 if there is none */
+    int   (*gamepad)(int index, banana_gamepad_t* out);
 } banana_api_t;
 
 /* the app's entry point (the SDK's crt0 provides it) */

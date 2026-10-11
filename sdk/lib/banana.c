@@ -454,3 +454,12 @@ int banana_repo_upgrade(char* msg, int mcap) {
     if (!has_v11()) { too_old(msg, mcap); return -1; }
     return __banana->repo_upgrade(msg, mcap);
 }
+
+/* ── version 12: game controllers ── */
+int banana_gamepad(int index, banana_gamepad_t* out) {
+    if (__banana->version < 12 || __banana->size < __builtin_offsetof(banana_api_t, gamepad) + sizeof(void*)) {
+        if (out) memset(out, 0, sizeof(*out));
+        return 0;
+    }
+    return __banana->gamepad(index, out);
+}

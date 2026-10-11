@@ -317,6 +317,17 @@ remove / upgrade` do; they take a while, so call them from a thread
 once nothing runs. `banana_repo_icon(name, path, cap)` gives a picture file
 for a package. `apps/store` (the App Store) is a complete example.
 
+### Game controllers (API version 12)
+
+`banana_gamepad(index, &pad)` gives controller `index` (0-3, in the order
+they were plugged in): 1 and a `banana_gamepad_t` - the sticks (`lx`, `ly`,
+`rx`, `ry`: -32767..32767, + is right / down), the triggers (`lt`, `rt`:
+0..32767) and `buttons` (`BANANA_PAD_A`, `_B`, `_X`, `_Y`, `_LB`, `_RB`,
+`_BACK`, `_START`, `_LS`, `_RS`, `_UP`, `_DOWN`, `_LEFT`, `_RIGHT`, `_GUIDE`,
+`_LT`, `_RT`) - or 0 when there is none. Every controller comes in that
+Xbox layout: USB HID gamepads and joysticks (PlayStation, Logitech, most PC
+pads), Xbox 360 and Xbox One / Series controllers. Read it once a frame.
+
 The C library also has `setjmp` / `longjmp`, `gettimeofday` (`<sys/time.h>`),
 `realpath`, `strtold` and `ldexpl`.
 

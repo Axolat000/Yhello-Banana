@@ -6,9 +6,10 @@
 #include "keyboard.h"
 #include "usb.h"
 #include "hidparse.h"
+#include "gamepad.h"
 
 /*
- * USB HID keyboards, mice, tablets and touchscreens.
+ * USB HID keyboards, mice, tablets, touchscreens and game controllers.
  *
  * Once Banana OS drives a USB controller itself, the BIOS stops faking
  * USB keyboards/mice as PS/2 devices - so this driver takes over: key
@@ -19,6 +20,11 @@
  * absolute X / Y - a tablet (VirtualBox's and QEMU's "USB tablet", the
  * pointer that follows the host's mouse) or a touchscreen - move the
  * pointer to a place (mouse_inject_abs), relative ones move it by.
+ * Joysticks and gamepads (their application collection says so) become
+ * game controllers (gamepad.c): X / Y the left stick, Z / Rz or Rx / Ry
+ * the right one, the hat switch the d-pad, buttons 1-13 in the usual
+ * DirectInput order (PlayStation and most PC pads: X A B Y LB RB LT RT
+ * Back Start LS RS Guide).
  */
 
 #define HID_SET_IDLE     0x0A
@@ -71,7 +77,15 @@ typedef struct {
     int        nfields;
     int        uses_rid;
     int        fx, fy, fwheel, ftip, fbtn[3];
+    /* a game controller: its fields, its slot in gamepad.c */
+    int        is_pad, pad;
+    uint8_t    pad_rid;
+    int        fp[9], fpb[13];
 } hid_iface_t;
+
+enum { PF_X, PF_Y, PF_Z, PF_RX, PF_RY, PF_RZ, PF_HAT, PF_BRAKE, PF_ACCEL };
+
+static int is_pad_app(uint32_t a) { return a == HID_U(1, 4) || a == HID_U(1, 5) || a == HID_U(1, 8); }
 
 typedef struct {
     hid_iface_t ifs[MAX_IFACES];
@@ -120,7 +134,34 @@ typedef struct {
     usb_device_t* dev;
 } walk_t;
 
-/* the fields of a pointer's report descriptor: 0 if it is one we can read */
+/* a joystick / gamepad: where its sticks, hat and buttons are (1), or -1 */
+static int pad_setup(hid_iface_t* h, hid_field_t* f, int n) {
+    for (int k = 0; k < 9; k++) h->fp[k] = -1;
+    for (int k = 0; k < 13; k++) h->fpb[k] = -1;
+    int rid = -1;
+    for (int i = 0; i < n; i++) {
+        if (f[i].rid) h->uses_rid = 1;
+        if (f[i].type != HID_INPUT || (f[i].flags & 1) || !is_pad_app(f[i].app)) continue;
+        if (rid < 0) rid = f[i].rid;
+        else if (f[i].rid != rid) continue;               /* (its first input report only) */
+        uint32_t u = f[i].usage;
+        int k = u == HID_U(1, 0x30) ? PF_X : u == HID_U(1, 0x31) ? PF_Y : u == HID_U(1, 0x32) ? PF_Z :
+                u == HID_U(1, 0x33) ? PF_RX : u == HID_U(1, 0x34) ? PF_RY : u == HID_U(1, 0x35) ? PF_RZ :
+                u == HID_U(1, 0x39) ? PF_HAT : u == HID_U(2, 0xC5) ? PF_BRAKE : u == HID_U(2, 0xC4) ? PF_ACCEL : -1;
+        if (k >= 0) { if (h->fp[k] < 0) h->fp[k] = i; }
+        else if (u >= HID_U(9, 1) && u <= HID_U(9, 13) && h->fpb[u - HID_U(9, 1)] < 0) h->fpb[u - HID_U(9, 1)] = i;
+    }
+    if (rid < 0 || (h->fp[PF_X] < 0 && h->fp[PF_HAT] < 0 && h->fpb[0] < 0)) return -1;
+    h->pad_rid = (uint8_t)rid;
+    h->fields = f;
+    h->nfields = n;
+    h->is_pad = 1;
+    h->report_mode = 1;
+    return 1;
+}
+
+/* the fields of a pointer's report descriptor: 0 if it is one we can read
+ * (1: it is a game controller - pad_setup) */
 static int pointer_setup(usb_device_t* d, hid_iface_t* h, uint8_t iface, uint16_t rlen) {
     if (rlen == 0 || rlen > 4096) return -1;
     uint8_t* desc = (uint8_t*)kmalloc(rlen);
@@ -132,6 +173,12 @@ static int pointer_setup(usb_device_t* d, hid_iface_t* h, uint8_t iface, uint16_
     int n = f ? hid_parse(desc, got, f, MAX_FIELDS) : -1;
     kfree(desc);
     if (n <= 0) { if (f) kfree(f); return -1; }
+    for (int i = 0; i < n; i++)
+        if (f[i].type == HID_INPUT && is_pad_app(f[i].app)) {
+            if (pad_setup(h, f, n) == 1) return 1;
+            kfree(f);
+            return -1;
+        }
     h->fx = h->fy = h->fwheel = h->ftip = -1;
     h->fbtn[0] = h->fbtn[1] = h->fbtn[2] = -1;
     for (int i = 0; i < n; i++) {
@@ -176,6 +223,68 @@ static void pointer_report(hid_iface_t* h, const uint8_t* buf, int len) {
     if (wheel) mouse_inject_wheel(-wheel);
 }
 
+static int pad_axis(hid_iface_t* h, int k, const uint8_t* r, int len) {
+    if (h->fp[k] < 0) return 0;
+    const hid_field_t* f = &h->fields[h->fp[k]];
+    return gamepad_axis(hid_value(r, len, f), f->lmin, f->lmax);
+}
+
+static int pad_trigger(hid_iface_t* h, int k, const uint8_t* r, int len) {
+    if (h->fp[k] < 0) return 0;
+    const hid_field_t* f = &h->fields[h->fp[k]];
+    int32_t v = hid_value(r, len, f);
+    if (f->lmax <= f->lmin || v <= f->lmin) return 0;
+    if (v >= f->lmax) return 32767;
+    return (int)((int64_t)(v - f->lmin) * 32767 / (f->lmax - f->lmin));
+}
+
+/* a report of a joystick / gamepad */
+static void pad_report(hid_iface_t* h, const uint8_t* buf, int len) {
+    static const uint32_t BTN[13] = { GP_X, GP_A, GP_B, GP_Y, GP_LB, GP_RB, GP_LT, GP_RT,
+                                      GP_BACK, GP_START, GP_LS, GP_RS, GP_GUIDE };
+    static const uint32_t HAT[8] = { GP_UP, GP_UP | GP_RIGHT, GP_RIGHT, GP_DOWN | GP_RIGHT,
+                                     GP_DOWN, GP_DOWN | GP_LEFT, GP_LEFT, GP_UP | GP_LEFT };
+    uint8_t rid = 0;
+    if (h->uses_rid) { if (len < 1) return; rid = buf[0]; buf++; len--; }
+    if (rid != h->pad_rid || h->pad < 0) return;
+    gamepad_t s;
+    memset(&s, 0, sizeof(s));
+    s.lx = pad_axis(h, PF_X, buf, len);
+    s.ly = pad_axis(h, PF_Y, buf, len);
+    int analog = 0;
+    if (h->fp[PF_Z] >= 0 && h->fp[PF_RZ] >= 0) {          /* right stick Z / Rz, triggers Rx / Ry */
+        s.rx = pad_axis(h, PF_Z, buf, len);
+        s.ry = pad_axis(h, PF_RZ, buf, len);
+        if (h->fp[PF_RX] >= 0 && h->fp[PF_RY] >= 0) {
+            s.lt = pad_trigger(h, PF_RX, buf, len);
+            s.rt = pad_trigger(h, PF_RY, buf, len);
+            analog = 1;
+        }
+    } else {
+        s.rx = pad_axis(h, PF_RX, buf, len);
+        s.ry = pad_axis(h, PF_RY, buf, len);
+    }
+    if (h->fp[PF_BRAKE] >= 0 || h->fp[PF_ACCEL] >= 0) {
+        s.lt = pad_trigger(h, PF_BRAKE, buf, len);
+        s.rt = pad_trigger(h, PF_ACCEL, buf, len);
+        analog = 1;
+    }
+    for (int k = 0; k < 13; k++)
+        if (h->fpb[k] >= 0 && hid_value(buf, len, &h->fields[h->fpb[k]])) s.buttons |= BTN[k];
+    if (!analog) {                                         /* digital triggers */
+        if (s.buttons & GP_LT) s.lt = 32767;
+        if (s.buttons & GP_RT) s.rt = 32767;
+    }
+    if (h->fp[PF_HAT] >= 0) {
+        const hid_field_t* f = &h->fields[h->fp[PF_HAT]];
+        int32_t v = hid_value(buf, len, f);
+        int32_t span = f->lmax - f->lmin;
+        if (v >= f->lmin && v <= f->lmax && (span == 7 || span == 3))
+            s.buttons |= HAT[(v - f->lmin) * (span == 3 ? 2 : 1)];
+    }
+    gamepad_update(h->pad, &s);
+}
+
 static int walk_cb(const uint8_t* desc, void* ctx) {
     walk_t* w = (walk_t*)ctx;
     if (desc[1] == USB_DT_INTERFACE) {
@@ -201,8 +310,9 @@ static int walk_cb(const uint8_t* desc, void* ctx) {
             memset(h, 0, sizeof(*h));
             /* a mouse may really be a tablet: its descriptor tells (absolute X / Y) */
             int report = 0;
-            if (w->cur_boot >= 2 && pointer_setup(d, h, w->cur_num, w->cur_rlen) == 0)
-                report = h->absolute || w->cur_boot == 3;   /* (relative boot mice stay on the boot protocol) */
+            int kind = w->cur_boot >= 2 ? pointer_setup(d, h, w->cur_num, w->cur_rlen) : -1;
+            if (kind == 0) report = h->absolute || w->cur_boot == 3;   /* (relative boot mice stay on the boot protocol) */
+            else if (kind == 1) report = 1;                            /* a game controller */
             if (!report && h->fields) { kfree(h->fields); h->fields = NULL; h->report_mode = 0; }
             if (w->cur_boot == 3 && !report) { w->cur_boot = 0; return 0; }   /* not a pointer */
             /* boot protocol (or the report protocol), and only report on change */
@@ -217,6 +327,7 @@ static int walk_cb(const uint8_t* desc, void* ctx) {
                 h->xfer.buf = (uint8_t*)usb_dma_alloc(64);
                 uint16_t mps = ep->wMaxPacketSize & 0x7FF;
                 h->xfer.len = report ? (mps > 64 ? 64 : mps ? mps : 8) : 8;
+                h->pad = h->is_pad ? gamepad_add(d->product) : -1;
                 if (h->xfer.buf) usb_submit(&h->xfer);
             } else if (h->fields) { kfree(h->fields); h->fields = NULL; }
         }
@@ -243,7 +354,7 @@ static int hid_attach(usb_device_t* d) {
     if (!hid->count) { kfree(hid); return -1; }
     d->drvdata = hid;
     for (int i = 0; i < hid->count; i++)
-        klog("usbhid: %s on endpoint %02x\n", hid->ifs[i].is_kbd ? "keyboard" :
+        klog("usbhid: %s on endpoint %02x\n", hid->ifs[i].is_kbd ? "keyboard" : hid->ifs[i].is_pad ? "game controller" :
              hid->ifs[i].report_mode ? (hid->ifs[i].absolute ? "tablet (absolute pointer)" : "mouse (report protocol)") : "mouse",
              hid->ifs[i].ep);
     return 0;
@@ -262,6 +373,8 @@ static void hid_poll(usb_device_t* d) {
         if (h->xfer.status == USB_XFER_OK) {
             if (h->is_kbd && h->xfer.actual >= 8) {
                 keyboard_report(h, h->xfer.buf);
+            } else if (h->is_pad) {
+                pad_report(h, h->xfer.buf, (int)h->xfer.actual);
             } else if (h->report_mode) {
                 pointer_report(h, h->xfer.buf, (int)h->xfer.actual);
             } else if (!h->is_kbd && h->xfer.actual >= 3) {
@@ -280,6 +393,7 @@ static void hid_detach(usb_device_t* d) {
     if (!hid) return;
     /* release anything still held down */
     for (int i = 0; i < hid->count; i++) {
+        if (hid->ifs[i].is_pad) gamepad_remove(hid->ifs[i].pad);
         if (hid->ifs[i].fields) { kfree(hid->ifs[i].fields); hid->ifs[i].fields = NULL; }
         if (!hid->ifs[i].is_kbd) continue;
         static const uint8_t none[8] = { 0 };

@@ -101,6 +101,9 @@ int  banana_repo_remove(const char* name, char* msg, int mcap);
 int  banana_repo_status(char* msg, int mcap);
 int  banana_repo_icon(const char* name, char* path, int pcap);   /* 0: path of a picture */
 int  banana_repo_upgrade(char* msg, int mcap);             /* how many, or -1 */
+/* game controller `index` (0-3): 1 and its state (sticks, triggers,
+ * BANANA_PAD_* buttons - the Xbox layout whatever the controller), or 0 */
+int  banana_gamepad(int index, banana_gamepad_t* out);
 /* a bevelled button-looking box with a centered label */
 void bwin_button(bwin_t* win, int x, int y, int w, int h, const char* label, int pressed);
 /* copies a w*h image (0x00RRGGBB) into the window at x, y */

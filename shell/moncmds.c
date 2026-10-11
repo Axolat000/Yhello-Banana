@@ -9,6 +9,7 @@
 #include "../kernel/meminfo.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/sensors.h"
+#include "../kernel/gamepad.h"
 #include "../kernel/task.h"
 #include "../kernel/smp.h"
 #include "../kernel/timer.h"
@@ -353,6 +354,25 @@ static void cmd_htop(void) {
     }
 }
 
+/* gamepad: the game controllers plugged in and what they are doing */
+static void cmd_gamepad(void) {
+    static const char* NAMES[17] = { "A", "B", "X", "Y", "LB", "RB", "Back", "Start", "LS", "RS",
+                                     "Up", "Down", "Left", "Right", "Guide", "LT", "RT" };
+    char row[200];
+    int any = 0;
+    for (int i = 0; i < GP_MAX; i++) {
+        gamepad_t g;
+        if (!gamepad_get(i, &g)) continue;
+        any = 1;
+        ksnprintf(row, sizeof(row), "%d: %s\n   left %d,%d  right %d,%d  triggers %d %d\n   buttons:",
+                  i, g.name, g.lx, g.ly, g.rx, g.ry, g.lt, g.rt);
+        terminal_write(row);
+        for (int b = 0; b < 17; b++) if (g.buttons & (1u << b)) { terminal_write(" "); terminal_write(NAMES[b]); }
+        terminal_write(g.buttons ? "\n" : " none\n");
+    }
+    if (!any) terminal_write("No game controller plugged in.\n");
+}
+
 /* sensors: the processor's temperature */
 static void cmd_sensors(void) {
     char row[128];
@@ -490,6 +510,7 @@ int moncmd_dispatch(const char* line) {
     if (strcmp(argv[0], "sched") == 0) { cmd_sched(); return 1; }
     if (strcmp(argv[0], "lscpu") == 0) { cmd_lscpu(); return 1; }
     if (strcmp(argv[0], "sensors") == 0) { cmd_sensors(); return 1; }
+    if (strcmp(argv[0], "gamepad") == 0) { cmd_gamepad(); return 1; }
     if (strcmp(argv[0], "kptest") == 0) {
         if (argc < 3) { terminal_writeln("usage: kptest <picture.png|jpg|gif|bmp> <drawing.svg> [seconds]   (checks kernel preemption)"); return 1; }
         char rep[400];
