@@ -1,3 +1,4 @@
+#include "../net/firewall.h"
 #include "../net/ipv6.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
@@ -284,6 +285,49 @@ static void cmd_ping(int argc, char** argv) {
                 sent, received, loss, timer_ms() - start);
     if (received)
         printf_line("rtt min/avg/max = %u/%u/%u ms\n", rtt_min, rtt_sum / received, rtt_max);
+}
+
+/* ── the firewall ─────────────────────────────────────────────── */
+
+static void fw_status(void) {
+    printf_line("Firewall: %s\n", fw_enabled() ? "on - new connections from outside are refused but for the ports below"
+                                                 : "off (firewall on turns it on)");
+    uint16_t p[32];
+    for (int k = 0; k < 2; k++) {
+        int proto = k ? FW_UDP : FW_TCP, n = fw_ports(proto, p, 32);
+        char line[200];
+        int o = ksnprintf(line, sizeof(line), "  allowed in, %s:", k ? "UDP" : "TCP");
+        if (!n) o += ksnprintf(line + o, sizeof(line) - (size_t)o, " none");
+        for (int i = 0; i < n && o < (int)sizeof(line) - 8; i++) o += ksnprintf(line + o, sizeof(line) - (size_t)o, " %u", p[i]);
+        printf_line("%s\n", line);
+    }
+    printf_line("  ping from outside: %s\n", fw_ping_allowed() ? "answered" : "not answered");
+    printf_line("  blocked so far: %u\n", fw_blocked_count());
+}
+
+static void cmd_firewall(int argc, char** argv) {
+    const char* usage = "usage: firewall [on|off] | allow|deny tcp|udp PORT | ping on|off | log";
+    if (argc < 2) { fw_status(); return; }
+    const char* c = argv[1];
+    if (!strcmp(c, "on")) { fw_enable(1); fw_status(); return; }
+    if (!strcmp(c, "off")) { fw_enable(0); printf_line("Firewall off\n"); return; }
+    if (!strcmp(c, "ping") && argc >= 3) { fw_set_ping(!strcmp(argv[2], "on")); fw_status(); return; }
+    if (!strcmp(c, "log")) {
+        char lines[16][64];
+        int n = fw_log(lines, 16);
+        if (!n) printf_line("Nothing blocked yet.\n");
+        for (int i = 0; i < n; i++) printf_line("blocked: %s\n", lines[i]);
+        return;
+    }
+    if ((!strcmp(c, "allow") || !strcmp(c, "deny")) && argc >= 4) {
+        int proto = !strcmp(argv[2], "udp") ? FW_UDP : !strcmp(argv[2], "tcp") ? FW_TCP : 0;
+        uint32_t port = 0;
+        if (!proto || !k_parse_u32(argv[3], &port) || !port || port > 65535) { terminal_writeln(usage); return; }
+        if (fw_allow(proto, (uint16_t)port, c[0] == 'a') < 0) { err("firewall", "too many ports allowed"); return; }
+        fw_status();
+        return;
+    }
+    terminal_writeln(usage);
 }
 
 /* ── IPv6 ───────────────────────────────────────────────────────── */
@@ -829,6 +873,7 @@ int netcmd_dispatch(const char* line) {
 
     if (strcmp(c, "ifconfig") == 0)                  { cmd_ifconfig(argc, argv); return 1; }
     if (strcmp(c, "ipv6") == 0)                      { cmd_ipv6(argc, argv); return 1; }
+    if (strcmp(c, "firewall") == 0)                  { cmd_firewall(argc, argv); return 1; }
     if (strcmp(c, "ping6") == 0)                     { cmd_ping6(argc, argv); return 1; }
     if (strcmp(c, "dhcp") == 0)                      { cmd_dhcp(); return 1; }
     if (strcmp(c, "ping") == 0)                      { cmd_ping(argc, argv); return 1; }

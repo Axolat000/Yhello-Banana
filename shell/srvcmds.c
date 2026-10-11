@@ -1,3 +1,4 @@
+#include "../net/firewall.h"
 #include "../net/ipv6.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/utf8.h"
@@ -146,6 +147,7 @@ static void cmd_sshd(int argc, char** argv) {
         if (!passwd_is_set(PASSWD_USER)) terminal_writeln("      no password set yet: `passwd`");
     } else if (strcmp(sub, "start") == 0 || strcmp(sub, "enable") == 0) {
         if (sshd_start(port, e, sizeof(e)) != 0) { fail("sshd", e); return; }
+        if (fw_enabled() && !fw_allowed(FW_TCP, (uint16_t)port)) say("note: the firewall keeps port %d closed - `firewall allow tcp %d` opens it\n", port, port);
         if (strcmp(sub, "enable") == 0) boot_setting("sshd", 1, port);
         sshd_print_status();
     } else if (strcmp(sub, "stop") == 0 || strcmp(sub, "disable") == 0) {
@@ -273,6 +275,7 @@ void services_boot(void) {
     netconf_boot();
     settings_boot();                    /* volume, keyboard layout */
     ipv6_boot();                        /* IPv6 only if it was turned on */
+    fw_boot();                          /* the firewall, if it was turned on */
     uint16_t port = 80;
     char e[96];
     if (boot_enabled("httpd", &port) && httpd_start(port, e, sizeof(e)) != 0)

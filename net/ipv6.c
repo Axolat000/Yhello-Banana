@@ -1,3 +1,4 @@
+#include "firewall.h"
 #include "ipv6.h"
 #include "net.h"
 #include "netdev.h"
@@ -289,6 +290,11 @@ void ipv6_rx(const uint8_t* p, uint32_t len) {
     switch (m[0]) {
     case 128: {                                /* echo request: answered */
         if (is_mcast(&dst) && !eq(&dst, &ALL_NODES)) break;
+        if (fw_enabled()) {
+            char from[48];
+            ip6_format(&src, from, sizeof(from));
+            if (!fw_in_ping(from)) break;
+        }
         static uint8_t r[1500];
         if (plen > sizeof(r)) break;
         memcpy(r, m, plen);

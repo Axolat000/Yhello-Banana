@@ -1,3 +1,4 @@
+#include "firewall.h"
 #include "net.h"
 #include "kstring.h"
 #include "kheap.h"
@@ -117,6 +118,15 @@ void ip_rx(const uint8_t* p, uint32_t len) {
 
     const uint8_t* payload = p + ihl;
     uint32_t plen = total - ihl;
+    /* the firewall (when on): what may come in */
+    if (fw_enabled() && (src >> 24) != 127 && !(nif->configured && src == nif->ip)) {
+        char from[16];
+        ip4_to_str(src, from);
+        if (p[9] == IP_PROTO_TCP && plen >= 14 &&
+            !fw_in_tcp(from, rd16(payload + 2), (payload[13] & 0x12) == 0x02)) return;
+        if (p[9] == IP_PROTO_UDP && plen >= 8 && !fw_in_udp(from, rd16(payload), rd16(payload + 2))) return;
+        if (p[9] == IP_PROTO_ICMP && plen >= 1 && payload[0] == 8 && !fw_in_ping(from)) return;
+    }
     switch (p[9]) {
     case IP_PROTO_ICMP: icmp_rx(src, payload, plen, p[8]); break;
     case IP_PROTO_UDP:  udp_rx(src, dst, payload, plen); break;

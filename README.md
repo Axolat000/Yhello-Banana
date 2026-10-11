@@ -52,6 +52,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **NVMe SSDs** - a polled NVMe driver: NVMe disks are install targets (and boot on UEFI), FAT32 partitions are mounted at `/mnt/nvme`
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
+- **Firewall (optional)** - off unless turned on (`firewall on`, Settings > Network): connections from outside refused but for the ports allowed (`firewall allow tcp 22`), pings only if allowed, everything you start works as before; `firewall log` shows what was blocked
 - **IPv6 (optional)** - off unless `ipv6 on`: link-local and SLAAC addresses, neighbor discovery, `ping6` (TCP / UDP stay on IPv4 for now)
 - **Intel Macs** - Apple keyboards (Command works as Ctrl), Apple NVMe SSDs (2015-2017 Macs, T2 Macs), the speakers of Macs' HD Audio codecs (GPIO amplifiers), and the Apple SMC's temperatures and fans in `sensors`
 - **Android phones** - `adb` (devices, shell, push, pull, install, logcat, reboot) and `fastboot` (getvar, flash, erase, boot, reboot, oem, flashing unlock) over USB, with the phone's "Allow USB debugging?" key check (RSA-2048, the key in `~/.android`)
@@ -766,6 +767,7 @@ include /path/to/banana-sdk/driver/driver.mk
 | `lscpu` | Processors: physical cores, hardware threads (Hyper-Threading), packages, performance / efficient cores, each one's load |
 | `adb devices / shell / push / pull / install / logcat / reboot` | Android phones over USB (USB debugging on) |
 | `fastboot devices / getvar / flash / erase / boot / reboot` | a phone in its bootloader |
+| `firewall [on/off] / allow / deny / ping / log` | the firewall (off by default) |
 | `ipv6 [on\|off]` / `ping6 ADDRESS` | IPv6 (off by default): its addresses, and echo |
 | `sensors` | The processor's temperature (Intel and AMD, real hardware) |
 | `gamepad` | The game controllers plugged in: sticks, triggers, buttons held |

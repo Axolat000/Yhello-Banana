@@ -1,3 +1,4 @@
+#include "firewall.h"
 #include "net.h"
 #include "kstring.h"
 #include "random.h"
@@ -43,6 +44,7 @@ uint16_t udp_ephemeral_port(void) {
 }
 
 int udp_send(ip4_t dst, uint16_t sport, uint16_t dport, const void* data, uint32_t len) {
+    fw_out_udp(sport);                     /* (answers to it may come in through the firewall) */
     netif_t* nif = net_if();
     if (len > IP_MAX_PAYLOAD - 8) return NET_ERR_PROTO;
     uint8_t d[IP_MAX_PAYLOAD];

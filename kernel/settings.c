@@ -1,3 +1,5 @@
+#include "../net/firewall.h"
+#include "../net/ipv6.h"
 #include "settings.h"
 #include "gfx.h"
 #include "display.h"
@@ -812,6 +814,12 @@ static void draw_network(void) {
     ip4_to_str(nf->dns, a);     ksnprintf(line, sizeof(line), "DNS:      %s", nf->configured ? a : "-"); label(x, y + 132, line, C_TEXT);
     button(x, y + 160, 200, nf->dhcp ? "Renew address (DHCP)" : "Switch to automatic", 0);
     label(x, y + 194, "A manual address: `ifconfig` in a terminal.", C_DIM);
+    /* the firewall and IPv6: both off unless turned on here */
+    label(x, y + 230, "Firewall: refuses connections from outside", C_TEXT);
+    button(x + 360, y + 226, 64, fw_enabled() ? "On" : "Off", fw_enabled());
+    label(x, y + 252, "(ports to open: `firewall allow tcp PORT`)", C_DIM);
+    label(x, y + 280, "IPv6", C_TEXT);
+    button(x + 360, y + 276, 64, ipv6_enabled() ? "On" : "Off", ipv6_enabled());
 }
 
 static void draw_time(void) {
@@ -1089,6 +1097,16 @@ void settings_click(int mx, int my) {
             nf->configured = 0;
             dhcp_start();
             kstrlcpy(g_status, "Asking the network for an address...", sizeof(g_status));
+            return;
+        }
+        if (nf && nf->dev && inside(mx, my, x + 360, y + 226, 64, 20)) {
+            fw_enable(!fw_enabled());
+            kstrlcpy(g_status, fw_enabled() ? "Firewall on" : "Firewall off", sizeof(g_status));
+            return;
+        }
+        if (nf && nf->dev && inside(mx, my, x + 360, y + 276, 64, 20)) {
+            ipv6_enable(!ipv6_enabled());
+            kstrlcpy(g_status, ipv6_enabled() ? "IPv6 on" : "IPv6 off", sizeof(g_status));
             return;
         }
     }
