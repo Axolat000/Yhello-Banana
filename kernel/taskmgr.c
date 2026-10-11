@@ -11,6 +11,7 @@
 #include "app.h"
 #include "gui.h"
 #include "audio.h"
+#include "sensors.h"
 #include "../net/net.h"
 
 #define TITLE_H  20
@@ -437,7 +438,12 @@ void taskmgr_draw(const fb_info_t* fi) {
             ksnprintf(line, sizeof(line), "Processor:      %d cores (the kernel on core 0, apps on all)", cpu_count());
         else
             ksnprintf(line, sizeof(line), "Processor:      1 core in use (%d found)", smp_cores_found());
-        gfx_draw_text(lx, ty + 112, line, C_TEXT, C_PANEL);
+        int temp = sensors_cpu_temp();
+        if (temp != SENSOR_NONE) {
+            size_t l = strlen(line);
+            ksnprintf(line + l, sizeof(line) - l, ", %d C", temp);
+        }
+        gfx_draw_text(lx, ty + 112, line, temp != SENSOR_NONE && sensors_cpu_tjmax() && temp >= sensors_cpu_tjmax() - 10 ? 0x00F0A060u : C_TEXT, C_PANEL);
     }
 
     gfx_fill_rect(x + 3, y + H - 18, W - 6, 15, 0x00161B22u);

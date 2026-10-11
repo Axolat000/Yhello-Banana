@@ -8,6 +8,7 @@
 #include "../kernel/fat32.h"
 #include "../kernel/meminfo.h"
 #include "../kernel/sysinfo.h"
+#include "../kernel/sensors.h"
 #include "../kernel/task.h"
 #include "../kernel/smp.h"
 #include "../kernel/timer.h"
@@ -352,6 +353,23 @@ static void cmd_htop(void) {
     }
 }
 
+/* sensors: the processor's temperature */
+static void cmd_sensors(void) {
+    char row[128];
+    const char* src = sensors_cpu_source();
+    int t = sensors_cpu_temp();
+    if (!src || t == SENSOR_NONE) {
+        terminal_write("No temperature sensor this kernel can read (a virtual machine, or an unsupported processor).\n");
+        return;
+    }
+    int tj = sensors_cpu_tjmax();
+    if (tj) ksnprintf(row, sizeof(row), "CPU temperature:  %d C  (throttles at %d C)\n", t, tj);
+    else ksnprintf(row, sizeof(row), "CPU temperature:  %d C\n", t);
+    terminal_write(row);
+    ksnprintf(row, sizeof(row), "Sensor:           %s\n", src);
+    terminal_write(row);
+}
+
 /* lscpu: the processors, their cores and hardware threads */
 static void cmd_lscpu(void) {
     const sysinfo_t* si = sysinfo_get();
@@ -471,6 +489,7 @@ int moncmd_dispatch(const char* line) {
     if (strcmp(argv[0], "htop") == 0) { cmd_htop(); return 1; }
     if (strcmp(argv[0], "sched") == 0) { cmd_sched(); return 1; }
     if (strcmp(argv[0], "lscpu") == 0) { cmd_lscpu(); return 1; }
+    if (strcmp(argv[0], "sensors") == 0) { cmd_sensors(); return 1; }
     if (strcmp(argv[0], "kptest") == 0) {
         if (argc < 3) { terminal_writeln("usage: kptest <picture.png|jpg|gif|bmp> <drawing.svg> [seconds]   (checks kernel preemption)"); return 1; }
         char rep[400];
