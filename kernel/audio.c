@@ -470,6 +470,22 @@ static int setup_codec(int cad) {
     if (g_afg < 0) return 0;                          /* a modem codec */
     verb12(g_afg, 0x705, 0);                          /* power: D0 */
     timer_sleep_ms(5);
+    /* Macs: the speaker and headphone amplifiers are switched by the
+     * codec's GPIO pins (Cirrus CS4206 / CS4208, IDT / SigmaTel in the
+     * older MacBooks, iMacs and Mac minis) - silent until they are raised.
+     * The codec's subsystem ID says it is in a Mac: every pin out, high. */
+    uint32_t ssid = verb12(g_afg, 0xF20, 0);
+    if ((ssid >> 16) == 0x106B) {
+        int ngpio = (int)(hda_param(g_afg, 0x11) & 0xFF);
+        if (ngpio > 8) ngpio = 8;
+        if (ngpio > 0) {
+            uint8_t m = (uint8_t)((1u << ngpio) - 1);
+            verb12(g_afg, 0x716, m);                  /* GPIO enable mask */
+            verb12(g_afg, 0x717, m);                  /* direction: outputs */
+            verb12(g_afg, 0x715, m);                  /* data: high (the amplifiers on) */
+            klog("hda: a Mac's codec (%08x): %d GPIO pins raised for its amplifiers\n", ssid, ngpio);
+        }
+    }
     uint32_t ws = hda_param(g_afg, 0x04);
     int w0 = (int)((ws >> 16) & 0xFF), nw = (int)(ws & 0xFF);
     char name[40];

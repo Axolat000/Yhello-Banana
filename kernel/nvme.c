@@ -23,7 +23,8 @@ typedef struct {
     uint8_t* iosq; uint8_t* iocq; /* I/O queues */
     uint16_t asq_tail, acq_head, iosq_tail, iocq_head;
     int      aphase, iophase;
-    uint16_t cid;
+    uint16_t cid;                 /* (one counter for every queue: Apple's "shared tags") */
+    uint32_t io_sqe;              /* I/O submission entry size: 64, Apple's 128 */
     uint8_t* bounce;              /* CHUNK bytes */
     uint64_t* prps;               /* the PRP list for the bounce buffer */
     uint32_t sectors;             /* namespace 1, 512-byte sectors (28-bit API) */
@@ -57,7 +58,9 @@ static int submit(nvme_t* n, int qid, uint32_t* cmd) {
     int* phase = qid ? &n->iophase : &n->aphase;
     uint16_t cid = ++n->cid;
     cmd[0] = (cmd[0] & 0xFFFF) | ((uint32_t)cid << 16);
-    memcpy(sq + (uint32_t)*tail * 64, cmd, 64);
+    uint32_t sqe = qid ? n->io_sqe : 64;
+    memcpy(sq + (uint32_t)*tail * sqe, cmd, 64);
+    if (sqe > 64) memset(sq + (uint32_t)*tail * sqe + 64, 0, sqe - 64);
     *tail = (uint16_t)((*tail + 1) % QDEPTH);
     w32(n, 0x1000 + (uint32_t)(2 * qid) * n->dstrd, *tail);          /* SQ tail doorbell */
     uint32_t start = timer_ms();
@@ -107,7 +110,10 @@ static int start_controller(nvme_t* n, const pci_dev_t* pd) {
     while (r32(n, 0x1C) & 1) { if (timer_ms() - t0 > timeout) return -1; timer_sleep_ms(1); }
     n->asq = (uint8_t*)page_alloc(PAGE);
     n->acq = (uint8_t*)page_alloc(PAGE);
-    n->iosq = (uint8_t*)page_alloc(PAGE);
+    /* Apple's SSDs (MacBook / MacBook Pro / iMac 2015-2017 and the T2 Macs)
+     * take 128-byte I/O commands, as Linux's nvme quirks say */
+    n->io_sqe = pd->vendor == 0x106B ? 128 : 64;
+    n->iosq = (uint8_t*)page_alloc(PAGE * 2);
     n->iocq = (uint8_t*)page_alloc(PAGE);
     n->bounce = (uint8_t*)page_alloc(CHUNK);
     n->prps = (uint64_t*)page_alloc(PAGE);
@@ -121,7 +127,7 @@ static int start_controller(nvme_t* n, const pci_dev_t* pd) {
      * would keep the CPU in the interrupt handler of whoever shares it) */
     w32(n, 0x0C, 0xFFFFFFFFu);                         /* INTMS: mask every vector */
     pci_write16(pd->bus, pd->dev, pd->fn, 0x04, (uint16_t)(pci_read16(pd->bus, pd->dev, pd->fn, 0x04) | (1u << 10)));
-    w32(n, 0x14, (4u << 20) | (6u << 16) | 1u);        /* CQ entry 16 B, SQ entry 64 B, 4 KiB pages, enable */
+    w32(n, 0x14, (4u << 20) | ((n->io_sqe == 128 ? 7u : 6u) << 16) | 1u);   /* CQ entry 16 B, SQ entry 64 (128) B, 4 KiB pages, enable */
     t0 = timer_ms();
     while (!(r32(n, 0x1C) & 1)) {
         if (r32(n, 0x1C) & 2) { klog("nvme: controller fatal status\n"); return -1; }
@@ -238,7 +244,9 @@ static int bd_write(blockdev_t* bd, uint32_t lba, uint32_t count, const void* bu
 
 static int scan_cb(const pci_dev_t* d, void* ctx) {
     (void)ctx;
-    if (d->class_code != 0x01 || d->subclass != 0x08 || d->prog_if != 0x02 || g_count >= NVME_MAX) return 0;
+    /* Apple's (106b:2001 / 2003 / 2005) do not all say NVMe in their class */
+    int apple = d->vendor == 0x106B && (d->device == 0x2001 || d->device == 0x2003 || d->device == 0x2005);
+    if ((!apple && (d->class_code != 0x01 || d->subclass != 0x08 || d->prog_if != 0x02)) || g_count >= NVME_MAX) return 0;
     nvme_t* n = &g_nv[g_count];
     memset(n, 0, sizeof(*n));
     if (start_controller(n, d) == 0) {

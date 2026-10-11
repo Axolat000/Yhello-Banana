@@ -52,6 +52,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **NVMe SSDs** - a polled NVMe driver: NVMe disks are install targets (and boot on UEFI), FAT32 partitions are mounted at `/mnt/nvme`
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
+- **Intel Macs** - Apple keyboards (Command works as Ctrl), Apple NVMe SSDs (2015-2017 Macs, T2 Macs), the speakers of Macs' HD Audio codecs (GPIO amplifiers), and the Apple SMC's temperatures and fans in `sensors`
 - **Android phones** - `adb` (devices, shell, push, pull, install, logcat, reboot) and `fastboot` (getvar, flash, erase, boot, reboot, oem, flashing unlock) over USB, with the phone's "Allow USB debugging?" key check (RSA-2048, the key in `~/.android`)
 - **Drag and drop everywhere** - files dragged from Files or the desktop onto a terminal type their paths at the prompt, onto Notepad / the Browser open there, onto an app's window go to the app (Banana Code, Photos, Media Player, Music; API 13 `BANANA_EV_DROP`); held over a taskbar button, that window comes up to drop on
 - **Game controllers** - USB gamepads and joysticks (HID: PlayStation, Logitech...), Xbox 360 and Xbox One / Series controllers, in one layout for apps (API 12, `banana_gamepad`); `gamepad` shows them
@@ -137,6 +138,7 @@ Banana-OS/
 │   ├── virtio_pci.c    # the virtio PCI transport (legacy and modern)
 │   ├── sdhci.c         # SD card readers
 │   ├── sensors.c       # CPU temperature (Intel DTS, AMD Tctl)
+│   ├── applesmc.c      # the Apple SMC of Intel Macs (temperatures, fans)
 │   ├── gamepad.c       # game controllers (the common layout)
 │   ├── paging.c        # Maps device memory above 4 GiB (64-bit, UEFI)
 │   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback (USB audio: usb/uaudio.c)

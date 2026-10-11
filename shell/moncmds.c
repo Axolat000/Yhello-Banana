@@ -9,6 +9,7 @@
 #include "../kernel/meminfo.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/sensors.h"
+#include "../kernel/applesmc.h"
 #include "../kernel/gamepad.h"
 #include "../kernel/task.h"
 #include "../kernel/smp.h"
@@ -378,6 +379,27 @@ static void cmd_sensors(void) {
     char row[128];
     const char* src = sensors_cpu_source();
     int t = sensors_cpu_temp();
+    if (applesmc_present()) {                       /* a Mac: its SMC's sensors and fans */
+        static const struct { const char* key; const char* name; } T[] = {
+            { "TC0P", "CPU proximity" }, { "TC0D", "CPU die" }, { "TC0E", "CPU" }, { "TC0F", "CPU" },
+            { "TG0P", "GPU proximity" }, { "TG0D", "GPU die" }, { "Th0H", "heatsink" }, { "Ts0P", "palm rest" },
+            { "TB0T", "battery" }, { "TM0P", "memory" },
+        };
+        terminal_write("Apple SMC:\n");
+        for (unsigned i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+            int c = applesmc_temp(T[i].key);
+            if (c == APPLESMC_NONE) continue;
+            ksnprintf(row, sizeof(row), "  %-16s %d C  (%s)\n", T[i].name, c, T[i].key);
+            terminal_write(row);
+        }
+        int rpm[8];
+        int nf = applesmc_fans(rpm, 8);
+        for (int i = 0; i < nf; i++) {
+            ksnprintf(row, sizeof(row), "  fan %d           %d RPM\n", i + 1, rpm[i]);
+            terminal_write(row);
+        }
+        if (!src || t == SENSOR_NONE) return;
+    }
     if (!src || t == SENSOR_NONE) {
         terminal_write("No temperature sensor this kernel can read (a virtual machine, or an unsupported processor).\n");
         return;

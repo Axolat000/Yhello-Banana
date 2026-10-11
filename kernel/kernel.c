@@ -23,6 +23,7 @@
 #include "blockdev.h"
 #include "audio.h"
 #include "nvme.h"
+#include "applesmc.h"
 #include "sdhci.h"
 #include "acpi.h"
 #include "virtio_blk.h"
@@ -124,6 +125,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     nvme_init();      /* NVMe SSDs: disks for install/sync, FAT32 partitions in /mnt/nvme */
     virtio_blk_init();  /* virtio disks (QEMU/KVM, Proxmox, clouds): the same, in /mnt/virtio */
     sdhci_init();     /* SD card readers: cards mounted in /mnt/sd as they are put in */
+    applesmc_init();  /* Intel Macs: the SMC's temperatures and fans */
     acpi_power_button_init();   /* VirtualBox's ACPI Shutdown, QEMU's system_powerdown, the PC's button */
     STEP("usb");
     usb_stack_init(); /* xHCI/EHCI: USB network adapters, keyboards, mice, sticks */

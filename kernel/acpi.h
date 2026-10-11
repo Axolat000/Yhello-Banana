@@ -6,5 +6,7 @@
 void acpi_s5_poweroff(void);
 /* the power button shuts the computer down (a task watching it) */
 void acpi_power_button_init(void);
+/* the firmware's DSDT / SSDTs declare a device with this _HID ("APP0001") */
+int  acpi_has_device(const char* hid);
 
 #endif

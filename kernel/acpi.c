@@ -158,3 +158,37 @@ void acpi_power_button_init(void) {
     if (task_create("acpi", button_task) < 0) return;
     klog("acpi: power button on port %x\n", g_evt_a);
 }
+
+/* ── devices the firmware declares ────────────────────────────────── */
+
+static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : (c | 32) >= 'a' && (c | 32) <= 'f' ? (c | 32) - 'a' + 10 : 0; }
+
+static int table_has(const uint8_t* t, const uint8_t* pat, int n) {
+    if (!t) return 0;
+    uint32_t len = rd32(t + 4);
+    if (len > (16u << 20)) return 0;
+    for (uint32_t i = 36; i + (uint32_t)n <= len; i++)
+        if (!memcmp(t + i, pat, (uint32_t)n)) return 1;
+    return 0;
+}
+
+int acpi_has_device(const char* hid) {
+    if (strlen(hid) != 7) return 0;
+    /* _HID as an EISA ID (DWordConst of the compressed letters + product) or as a string */
+    uint16_t w = (uint16_t)(((hid[0] - 0x40) & 31) << 10 | ((hid[1] - 0x40) & 31) << 5 | ((hid[2] - 0x40) & 31));
+    uint8_t eisa[5] = { 0x0C, (uint8_t)(w >> 8), (uint8_t)w,
+                        (uint8_t)(hexv(hid[3]) << 4 | hexv(hid[4])), (uint8_t)(hexv(hid[5]) << 4 | hexv(hid[6])) };
+    const uint8_t* f = acpi_find_table("FACP");
+    const uint8_t* tabs[9];
+    int nt = 0;
+    if (f) {
+        uint32_t flen = rd32(f + 4);
+        uint64_t a = rd32(f + 40);
+        if (flen >= 148 && rd64(f + 140)) a = rd64(f + 140);
+        tabs[nt++] = acpi_table_at(a, "DSDT");
+    }
+    for (int i = 0; i < 8; i++) tabs[nt++] = acpi_find_table_n("SSDT", i);
+    for (int i = 0; i < nt; i++)
+        if (table_has(tabs[i], eisa, 5) || table_has(tabs[i], (const uint8_t*)hid, 7)) return 1;
+    return 0;
+}

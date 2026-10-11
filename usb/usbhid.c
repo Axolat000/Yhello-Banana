@@ -62,9 +62,14 @@ static const uint16_t g_usage_sc[0x82] = {
 
 /* modifier bits (report byte 0) -> scancode */
 static const uint16_t g_mod_sc[8] = { 0x1D, 0x2A, 0x38, 0xE05B, 0xE01D, 0x36, 0xE038, 0xE05C };
+/* Apple keyboards (a Mac's own, or one plugged in): Command is Ctrl, so the
+ * shortcuts are where Mac hands expect them (Cmd+C, Cmd+V, Cmd+Z...);
+ * Control stays Control, Option is Alt */
+static const uint16_t g_mod_sc_apple[8] = { 0x1D, 0x2A, 0x38, 0xE01D, 0xE01D, 0x36, 0xE038, 0xE01D };
 
 typedef struct {
     int        is_kbd;
+    int        apple;            /* an Apple keyboard (vendor 05ac) */
     int        report_mode;      /* a pointer read through its report descriptor */
     int        absolute;         /* ... with absolute X / Y */
     uint8_t    ep;
@@ -106,7 +111,7 @@ static void keyboard_report(hid_iface_t* h, const uint8_t* r) {
     if (r[2] == 1) return;                     /* ErrorRollOver: ignore */
     uint8_t changed = (uint8_t)(r[0] ^ h->prev[0]);
     for (int b = 0; b < 8; b++)
-        if (changed & (1u << b)) send_sc(g_mod_sc[b], !(r[0] & (1u << b)));
+        if (changed & (1u << b)) send_sc((h->apple ? g_mod_sc_apple : g_mod_sc)[b], !(r[0] & (1u << b)));
     for (int i = 2; i < 8; i++) {              /* released */
         uint8_t u = h->prev[i];
         if (u >= 4 && u < 0x82 && !in_report(r, u) && g_usage_sc[u]) send_sc(g_usage_sc[u], 1);
@@ -308,6 +313,7 @@ static int walk_cb(const uint8_t* desc, void* ctx) {
             usb_device_t* d = w->dev;
             hid_iface_t* h = &w->hid->ifs[w->hid->count];
             memset(h, 0, sizeof(*h));
+            h->apple = d->desc.idVendor == 0x05AC;
             /* a mouse may really be a tablet: its descriptor tells (absolute X / Y) */
             int report = 0;
             int kind = w->cur_boot >= 2 ? pointer_setup(d, h, w->cur_num, w->cur_rlen) : -1;

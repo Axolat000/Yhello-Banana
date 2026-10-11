@@ -2,6 +2,7 @@
 #include "sysinfo.h"
 #include "pci.h"
 #include "kstring.h"
+#include "applesmc.h"
 
 /*
  * The processor's temperature.
