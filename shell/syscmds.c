@@ -12,6 +12,7 @@
 #include "../kernel/audio.h"
 #include "../kernel/settings.h"
 #include "aptcmd.h"
+#include "adbcmd.h"
 
 static void say(const char* fmt, ...) {
     char buf[256];
@@ -188,6 +189,8 @@ int syscmd_dispatch(const char* line) {
     if (strcmp(argv[0], "mount") == 0) { cmd_mount(argc, argv); return 1; }
     if (strcmp(argv[0], "umount") == 0 || strcmp(argv[0], "eject") == 0) { cmd_umount(argc, argv); return 1; }
     if (strcmp(argv[0], "apt") == 0 || strcmp(argv[0], "apt-get") == 0) { cmd_apt(argc, argv); return 1; }
+    if (strcmp(argv[0], "adb") == 0) { cmd_adb(argc, argv); return 1; }
+    if (strcmp(argv[0], "fastboot") == 0) { cmd_fastboot(argc, argv); return 1; }
     if (strcmp(argv[0], "pkg") == 0 && argc >= 2 &&
         (!strcmp(argv[1], "update") || !strcmp(argv[1], "upgrade") || !strcmp(argv[1], "search") ||
          !strcmp(argv[1], "show") || !strcmp(argv[1], "autoremove") || !strcmp(argv[1], "sources"))) { cmd_apt(argc, argv); return 1; }
