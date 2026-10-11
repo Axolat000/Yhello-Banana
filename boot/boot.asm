@@ -31,8 +31,9 @@ mb2_header_end:
 
 section .bss
 align 16
+global stack_bottom
 stack_bottom:
-    resb 16384      ; 16 KiB stack
+    resb 65536      ; 64 KiB: the desktop and the console shell run on it (task 0)
 stack_top:
 
 section .text

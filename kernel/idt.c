@@ -181,6 +181,17 @@ static void fb_raw_binary(int x, int y, uint32_t val, int bits) {
     }
 }
 
+void kernel_panic(const char* what) {
+    __asm__ volatile("cli");
+    vga_clear_rows(3, 0x4F);
+    vga_puts(0, 2, "*** BANANA OS PANIC ***", 0x4F);
+    vga_puts(1, 2, what, 0x4F);
+    klog("*** PANIC: %s\n", what);
+    serial_drain();
+    fb_raw_rect(0, 0, 260, 200, 0x00990000u);
+    for (;;) __asm__ volatile("cli; hlt");
+}
+
 void isr_handler(registers_t* regs) {
     uint32_t n = regs->int_no;
     const char* name = (n < 32) ? exception_names[n] : "Unknown";
@@ -193,6 +204,7 @@ void isr_handler(registers_t* regs) {
         task_ap_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
         klog("*** PANIC on core %d: %s (vector %u) at ip %llx\n", cpu_id(), name, n,
              (unsigned long long)REG_IP(regs));
+        serial_drain();
         for (;;) __asm__ volatile("cli; hlt");
     }
 
@@ -222,6 +234,7 @@ void isr_handler(registers_t* regs) {
     vga_put_hex(5, 6, (uint32_t)regs->cs, 0x4F);
     klog("*** PANIC: %s (vector %u, error %x) at ip %llx\n", name, n, (uint32_t)regs->err_code,
          (unsigned long long)REG_IP(regs));
+    serial_drain();                                 /* (interrupts are off: nothing else would send it) */
 
     /* Solid red field + binary-encoded vector number (MSB..LSB, left to
      * right) on the real framebuffer, in case that's what's on screen. */

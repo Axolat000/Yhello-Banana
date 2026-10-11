@@ -15,6 +15,8 @@ void serial_write(const char* s);
 int  serial_try_getc(void);          /* -1 if nothing received */
 /* pushes queued output into the UART FIFO; IRQ-safe (the timer IRQ calls it) */
 void serial_kick(void);
+/* everything queued, sent now, waiting for the UART (a panic: no timer to do it) */
+void serial_drain(void);
 
 /* printf to the serial port only (kernel debug log) */
 void klog(const char* fmt, ...);

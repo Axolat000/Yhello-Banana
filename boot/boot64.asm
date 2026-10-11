@@ -41,8 +41,9 @@ pml4:   resb 4096
 pdpt:   resb 4096
 pd:     resb 4096 * 4               ; 4 x 512 entries x 2 MiB = 4 GiB
 align 16
+global stack_bottom
 stack_bottom:
-    resb 32768
+    resb 65536                      ; the desktop and the console shell run on it (task 0)
 stack_top:
 
 section .rodata

@@ -1,4 +1,6 @@
 #include "task.h"
+#include "idt.h"
+#include "kstring.h"
 #include "timer.h"
 #include "terminal.h"
 #include "kheap.h"
@@ -42,6 +44,7 @@
 
 typedef struct task {
     uintptr_t*   sp;                      /* saved stack pointer when not running */
+    uintptr_t*   guard;                   /* the bottom of its stack: GUARD_WORDS of GUARD_MAGIC */
     uintptr_t    stack[TASK_STACK_WORDS] __attribute__((aligned(16))); /* created tasks only */
     uint32_t     pid;
     char         name[TASK_NAME_MAX];
@@ -364,6 +367,29 @@ static void after_switch(task_t* self) {
     terminal_vt_set_active(self->vt);
 }
 
+/* The bottom words of every stack hold a known pattern; a task that used
+ * more stack than it has wrote over them. Found when it is switched away
+ * from: the panic screen names it - a clear stop, rather than other
+ * memory quietly overwritten (a hang, or a crash somewhere else later). */
+extern char stack_bottom[];
+#define GUARD_WORDS 16
+#define GUARD_MAGIC ((uintptr_t)0x57AC6E4D57AC6E4Dull)
+
+static void guard_set(task_t* t, uintptr_t* bottom) {
+    t->guard = bottom;
+    for (int i = 0; i < GUARD_WORDS; i++) bottom[i] = GUARD_MAGIC;
+}
+
+static void guard_check(task_t* t) {
+    if (!t->guard) return;
+    for (int i = 0; i < GUARD_WORDS; i++)
+        if (t->guard[i] != GUARD_MAGIC) {
+            static char msg[80];
+            ksnprintf(msg, sizeof(msg), "stack overflow in task %u (%s)", t->pid, t->name);
+            kernel_panic(msg);
+        }
+}
+
 static void switch_to(task_t* cur, task_t* nxt) {
     uint64_t now = rdtsc();
     int invol = g_involuntary;
@@ -390,6 +416,7 @@ static void switch_to(task_t* cur, task_t* nxt) {
     cur->vt = terminal_vt_get_active();
     g_current = nxt;
     g_prev = cur;
+    guard_check(cur);
     fpu_save(cur->fpu);
     task_switch(&cur->sp, nxt->sp);
     after_switch(cur);
@@ -466,6 +493,7 @@ void task_init(const char* main_task_name) {
     t->no_kpreempt = 1;                     /* (see task_kpreempt) */
     t->run_start = rdtsc();
     t->switched_in = t->run_start;
+    guard_set(t, (uintptr_t*)stack_bottom);  /* the boot stack (boot/boot*.asm) */
 
     set_name(g_idle.name, "idle", TASK_NAME_MAX);
     g_idle.entry = idle_entry;
@@ -473,6 +501,7 @@ void task_init(const char* main_task_name) {
     g_idle.pinned = 1;
     g_idle.prio = TASK_PRIO_NORMAL;
     g_idle.sp = fake_frame(&g_idle.stack[TASK_STACK_WORDS], task_trampoline);
+    guard_set(&g_idle, g_idle.stack);
 
     g_count = 1;
     g_current = t;
@@ -530,6 +559,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
         sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes) & ~(uintptr_t)15);
     }
     t->sp = fake_frame(sp, task_trampoline);
+    guard_set(t, t->stack_mem ? (uintptr_t*)(((uintptr_t)t->stack_mem + 15) & ~(uintptr_t)15) : t->stack);
 
     t->state = TASK_READY;
     return (int)t->pid;

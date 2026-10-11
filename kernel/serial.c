@@ -49,6 +49,16 @@ void serial_kick(void) {
     irq_restore(f);
 }
 
+void serial_drain(void) {
+    if (!g_present) return;
+    for (uint32_t spins = 0; g_tx_tail != g_tx_head && spins < 50000000u; spins++) {
+        if (inb(COM1 + 5) & 0x20) {
+            outb(COM1, (uint8_t)g_tx[g_tx_tail]);
+            g_tx_tail = (g_tx_tail + 1) % TX_SIZE;
+        } else __asm__ volatile("pause");
+    }
+}
+
 static void enqueue(char c) {
     uint32_t f = irq_save();
     uint32_t next = (g_tx_head + 1) % TX_SIZE;
