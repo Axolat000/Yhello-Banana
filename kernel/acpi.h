@@ -4,5 +4,7 @@
 /* Power the machine off the ACPI way (the S5 sleep state, read from the
  * firmware's FADT and DSDT). Returns only if that did not work. */
 void acpi_s5_poweroff(void);
+/* the power button shuts the computer down (a task watching it) */
+void acpi_power_button_init(void);
 
 #endif

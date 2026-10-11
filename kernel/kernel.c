@@ -23,6 +23,8 @@
 #include "blockdev.h"
 #include "audio.h"
 #include "nvme.h"
+#include "acpi.h"
+#include "virtio_blk.h"
 #include "paging.h"
 #include "smp.h"
 #include "splash.h"
@@ -119,6 +121,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     blockdev_init();  /* mounts USB sticks (FAT32) under /mnt once they show up */
     STEP("nvme");
     nvme_init();      /* NVMe SSDs: disks for install/sync, FAT32 partitions in /mnt/nvme */
+    virtio_blk_init();  /* virtio disks (QEMU/KVM, Proxmox, clouds): the same, in /mnt/virtio */
+    acpi_power_button_init();   /* VirtualBox's ACPI Shutdown, QEMU's system_powerdown, the PC's button */
     STEP("usb");
     usb_stack_init(); /* xHCI/EHCI: USB network adapters, keyboards, mice, sticks */
     STEP("services");

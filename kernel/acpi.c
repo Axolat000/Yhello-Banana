@@ -3,6 +3,7 @@
  * sleep type from the \_S5_ package in the DSDT - what VMware, real PCs and
  * every other machine expect, instead of guessing well-known ports.
  */
+#include "task.h"
 #include "acpi.h"
 #include "smp.h"
 #include "io.h"
@@ -88,4 +89,72 @@ void acpi_s5_poweroff(void) {
     }
     delay_us(500000);                          /* (the machine goes off here) */
     klog("acpi: S5 did not power off\n");
+}
+
+/* ── the power button ───────────────────────────────────────────────
+ * The fixed-hardware power button (FADT flag PWR_BUTTON clear: QEMU,
+ * VirtualBox's "ACPI Shutdown", most desktops): its status bit in the PM1
+ * event block. ACPI mode on (as every ACPI OS), every event but that one
+ * off (nobody here would handle them: the SCI must not fire for them), and
+ * a task looking at the status ten times a second - a press shuts down
+ * like Start > Shut down (the files saved first). A control-method button
+ * (laptops: a GPE and AML) would need an AML interpreter. */
+
+#define PM1_PWRBTN (1u << 8)
+
+static uint16_t g_evt_a, g_evt_b;
+static uint8_t  g_evt_len;
+
+extern void shell_power(int restart);
+
+static uint32_t gas_io(const uint8_t* f, uint32_t flen, uint32_t legacy_off, uint32_t gas_off) {
+    uint32_t v = rd32(f + legacy_off);
+    if (!v && flen >= gas_off + 12 && f[gas_off] == 1) v = (uint32_t)rd64(f + gas_off + 4);
+    return v <= 0xFFFF ? v : 0;
+}
+
+static void button_task(void) {
+    task_set_background();
+    for (;;) {
+        task_sleep_ms(100);
+        uint16_t st = inw(g_evt_a);
+        if (g_evt_b) st |= inw(g_evt_b);
+        if (!(st & PM1_PWRBTN)) continue;
+        outw(g_evt_a, PM1_PWRBTN);                 /* (write 1 to clear) */
+        if (g_evt_b) outw(g_evt_b, PM1_PWRBTN);
+        klog("acpi: power button - shutting down\n");
+        shell_power(0);
+    }
+}
+
+void acpi_power_button_init(void) {
+    const uint8_t* f = acpi_find_table("FACP");
+    if (!f) return;
+    uint32_t flen = rd32(f + 4);
+    if (flen < 116) return;
+    uint32_t flags = rd32(f + 112);
+    if (flags & (1u << 4)) { klog("acpi: the power button is a control-method device (not handled)\n"); return; }
+    g_evt_a = (uint16_t)gas_io(f, flen, 56, 148);
+    g_evt_b = (uint16_t)gas_io(f, flen, 60, 160);
+    g_evt_len = f[88];
+    uint32_t cnt_a = gas_io(f, flen, 64, 172);
+    if (!g_evt_a || g_evt_len < 4 || !cnt_a) { klog("acpi: no PM1 event block\n"); return; }
+    /* ACPI mode */
+    uint32_t smi_cmd = rd32(f + 48);
+    uint8_t enable = f[52];
+    if (!(inw((uint16_t)cnt_a) & 1) && smi_cmd && smi_cmd <= 0xFFFF && enable) {
+        outb((uint16_t)smi_cmd, enable);
+        for (int i = 0; i < 300 && !(inw((uint16_t)cnt_a) & 1); i++) delay_us(10000);
+    }
+    /* the general-purpose events off: only the button may raise the SCI */
+    uint32_t gpe0 = rd32(f + 80), gpe1 = rd32(f + 84);
+    uint8_t gpe0_len = f[92], gpe1_len = f[93];
+    if (gpe0 && gpe0 <= 0xFFFF) for (int i = 0; i < gpe0_len / 2; i++) outb((uint16_t)(gpe0 + gpe0_len / 2 + i), 0);
+    if (gpe1 && gpe1 <= 0xFFFF) for (int i = 0; i < gpe1_len / 2; i++) outb((uint16_t)(gpe1 + gpe1_len / 2 + i), 0);
+    uint16_t en = (uint16_t)(g_evt_len / 2);
+    outw(g_evt_a, 0xFFFF);                         /* old events cleared */
+    outw((uint16_t)(g_evt_a + en), PM1_PWRBTN);    /* the button only */
+    if (g_evt_b) { outw(g_evt_b, 0xFFFF); outw((uint16_t)(g_evt_b + en), PM1_PWRBTN); }
+    if (task_create("acpi", button_task) < 0) return;
+    klog("acpi: power button on port %x\n", g_evt_a);
 }

@@ -2,6 +2,7 @@
 #include "atapi.h"
 #include "ahci.h"
 #include "nvme.h"
+#include "virtio_blk.h"
 #include "kstring.h"
 
 int disk_probe(ata_disk_t* out, int max) {
@@ -12,11 +13,13 @@ int disk_probe(ata_disk_t* out, int max) {
         if (ide[i].present) out[n++] = ide[i];
     n += ahci_probe(out + n, max - n);
     n += nvme_probe(out + n, max - n);
+    n += virtio_blk_probe(out + n, max - n);
     return n;
 }
 
 int disk_read(const ata_disk_t* d, uint32_t lba, uint32_t count, void* buf) {
     if (d->nvme) return nvme_read(d->nvme - 1, lba, count, buf);
+    if (d->vblk) return virtio_blk_read(d->vblk - 1, lba, count, buf);
     if (d->ahci_port >= 0) return ahci_read(d->ahci_port, lba, count, buf);
     uint8_t* b = (uint8_t*)buf;
     while (count) {
@@ -31,6 +34,7 @@ int disk_read(const ata_disk_t* d, uint32_t lba, uint32_t count, void* buf) {
 
 int disk_write(const ata_disk_t* d, uint32_t lba, uint32_t count, const void* buf) {
     if (d->nvme) return nvme_write(d->nvme - 1, lba, count, buf);
+    if (d->vblk) return virtio_blk_write(d->vblk - 1, lba, count, buf);
     if (d->ahci_port >= 0) return ahci_write(d->ahci_port, lba, count, buf);
     const uint8_t* b = (const uint8_t*)buf;
     while (count) {
@@ -45,6 +49,7 @@ int disk_write(const ata_disk_t* d, uint32_t lba, uint32_t count, const void* bu
 
 int disk_flush(const ata_disk_t* d) {
     if (d->nvme) return nvme_flush(d->nvme - 1);
+    if (d->vblk) return virtio_blk_flush(d->vblk - 1);
     return d->ahci_port >= 0 ? ahci_flush(d->ahci_port) : 0;   /* ata.c flushes after each write */
 }
 
@@ -65,6 +70,7 @@ int disk_cd_iso_size(const ata_disk_t* d, uint32_t* out_bytes) {
 
 void disk_describe(const ata_disk_t* d, char* out, int cap) {
     if (d->nvme) ksnprintf(out, (size_t)cap, "NVMe #%d", d->nvme - 1);
+    else if (d->vblk) ksnprintf(out, (size_t)cap, "virtio #%d", d->vblk - 1);
     else if (d->ahci_port >= 0) ksnprintf(out, (size_t)cap, "SATA #%d", d->ahci_port);
     else ksnprintf(out, (size_t)cap, "IDE %s %s", d->bus == ATA_BUS_PRIMARY ? "primary" : "secondary",
                    d->is_slave ? "slave" : "master");
