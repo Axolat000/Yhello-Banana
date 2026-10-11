@@ -1,4 +1,5 @@
 #include "net.h"
+#include "ipv6.h"
 #include "netconf.h"
 #include "tcp.h"
 #include "kstring.h"
@@ -106,6 +107,7 @@ void net_rx(netdev_t* nd, const uint8_t* frame, uint32_t len) {
     uint16_t type = rd16(frame + 12);
     if (type == ETH_TYPE_ARP)     arp_rx(frame + 14, len - 14);
     else if (type == ETH_TYPE_IP) ip_rx(frame + 14, len - 14);
+    else if (type == 0x86DD)      ipv6_rx(frame + 14, len - 14);
 }
 
 /* ── polling / waiting ──────────────────────────────────────────── */
@@ -130,6 +132,7 @@ void net_poll(void) {
     if ((uint32_t)(now - g_last_timer_ms) >= 10) {
         g_last_timer_ms = now;
         arp_timer();
+        ipv6_timer();
         dhcp_timer();
         tcp_timer();
     }

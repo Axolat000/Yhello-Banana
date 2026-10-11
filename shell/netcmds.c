@@ -1,3 +1,4 @@
+#include "../net/ipv6.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"
@@ -283,6 +284,76 @@ static void cmd_ping(int argc, char** argv) {
                 sent, received, loss, timer_ms() - start);
     if (received)
         printf_line("rtt min/avg/max = %u/%u/%u ms\n", rtt_min, rtt_sum / received, rtt_max);
+}
+
+/* ── IPv6 ───────────────────────────────────────────────────────── */
+
+static void show_ipv6(void) {
+    ip6_t a;
+    char t[48];
+    int plen = 0;
+    if (!ipv6_enabled()) { printf_line("IPv6: off (ipv6 on turns it on)\n"); return; }
+    printf_line("IPv6: on\n");
+    if (ipv6_link_local(&a)) { ip6_format(&a, t, sizeof(t)); printf_line("        inet6 %s/64  scope link\n", t); }
+    if (ipv6_global(&a, &plen)) { ip6_format(&a, t, sizeof(t)); printf_line("        inet6 %s/%d  scope global\n", t, plen); }
+    else printf_line("        (no global address yet: no router advertisement)\n");
+    if (ipv6_router(&a)) { ip6_format(&a, t, sizeof(t)); printf_line("        router %s\n", t); }
+    if (ipv6_dns(&a)) { ip6_format(&a, t, sizeof(t)); printf_line("        dns %s\n", t); }
+}
+
+static void cmd_ipv6(int argc, char** argv) {
+    if (argc >= 2 && !strcmp(argv[1], "on")) {
+        ipv6_enable(1);
+        printf_line("IPv6 on (kept for the next start) - addresses in a few seconds: ipv6\n");
+        return;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "off")) { ipv6_enable(0); printf_line("IPv6 off\n"); return; }
+    if (argc >= 2) { terminal_writeln("usage: ipv6 [on|off]"); return; }
+    show_ipv6();
+}
+
+static void cmd_ping6(int argc, char** argv) {
+    uint32_t count = 4;
+    const char* host = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) k_parse_u32(argv[++i], &count);
+        else host = argv[i];
+    }
+    if (!host) { terminal_writeln("usage: ping6 [-c count] address"); return; }
+    if (!ipv6_enabled()) { err("ping6", "IPv6 is off (ipv6 on)"); return; }
+    if (!need_device("ping6")) return;
+    ip6_t dst;
+    if (!ip6_parse(host, &dst)) { err("ping6", "not an IPv6 address"); return; }
+    char t[48];
+    ip6_format(&dst, t, sizeof(t));
+    printf_line("PING %s 56 data bytes\n", t);
+    uint16_t id = (uint16_t)(timer_ms() ^ 0x6B6E);
+    uint32_t sent = 0, received = 0, start = timer_ms(), send_ms[64];
+    int intr = 0;
+    for (uint32_t seq = 1; count == 0 || seq <= count; seq++) {
+        send_ms[seq % 64] = timer_ms();
+        int s = ipv6_echo_send(&dst, id, (uint16_t)seq, 56);
+        if (s != NET_OK) printf_line("ping6: %s\n", net_strerror(s));
+        sent++;
+        uint32_t t0 = timer_ms(), wait = (count && seq == count) ? 2000u : 1000u;
+        while (timer_ms() - t0 < wait) {
+            ip6_echo_t ev;
+            while (ipv6_echo_poll(id, &ev)) {
+                char from[48];
+                ip6_format(&ev.src, from, sizeof(from));
+                received++;
+                printf_line("%u bytes from %s: icmp_seq=%u hlim=%u time=%u ms\n", ev.bytes, from, ev.seq, ev.hops,
+                            ev.recv_ms - send_ms[ev.seq % 64]);
+            }
+            if (net_interrupted()) { intr = 1; break; }
+            if (count && seq == count && received >= sent) break;
+            net_wait(10);
+        }
+        if (intr) { terminal_writeln("^C"); break; }
+    }
+    printf_line("\n--- %s ping6 statistics ---\n", t);
+    printf_line("%u packets transmitted, %u received, %u%% packet loss, time %ums\n", sent, received,
+                sent ? (sent - received) * 100u / sent : 0, timer_ms() - start);
 }
 
 /* ── nslookup ───────────────────────────────────────────────────── */
@@ -757,6 +828,8 @@ int netcmd_dispatch(const char* line) {
     const char* c = argv[0];
 
     if (strcmp(c, "ifconfig") == 0)                  { cmd_ifconfig(argc, argv); return 1; }
+    if (strcmp(c, "ipv6") == 0)                      { cmd_ipv6(argc, argv); return 1; }
+    if (strcmp(c, "ping6") == 0)                     { cmd_ping6(argc, argv); return 1; }
     if (strcmp(c, "dhcp") == 0)                      { cmd_dhcp(); return 1; }
     if (strcmp(c, "ping") == 0)                      { cmd_ping(argc, argv); return 1; }
     if (strcmp(c, "nslookup") == 0 || strcmp(c, "host") == 0) { cmd_nslookup(argc, argv); return 1; }

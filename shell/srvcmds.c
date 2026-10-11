@@ -1,3 +1,4 @@
+#include "../net/ipv6.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/utf8.h"
 #include "../kernel/settings.h"
@@ -271,6 +272,7 @@ int srvcmd_dispatch(const char* line) {
 void services_boot(void) {
     netconf_boot();
     settings_boot();                    /* volume, keyboard layout */
+    ipv6_boot();                        /* IPv6 only if it was turned on */
     uint16_t port = 80;
     char e[96];
     if (boot_enabled("httpd", &port) && httpd_start(port, e, sizeof(e)) != 0)

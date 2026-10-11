@@ -220,6 +220,12 @@ static int igb_poll(netdev_t* nd) {
     return count;
 }
 
+static void e1000_multicast(netdev_t* nd, int all) {
+    (void)nd;
+    uint32_t v = rd(REG_RCTL);
+    wr(REG_RCTL, all ? v | (1u << 4) : v & ~(1u << 4));   /* MPE: multicast promiscuous */
+}
+
 static int e1000_poll(netdev_t* nd) {
     int count = 0;
     if (g_kind == K_IGB) return igb_poll(nd);
@@ -445,6 +451,7 @@ netdev_t* e1000_probe(void) {
     g_nd.send = e1000_send;
     g_nd.poll = e1000_poll;
     g_nd.link_up = e1000_link_up;
+    g_nd.set_multicast = e1000_multicast;
     g_nd.irq = pd.irq_line;
 
     if (pd.irq_line > 0 && pd.irq_line < 16) {

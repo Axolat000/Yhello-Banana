@@ -24,6 +24,9 @@ typedef struct netdev {
 
     uint32_t rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors, tx_errors, rx_dropped;
     void*    priv;
+    /* every multicast frame in too (IPv6 neighbor discovery); NULL if the
+     * card takes them anyway */
+    void (*set_multicast)(struct netdev* nd, int all);
 } netdev_t;
 
 /* Drivers: each returns a ready-to-use device, or NULL if its hardware
