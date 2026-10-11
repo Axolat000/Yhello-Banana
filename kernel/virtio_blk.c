@@ -1,6 +1,6 @@
 #include "virtio_blk.h"
 #include "pci.h"
-#include "io.h"
+#include "virtio_pci.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "timer.h"
@@ -8,8 +8,9 @@
 #include "blockdev.h"
 
 /*
- * virtio-blk, legacy interface: the paravirtualized disks of QEMU / KVM,
- * Proxmox and most cloud VMs (-drive if=virtio, -device virtio-blk-pci).
+ * virtio-blk: the paravirtualized disks of QEMU / KVM, Proxmox and most
+ * cloud VMs (-drive if=virtio, -device virtio-blk-pci), legacy or modern
+ * (kernel/virtio_pci.c).
  *
  * One virtqueue of requests; each is three descriptors - the request
  * header (read / write / flush and the sector), the data, and one status
@@ -17,21 +18,6 @@
  * (polled), through a 64 KiB bounce buffer as for NVMe. FAT32 partitions on
  * these disks are mounted under /mnt/virtio; Banana OS installs on them too.
  */
-
-#define VIO_DEV_FEATURES   0x00
-#define VIO_GUEST_FEATURES 0x04
-#define VIO_QUEUE_PFN      0x08
-#define VIO_QUEUE_SIZE     0x0C
-#define VIO_QUEUE_SEL      0x0E
-#define VIO_QUEUE_NOTIFY   0x10
-#define VIO_STATUS         0x12
-#define VIO_ISR            0x13
-#define VIO_BLK_CAPACITY   0x14      /* device config (no MSI-X): u64 sectors */
-
-#define ST_ACK       1
-#define ST_DRIVER    2
-#define ST_DRIVER_OK 4
-#define ST_FAILED    128
 
 #define F_RO    (1u << 5)
 #define F_FLUSH (1u << 9)
@@ -43,17 +29,14 @@
 #define D_NEXT  1
 #define D_WRITE 2
 
-#define QMAX   1024
-#define QBYTES (32u * 1024u)
 #define CHUNK  65536u
 
-typedef struct __attribute__((packed)) { uint64_t addr; uint32_t len; uint16_t flags, next; } vdesc_t;
 typedef struct __attribute__((packed)) { uint32_t type, reserved; uint64_t sector; } vreq_t;
 
 typedef struct {
-    uint16_t io;
-    uint8_t* ring;                /* QBYTES, page aligned */
-    vdesc_t* desc;
+    vio_t    vio;
+    uint8_t* ring;                /* VIO_QBYTES, page aligned */
+    vio_desc_t* desc;
     volatile uint16_t* avail;
     volatile uint8_t* used;
     uint16_t size, last_used, avail_idx;
@@ -106,14 +89,14 @@ static int request(vblk_t* v, uint32_t type, uint32_t lba, uint32_t count) {
     v->avail_idx++;
     v->avail[1] = v->avail_idx;
     __asm__ volatile("" ::: "memory");
-    outw((uint16_t)(v->io + VIO_QUEUE_NOTIFY), 0);
+    vio_notify(&v->vio, 0);
     uint32_t t0 = timer_ms();
     while (used_idx(v) == v->last_used) {
         if (timer_ms() - t0 > 10000) { klog("virtio-blk: request timed out\n"); return -1; }
         timer_idle();
     }
     v->last_used = used_idx(v);
-    (void)inb((uint16_t)(v->io + VIO_ISR));          /* (acknowledge, should it have raised one) */
+    (void)vio_isr(&v->vio);          /* (acknowledge, should it have raised one) */
     return *v->status == 0 ? 0 : -1;
 }
 
@@ -178,49 +161,36 @@ static int bd_write(blockdev_t* bd, uint32_t lba, uint32_t count, const void* bu
 }
 
 static int start(vblk_t* v, const pci_dev_t* pd) {
-    int is_io = 0;
-    uintptr_t bar0 = pci_bar(pd, 0, &is_io);
-    if (!is_io || !bar0) return -1;                   /* (a modern-only device: no legacy interface) */
-    pci_enable(pd);
-    v->io = (uint16_t)bar0;
-    outb((uint16_t)(v->io + VIO_STATUS), 0);
-    outb((uint16_t)(v->io + VIO_STATUS), ST_ACK);
-    outb((uint16_t)(v->io + VIO_STATUS), ST_ACK | ST_DRIVER);
-    uint32_t feat = inl((uint16_t)(v->io + VIO_DEV_FEATURES));
-    outl((uint16_t)(v->io + VIO_GUEST_FEATURES), feat & (F_RO | F_FLUSH));
+    if (vio_open(&v->vio, pd) != 0) return -1;
+    uint32_t feat = vio_features(&v->vio);
+    if (vio_set_features(&v->vio, feat & (F_RO | F_FLUSH)) != 0) { vio_failed(&v->vio); return -1; }
     v->ro = (feat & F_RO) != 0;
     v->flush = (feat & F_FLUSH) != 0;
-    uint64_t cap = (uint64_t)inl((uint16_t)(v->io + VIO_BLK_CAPACITY)) |
-                   (uint64_t)inl((uint16_t)(v->io + VIO_BLK_CAPACITY + 4)) << 32;
+    uint64_t cap = (uint64_t)vio_cfg32(&v->vio, 0) | (uint64_t)vio_cfg32(&v->vio, 4) << 32;
     v->sectors = cap > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)cap;
-
-    outw((uint16_t)(v->io + VIO_QUEUE_SEL), 0);
-    uint16_t size = inw((uint16_t)(v->io + VIO_QUEUE_SIZE));
-    if (size < 3 || size > QMAX) { outb((uint16_t)(v->io + VIO_STATUS), ST_FAILED); return -1; }
-    v->ring = (uint8_t*)page_alloc(QBYTES);
+    v->ring = (uint8_t*)page_alloc(VIO_QBYTES);
     v->bounce = (uint8_t*)page_alloc(CHUNK);
     v->req = (vreq_t*)page_alloc(64);
-    if (!v->ring || !v->bounce || !v->req) { outb((uint16_t)(v->io + VIO_STATUS), ST_FAILED); return -1; }
+    if (!v->ring || !v->bounce || !v->req) { vio_failed(&v->vio); return -1; }
+    volatile uint8_t* used;
+    uint16_t size = vio_queue(&v->vio, 0, v->ring, 128, &v->desc, &v->avail, &used);
+    if (size < 3) { vio_failed(&v->vio); return -1; }
+    v->used = used;
     v->status = (volatile uint8_t*)v->req + 32;
     v->size = size;
-    v->desc = (vdesc_t*)v->ring;
-    v->avail = (volatile uint16_t*)(v->ring + 16u * size);
-    uint32_t used_off = (16u * size + 6u + 2u * size + 4095u) & ~4095u;
-    v->used = v->ring + used_off;
     v->avail[0] = 1;                                  /* no interrupts: polled */
-    outl((uint16_t)(v->io + VIO_QUEUE_PFN), (uint32_t)((uintptr_t)v->ring >> 12));
-    outb((uint16_t)(v->io + VIO_STATUS), ST_ACK | ST_DRIVER | ST_DRIVER_OK);
+    vio_driver_ok(&v->vio);
     uint32_t mb = v->sectors / 2048;
     ksnprintf(v->model, sizeof(v->model), "virtio disk, %u %s%s", mb >= 10240 ? mb / 1024 : mb,
               mb >= 10240 ? "GiB" : "MiB", v->ro ? " (read-only)" : "");
-    klog("virtio-blk: io 0x%x, %u sectors, queue %u%s%s\n", v->io, v->sectors, size,
+    klog("virtio-blk: %s, %u sectors, queue %u%s%s\n", v->vio.modern ? "modern" : "legacy", v->sectors, size,
          v->flush ? ", flush" : "", v->ro ? ", read-only" : "");
     return 0;
 }
 
 static int scan_cb(const pci_dev_t* d, void* ctx) {
     (void)ctx;
-    if (d->vendor != 0x1AF4 || d->device != 0x1001 || g_count >= VBLK_MAX) return 0;
+    if (d->vendor != 0x1AF4 || (d->device != 0x1001 && d->device != 0x1042) || g_count >= VBLK_MAX) return 0;
     vblk_t* v = &g_vb[g_count];
     memset(v, 0, sizeof(*v));
     if (start(v, d) == 0) {

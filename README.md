@@ -50,7 +50,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **Crash-safe apps** - an app that crashes (bad pointer, division by zero, stack overflow...) is stopped with a message saying what happened, and the rest of the system keeps running; on the 64-bit kernel NULL pointers and stack overflows (guard pages) always fault. Every task's FPU/SSE registers are saved, so apps compute in floating point
 - **USB sticks (FAT32)** - plugged-in sticks are mounted at `/mnt/usb`, read and write, long file names included; every tool works on them (`ls`, `cp`, Files, the browser, `pkg install`...). `umount` ejects
 - **NVMe SSDs** - a polled NVMe driver: NVMe disks are install targets (and boot on UEFI), FAT32 partitions are mounted at `/mnt/nvme`
-- **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`
+- **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
 - **Power button** - the ACPI power button (and VirtualBox's ACPI Shutdown, QEMU's `system_powerdown`) saves the files and shuts down
 - **Sound** - Intel HD Audio (any codec: Realtek ALC, IDT/SigmaTel, Conexant, VIA... - every analog output, speakers and headphones together) and AC'97 drivers (QEMU, VirtualBox, real PCs) and the PC speaker: `play file.wav`, `beep`, `volume`, and sound for apps
@@ -130,6 +130,7 @@ Banana-OS/
 │   ├── blockdev.c      # Removable drives + the automount task
 │   ├── nvme.c          # NVMe SSD driver
 │   ├── virtio_blk.c    # virtio-blk disks (QEMU/KVM, clouds)
+│   ├── virtio_pci.c    # the virtio PCI transport (legacy and modern)
 │   ├── sdhci.c         # SD card readers
 │   ├── paging.c        # Maps device memory above 4 GiB (64-bit, UEFI)
 │   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback

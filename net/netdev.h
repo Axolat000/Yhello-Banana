@@ -32,7 +32,7 @@ netdev_t* e1000_probe(void);
 netdev_t* rtl8139_probe(void);
 netdev_t* r8169_probe(void);      /* Realtek RTL8111/8168, RTL8169, RTL8101/8102 */
 netdev_t* pcnet_probe(void);     /* AMD PCnet-PCI II / PCnet-FAST III (VirtualBox) */
-netdev_t* virtio_net_probe(void); /* virtio-net, legacy interface (VirtualBox, QEMU) */
+netdev_t* virtio_net_probe(void); /* virtio-net, legacy or modern (VirtualBox, QEMU, clouds) */
 
 /* Implemented by the stack (net/net.c): one received Ethernet frame. */
 void net_rx(netdev_t* nd, const uint8_t* frame, uint32_t len);
