@@ -7,6 +7,7 @@ extern const uint8_t ex_clock[], ex_clock_end[], ex_tones[], ex_tones_end[], ex_
 extern const uint8_t ex_threads[], ex_threads_end[];
 extern const uint8_t ex_webview[], ex_webview_end[];
 extern const uint8_t ex_gears[], ex_gears_end[];
+extern const uint8_t ex_cltest[], ex_cltest_end[];
 
 static const struct { const char* name; const uint8_t* start; const uint8_t* end; } g_examples[] = {
     { "hello.bpk", ex_hello, ex_hello_end },
@@ -18,6 +19,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "threads.bpk", ex_threads, ex_threads_end },
     { "webview.bpk", ex_webview, ex_webview_end },
     { "gears.bpk", ex_gears, ex_gears_end },
+    { "cltest.bpk", ex_cltest, ex_cltest_end },
 };
 
 void examples_seed(void) {

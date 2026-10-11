@@ -14,6 +14,7 @@
 #     DEPENDS     = libfoo (>= 1.0)       # optional: packages apt installs first
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
 #     USE_GL      = 1                     # optional: OpenGL (#include <GL/bgl.h>)
+#     USE_CL      = 1                     # optional: OpenCL (#include <CL/cl.h>)
 #     include /path/to/banana-sdk/banana.mk
 #
 # `make` builds the app for both CPUs Banana OS runs on (i686 and x86_64)
@@ -37,6 +38,7 @@ CATEGORY    ?=
 DEPENDS     ?=
 ICON        ?=
 USE_GL      ?= 0
+USE_CL      ?= 0
 BUILD       ?= build
 # extra libraries (.a) linked after the objects, per CPU
 LIBS_i686   ?=
@@ -63,6 +65,19 @@ APP_LDFLAGS = -pie --no-dynamic-linker -z noexecstack -z norelro -z max-page-siz
 # USE_GL = 1: OpenGL (<GL/gl.h>, <GL/glu.h>, <GL/bgl.h>), built like the app's own code
 ifeq ($(USE_GL),1)
 SRCS += $(BANANA_SDK)/lib/gl.c
+endif
+
+# USE_CL = 1: OpenCL (<CL/cl.h>) - the runtime and TinyCC, which compiles the
+# kernels; TinyCC's source comes from the Banana OS tree (ports/tcc)
+ifeq ($(USE_CL),1)
+BANANA_TCC ?= $(BANANA_SDK)/../ports/tcc
+CLJIT       = $(BUILD)/cljit
+SRCS       += $(BANANA_SDK)/lib/cl.c $(BANANA_SDK)/lib/cljit.c
+CFLAGS     += -I$(CLJIT)
+.DEFAULT_GOAL := all
+$(CLJIT)/config.h:
+	sh $(BANANA_SDK)/lib/mkcljit.sh $(BANANA_TCC) $(CLJIT)
+$(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o $(BUILD)/i686/cljit.o $(BUILD)/x86_64/cljit.o: $(CLJIT)/config.h
 endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \

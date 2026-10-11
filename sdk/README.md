@@ -297,6 +297,13 @@ draw, `bgl_swap(ctx)`; after `BANANA_EV_RESIZE`, `bgl_resize(ctx)` and
 `glViewport`. It renders in software on every processor core.
 `examples/gears` is a complete app.
 
+### OpenCL
+
+Set `USE_CL = 1` and `#include <CL/cl.h>`: the OpenCL 1.2 host API, the
+kernels compiled when the program is built (TinyCC inside the app - such
+apps build in the Banana OS source tree, which has `ports/tcc`) and run on
+every core. `examples/cltest` is a complete program.
+
 ### Packages (API version 11): what the App Store uses
 
 `banana_repo_list(pkgs, max)` fills `banana_pkg_t` entries (name, title,
