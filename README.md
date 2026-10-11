@@ -24,6 +24,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **ACPI power-off** - `shutdown` and Start > Shut down turn the computer off the ACPI way (the FADT's registers and the DSDT's `\_S5_` sleep type, switching ACPI on first if the firmware left it off): VMware, VirtualBox, QEMU and real PCs
 - **Secure Boot, 32-bit UEFI, more in the boot menu** - the UEFI loaders are signed with Banana OS's own key and boot with Secure Boot on once the key is enrolled: from the boot menu in Secure Boot's setup mode (*Enroll Banana OS's Secure Boot keys*), or by hand in the firmware's settings from `EFI/BananaOS/BananaOS.cer` on the CD or stick. Under Secure Boot the loader starts only the kernels it was built with (their SHA-256 is in it). `BOOTIA32.EFI` boots on 32-bit UEFI firmware (tablets, early UEFI PCs) - both kernels, the 64-bit one when the processor has long mode. The menu also has *Boot the next boot option* / *Boot from the next device*, *UEFI firmware settings* (restarts into the firmware's setup screen) and *Restart the computer* - see [Secure Boot](#secure-boot)
 - **New in 0.6: apt and the App Store** - packages now come from **repositories**, like Debian's: `apt update`, `apt search`, `apt install <name>` (it installs what the app depends on first), `apt upgrade`, `apt remove`, `apt autoremove`, `apt list --upgradable`, `apt add-repo <url> key=<key>`. The **App Store** (desktop, Apps > *Get apps...*, or `store`) does the same with the mouse: Discover by category, search, an app's page with *Install* / *Open* / *Update* / *Remove*, Updates with *Update all*, Installed. Repositories are **signed** (Ed25519: a list whose signature does not match its key is refused, and every download must match the signed index's SHA-256). The examples that come with Banana OS are a repository of their own (`file:///home/banana/Examples`). See [Packages: apt and the App Store](#packages-apt-and-the-app-store)
+- **New in 0.6: the Banana OS package server** - `tools/repo/banana-pkgd` runs a repository as a service on Linux: what `apt` and the App Store fetch, web pages listing the packages (search, a page per app with the `apt add-repo` line), and **uploads with tokens** - `banana-repo push https://your.server app.bpk --token ...`, or its `/upload` page (from Banana OS's browser too). Each upload is checked, published and the index signed at once; `install-server.sh` sets it all up (systemd, nginx, HTTPS)
 - **New in 0.6: host your own repository on Linux** - `tools/repo/banana-repo` (Python 3, nothing else) makes one (`init`, `add app.bpk`, `remove`, `list`, `verify`, `key`) and serves it (`serve`); `tools/repo/install-server.sh` sets up a server - nginx (or a systemd service), HTTPS with Let's Encrypt - on Debian, Ubuntu, Fedora or Arch. Apps say their category, what they depend on and their picture in their Makefile (`CATEGORY`, `DEPENDS`, `ICON`); an app's `icon.png` is also its icon on the desktop, the taskbar and the Start menu
 - **New in 0.6: uploads in the browser (catbox.moe)** - `<input type="file">` works: clicking it (or the drop area of an upload site - catbox.moe, Dropzone, a `<label>` for a hidden one) opens **Choose a file to upload** over the page; the file goes to the page as a real `File` (`files`, `name`, `size`, `type`, `text()`, `FileReader`) and is sent as `multipart/form-data` by `fetch`, `XMLHttpRequest` (with `upload` progress events) and plain forms. A page can only ever read the files you chose for it. **jQuery 3.7** now runs (array methods on array-like objects, `F[key] = ...` on functions, JavaScript's left-to-right order in `a.b = c`, `document.implementation`), `document.readyState` goes *loading - interactive - complete* (scripts that wait for DOMContentLoaded start), and blocks inside `<center>` are centered
 - **New in 0.6: the browser and Bing** - searching from Bing's home page works (one-line search boxes made of a `<textarea>`, as Bing and Google have, submit on Enter), `<base href>` and `data:` URLs (pictures, scripts, fetch), `Function.prototype.toString`, `in` inside a `for (...)` head's parentheses, and a layout fix for nested flex rows that made headers and some tables (Hacker News) far too wide or squeezed
@@ -514,11 +515,22 @@ tools/repo/banana-repo serve ~/myrepo --port 8080    # a quick server (tests, a 
 tools/repo/banana-repo verify ~/myrepo               # signature and every file
 ```
 
-For a real server, `tools/repo/install-server.sh` (as root, on Debian / Ubuntu / Fedora / Arch) installs nginx, makes the repository in `/srv/banana-repo` owned by the user who publishes, serves it (the index never cached, hidden files refused) and with `--domain` + `--email` gets an HTTPS certificate:
+**The package server** - `banana-pkgd` serves a repository and takes uploads:
+
+```sh
+tools/repo/banana-pkgd init ~/myrepo                 # the repository, its key, and an upload token (shown once)
+tools/repo/banana-pkgd serve ~/myrepo --bind 0.0.0.0 --port 8080
+tools/repo/banana-repo push http://server:8080 game.bpk --token bpk_...   # publish from any machine
+tools/repo/banana-pkgd token add ~/myrepo alice      # more tokens (token list / token remove)
+```
+
+Its pages (`/`, `/package/<name>`, `/upload`) show the packages and the `apt add-repo` line; `GET /api/packages` is the index as JSON, `POST /api/upload` (a `.bpk`, `Authorization: Bearer <token>`) publishes, `DELETE /api/packages/<name>[/<version>]` takes one out. Uploads are checked (format, name, programs), a version already published with other contents is refused (give it a new version), only the tokens' SHA-256 is stored.
+
+For a real server, `tools/repo/install-server.sh` (as root, on Debian / Ubuntu / Fedora / Arch) installs `banana-pkgd` as a systemd service and nginx in front of it, makes the repository in `/srv/banana-repo` owned by the user who publishes, prints the first upload token, and with `--domain` + `--email` gets an HTTPS certificate:
 
 ```sh
 sudo tools/repo/install-server.sh --owner alice --domain pkgs.example.org --email alice@example.org
-# or without nginx: a systemd service on a port
+# or without nginx: banana-pkgd alone on a port
 sudo tools/repo/install-server.sh --owner alice --no-nginx --port 8080
 # --dry-run shows what it would do
 ```

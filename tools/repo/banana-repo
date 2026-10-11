@@ -11,6 +11,9 @@
                                      .bpk files into DIR/pool by hand)
   banana-repo key DIR [URL]          the line Banana OS needs in /etc/pkg/sources.list
   banana-repo verify DIR             check the index, its signature and every file
+  banana-repo push URL app.bpk... [--token TOKEN] [--replace]
+                                     publish to a banana-pkgd server (the token
+                                     can also be in $BANANA_REPO_TOKEN)
   banana-repo serve DIR [--port 8080] [--bind 0.0.0.0]
                                      serve it over HTTP (for tests and small setups;
                                      see install-server.sh for nginx + HTTPS)
@@ -509,6 +512,60 @@ def cmd_serve(d, args):
             pass
 
 
+def cmd_push(args):
+    import urllib.request, urllib.error
+    if not args:
+        die("usage: banana-repo push URL app.bpk... [--token TOKEN] [--replace]")
+    url, files, token, replace = args[0].rstrip("/"), [], os.environ.get("BANANA_REPO_TOKEN", ""), False
+    i = 1
+    while i < len(args):
+        if args[i] == "--token" and i + 1 < len(args):
+            token = args[i + 1]
+            i += 2
+        elif args[i] == "--replace":
+            replace = True
+            i += 1
+        else:
+            files.append(args[i])
+            i += 1
+    if not files:
+        die("no package to push")
+    if not token:
+        die("no token (--token, or $BANANA_REPO_TOKEN)")
+    bad = 0
+    for f in files:
+        try:
+            data, content = read_pkg_bytes(f)
+        except (OSError, ValueError) as e:
+            die("%s: %s" % (f, e))
+        req = urllib.request.Request(url + "/api/upload" + ("?replace=1" if replace else ""), data=data, method="POST",
+                                     headers={"Content-Type": "application/octet-stream", "Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                ans = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            try:
+                ans = json.loads(e.read().decode())
+            except Exception:
+                ans = {"ok": False, "error": "HTTP %d" % e.code}
+        except urllib.error.URLError as e:
+            die("%s: %s" % (url, e.reason))
+        if ans.get("ok"):
+            print("  %s: %s" % (f, ans.get("message", "published")))
+        else:
+            print("  %s: refused - %s" % (f, ans.get("error", "?")), file=sys.stderr)
+            bad += 1
+    if bad:
+        sys.exit(1)
+
+
+def read_pkg_bytes(path):
+    data = open(path, "rb").read()
+    if data[:4] != b"BPK1":
+        raise ValueError("not a .bpk package")
+    return data, None
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
         print(__doc__)
@@ -522,6 +579,9 @@ def main(argv):
         assert ed25519_verify(ed25519_public(sk), b"", sig) and not ed25519_verify(ed25519_public(sk), b"x", sig)
         assert vercmp("1.10", "1.9") > 0 and vercmp("1.0~rc1", "1.0") < 0 and vercmp("2.0", "2.0") == 0
         print("selftest: ok")
+        return
+    if cmd == "push":
+        cmd_push(argv[2:])
         return
     if len(argv) < 3:
         die("usage: banana-repo %s DIR ... (banana-repo --help)" % cmd)

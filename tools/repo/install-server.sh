@@ -18,9 +18,11 @@
 #   2. puts banana-repo in /usr/local/bin
 #   3. makes the repository (banana-repo init) owned by --owner; the signing
 #      key goes to that user's ~/.config/banana-repo/NAME.key - never served
-#   4. serves the folder: an nginx site (the index never cached, hidden files
-#      refused), or a systemd service
-# Then, as --owner:  banana-repo add DIR app.bpk   and   banana-repo key DIR URL
+#   4. runs banana-pkgd (the package server: the repository, web pages,
+#      uploads with tokens) as a systemd service, behind nginx (HTTPS), or alone
+#      with --no-nginx; the first upload token is printed at the end
+# Then publish from anywhere:  banana-repo push URL app.bpk --token TOKEN
+#   (or the server's /upload page), and on Banana OS: apt add-repo URL key=KEY
 set -eu
 
 DIR=/srv/banana-repo
@@ -91,6 +93,8 @@ fi
 
 # ── 2. the tool ──
 run install -m 755 "$HERE/banana-repo" /usr/local/bin/banana-repo
+[ -f "$HERE/banana-pkgd" ] || { echo "install-server.sh: banana-pkgd is not next to this script" >&2; exit 1; }
+run install -m 755 "$HERE/banana-pkgd" /usr/local/bin/banana-pkgd
 
 # ── 3. the repository ──
 if [ -f "$DIR/.banana-repo.json" ]; then
@@ -99,8 +103,33 @@ else
     run mkdir -p "$DIR"
     run chown "$OWNER": "$DIR"
     run chmod 755 "$DIR"
-    run su -s /bin/sh "$OWNER" -c "/usr/local/bin/banana-repo init '$DIR' --name '$NAME'"
+    run su -s /bin/sh "$OWNER" -c "/usr/local/bin/banana-pkgd init '$DIR' --name '$NAME'" | tee /tmp/banana-pkgd-init.$$
 fi
+TOKEN_LINE=$( (grep -o 'bpk_[A-Za-z0-9_-]*' /tmp/banana-pkgd-init.$$ 2>/dev/null || true) | head -1)
+rm -f /tmp/banana-pkgd-init.$$
+
+# the service
+if [ "$NGINX" = 1 ]; then LISTEN_ADDR=127.0.0.1; else LISTEN_ADDR=0.0.0.0; fi
+put /etc/systemd/system/banana-pkgd.service <<EOF
+[Unit]
+Description=Banana OS package server ($DIR)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$OWNER
+ExecStart=/usr/local/bin/banana-pkgd serve $DIR --bind $LISTEN_ADDR --port $PORT
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$DIR
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+run systemctl daemon-reload
+run systemctl enable --now banana-pkgd.service
 
 # ── 4. serving it ──
 if [ "$NGINX" = 1 ]; then
@@ -117,26 +146,20 @@ if [ "$NGINX" = 1 ]; then
     [ -z "$DOMAIN" ] && LISTEN="listen 80 default_server;
     listen [::]:80 default_server;"
     put "$SITE" <<EOF
-# Banana OS package repository (made by install-server.sh)
+# Banana OS package server (made by install-server.sh): nginx in front of banana-pkgd
 server {
     $LISTEN
     server_name $SERVER_NAME;
-    root $DIR;
-    autoindex off;
+    client_max_body_size 200m;
 
-    # the configuration and temporary files are not for anyone
-    location ~ /\\. { deny all; return 404; }
-
-    # the index and its signature change with every upload
-    location ~ ^/Packages(\\.sig)?\$ {
-        add_header Cache-Control "no-cache";
-        default_type text/plain;
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout 300s;
     }
-    location ~ \\.bpk\$ {
-        default_type application/octet-stream;
-        add_header Cache-Control "public, max-age=86400";
-    }
-    location = /repo.pub { default_type text/plain; }
 }
 EOF
     if [ -n "$LINK" ]; then
@@ -156,36 +179,16 @@ EOF
     fi
     if [ -n "$EMAIL" ]; then URL="https://$DOMAIN"; elif [ -n "$DOMAIN" ]; then URL="http://$DOMAIN"; else URL="http://<this server>"; fi
 else
-    put /etc/systemd/system/banana-repo.service <<EOF
-[Unit]
-Description=Banana OS package repository ($DIR)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=$OWNER
-ExecStart=/usr/local/bin/banana-repo serve $DIR --port $PORT
-Restart=on-failure
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadOnlyPaths=$DIR
-PrivateTmp=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    run systemctl daemon-reload
-    run systemctl enable --now banana-repo.service
     URL="http://${DOMAIN:-<this server>}:$PORT"
 fi
 
 cat <<EOF
 
-Done. The repository is $DIR, served at $URL
-As $OWNER:
-    banana-repo add $DIR app.bpk          publish (or upgrade) packages
-    banana-repo key $DIR $URL       the line for Banana OS
+Done. The package server runs (systemctl status banana-pkgd), the repository is $DIR,
+its pages are at $URL
+Upload token "admin": ${TOKEN_LINE:-(made earlier - banana-pkgd token add $DIR NAME makes another)}
+Publish:
+    banana-repo push $URL app.bpk --token TOKEN      (or $URL/upload)
 Back up the signing key: $OWNER_HOME/.config/banana-repo/$NAME.key
 On Banana OS: apt add-repo $URL key=<key>   then   apt update   (or the App Store)
 EOF
