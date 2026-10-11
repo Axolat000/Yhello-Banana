@@ -877,6 +877,11 @@ static int a_repo_upgrade(char* msg, int mcap) {
     return repo_upgrade(NULL, NULL, msg, mcap);
 }
 
+static int a_win_dropped(int win, int index, char* path, int cap) {
+    app_proc_t* p = cur();
+    return appwin_dropped(win, p ? p->id : -1, index, path, cap);
+}
+
 static int a_gamepad(int index, banana_gamepad_t* out) {
     gamepad_t g;
     int r = gamepad_get(index, &g);
@@ -1210,6 +1215,7 @@ static void api_init(void) {
     g_api.repo_icon = G(a_repo_icon);
     g_api.repo_upgrade = G(a_repo_upgrade);
     g_api.gamepad = G(a_gamepad);
+    g_api.win_dropped = G(a_win_dropped);
 }
 
 /* ── the ELF loader ────────────────────────────────────────────────── */

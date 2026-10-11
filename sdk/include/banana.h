@@ -87,6 +87,9 @@ int  banana_set_wallpaper(const char* path, int mode, char* err, int errcap);
 int  banana_http_fetch(const banana_http_req_t* req, banana_http_resp_t* resp);
 int  banana_key_mods(void);                /* BANANA_MOD_SHIFT / _CTRL / _ALT held */
 void bwin_wheel(bwin_t* win);              /* the wheel as BANANA_EV_WHEEL (ev.y notches) */
+/* files dropped on the window come as BANANA_EV_DROP (ev.key paths, ev.x / ev.y
+ * where): path `index` of them; 0, or -1 */
+int  bwin_dropped(bwin_t* win, int index, char* path, int cap);
 int  banana_pkg_install(const char* path, char* msg, int mcap);
 int  banana_app_run(const char* name, int argc, char** argv, char* err, int ecap);
 /* ── packages (API version 11): what apt and the App Store use ───────

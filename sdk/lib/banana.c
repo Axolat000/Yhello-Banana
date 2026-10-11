@@ -455,6 +455,12 @@ int banana_repo_upgrade(char* msg, int mcap) {
     return __banana->repo_upgrade(msg, mcap);
 }
 
+/* ── version 13: drag and drop ── */
+int bwin_dropped(bwin_t* win, int index, char* path, int cap) {
+    if (__banana->version < 13 || __banana->size < __builtin_offsetof(banana_api_t, win_dropped) + sizeof(void*)) return -1;
+    return __banana->win_dropped(win->id, index, path, cap);
+}
+
 /* ── version 12: game controllers ── */
 int banana_gamepad(int index, banana_gamepad_t* out) {
     if (__banana->version < 12 || __banana->size < __builtin_offsetof(banana_api_t, gamepad) + sizeof(void*)) {

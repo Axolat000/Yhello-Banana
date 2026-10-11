@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 12u
+#define BANANA_API_VERSION 13u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -88,6 +88,8 @@ typedef struct {
 #define BANANA_EV_RESIZE      7    /* (resizable windows) x, y = the new size: fetch
                                       win_pixels() again and redraw */
 #define BANANA_EV_WHEEL       8    /* (after win_wheel) y = notches, + = toward the user */
+#define BANANA_EV_DROP        9    /* (version 13) files dropped on the window: x, y where,
+                                      key = how many - win_dropped() gives their paths */
 
 /* key_mods() */
 #define BANANA_MOD_SHIFT 1
@@ -361,6 +363,11 @@ typedef struct banana_api {
     /* controller `index` (0-3, in the order they were plugged in): 1 and
      * its state now, or 0 if there is none */
     int   (*gamepad)(int index, banana_gamepad_t* out);
+
+    /* ── version 13: drag and drop ─────────────────────────── */
+    /* after BANANA_EV_DROP: path `index` (0..key-1) of the last drop on
+     * the window; 0, or -1 if there is no such path */
+    int   (*win_dropped)(int win, int index, char* path, int cap);
 } banana_api_t;
 
 /* the app's entry point (the SDK's crt0 provides it) */

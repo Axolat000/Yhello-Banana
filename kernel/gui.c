@@ -3190,11 +3190,56 @@ static int over_files(int mx, int my) {
     return app_at(mx, my, 0) == APP_FILES;
 }
 
+/* the window a drop at (mx, my) lands on: the app in front, else a
+ * terminal (*term = its index + 1), else another app window */
+static int drop_target(int mx, int my, int* term) {
+    *term = 0;
+    if (g_front_app >= 0 && app_visible(g_front_app) && g_apps[g_front_app].contains(mx, my)) return g_front_app;
+    int wi = term_at(mx, my);
+    if (wi) { *term = wi; return -1; }
+    return app_at(mx, my, 0);
+}
+
+/* what a drop there does besides Files and the desktop */
+enum { DROP_NONE, DROP_TYPE, DROP_OPEN };
+static int drop_kind(int mx, int my) {
+    if (!g_ndnd) return DROP_NONE;
+    int wi, a = drop_target(mx, my, &wi);
+    if (wi) return DROP_TYPE;
+    if (a == APP_APPWIN) return DROP_OPEN;
+    if ((a == APP_NOTEPAD || a == APP_BROWSER) && !fileops_is_dir(g_dnd[0])) return DROP_OPEN;
+    return DROP_NONE;
+}
+
+/* files let go over a window other than Files: a terminal gets their
+ * paths typed at its prompt (quoted when they have spaces), Notepad and
+ * the Browser open the first one, an app's window gets BANANA_EV_DROP */
+static int drop_on_window(int mx, int my) {
+    int k = drop_kind(mx, my);
+    if (k == DROP_NONE) return 0;
+    int wi, a = drop_target(mx, my, &wi);
+    if (k == DROP_TYPE) {
+        char line[1024];
+        int o = 0;
+        for (int i = 0; i < g_ndnd && o < (int)sizeof(line) - FS_PATH_LEN - 4; i++)
+            o += ksnprintf(line + o, sizeof(line) - (size_t)o, strchr(g_dnd[i], ' ') ? "\"%s\" " : "%s ", g_dnd[i]);
+        bring_term_front(wi - 1);
+        g_front_app = -1;
+        keyboard_inject(line);
+    } else if (a == APP_APPWIN) {
+        if (appwin_drop(mx, my, (const char (*)[FS_PATH_LEN])g_dnd, g_ndnd)) raise_app(APP_APPWIN);
+    } else if (a == APP_NOTEPAD) gui_open_notepad(g_dnd[0]);
+    else gui_open_browser(g_dnd[0]);
+    return 1;
+}
+
 static void dnd_drop(const fb_info_t* fi, int mx, int my) {
     int copy = (keyboard_mods() & 2) != 0;              /* Ctrl: a copy */
     int bar_y = (int)fi->height - BAR_H;
     g_desk_drop = -1;
-    if (over_files(mx, my)) {
+    if (my < bar_y && drop_on_window(mx, my)) {
+        /* (a terminal, Notepad, the Browser or an app took it) */
+    } else if (over_files(mx, my)) {
         if (g_ndnd) explorer_drop((const char (*)[FS_PATH_LEN])g_dnd, g_ndnd, mx, my, copy);
         raise_app(APP_FILES);
     } else if (my < bar_y && !over_window(mx, my)) {
@@ -3273,6 +3318,13 @@ static void dnd_drop(const fb_info_t* fi, int mx, int my) {
 static void desk_mouse(const fb_info_t* fi, int mx, int my, int left) {
     if (g_dnd_on) {
         if (!left) { dnd_drop(fi, mx, my); return; }
+        {   /* held over a window's taskbar button: that window comes up, to drop on it */
+            static int tb = -1;
+            static uint32_t since;
+            int j = my >= (int)fi->height - BAR_H ? tb_button_at(fi, mx, my) : -1;
+            if (j != tb) { tb = j; since = timer_ms(); }
+            else if (j >= 0 && since && timer_ms() - since > 600) { win_activate(g_tb[j]); since = 0; }
+        }
         if (over_files(mx, my)) explorer_drag_over(mx, my);
         int d = -1;
         if (!over_window(mx, my)) {
@@ -3345,7 +3397,10 @@ static void dnd_draw(const fb_info_t* fi, int mx, int my) {
     int x = mx + 14, y = my + 14;
     char t[64];
     int copy = (keyboard_mods() & 2) != 0;
+    int dk = my < (int)fb_info()->height - BAR_H ? drop_kind(mx, my) : DROP_NONE;
     if (g_ndnd && (g_desk_drop >= 0 && g_desk[g_desk_drop].kind == DK_TRASH)) ksnprintf(t, sizeof(t), "Delete %d", g_ndnd);
+    else if (dk == DROP_TYPE) ksnprintf(t, sizeof(t), "Type the path%s", g_ndnd > 1 ? "s" : "");
+    else if (dk == DROP_OPEN) ksnprintf(t, sizeof(t), "Open %s", fileops_base(g_dnd[0]));
     else if (n == 1) ksnprintf(t, sizeof(t), "%s%s", copy ? "+ " : "", g_ndnd ? fileops_base(g_dnd[0]) : g_desk[g_dnd_icons[0]].label);
     else ksnprintf(t, sizeof(t), "%s%d items", copy ? "+ " : "", n);
     if (strlen(t) > 22) { t[20] = '.'; t[21] = '.'; t[22] = 0; }

@@ -35,6 +35,8 @@ typedef struct {
     int       maxed, sx, sy, sw, sh;
     uint32_t  title_ms;
     int       wheel;               /* wants BANANA_EV_WHEEL (win_wheel) */
+    char    (*drop)[FS_PATH_LEN];  /* the last files dropped on it */
+    int       ndrop;
 } awin_t;
 
 #define GRIP 14
@@ -228,6 +230,8 @@ static void destroy(int id) {
     kfree(w->px);
     kfree(w->shown);
     w->px = w->shown = NULL;
+    if (w->drop) { kfree(w->drop); w->drop = NULL; }
+    w->ndrop = 0;
     w->used = 0;
     unlink_order(id);
     g_gen++;
@@ -270,6 +274,36 @@ static int win_at(int mx, int my) {
 }
 
 int appwin_contains(int mx, int my) { return win_at(mx, my) >= 0; }
+
+#define DROP_MAX 64
+
+int appwin_drop(int mx, int my, const char (*paths)[FS_PATH_LEN], int n) {
+    int id = win_at(mx, my);
+    if (id < 0 || n <= 0) return 0;
+    awin_t* w = &g_w[id];
+    if (n > DROP_MAX) n = DROP_MAX;
+    char (*d)[FS_PATH_LEN] = (char (*)[FS_PATH_LEN])kmalloc((uint32_t)n * FS_PATH_LEN);
+    if (!d) return 0;
+    memcpy(d, paths, (uint32_t)n * FS_PATH_LEN);
+    if (w->drop) kfree(w->drop);
+    w->drop = d;
+    w->ndrop = n;
+    raise(id);
+    int cx = mx - w->x - BORDER, cy = my - w->y - TITLE_H - BORDER;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx >= w->cw) cx = w->cw - 1;
+    if (cy >= w->ch) cy = w->ch - 1;
+    push_simple(w, BANANA_EV_DROP, cx, cy, 0, n);
+    return 1;
+}
+
+int appwin_dropped(int id, int owner, int index, char* path, int cap) {
+    awin_t* w = get(id, owner);
+    if (!w || !path || cap <= 0 || index < 0 || index >= w->ndrop) return -1;
+    kstrlcpy(path, w->drop[index], (size_t)cap);
+    return 0;
+}
 
 /* over the resize grip of the app window under the mouse, or resizing one */
 int appwin_resize_cursor(int mx, int my) {

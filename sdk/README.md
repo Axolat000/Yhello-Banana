@@ -328,6 +328,12 @@ they were plugged in): 1 and a `banana_gamepad_t` - the sticks (`lx`, `ly`,
 Xbox layout: USB HID gamepads and joysticks (PlayStation, Logitech, most PC
 pads), Xbox 360 and Xbox One / Series controllers. Read it once a frame.
 
+### Drag and drop (API version 13)
+
+Files dragged from Files or the desktop and let go over an app's window
+come as `BANANA_EV_DROP`: `ev.key` paths, `ev.x` / `ev.y` where (client
+coordinates). `bwin_dropped(&win, i, path, cap)` gives path `i`.
+
 The C library also has `setjmp` / `longjmp`, `gettimeofday` (`<sys/time.h>`),
 `realpath`, `strtold` and `ldexpl`.
 

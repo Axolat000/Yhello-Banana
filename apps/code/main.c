@@ -1618,6 +1618,14 @@ int main(int argc, char** argv) {
         case BANANA_EV_KEY: on_key(ev.key); break;
         case BANANA_EV_MOUSE_DOWN: case BANANA_EV_MOUSE_UP: case BANANA_EV_MOUSE_MOVE: on_mouse(&ev); break;
         case BANANA_EV_WHEEL: on_wheel(ev.y); break;
+        case BANANA_EV_DROP:                      /* files from Files / the desktop: opened */
+            for (int i = 0; i < ev.key; i++) {
+                char p[512];
+                if (bwin_dropped(&win, i, p, sizeof(p)) != 0) continue;
+                if (is_dir(p)) open_folder(p);
+                else open_file(p);
+            }
+            break;
         case BANANA_EV_RESIZE: {
             layout();
             int h = win.h - TOP_H - STATUS_H - 30;

@@ -1,6 +1,7 @@
 #ifndef APPWIN_H
 #define APPWIN_H
 
+#include "fs.h"
 #include "types.h"
 #include "fb.h"
 #include "../sdk/include/banana_api.h"
@@ -34,6 +35,9 @@ int       appwin_kill_requested(int owner);
 int      appwin_is_open(void);
 void     appwin_draw(const fb_info_t* fi);
 int      appwin_contains(int mx, int my);
+/* files let go over an app window: it gets BANANA_EV_DROP (1 if one was there) */
+int      appwin_drop(int mx, int my, const char (*paths)[FS_PATH_LEN], int n);
+int      appwin_dropped(int id, int owner, int index, char* path, int cap);
 int      appwin_resize_cursor(int mx, int my);
 void     appwin_wheel(int mx, int my, int dz);   /* as arrow keys to the window under it */   /* the mouse shows the resize arrows */
 void     appwin_click(int mx, int my);

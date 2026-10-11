@@ -228,6 +228,12 @@ int main(int argc, char** argv) {
         if (!bwin_wait_event(&win, &ev, -1)) continue;
         int redraw = 1;
         if (ev.type == BANANA_EV_CLOSE) break;
+        if (ev.type == BANANA_EV_DROP) {          /* a picture (or a folder) dropped: shown */
+            char p[512];
+            if (bwin_dropped(&win, 0, p, sizeof(p)) == 0) { status[0] = 0; scan(p); load(cur); }
+            draw();
+            continue;
+        }
         if (ev.type == BANANA_EV_KEY) {
             int k = ev.key;
             status[0] = 0;

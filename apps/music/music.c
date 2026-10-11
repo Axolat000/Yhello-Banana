@@ -1495,6 +1495,37 @@ int main(int argc, char** argv) {
             timeout = 0;
             if (ev.type == BANANA_EV_CLOSE) goto out;
             if (ev.type == BANANA_EV_RESIZE) { dirty = 1; continue; }
+            if (ev.type == BANANA_EV_DROP) {      /* songs dropped: into the library, queued, the first played */
+                int first = -1;
+                for (int i = 0; i < ev.key; i++) {
+                    char p[256];
+                    if (bwin_dropped(&win, i, p, sizeof(p)) != 0 || !is_audio(p)) continue;
+                    banana_lock(&g_lib_lock);
+                    int k = lib_find(p);
+                    banana_unlock(&g_lib_lock);
+                    if (k < 0) {
+                        song_t s;
+                        memset(&s, 0, sizeof(s));
+                        snprintf(s.path, sizeof(s.path), "%s", p);
+                        if (probe(p, &s) < 0) continue;
+                        struct stat st;
+                        if (stat(p, &st) == 0) s.size = (unsigned)st.st_size;
+                        s.seen = 1;
+                        banana_lock(&g_lib_lock);
+                        lib_add(&s);
+                        k = g_nsongs - 1;
+                        banana_unlock(&g_lib_lock);
+                    }
+                    if (g_qlen < 4096) {
+                        g_queue[g_qlen] = k;
+                        if (first < 0) { first = k; g_qpos = g_qlen; }
+                        g_qlen++;
+                    }
+                }
+                if (first >= 0) { engine_play(first, 0); g_view = V_NOW; }
+                dirty = 1;
+                continue;
+            }
             if (ev.type == BANANA_EV_MOUSE_DOWN && ev.button == 1) {
                 unsigned int now = banana_ticks();
                 int id = hit_at(ev.x, ev.y);

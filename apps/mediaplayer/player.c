@@ -608,6 +608,14 @@ int main(int argc, char** argv) {
         while (bwin_wait_event(&win, &ev, wait)) {
             wait = 0;
             if (ev.type == BANANA_EV_CLOSE) goto out;
+            if (ev.type == BANANA_EV_DROP) {      /* another file dropped: a player for it instead */
+                char p[256], err[96];
+                if (bwin_dropped(&win, 0, p, sizeof(p)) == 0) {
+                    char* av[2] = { "mediaplayer", p };
+                    if (__banana->app_run("mediaplayer", 2, av, err, sizeof(err)) == 0) goto out;
+                }
+                continue;
+            }
             if (ev.type == BANANA_EV_RESIZE) { tell_size(); dirty = 1; continue; }
             int sx, sy, sw;
             seek_bar(&sx, &sy, &sw);
