@@ -289,6 +289,14 @@ keys; `banana_pkg_install(path, msg, cap)` installs a `.bpk` and
 `banana_app_run(name, argc, argv, err, cap)` starts an installed app. Banana
 Code (`apps/code`) is built on them.
 
+### OpenGL
+
+Set `USE_GL = 1` in the Makefile and `#include <GL/bgl.h>`: the OpenGL 1.x
+API (`<GL/gl.h>`, `<GL/glu.h>`) drawing into a window - `bgl_create(&win)`,
+draw, `bgl_swap(ctx)`; after `BANANA_EV_RESIZE`, `bgl_resize(ctx)` and
+`glViewport`. It renders in software on every processor core.
+`examples/gears` is a complete app.
+
 ### Packages (API version 11): what the App Store uses
 
 `banana_repo_list(pkgs, max)` fills `banana_pkg_t` entries (name, title,

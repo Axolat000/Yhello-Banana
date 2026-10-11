@@ -13,6 +13,7 @@
 #     CATEGORY    = Games                 # optional: the App Store's shelf
 #     DEPENDS     = libfoo (>= 1.0)       # optional: packages apt installs first
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
+#     USE_GL      = 1                     # optional: OpenGL (#include <GL/bgl.h>)
 #     include /path/to/banana-sdk/banana.mk
 #
 # `make` builds the app for both CPUs Banana OS runs on (i686 and x86_64)
@@ -35,6 +36,7 @@ DATA        ?=
 CATEGORY    ?=
 DEPENDS     ?=
 ICON        ?=
+USE_GL      ?= 0
 BUILD       ?= build
 # extra libraries (.a) linked after the objects, per CPU
 LIBS_i686   ?=
@@ -57,6 +59,11 @@ LDFLAGS_i686   = -m elf_i386
 LDFLAGS_x86_64 = -m elf_x86_64
 APP_LDFLAGS = -pie --no-dynamic-linker -z noexecstack -z norelro -z max-page-size=4096 \
               -z noseparate-code --hash-style=sysv -e _banana_start -s $(LDFLAGS)
+
+# USE_GL = 1: OpenGL (<GL/gl.h>, <GL/glu.h>, <GL/bgl.h>), built like the app's own code
+ifeq ($(USE_GL),1)
+SRCS += $(BANANA_SDK)/lib/gl.c
+endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c
