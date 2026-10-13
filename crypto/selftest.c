@@ -5,6 +5,9 @@
 #include "aead.h"
 #include "sha512.h"
 #include "ed25519.h"
+#include "md5.h"
+#include "tls12.h"
+#include "ntlm.h"
 #include "kstring.h"
 #include "kheap.h"
 
@@ -141,6 +144,57 @@ int crypto_selftest(void (*report)(const char* name, int ok)) {
         all &= check("Ed25519 signature (RFC 8032 #1)", sig,
                      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555"
                      "fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b", report);
+    }
+
+    /* Remote Desktop: TLS 1.2 and NTLM (net/tls12.c, net/ntlm.c) */
+    md4("abc", 3, out);
+    all &= check("MD4 (RFC 1320)", out, "a448017aaf21d8525fc10ae87aa6729d", report);
+    md5("message digest", 14, out);
+    all &= check("MD5 (RFC 1321)", out, "f96b697d7cb7938d525a2f31aaf161d0", report);
+    hmac_md5((const uint8_t*)"Jefe", 4, "what do ya want for nothing?", 28, out);
+    all &= check("HMAC-MD5 (RFC 2104 #2)", out, "750c783e6ab0b503eaa86e310a5db738", report);
+    {
+        rc4_t r;
+        memcpy(out, "Attack at dawn", 14);
+        rc4_init(&r, (const uint8_t*)"Secret", 6);
+        rc4_crypt(&r, out, 14);
+        all &= check("RC4", out, "45a01f645fc35b383552544b9bf5", report);
+    }
+    {
+        uint8_t sec[16], seed[16];
+        unhex("9bbe436ba940f017b17652849a71db35", sec, 16);
+        unhex("a0ba9f936cda311827a6f796ffd5198c", seed, 16);
+        tls12_prf(sec, 16, "test label", seed, 16, out, 100);
+        all &= check("TLS 1.2 PRF (SHA-256)", out,
+                     "e3f229ba727be17b8d122620557cd453c2aab21d07c3d495329b52d4e61edb5a6b301791e90d35c9c9a46b4e14baf9af"
+                     "0fa022f7077def17abfd3797c0564bab4fbc91666e9def9b97fce34f796789baa48082d122ee42c5a72e5a5110fff70187347b66",
+                     report);
+    }
+    {
+        /* MS-NLMP 4.2.4: User / Domain / Password, server challenge
+         * 0123456789abcdef, client challenge aa.., time 0, session key 55.. */
+        static ntlm_t n;
+        uint8_t user[16], dom[16], pw[16], key[16], base[16], av[36], sc[8], cc[8], t[8], resp[16 + 28 + 36 + 4];
+        uint32_t ul = ntlm_utf16("User", user, 16), dl = ntlm_utf16("Domain", dom, 16), pl = ntlm_utf16("Password", pw, 16);
+        ntlm_ntowfv2(pw, pl, user, ul, dom, dl, key);
+        all &= check("NTLMv2 NTOWFv2 (MS-NLMP 4.2.4)", key, "0c868a403bfd7a93a3001ef22ef02e3f", report);
+        unhex("0123456789abcdef", sc, 8);
+        memset(cc, 0xaa, 8);
+        memset(t, 0, 8);
+        unhex("02000c0044006f006d00610069006e0001000c0053006500720076006500720000000000", av, 36);
+        ntlm_v2_response(key, sc, cc, t, av, 36, resp, base);
+        all &= check("NTLMv2 NTProofStr (MS-NLMP 4.2.4)", resp, "68cd0ab851e51c96aabc927bebef6a1c", report);
+        all &= check("NTLMv2 session key (MS-NLMP 4.2.4)", base, "8de40ccadbc14a82f15cb0ad0de95ca3", report);
+        memset(&n, 0, sizeof(n));
+        n.flags = 0xe28a8233;
+        memset(key, 0x55, 16);
+        ntlm_keys(&n, key);
+        uint8_t msg[18];
+        ntlm_utf16("Plaintext", msg, 18);
+        ntlm_seal(&n, msg, 18, out);
+        all &= check("NTLMv2 seal (MS-NLMP 4.2.4.4)", out,
+                     "010000007fb38ec5c55d49760000000054e50165bf1936dc996020c1811b0f06fb5f", report);
+        ntlm_wipe(&n);
     }
     return all;
 }
