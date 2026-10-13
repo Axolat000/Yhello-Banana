@@ -13,6 +13,7 @@
 #include "../net/netconf.h"
 #include "../net/httpd.h"
 #include "../net/sshd.h"
+#include "../net/rdpd.h"
 #include "../kernel/passwd.h"
 #include "../kernel/keyboard.h"
 #include "../kernel/gui.h"
@@ -160,6 +161,37 @@ static void cmd_sshd(int argc, char** argv) {
     }
 }
 
+/* ── rdpd ─────────────────────────────────────────────────────────── */
+
+static void cmd_rdpd(int argc, char** argv) {
+    const char* sub = argc >= 2 ? argv[1] : "status";
+    uint16_t port = rdpd_running() ? rdpd_port() : 3389;
+    if (argc >= 3 && !parse_port(argv[2], &port)) { fail("rdpd", "bad port number"); return; }
+    char e[96];
+
+    if (strcmp(sub, "status") == 0) {
+        rdpd_print_status();
+        uint16_t bp = 3389;
+        say("      at boot: %s\n", boot_enabled("rdpd", &bp) ? "enabled" : "disabled (`rdpd enable`)");
+        if (!passwd_is_set(PASSWD_USER)) terminal_writeln("      no password set yet: `passwd`");
+    } else if (strcmp(sub, "start") == 0 || strcmp(sub, "enable") == 0) {
+        terminal_writeln("rdpd: starting (the first start generates an RSA key - a moment)...");
+        terminal_flush();
+        if (rdpd_start(port, e, sizeof(e)) != 0) { fail("rdpd", e); return; }
+        if (fw_enabled() && !fw_allowed(FW_TCP, (uint16_t)port)) say("note: the firewall keeps port %d closed - `firewall allow tcp %d` opens it\n", port, port);
+        if (strcmp(sub, "enable") == 0) boot_setting("rdpd", 1, port);
+        rdpd_print_status();
+    } else if (strcmp(sub, "stop") == 0 || strcmp(sub, "disable") == 0) {
+        rdpd_stop();
+        if (strcmp(sub, "disable") == 0) boot_setting("rdpd", 0, 0);
+        terminal_writeln("rdpd: stopped");
+    } else {
+        terminal_writeln("usage: rdpd [status | start [port] | stop | enable [port] | disable]");
+        terminal_writeln("       Remote Desktop server, default port 3389; log in as " PASSWD_USER " with the");
+        terminal_writeln("       `passwd` password (mstsc, FreeRDP, the Remote Desktop apps). TLS, no NLA.");
+    }
+}
+
 /* ── passwd ───────────────────────────────────────────────────────── */
 
 /* reads a line without echoing it; -1 if cancelled with Ctrl+C */
@@ -225,6 +257,7 @@ int srvcmd_dispatch(const char* line) {
     if (argc == 0) return 0;
     if (strcmp(argv[0], "httpd") == 0)  { cmd_httpd(argc, argv); return 1; }
     if (strcmp(argv[0], "sshd") == 0)   { cmd_sshd(argc, argv); return 1; }
+    if (strcmp(argv[0], "rdpd") == 0)   { cmd_rdpd(argc, argv); return 1; }
     if (strcmp(argv[0], "passwd") == 0) { cmd_passwd(argc, argv); return 1; }
     if (strcmp(argv[0], "notepad") == 0) {
         /* the desktop's text editor, optionally with a file (relative: to the current folder) */
@@ -283,6 +316,9 @@ void services_boot(void) {
     port = 22;
     if (boot_enabled("sshd", &port) && sshd_start(port, e, sizeof(e)) != 0)
         say("sshd: could not start at boot: %s\n", e);
+    port = 3389;
+    if (boot_enabled("rdpd", &port) && rdpd_start(port, e, sizeof(e)) != 0)
+        say("rdpd: could not start at boot: %s\n", e);
 }
 
 /* Settings > Startup: the desktop instead of the text console (after the login) */

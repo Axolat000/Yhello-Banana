@@ -783,6 +783,13 @@ void keyboard_feed_scancode(uint8_t sc) {
     }
 }
 
+void keyboard_feed_set1(uint8_t sc) {
+    /* a USB keyboard may have switched the decoder to set 2; the RDP client
+     * always sends set-1 scancodes, so force set 1 for these bytes */
+    use_set2 = 0; set2_break = 0; set2_e0 = 0;
+    keyboard_feed_scancode(sc);
+}
+
 /* Serial console input (see serial.h): terminals send CR for Enter and
  * DEL for Backspace; map them to what the shell expects. Arrow keys
  * already arrive as the same ESC [ A-D sequences the PS/2 path queues. */

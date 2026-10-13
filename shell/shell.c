@@ -971,9 +971,10 @@ static void cmd_help(void) {
         "Servers:",
         "  passwd             set the password of banana (the SSH login)",
         "  sshd start|stop    SSH server (port 22): ssh banana@<this machine>",
+        "  rdpd start|stop    Remote Desktop server (port 3389): mstsc / FreeRDP",
         "  httpd start|stop   web server (port 80) for /var/www, runs .php pages",
         "  httpd expose       make it reachable from the Internet (router UPnP)",
-        "  sshd/httpd enable  also start it at every boot (disable: undo)",
+        "  sshd/rdpd/httpd enable  also start it at every boot (disable: undo)",
         "",
         "Shell: cmd > file, cmd >> file, cmd1; cmd2, cmd1 && cmd2",
         "  Editor: arrows move, ^O/^S save, ^X exit, ^K cut line, ^U paste",
@@ -1375,7 +1376,7 @@ static const char* const known_cmds[] = {
     "grep", "wc", "head", "tail", "find", "time", "nice",
     /* shell/netcmds.c + shell/wpcmd.c */
     "ifconfig", "dhcp", "ping", "nslookup", "host", "netstat", "arp", "curl", "wget",
-    "cryptotest", "wallpaper", "lsusb", "usb", "httpd", "sshd", "passwd", "files", "browser", "notepad",
+    "cryptotest", "wallpaper", "lsusb", "usb", "httpd", "sshd", "rdpd", "passwd", "files", "browser", "notepad",
     /* shell/syscmds.c */
     "mount", "umount", "eject", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */

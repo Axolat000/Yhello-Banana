@@ -20,6 +20,7 @@
 #include "../net/netconf.h"
 #include "../net/httpd.h"
 #include "../net/sshd.h"
+#include "../net/rdpd.h"
 #include "passwd.h"
 #include "fsdisk.h"
 #include "login.h"
@@ -644,20 +645,21 @@ static void checkbox(int x, int y, int on) {
     if (on) { gfx_fill_rect(x + 3, y + 3, 8, 8, C_ACCENT); }
 }
 
-static void su_rows(int y, int* ry) { for (int i = 0; i < 4; i++) ry[i] = y + 44 + i * SU_ROW_H; }
-static int  su_pw_y(int y) { return y + 44 + 4 * SU_ROW_H + 14; }
+#define SU_ROWS 5
+static void su_rows(int y, int* ry) { for (int i = 0; i < SU_ROWS; i++) ry[i] = y + 44 + i * SU_ROW_H; }
+static int  su_pw_y(int y) { return y + 44 + SU_ROWS * SU_ROW_H + 14; }
 
 static void draw_startup(void) {
     int x = cx0(), y = cy0(), w = cw();
     label(x, y, "Startup", C_HEAD);
     label(x, y + 18, "Started by themselves when Banana OS boots:", C_DIM);
-    int ry[4];
+    int ry[SU_ROWS];
     su_rows(y, ry);
     char line[96];
 
     /* auto-login: the login screen's switch, the other way round */
-    checkbox(x, ry[3], !login_required());
-    label(x + 24, ry[3] + 3, passwd_is_set(PASSWD_USER) ? "Log in automatically (no password asked at boot)"
+    checkbox(x, ry[4], !login_required());
+    label(x + 24, ry[4] + 3, passwd_is_set(PASSWD_USER) ? "Log in automatically (no password asked at boot)"
                                                         : "Log in automatically (always: no password is set)", C_TEXT);
 
     checkbox(x, ry[0], rc_on("desktop"));
@@ -675,9 +677,15 @@ static void draw_startup(void) {
     label(x + w - 170, ry[2] + 3, sshd_running() ? "running" : "stopped", sshd_running() ? 0x0080E080u : C_DIM);
     button(x + w - 90, ry[2] - 3, 86, sshd_running() ? "Stop" : "Start now", 0);
 
+    checkbox(x, ry[3], rc_on("rdpd"));
+    ksnprintf(line, sizeof(line), "Remote Desktop server (rdpd), port %u", rc_port("rdpd", 3389));
+    label(x + 24, ry[3] + 3, line, C_TEXT);
+    label(x + w - 170, ry[3] + 3, rdpd_running() ? "running" : "stopped", rdpd_running() ? 0x0080E080u : C_DIM);
+    button(x + w - 90, ry[3] - 3, 86, rdpd_running() ? "Stop" : "Start now", 0);
+
     /* the password */
     int py = su_pw_y(y);
-    label(x, py, "Password (for SSH logins)", C_HEAD);
+    label(x, py, "Password (for SSH and RDP logins)", C_HEAD);
     int set = passwd_is_set(PASSWD_USER);
     label(x, py + 18, set ? "A password is set." : "No password yet: the SSH server will not start without one.",
           set ? C_DIM : 0x00FFC060u);
@@ -718,7 +726,7 @@ static void su_submit_password(void) {
 
 static void click_startup(int mx, int my) {
     int x = cx0(), y = cy0(), w = cw();
-    int ry[4];
+    int ry[SU_ROWS];
     su_rows(y, ry);
     char err[96];
     err[0] = 0;
@@ -733,6 +741,15 @@ static void click_startup(int mx, int my) {
         if (sshd_running()) { sshd_stop(); kstrlcpy(g_status, "SSH server stopped", sizeof(g_status)); }
         else if (sshd_start(rc_port("sshd", 22), err, sizeof(err)) == 0) kstrlcpy(g_status, "SSH server started", sizeof(g_status));
         else ksnprintf(g_status, sizeof(g_status), "sshd: %s", err);
+        return;
+    }
+    if (inside(mx, my, x + w - 90, ry[3] - 3, 86, 20)) {
+        if (rdpd_running()) { rdpd_stop(); kstrlcpy(g_status, "Remote Desktop server stopped", sizeof(g_status)); }
+        else {
+            kstrlcpy(g_status, "Starting the Remote Desktop server (first start makes a key)...", sizeof(g_status));
+            if (rdpd_start(rc_port("rdpd", 3389), err, sizeof(err)) == 0) kstrlcpy(g_status, "Remote Desktop server started", sizeof(g_status));
+            else ksnprintf(g_status, sizeof(g_status), "rdpd: %s", err);
+        }
         return;
     }
     /* the boot switches */
@@ -756,7 +773,15 @@ static void click_startup(int mx, int my) {
                  : "The SSH server starts at boot (set a password below)", sizeof(g_status));
         return;
     }
-    if (inside(mx, my, x, ry[3] - 4, w - 100, 24)) {
+    if (inside(mx, my, x, ry[3] - 4, w - 180, 24)) {
+        int on = !rc_on("rdpd");
+        rc_set("rdpd", on, rc_port("rdpd", 3389));
+        kstrlcpy(g_status, !on ? "The Remote Desktop server no longer starts at boot"
+                 : passwd_is_set(PASSWD_USER) ? "The Remote Desktop server starts at boot"
+                 : "The Remote Desktop server starts at boot (set a password below)", sizeof(g_status));
+        return;
+    }
+    if (inside(mx, my, x, ry[4] - 4, w - 100, 24)) {
         if (!passwd_is_set(PASSWD_USER)) {
             kstrlcpy(g_status, "No password is set: Banana OS always logs in by itself", sizeof(g_status));
             return;
