@@ -127,25 +127,18 @@ static void image_at(target_t* T, const img_data_t* im, int x, int y, int w, int
     }
 }
 
-void render_page(const layout_t* L, uint32_t* buf, int stride, int buf_w, int buf_h,
-                 int vx, int vy, int vw, int vh, int scroll) {
-    target_t T;
-    T.buf = buf;
-    T.stride = stride;
-    T.cx0 = vx < 0 ? 0 : vx;
-    T.cy0 = vy < 0 ? 0 : vy;
-    T.cx1 = vx + vw > buf_w ? buf_w : vx + vw;
-    T.cy1 = vy + vh > buf_h ? buf_h : vy + vh;
-    fill(&T, vx, vy, vw, vh, L ? L->bg : 0xFFFFFF);
+/* draws L's display list into the clip already set in T; the document's
+ * (0,0) maps to (ox, oy), scrolled down by `scroll`. Recurses for iframes. */
+static void render_into(const layout_t* L, target_t T, int ox, int oy, int scroll) {
+    fill(&T, T.cx0, T.cy0, T.cx1 - T.cx0, T.cy1 - T.cy0, L ? L->bg : 0xFFFFFF);
     if (!L) return;
-    int top = scroll, bottom = scroll + vh;
     for (uint32_t i = 0; i < L->n; i++) {
         const dl_item_t* it = &L->items[i];
-        if (it->y + it->h < top - 2 || it->y > bottom) continue;
-        int x = vx + it->x, y = vy + it->y - scroll;
+        int x = ox + it->x, y = oy + it->y - scroll;
+        if (y + it->h < T.cy0 - 2 || y > T.cy1) continue;
         target_t saved = T;
         if (it->has_clip) {                 /* overflow: hidden */
-            int c0 = vx + it->cx0, c1 = vx + it->cx1, d0 = vy + it->cy0 - scroll, d1 = it->cy1 > 0x3FFFF000 ? T.cy1 : vy + it->cy1 - scroll;
+            int c0 = ox + it->cx0, c1 = ox + it->cx1, d0 = oy + it->cy0 - scroll, d1 = it->cy1 > 0x3FFFF000 ? T.cy1 : oy + it->cy1 - scroll;
             if (c0 > T.cx0) T.cx0 = c0;
             if (c1 < T.cx1) T.cx1 = c1;
             if (d0 > T.cy0) T.cy0 = d0;
@@ -161,6 +154,26 @@ void render_page(const layout_t* L, uint32_t* buf, int stride, int buf_w, int bu
         case DL_IMG:
             image(&T, it, x, y);
             break;
+        case DL_IFRAME: {
+            int bw = 2;                              /* a thin border, then the frame's page inside */
+            fill(&T, x, y, it->w, it->h, 0xB0B0B0);
+            int cx = x + bw, cy = y + bw, cw = it->w - 2 * bw, ch = it->h - 2 * bw;
+            if (cw > 0 && ch > 0) {
+                target_t C = T;
+                if (cx > C.cx0) C.cx0 = cx;
+                if (cy > C.cy0) C.cy0 = cy;
+                if (cx + cw < C.cx1) C.cx1 = cx + cw;
+                if (cy + ch < C.cy1) C.cy1 = cy + ch;
+                /* the child's layout is read live from the node: the frame
+                 * re-lays-out on its own (timers, typing) between our paints */
+                const layout_t* child = it->node && it->node->frame_layout
+                                        ? (const layout_t*)it->node->frame_layout : (const layout_t*)it->frame_l;
+                int fs = it->node ? it->node->frame_scroll : it->fscroll;
+                if (C.cx0 < C.cx1 && C.cy0 < C.cy1)
+                    render_into(child, C, cx, cy, fs);
+            }
+            break;
+        }
         case DL_TEXT: {
             if (it->px) {                        /* the system fonts */
                 int px = it->px, base = y + it->asc;
@@ -220,4 +233,16 @@ void render_page(const layout_t* L, uint32_t* buf, int stride, int buf_w, int bu
         }
         T = saved;
     }
+}
+
+void render_page(const layout_t* L, uint32_t* buf, int stride, int buf_w, int buf_h,
+                 int vx, int vy, int vw, int vh, int scroll) {
+    target_t T;
+    T.buf = buf;
+    T.stride = stride;
+    T.cx0 = vx < 0 ? 0 : vx;
+    T.cy0 = vy < 0 ? 0 : vy;
+    T.cx1 = vx + vw > buf_w ? buf_w : vx + vw;
+    T.cy1 = vy + vh > buf_h ? buf_h : vy + vh;
+    render_into(L, T, vx, vy, scroll);
 }

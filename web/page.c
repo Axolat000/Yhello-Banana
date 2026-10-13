@@ -435,6 +435,78 @@ static void load_images(page_t* p, dom_node_t* n, int* count) {
     }
 }
 
+/* ── <iframe>: each is a page of its own ──────────────────────────── */
+
+#define FRAME_MEM       (16u << 20)
+#define MAX_FRAME_DEPTH 4
+
+/* an iframe's inner (content) width, the box minus its 2px border each side */
+static int frame_inner_w(page_t* p, dom_node_t* e) {
+    int w, h;
+    iframe_dims(e, p->width, &w, &h);
+    int iw = w - 4;
+    return iw < 16 ? 16 : iw;
+}
+
+/* loads the document of every not-yet-loaded <iframe> (once) */
+static void load_frames(page_t* p, dom_node_t* n) {
+    if (p->frame_depth >= MAX_FRAME_DEPTH) return;
+    for (dom_node_t* c = n->first; c; c = c->next) {
+        if (c->type != DOM_ELEM) continue;
+        if (strcmp(c->tag, "iframe") == 0) {
+            if (!c->frame && p->nframes < PAGE_MAX_FRAMES && p->env && p->env->fetch) {
+                const char* srcdoc = dom_attr(c, "srcdoc");
+                const char* src = dom_attr(c, "src");
+                char* html = NULL;
+                uint32_t len = 0;
+                char furl[PAGE_URL_MAX];
+                if (srcdoc && *srcdoc) {
+                    len = (uint32_t)strlen(srcdoc);
+                    html = (char*)kmalloc(len + 1);
+                    if (html) { memcpy(html, srcdoc, len); html[len] = 0; len = html_decode_entities(html, len); }
+                    kstrlcpy(furl, p->base, sizeof(furl));
+                } else if (src && *src && strcmp(src, "about:blank") != 0) {
+                    char ct[96];
+                    url_resolve(p->base, src, furl, sizeof(furl));
+                    if (fetch(p, furl, &html, &len, ct, sizeof(ct)) != 0) html = NULL;
+                } else {
+                    kstrlcpy(furl, "about:blank", sizeof(furl));
+                }
+                page_t* child = page_new(p->env, FRAME_MEM);
+                if (child) {
+                    child->frame_depth = p->frame_depth + 1;
+                    child->js_disabled = p->js_disabled;
+                    child->view_h = 150;
+                    page_load(child, furl, html ? html : "", html ? len : 0, frame_inner_w(p, c));
+                    p->frames[p->nframes++] = child;
+                    c->frame = child;
+                    c->frame_layout = child->layout;
+                }
+                if (html) kfree(html);
+            }
+            continue;                               /* its own markup is the child document */
+        }
+        load_frames(p, c);
+    }
+}
+
+/* keeps each frame laid out at its box width, and the node's layout
+ * pointer current (the child re-lays-out on its own) */
+static void sync_frames(page_t* p, dom_node_t* n) {
+    for (dom_node_t* c = n->first; c; c = c->next) {
+        if (c->type != DOM_ELEM) continue;
+        if (strcmp(c->tag, "iframe") == 0) {
+            page_t* child = (page_t*)c->frame;
+            if (child) {
+                page_update(child, frame_inner_w(p, c));   /* no-op when clean + same width */
+                c->frame_layout = child->layout;
+            }
+            continue;
+        }
+        sync_frames(p, c);
+    }
+}
+
 /* CSS background-image: once styles are known, each element's image is
  * fetched (once per address: icons repeat) and decoded into the page arena */
 static img_data_t* bg_image_for(page_t* p, const char* url) {
@@ -523,6 +595,7 @@ void page_free(page_t* p) {
     if (p && p->env && p->env->media_cmd)            /* its sounds stop with it */
         for (int i = 0; i < p->nmedia; i++) p->env->media_cmd(p->env->ctx, p->media[i], PAGE_MEDIA_CLOSE, 0, 0, 0);
     if (!p) return;
+    for (int i = 0; i < p->nframes; i++) page_free(p->frames[i]);   /* <iframe> children */
     arena_free_all(&p->LA);
     arena_free_all(&p->A);
     kfree(p);
@@ -544,6 +617,7 @@ void page_update(page_t* p, int width) {
     if (p->env) load_bg_images(p, p->doc);
     int svgs = 0;
     load_inline_svgs(p, p->doc, &svgs);
+    if (p->env) { load_frames(p, p->doc); sync_frames(p, p->doc); }   /* <iframe> children */
     p->layout = layout_build(&p->LA, p->doc, width, p->focus);
     p->width = width;
     p->dirty = 0;
@@ -899,6 +973,23 @@ static int is_text_field(dom_node_t* e) {
 
 void page_click(page_t* p, int x, int y) {
     if (!p->layout) return;
+    /* a click landing on an <iframe> goes to the child document (its
+     * buttons, checkboxes and onclick handlers). A link inside the frame
+     * is not followed in this version. */
+    for (uint32_t i = 0; i < p->layout->n; i++) {
+        dl_item_t* it = &p->layout->items[i];
+        if (it->kind != DL_IFRAME) continue;
+        if (x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) {
+            dom_node_t* e = it->node;
+            page_t* child = e ? (page_t*)e->frame : NULL;
+            if (child) {
+                page_click(child, x - (it->x + 2), y - (it->y + 2) + e->frame_scroll);
+                child->nav_pending = 0;          /* frame navigation is not supported yet */
+                p->dirty = 1;
+            }
+            return;
+        }
+    }
     dom_node_t* n = layout_hit(p->layout, x, y);
     dom_node_t* old_focus = p->focus;
     p->focus = NULL;
@@ -1077,9 +1168,13 @@ int page_key(page_t* p, char c) {
 }
 
 int page_tick(page_t* p) {
-    if (!p->js) return 0;
-    uint32_t t = now(p);
     int any = 0;
+    /* run the timers of the <iframe> children too, then keep their layouts current */
+    for (int i = 0; i < p->nframes; i++)
+        if (page_tick(p->frames[i])) any = 1;
+    if (any) sync_frames(p, p->doc);
+    if (!p->js) return any;
+    uint32_t t = now(p);
     for (int i = 0; i < PAGE_TIMERS; i++) {
         page_timer_t* tm = &p->timers[i];
         if (!tm->active || (int32_t)(t - tm->due) < 0) continue;

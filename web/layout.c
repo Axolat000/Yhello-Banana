@@ -550,6 +550,24 @@ static int str_to_px(const char* s) {
     return v;
 }
 
+void iframe_dims(dom_node_t* n, int avail, int* wo, int* ho) {
+    const style_t* st = n->style;
+    int w = 300, h = 150;                             /* the browser default */
+    const char* aw = dom_attr(n, "width");
+    const char* ah = dom_attr(n, "height");
+    if (aw) { int v = attr_px(aw, st); if (v > 0) w = v; }
+    if (ah) { int v = attr_px(ah, st); if (v > 0) h = v; }
+    if (st) {
+        if (st->width != LEN_AUTO && st->width > 0) w = st->width;
+        if (st->height != LEN_AUTO && st->height > 0) h = st->height;
+        if (st->width_pct && avail > 0) w = avail * st->width_pct / 100;
+    }
+    if (w < 16) w = 16;
+    if (h < 16) h = 16;
+    *wo = w;
+    *ho = h;
+}
+
 /* form controls and images: atomic boxes */
 static void inline_replaced(inl_t* I, dom_node_t* e, const style_t* st) {
     ctx_t* C = I->C;
@@ -559,6 +577,19 @@ static void inline_replaced(inl_t* I, dom_node_t* e, const style_t* st) {
     if (cw < 4) cw = 4;
     const char* tag = e->tag;
     uint32_t first = C->dry ? 0 : C->L->n;
+    if (strcmp(tag, "iframe") == 0) {
+        int w, h;
+        iframe_dims(e, I->w, &w, &h);
+        if (I->w > 0 && w > I->w) w = I->w;
+        int x = place_box(I, w, h);
+        dl_item_t* it = push(C, DL_IFRAME);
+        it->x = x; it->w = w; it->h = h;
+        it->node = e;
+        it->frame_l = e->frame_layout;
+        it->fscroll = e->frame_scroll;
+        mark_box(C, first, h);
+        return;
+    }
     if (strcmp(tag, "img") == 0 || strcmp(tag, "svg") == 0) {
         const char* aw = dom_attr(e, "width");
         const char* ah = dom_attr(e, "height");
@@ -786,7 +817,7 @@ static void inline_node(inl_t* I, dom_node_t* n, uint32_t bg, int has_bg) {
     n->box_x = I->x0 + I->cx;
     n->box_y = I->y;
     int replaced = strcmp(tag, "img") == 0 || strcmp(tag, "svg") == 0 || strcmp(tag, "input") == 0 || strcmp(tag, "button") == 0 ||
-                   strcmp(tag, "select") == 0 || strcmp(tag, "textarea") == 0;
+                   strcmp(tag, "select") == 0 || strcmp(tag, "textarea") == 0 || strcmp(tag, "iframe") == 0;
     if (replaced) {
         if (!st->visible) return;
         if (I->space && I->cx > 0) { I->cx += text_w(st, " ", 1); I->space = 0; }
@@ -922,7 +953,7 @@ static int is_blank_text(const dom_node_t* t) {
 static int flex_is_inline(const dom_node_t* e) {
     const char* t = e->tag;
     if (strcmp(t, "img") == 0 || strcmp(t, "svg") == 0 || strcmp(t, "input") == 0 || strcmp(t, "button") == 0 ||
-        strcmp(t, "select") == 0 || strcmp(t, "textarea") == 0) return 1;
+        strcmp(t, "select") == 0 || strcmp(t, "textarea") == 0 || strcmp(t, "iframe") == 0) return 1;
     return e->style->display == DISP_INLINE && !has_block_child((dom_node_t*)e);
 }
 

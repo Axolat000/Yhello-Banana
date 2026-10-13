@@ -20,7 +20,7 @@ typedef struct img_data {
     int       failed;       /* could not load: draw a placeholder */
 } img_data_t;
 
-enum { DL_RECT = 1, DL_TEXT, DL_IMG, DL_CARET };
+enum { DL_RECT = 1, DL_TEXT, DL_IMG, DL_CARET, DL_IFRAME };
 
 typedef struct dl_item {
     uint8_t  kind;
@@ -41,6 +41,8 @@ typedef struct dl_item {
     int16_t  tw, th, ox, oy;
     uint8_t  has_clip;      /* only draw inside clip (overflow: hidden) */
     int      cx0, cy0, cx1, cy1;
+    struct layout* frame_l; /* DL_IFRAME: the child document's layout, drawn inside the box */
+    int      fscroll;       /* DL_IFRAME: how far the frame is scrolled */
 } dl_item_t;
 
 typedef struct layout {
@@ -55,6 +57,10 @@ typedef struct layout {
 } layout_t;
 
 layout_t*   layout_build(arena_t* A, dom_node_t* doc, int width, dom_node_t* focus);
+
+/* an <iframe>'s box size from its width/height attributes or CSS (avail:
+ * the width available for a percentage; default 300x150, like browsers) */
+void        iframe_dims(dom_node_t* n, int avail, int* w, int* h);
 dom_node_t* layout_hit(layout_t* L, int x, int y);   /* element at page coordinates */
 
 /* text selection: the text position (DL_TEXT item index, character) nearest a page point;

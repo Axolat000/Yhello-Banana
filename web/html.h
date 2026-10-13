@@ -20,6 +20,8 @@ typedef struct dom_attr {
 
 struct style;
 struct img_data;
+struct layout;
+struct page;
 
 typedef struct dom_handler {
     char*  event;                /* "click", "submit", "input", ... */
@@ -47,6 +49,9 @@ typedef struct dom_node {
     int      form_init;          /* value/checked hold the live state (else: from the markup) */
     int      script_done;        /* <script> already run */
     uint8_t  ce_state;           /* custom element: 1 constructed, 2 connected */
+    void*    frame;              /* <iframe>: its child page (struct page*), page.c owns it */
+    struct layout* frame_layout; /* ...its current layout, read by render; page.c keeps it current */
+    int      frame_scroll;       /* ...how far the frame is scrolled inside its box */
     int      box_x, box_y, box_w, box_h;   /* last layout position (page coordinates) */
     uint32_t meas_gen;           /* layout.c: max/min content widths measured in layout pass meas_gen */
     int      meas_max, meas_min;

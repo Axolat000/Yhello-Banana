@@ -120,6 +120,11 @@ typedef struct page {
     /* CSS background images, fetched once per address */
     struct { const char* url; struct img_data* img; } bgcache[40];
     int          nbg;
+    /* <iframe> child documents (each a page of its own), loaded once */
+#define PAGE_MAX_FRAMES 16
+    struct page* frames[PAGE_MAX_FRAMES];
+    int          nframes;
+    int          frame_depth;         /* this page's nesting (0 = top), caps recursion */
 } page_t;
 
 page_t* page_new(page_env_t* env, uint32_t mem_limit);
