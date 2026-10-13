@@ -678,7 +678,7 @@ static void draw_startup(void) {
     button(x + w - 90, ry[2] - 3, 86, sshd_running() ? "Stop" : "Start now", 0);
 
     checkbox(x, ry[3], rc_on("rdpd"));
-    ksnprintf(line, sizeof(line), "Remote Desktop server (rdpd), port %u", rc_port("rdpd", 3389));
+    ksnprintf(line, sizeof(line), "Remote Desktop (rdpd), port %u", rc_port("rdpd", 3389));
     label(x + 24, ry[3] + 3, line, C_TEXT);
     label(x + w - 170, ry[3] + 3, rdpd_running() ? "running" : "stopped", rdpd_running() ? 0x0080E080u : C_DIM);
     button(x + w - 90, ry[3] - 3, 86, rdpd_running() ? "Stop" : "Start now", 0);
