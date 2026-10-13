@@ -674,7 +674,41 @@ static int translate_scancode(uint8_t sc, char* out) {
     return 1;
 }
 
+/* ── raw set-1 capture for the RDP client ─────────────────────────── */
+static int      g_raw_on;
+static int      g_raw_e0;
+static uint16_t g_raw_q[64];         /* code | (e0<<8) | (down<<9) */
+static int      g_raw_h, g_raw_t;
+
+void keyboard_capture_raw(int on) {
+    g_raw_on = on;
+    g_raw_e0 = 0;
+    if (!on) g_raw_h = g_raw_t = 0;
+}
+
+static void raw_capture(uint8_t sc) {
+    /* the stream is set 1 here: PS/2 with controller translation, and USB
+     * keyboards feed set-1 scancodes through keyboard_feed_scancode */
+    if (sc == 0xE0) { g_raw_e0 = 1; return; }
+    if (sc == 0xE1) return;                         /* Pause: ignored */
+    uint16_t v = (uint16_t)((sc & 0x7F) | (g_raw_e0 ? 0x100 : 0) | ((sc & 0x80) ? 0 : 0x200));
+    g_raw_e0 = 0;
+    int next = (g_raw_h + 1) % 64;
+    if (next != g_raw_t) { g_raw_q[g_raw_h] = v; g_raw_h = next; }
+}
+
+int keyboard_poll_raw(uint8_t* code, int* down, int* e0) {
+    if (g_raw_t == g_raw_h) return 0;
+    uint16_t v = g_raw_q[g_raw_t];
+    g_raw_t = (g_raw_t + 1) % 64;
+    *code = (uint8_t)(v & 0x7F);
+    *e0 = (v >> 8) & 1;
+    *down = (v >> 9) & 1;
+    return 1;
+}
+
 static int process_scancode_byte(uint8_t sc, char* out) {
+    if (g_raw_on) { raw_capture(sc); return 0; }   /* the RDP window has the keyboard */
     if (sc == 0xF0) {
         use_set2 = 1;
         set2_break = 1;

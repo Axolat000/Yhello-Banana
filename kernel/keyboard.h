@@ -24,6 +24,16 @@ void keyboard_feed_scancode(uint8_t sc);
  * forces the decoder back to set 1 first (a USB keyboard may have left it
  * in set 2) so E0 prefixes and break codes are read the same way */
 void keyboard_feed_set1(uint8_t sc);
+
+/* Raw set-1 scancode capture for the RDP client (kernel/rdpclient.c).
+ * While on, keys are NOT delivered locally (no characters, no F-keys); the
+ * client drains the raw make/break codes and forwards them to the server,
+ * so the remote side sees the exact keys. Turned on while the RDP window
+ * has focus, off otherwise. */
+void keyboard_capture_raw(int on);
+/* next captured scancode: 1 and fills *code (set-1), *down (1 press /
+ * 0 release), *e0 (extended), or 0 if none waiting */
+int  keyboard_poll_raw(uint8_t* code, int* down, int* e0);
 /* queues text as typed input for whoever reads the keyboard next */
 void keyboard_inject(const char* s);
 /* only task `pid` reads the keyboard from now on (-1: everyone again) - the lock screen */

@@ -14,6 +14,7 @@
 #include "../net/httpd.h"
 #include "../net/sshd.h"
 #include "../net/rdpd.h"
+#include "../kernel/rdpclient.h"
 #include "../kernel/passwd.h"
 #include "../kernel/keyboard.h"
 #include "../kernel/gui.h"
@@ -247,6 +248,46 @@ static void cmd_passwd(int argc, char** argv) {
         terminal_writeln("        (kept after reboot once Banana OS is installed: `install`)");
 }
 
+/* ── rdp (the client) ─────────────────────────────────────────────── */
+
+static void cmd_rdp(int argc, char** argv) {
+    rdp_params_t p;
+    memset(&p, 0, sizeof(p));
+    const char* host = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-u") == 0 && i + 1 < argc) kstrlcpy(p.user, argv[++i], sizeof(p.user));
+        else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) kstrlcpy(p.domain, argv[++i], sizeof(p.domain));
+        else if (argv[i][0] != '-') host = argv[i];
+    }
+    if (!host) {
+        terminal_writeln("usage: rdp [-u user] [-d domain] host[:port]");
+        terminal_writeln("       connect to a Remote Desktop server (default port 3389). It opens a");
+        terminal_writeln("       window on the desktop - run `startx` first. NLA is used if a password");
+        terminal_writeln("       is given. The password is asked next, and not shown.");
+        return;
+    }
+    /* split host[:port] */
+    char hb[128];
+    kstrlcpy(hb, host, sizeof(hb));
+    p.port = 3389;
+    for (int i = 0; hb[i]; i++)
+        if (hb[i] == ':') { hb[i] = 0; uint32_t v; if (k_parse_u32(hb + i + 1, &v) && v > 0 && v < 65536) p.port = (uint16_t)v; break; }
+    kstrlcpy(p.host, hb, sizeof(p.host));
+    if (!p.user[0]) kstrlcpy(p.user, PASSWD_USER, sizeof(p.user));
+
+    char pw[128];
+    int n = read_secret("Password (empty for none): ", pw, sizeof(pw));
+    if (n < 0) return;
+    kstrlcpy(p.password, pw, sizeof(p.password));
+    memset(pw, 0, sizeof(pw));
+    p.nla = p.password[0] ? 1 : 0;
+
+    say("rdp: connecting to %s:%u as %s...\n", p.host, p.port, p.user);
+    if (rdpclient_launch(&p) != 0)
+        fail("rdp", "could not start (is the desktop running? `startx`)");
+    memset(&p, 0, sizeof(p));
+}
+
 /* ── dispatch / boot ──────────────────────────────────────────────── */
 
 int srvcmd_dispatch(const char* line) {
@@ -258,6 +299,7 @@ int srvcmd_dispatch(const char* line) {
     if (strcmp(argv[0], "httpd") == 0)  { cmd_httpd(argc, argv); return 1; }
     if (strcmp(argv[0], "sshd") == 0)   { cmd_sshd(argc, argv); return 1; }
     if (strcmp(argv[0], "rdpd") == 0)   { cmd_rdpd(argc, argv); return 1; }
+    if (strcmp(argv[0], "rdp") == 0)    { cmd_rdp(argc, argv); return 1; }
     if (strcmp(argv[0], "passwd") == 0) { cmd_passwd(argc, argv); return 1; }
     if (strcmp(argv[0], "notepad") == 0) {
         /* the desktop's text editor, optionally with a file (relative: to the current folder) */
