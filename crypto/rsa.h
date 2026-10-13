@@ -23,6 +23,8 @@ int  rsa_generate(rsa_key_t* k, void (*rnd)(void* buf, uint32_t len));
 /* PKCS#1 v1.5 signature of a SHA-1 digest (or anything 20 bytes long, as
  * adb signs its token): sig is RSA_BYTES, big endian */
 void rsa_sign_sha1(const rsa_key_t* k, const uint8_t digest[20], uint8_t sig[RSA_BYTES]);
+/* the same over a SHA-256 digest (the Remote Desktop server's TLS key) */
+void rsa_sign_sha256(const rsa_key_t* k, const uint8_t digest[32], uint8_t sig[RSA_BYTES]);
 /* s^e mod n (checking a signature): out RSA_BYTES, big endian */
 void rsa_public(const rsa_key_t* k, const uint8_t in[RSA_BYTES], uint8_t out[RSA_BYTES]);
 /* Android's RSAPublicKey structure (524 bytes): len, n0inv, n, rr, exponent */

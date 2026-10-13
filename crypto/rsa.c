@@ -268,22 +268,34 @@ static void to_be(uint8_t* b, const uint32_t* w) {
     }
 }
 
-void rsa_sign_sha1(const rsa_key_t* k, const uint8_t digest[20], uint8_t sig[RSA_BYTES]) {
-    static const uint8_t SHA1_INFO[15] = { 0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14 };
+/* EMSA-PKCS1-v1_5: 00 01 FF..FF 00 DigestInfo digest, then m^d mod n */
+static void sign_pkcs1(const rsa_key_t* k, const uint8_t* info, int ilen, const uint8_t* digest, int dlen,
+                       uint8_t sig[RSA_BYTES]) {
     static uint8_t em[RSA_BYTES];
-    int tlen = 15 + 20;
+    int tlen = ilen + dlen;
     em[0] = 0x00;
     em[1] = 0x01;
     memset(em + 2, 0xFF, (uint32_t)(RSA_BYTES - 3 - tlen));
     em[RSA_BYTES - tlen - 1] = 0x00;
-    memcpy(em + RSA_BYTES - tlen, SHA1_INFO, 15);
-    memcpy(em + RSA_BYTES - 20, digest, 20);
+    memcpy(em + RSA_BYTES - tlen, info, (uint32_t)ilen);
+    memcpy(em + RSA_BYTES - dlen, digest, (uint32_t)dlen);
     static uint32_t m[MAXW], s[MAXW];
     from_be(m, em);
     static mont_t M;
     mont_setup(&M, k->n, RSA_WORDS);
     mod_exp(&M, s, m, k->d, RSA_WORDS);
     to_be(sig, s);
+}
+
+void rsa_sign_sha1(const rsa_key_t* k, const uint8_t digest[20], uint8_t sig[RSA_BYTES]) {
+    static const uint8_t SHA1_INFO[15] = { 0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14 };
+    sign_pkcs1(k, SHA1_INFO, 15, digest, 20, sig);
+}
+
+void rsa_sign_sha256(const rsa_key_t* k, const uint8_t digest[32], uint8_t sig[RSA_BYTES]) {
+    static const uint8_t SHA256_INFO[19] = { 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65,
+                                             0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20 };
+    sign_pkcs1(k, SHA256_INFO, 19, digest, 32, sig);
 }
 
 void rsa_public(const rsa_key_t* k, const uint8_t in[RSA_BYTES], uint8_t out[RSA_BYTES]) {
