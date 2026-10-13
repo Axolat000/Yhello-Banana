@@ -1,6 +1,7 @@
 #include "tls12.h"
 #include "sha256.h"
 #include "x25519.h"
+#include "p256.h"
 #include "aead.h"
 #include "kstring.h"
 #include "kheap.h"
@@ -37,6 +38,7 @@
 #define EXT_RENEGOTIATION 0xff01
 
 #define GROUP_X25519      0x001d
+#define GROUP_SECP256R1   0x0017
 #define SIG_RSA_PKCS1_SHA256 0x0401
 
 #define MAX_PLAINTEXT  16384u
@@ -459,8 +461,8 @@ static int client_handshake(tls12_conn_t* t, const char* host) {
 
     uint8_t* msg;
     uint32_t len;
-    uint8_t server_pub[32];
-    int have_kx = 0, cert_req = 0;
+    uint8_t server_pub[65];
+    int have_kx = 0, cert_req = 0, srv_p256 = 0;
     r = next_msg(t, &msg, &len, NULL);
     if (r != NET_OK) return r;
     if (msg[0] != HS_SERVER_HELLO) { fail(t, "expected ServerHello, got message %u", msg[0]); return NET_ERR_PROTO; }
@@ -481,13 +483,19 @@ static int client_handshake(tls12_conn_t* t, const char* host) {
                 if (cert_pubkey(t->cert, cl, &t->pubkey, &t->pubkey_len) != 0) { t->pubkey = NULL; t->pubkey_len = 0; }
             }
         } else if (type == HS_SERVER_KX) {
-            /* ECParameters (named_curve, x25519) || point || signature -
+            /* ECParameters (named_curve, X25519 or P-256) || point || signature -
              * the signature is not checked: the certificate is not either */
-            if (len < 4 + 4 + 32 || msg[4] != 3 || rd16(msg + 5) != GROUP_X25519 || msg[7] != 32) {
-                fail(t, "the server's key exchange is not X25519");
+            if (len < 4 + 4 || msg[4] != 3) { fail(t, "malformed ServerKeyExchange"); return NET_ERR_PROTO; }
+            uint16_t grp = rd16(msg + 5);
+            if (grp == GROUP_X25519 && msg[7] == 32 && len >= 4 + 4 + 32) {
+                memcpy(server_pub, msg + 8, 32);
+            } else if (grp == GROUP_SECP256R1 && msg[7] == 65 && len >= 4 + 4 + 65) {
+                memcpy(server_pub, msg + 8, 65);
+                srv_p256 = 1;
+            } else {
+                fail(t, "the server's key exchange curve is not supported");
                 return NET_ERR_PROTO;
             }
-            memcpy(server_pub, msg + 8, 32);
             have_kx = 1;
         } else if (type == HS_CERT_REQUEST) {
             cert_req = 1;
@@ -505,23 +513,33 @@ static int client_handshake(tls12_conn_t* t, const char* host) {
     if (!have_kx) { fail(t, "the server sent no ECDHE key exchange"); return NET_ERR_PROTO; }
 
     /* our flight: [empty Certificate], ClientKeyExchange, CCS, Finished */
-    uint8_t priv[32], pub[32], pms[32];
+    uint8_t priv[32], pub[65], pms[32];
+    uint32_t publen;
+    int kx_ok = 1;
     random_bytes(priv, 32);
-    x25519_base(pub, priv);
-    x25519(pms, priv, server_pub);
+    if (srv_p256) {
+        p256_public(pub, priv);
+        publen = 65;
+        if (p256_ecdh(pms, priv, server_pub) != 0) kx_ok = 0;
+    } else {
+        x25519_base(pub, priv);
+        publen = 32;
+        x25519(pms, priv, server_pub);
+    }
     memset(priv, 0, 32);
+    if (!kx_ok) { fail(t, "the server sent an invalid P-256 key share"); return NET_ERR_PROTO; }
     task_maybe_yield();
-    uint8_t flight[8 + 4 + 33];
+    uint8_t flight[8 + 4 + 66];
     uint32_t o = 0;
     if (cert_req) {
         static const uint8_t empty_cert[7] = { HS_CERTIFICATE, 0, 0, 3, 0, 0, 0 };
         memcpy(flight, empty_cert, 7);
         o = 7;
     }
-    put_hs_header(flight + o, HS_CLIENT_KX, 33);
-    flight[o + 4] = 32;
-    memcpy(flight + o + 5, pub, 32);
-    o += 4 + 33;
+    put_hs_header(flight + o, HS_CLIENT_KX, 1 + publen);
+    flight[o + 4] = (uint8_t)publen;
+    memcpy(flight + o + 5, pub, publen);
+    o += 4 + 1 + publen;
     sha256_update(&t->th, flight, o);
     if ((r = send_record(t, CT_HANDSHAKE, flight, o)) != NET_OK) return r;
     make_master(t, pms);
@@ -570,7 +588,7 @@ static int server_handshake(tls12_conn_t* t, const tls12_identity_t* id) {
     uint32_t cl = rd16(p);
     p += 2;
     if (p + cl + 1 > end) goto bad;
-    int suite_ok = 0, reneg = 0, x25519_ok = 0, groups_sent = 0, rsa_sha256 = 0, sigalgs_sent = 0;
+    int suite_ok = 0, reneg = 0, x25519_ok = 0, p256_ok = 0, groups_sent = 0, rsa_sha256 = 0, sigalgs_sent = 0;
     for (uint32_t i = 0; i + 1 < cl; i += 2) {
         uint16_t s = rd16(p + i);
         if (s == SUITE_ECDHE_RSA_AES128_GCM) suite_ok = 1;
@@ -593,7 +611,11 @@ static int server_handshake(tls12_conn_t* t, const tls12_identity_t* id) {
             if (type == EXT_RENEGOTIATION) reneg = 1;
             if (type == EXT_GROUPS && l >= 2) {
                 groups_sent = 1;
-                for (uint32_t i = 2; i + 1 < l; i += 2) if (rd16(v + i) == GROUP_X25519) x25519_ok = 1;
+                for (uint32_t i = 2; i + 1 < l; i += 2) {
+                    uint16_t g = rd16(v + i);
+                    if (g == GROUP_X25519) x25519_ok = 1;
+                    else if (g == GROUP_SECP256R1) p256_ok = 1;
+                }
             }
             if (type == EXT_SIGALGS && l >= 2) {
                 sigalgs_sent = 1;
@@ -602,16 +624,19 @@ static int server_handshake(tls12_conn_t* t, const tls12_identity_t* id) {
             e = v + l;
         }
     }
-    if (!suite_ok || (groups_sent && !x25519_ok) || (sigalgs_sent && !rsa_sha256)) {
+    if (!suite_ok || (groups_sent && !x25519_ok && !p256_ok) || (sigalgs_sent && !rsa_sha256)) {
         send_alert(t, 2, 40);
-        fail(t, "no common cipher suite (needs ECDHE-RSA-AES128-GCM-SHA256 with X25519)");
+        fail(t, "no common cipher suite (needs ECDHE-RSA-AES128-GCM-SHA256 with X25519 or P-256)");
         return NET_ERR_PROTO;
     }
+    /* prefer X25519 when the client offers it; otherwise P-256 (Windows
+     * Schannel offers only the NIST curves) */
+    int use_p256 = (groups_sent && !x25519_ok);
     sha256_update(&t->th, msg, len);
     consume(t, len);
 
     /* ServerHello, Certificate, ServerKeyExchange, ServerHelloDone - one record */
-    uint32_t cap = 128 + 10 + id->cert_len + 4 + 4 + 33 + 4 + RSA_BYTES + 4;
+    uint32_t cap = 128 + 10 + id->cert_len + 4 + 4 + 66 + 4 + RSA_BYTES + 4;
     uint8_t* f = (uint8_t*)kmalloc(cap);
     if (!f) return NET_ERR_NOMEM;
     uint32_t o = 4;
@@ -636,14 +661,16 @@ static int server_handshake(tls12_conn_t* t, const tls12_identity_t* id) {
     memcpy(f + o, id->cert, id->cert_len); o += id->cert_len;
     put_hs_header(f + c0, HS_CERTIFICATE, o - c0 - 4);
 
-    uint8_t priv[32], pub[32];
+    uint8_t priv[32], pub[65];
+    uint32_t publen;
     random_bytes(priv, 32);
-    x25519_base(pub, priv);
+    if (use_p256) { p256_public(pub, priv); publen = 65; }
+    else { x25519_base(pub, priv); publen = 32; }
     uint32_t k0 = o;
     o += 4;
     uint32_t params = o;
-    f[o++] = 3; wr16(f + o, GROUP_X25519); o += 2; f[o++] = 32;
-    memcpy(f + o, pub, 32); o += 32;
+    f[o++] = 3; wr16(f + o, use_p256 ? GROUP_SECP256R1 : GROUP_X25519); o += 2; f[o++] = (uint8_t)publen;
+    memcpy(f + o, pub, publen); o += publen;
     {
         /* signed: client_random || server_random || params */
         sha256_ctx_t c;
@@ -674,14 +701,24 @@ static int server_handshake(tls12_conn_t* t, const tls12_identity_t* id) {
         consume(t, len);
         if ((r = next_msg(t, &msg, &len, NULL)) != NET_OK) { memset(priv, 0, 32); return r; }
     }
-    if (msg[0] != HS_CLIENT_KX || len != 4 + 33 || msg[4] != 32) {
+    uint32_t kxlen = use_p256 ? 65 : 32;
+    if (msg[0] != HS_CLIENT_KX || len != 4 + 1 + kxlen || msg[4] != kxlen) {
         memset(priv, 0, 32);
         send_alert(t, 2, 10);
-        fail(t, "expected the client's X25519 key exchange");
+        fail(t, "expected the client's %s key exchange", use_p256 ? "P-256" : "X25519");
         return NET_ERR_PROTO;
     }
     uint8_t pms[32];
-    x25519(pms, priv, msg + 5);
+    if (use_p256) {
+        if (p256_ecdh(pms, priv, msg + 5) != 0) {
+            memset(priv, 0, 32);
+            send_alert(t, 2, 47);
+            fail(t, "the client's P-256 key share is not on the curve");
+            return NET_ERR_PROTO;
+        }
+    } else {
+        x25519(pms, priv, msg + 5);
+    }
     memset(priv, 0, 32);
     uint8_t acc = 0;
     for (int i = 0; i < 32; i++) acc |= pms[i];

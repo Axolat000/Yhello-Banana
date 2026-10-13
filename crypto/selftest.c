@@ -2,6 +2,7 @@
 #include "sha256.h"
 #include "chacha20.h"
 #include "x25519.h"
+#include "p256.h"
 #include "aead.h"
 #include "sha512.h"
 #include "ed25519.h"
@@ -75,6 +76,29 @@ int crypto_selftest(void (*report)(const char* name, int ok)) {
         x25519_base(out, k);
         all &= check("X25519 base point (RFC 7748 6.1)", out,
                      "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", report);
+    }
+
+    {
+        /* P-256 ECDH, used by TLS 1.2 with Windows (Schannel offers only
+         * the NIST curves). Scalars from RFC 5903 8.1; the public X and
+         * shared X below are cross-checked against OpenSSL. */
+        uint8_t i[32], r[32], pub[65];
+        unhex("c88f01f510d9ac3f6db07b38bf9c83a155ebf24a1d1e6c5a00cd8fe4ffe7c5b9", i, 32);
+        unhex("c6ef9c5d78ae012a011164acb397ce2088685d8f06bf9be0b283ab46476bee53", r, 32);
+        p256_public(pub, i);
+        all &= check("P-256 base point (i*G.x)", pub + 1,
+                     "de67837287bf51b28eb4661a2347a8db8e4e4650bc03928da5910421e11a11b8", report);
+        uint8_t peer[65];
+        p256_public(peer, r);
+        int ok = p256_ecdh(out, i, peer) == 0;
+        report("P-256 ECDH valid point", ok);
+        all &= ok;
+        all &= check("P-256 ECDH shared (RFC 5903)", out,
+                     "8ee6bb0364945f6b86a9e90305c8e09798cea206a1d9aa3e28de7809746aea4c", report);
+        peer[64] ^= 1;                                   /* off-curve: must be rejected */
+        int rej = p256_ecdh(out, i, peer) != 0;
+        report("P-256 ECDH rejects off-curve", rej);
+        all &= rej;
     }
 
     {
