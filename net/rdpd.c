@@ -51,6 +51,7 @@ typedef struct {
     int           pdu_fastpath;
     uint8_t*      out;                   /* scratch for building PDUs */
 
+    uint32_t      requested;            /* the client's X.224 requestedProtocols */
     uint16_t      client_user;          /* channel id granted in Attach User Confirm */
     uint16_t      channels[16];         /* the client's virtual channels */
     int           channel_count;
@@ -235,7 +236,7 @@ static int send_sdin(rdp_t* s, uint16_t channel, const uint8_t* payload, uint32_
     rw_u8(&w, 3); rw_u8(&w, 0); rw_be16(&w, (uint16_t)total);
     rw_u8(&w, 2); rw_u8(&w, 0xF0); rw_u8(&w, 0x80);  /* X.224 data */
     rw_u8(&w, (uint8_t)(MCS_SDIN << 2));
-    rw_be16(&w, SVR_CHANNEL);
+    rw_be16(&w, SVR_CHANNEL - MCS_USERCHANNEL_BASE); /* initiator, PER: minus 1001 */
     rw_be16(&w, channel);
     rw_u8(&w, 0x70);
     if (len >= 128) rw_u8(&w, (uint8_t)(0x80 | (len >> 8)));
@@ -451,7 +452,8 @@ static int send_connect_response(rdp_t* s) {
     /* SC_CORE (0x0C01) */
     rw_le16(&u, 0x0C01); rw_le16(&u, 16);
     rw_le32(&u, 0x00080004);                         /* version */
-    rw_le32(&u, PROTOCOL_SSL);                       /* clientRequestedProtocols */
+    rw_le32(&u, s->requested);                       /* clientRequestedProtocols: must echo
+                                                        the request (Windows checks it) */
     rw_le32(&u, 0);                                  /* earlyCapabilityFlags */
     /* SC_NET (0x0C03): I/O channel + the client's virtual channels */
     int cc = s->channel_count;
@@ -480,7 +482,7 @@ static int send_connect_response(rdp_t* s) {
     uint8_t mcs[400];
     rdp_w_t m = { mcs, 0, sizeof(mcs), 0 };
     rw_u8(&m, 0x7F); rw_u8(&m, 0x66);                /* Connect-Response [APPLICATION 102] */
-    rw_u8(&m, 0x82); rw_be16(&m, (uint16_t)(g.len + 44));
+    rw_u8(&m, 0x82); rw_be16(&m, (uint16_t)(3 + 3 + 28 + 4 + g.len));
     rw_u8(&m, 0x0A); rw_u8(&m, 0x01); rw_u8(&m, 0x00);           /* result successful */
     rw_u8(&m, 0x02); rw_u8(&m, 0x01); rw_u8(&m, 0x00);           /* calledConnectId */
     /* domainParameters: maxChannelIds 34, maxUserIds 3, maxTokenIds 0,
@@ -511,7 +513,7 @@ static int check_client_info(rdp_t* s) {
     if (!(flags & SEC_INFO_PKT)) return 0;           /* not the info PDU */
     rr_le32(&r);                                     /* codePage */
     uint32_t infoflags = rr_le32(&r);
-    int unicode = (infoflags & 0x00000001) != 0;     /* INFO_UNICODE */
+    int unicode = (infoflags & 0x00000010) != 0;     /* INFO_UNICODE */
     uint16_t cbDomain = rr_le16(&r);
     uint16_t cbUser = rr_le16(&r);
     uint16_t cbPassword = rr_le16(&r);
@@ -527,6 +529,9 @@ static int check_client_info(rdp_t* s) {
         if (c) user[ui++] = (char)c;
     }
     user[ui] = 0;
+    /* Windows clients may send ".\banana" or "PC\banana": drop the domain part */
+    const char* name = user;
+    for (const char* q = user; *q; q++) if (*q == '\\') name = q + 1;
     rr_skip(&r, unicode ? 2 : 1);
     char pw[128];
     int pi = 0;
@@ -538,7 +543,7 @@ static int check_client_info(rdp_t* s) {
     pw[pi] = 0;
     if (r.err) { memset(pw, 0, sizeof(pw)); return 0; }
 
-    int ok = user[0] && strcmp(user, PASSWD_USER) == 0 &&
+    int ok = name[0] && strcasecmp(name, PASSWD_USER) == 0 &&
              (passwd_is_set(PASSWD_USER) ? passwd_check(PASSWD_USER, pw) : 1);
     memset(pw, 0, sizeof(pw));
     if (ok) {
@@ -754,7 +759,7 @@ static int recv_tcp_tpkt(tcp_conn_t* c, uint8_t* buf, uint32_t cap, uint32_t tim
     return (int)have;
 }
 
-static int negotiate(tcp_conn_t* c, uint32_t* selected) {
+static int negotiate(tcp_conn_t* c, uint32_t* selected, uint32_t* requested) {
     uint8_t buf[256];
     int n = recv_tcp_tpkt(c, buf, sizeof(buf), 15000);
     if (n < 11 || buf[0] != 3) return -1;
@@ -766,6 +771,7 @@ static int negotiate(tcp_conn_t* c, uint32_t* selected) {
             have_req = 1;
             break;
         }
+    *requested = req;
     uint8_t out[19];
     rdp_w_t w = { out, 0, sizeof(out), 0 };
     rw_u8(&w, 3); rw_u8(&w, 0); rw_be16(&w, 19);
@@ -798,7 +804,7 @@ static void run_session(int slot, tcp_conn_t* c) {
     if (locked_out(s->peer_ip)) { klog("rdpd: %s: refused (too many failed logins)\n", s->peer); goto done; }
 
     uint32_t proto;
-    if (negotiate(c, &proto) != 0) { klog("rdpd: %s: negotiation failed (needs TLS)\n", s->peer); goto done; }
+    if (negotiate(c, &proto, &s->requested) != 0) { klog("rdpd: %s: negotiation failed (needs TLS)\n", s->peer); goto done; }
 
     int err;
     char em[160];
