@@ -14,6 +14,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Remote Desktop (RDP)** - both a server and a client, speaking the Remote Desktop Protocol (MS-RDPBCGR) over its own TLS 1.2 (written from the RFCs, `net/tls12.c`). The **server** (`rdpd start`, port 3389, off by default like `sshd`) lets Windows' *Remote Desktop Connection* (mstsc), the Microsoft Remote Desktop apps and FreeRDP connect to the Banana OS desktop: it mirrors the screen and takes the keyboard and mouse. Log in as `banana` with the `passwd` password; an RSA key and certificate are made on first start and kept in `/etc/rdp/`. The **client** (`rdp host[:port]`, a desktop window) connects out to Windows, xrdp, FreeRDP or another Banana OS: it draws the remote screen (uncompressed, RDP 6.0 planar and interleaved-RLE bitmaps) and forwards the exact keys and the mouse, with **NLA** (CredSSP / NTLMv2) when a password is given. Both are in *Settings > Startup*. See [Remote Desktop](#remote-desktop-rdp)
 - **Amethyst Music** - the app of [Amethyst Music](https://music.office-works.ch/): the server's whole catalogue streamed (songs are kept in `~/.cache/amethyst`, the next one is fetched while the current one plays, so there is no gap), with the covers (WebP), *Home* (recommendations, recently played, most played), *Songs*, *Albums*, *Artists*, *Playlists*, the queue, shuffle / repeat, an equalizer and a visualizer. The first time it asks for the server's address (any Amethyst server; e.g. `https://music.office-works.ch`) and, optionally, an account: log in (or create one) for your recommendations, history and play counts, and to make playlists (right-click a song > *Add to...*). The account box at the bottom of the sidebar changes both; it comes installed
 - **Media Player** - videos and music through **FFmpeg** (7.1, ported to Banana OS: [ports/ffmpeg](ports/ffmpeg/build.sh)): MP4, MKV, WebM, AVI, MOV, MPEG, OGG, FLV, WMV with H.264, H.265/HEVC, VP8, VP9, MPEG-4 (DivX/Xvid), MPEG-1/2, Theora, WMV and AAC, MP3, Opus, Vorbis, FLAC, AC-3, ALAC sound. The picture keeps to the sound's clock (late frames are dropped), seek bar, pause, keyboard and media keys, album covers for songs. Double-click a video in Files, or `mediaplayer file.mp4`. On the 64-bit kernel FFmpeg's SIMD code (SSE2...SSE4) is used
 - **Music** - a music library player after [Amethyst](https://github.com/Geoxor/Amethyst): the songs of `~/Music`, `~/Downloads`, the home folder and USB sticks with their tags and covers, *Songs* / *Albums* (a grid of covers) / *Artists* / *Liked songs* / *Queue*, search as you type, shuffle and repeat, **gapless** playback, a 6-band **equalizer** with presets, a spectrum **visualizer** (*Now playing*), and the media keys from anywhere on the desktop. (Amethyst itself is an Electron app - a whole Chromium - which cannot run here; this is a native player made the same way.)
@@ -146,6 +147,7 @@ Banana-OS/
 │   ├── audio.c         # Intel HD Audio, AC'97, PC speaker, WAV playback (USB audio: usb/uaudio.c)
 │   ├── app.c, appcall*.asm # App loader (PIE ELF) + the app API table
 │   ├── appwin.c        # Windows of apps
+│   ├── rdpclient.c rdpclient_rle.c # Remote Desktop client (RDP) + bitmap decoders
 │   ├── pkg.c           # .bpk packages (pkg install / remove / run)
 │   ├── repo.c          # package repositories: sources, signed indexes, dependencies (apt, the App Store)
 │   ├── launcher.c      # "Apps" window
@@ -167,11 +169,14 @@ Banana-OS/
 │   ├── arp.c ip.c icmp.c udp.c dhcp.c dns.c tcp.c
 │   ├── netconf.c       # Saved network configuration (/etc/network.conf)
 │   ├── tls.c           # TLS 1.3 client
+│   ├── tls12.c         # TLS 1.2 client + server (Remote Desktop)
 │   ├── http.c          # HTTP/1.1 client (curl, wget)
 │   ├── httpd.c         # Web server
 │   ├── httpd_php.c     # .php pages for httpd
 │   ├── upnp.c          # UPnP IGD client (httpd expose: port forwarding on the router)
-│   └── sshd.c          # SSH server
+│   ├── sshd.c          # SSH server
+│   ├── rdpd.c rdp.h    # Remote Desktop server (RDP)
+│   └── ntlm.c credssp.c # NTLMv2 + CredSSP (the RDP client's NLA)
 ├── web/                # Browser engine: html.c (parser + DOM), css.c, layout.c, render.c,
 │                       #   script.c + script_lib.c + script_es.c (JavaScript and PHP interpreter),
 │                       #   regex.c (regular expressions), jsdom.c (the DOM, ES modules), page.c,
@@ -180,7 +185,7 @@ Banana-OS/
 ├── shell/
 │   ├── shell.c/h       # Banana shell
 │   ├── netcmds.c       # ifconfig, ping, curl, wget, ...
-│   ├── srvcmds.c       # sshd, httpd, passwd, files, browser, notepad
+│   ├── srvcmds.c       # sshd, rdpd, rdp, httpd, passwd, files, browser, notepad
 │   ├── wpcmd.c         # wallpaper command
 │   ├── aptcmd.c        # apt / apt-get (repositories, kernel/repo.c)
 │   └── editor.c/h      # Nano-like text editor
@@ -379,6 +384,37 @@ ssh -p 2222 banana@localhost        # and http://localhost:8080/
 ```
 
 With a bridged network (VirtualBox "Bridged Adapter", QEMU tap) the machine has its own address on your LAN - no forwarding needed.
+
+## Remote Desktop (RDP)
+
+Banana OS speaks the Remote Desktop Protocol (MS-RDPBCGR) both ways, over its own TLS 1.2. Both halves are off by default and are turned on from *Settings > Startup* or the shell, like `sshd`.
+
+### Server (`rdpd`) - connect *to* Banana OS
+
+```
+rdpd start             # listen on port 3389 (rdpd start 4000 for another port)
+rdpd enable            # ...and start it at every boot
+rdpd                   # status, certificate fingerprint, the open session
+rdpd stop
+```
+
+Then from another machine open a Remote Desktop client and connect to Banana OS's address - Windows' **Remote Desktop Connection** (`mstsc`), the **Microsoft Remote Desktop** apps (Mac, iOS, Android), or **FreeRDP** (`xfreerdp /v:<address> /u:banana`). You see the Banana OS desktop; your keyboard and mouse drive it.
+
+- **Log in** as `banana` with the password you set with `passwd` (the same one SSH uses). Ten wrong tries from an address lock it out for fifteen minutes, as with SSH.
+- **Transport is TLS** (the X.224 negotiation asks for it); a client that insists on NLA only is refused. On the first start an RSA-2048 key and a self-signed certificate are generated (it says so - it takes a moment) and kept in `/etc/rdp/`. `mstsc` warns once about the self-signed certificate; its fingerprint is what `rdpd` prints.
+- The screen is sent as changed 64x64 tiles (32-bit colour); one client at a time.
+
+### Client (`rdp`) - connect *from* Banana OS
+
+```
+rdp 192.168.1.50            # asks for the password (blank = none), opens a window
+rdp -u admin server.lan     # a user name
+rdp -u admin -d WORK host:3390
+```
+
+`rdp` opens a window showing the other computer's desktop; while it has the focus your keyboard (exact scancodes) and mouse go to it. It connects to Windows, **xrdp**, **FreeRDP** or another Banana OS. When a password is given it uses **NLA** (CredSSP with NTLMv2); otherwise the login travels inside the TLS connection. Bitmaps arrive uncompressed, as RDP 6.0 planar, or interleaved-RLE. Run it from the desktop (`startx`), since it opens a window.
+
+Over QEMU's NAT, the host is `10.0.2.2` from inside Banana OS, so `rdp 10.0.2.2` reaches an RDP server on your computer.
 
 ## File Explorer ("Files")
 
@@ -834,6 +870,8 @@ include /path/to/banana-sdk/driver/driver.mk
 | **Servers** | |
 | `passwd [-d]` | Set (or remove) the password of `banana`, used for SSH logins |
 | `sshd [status\|start [port]\|stop\|enable [port]\|disable]` | SSH server (port 22); `enable` also starts it at boot |
+| `rdpd [status\|start [port]\|stop\|enable [port]\|disable]` | Remote Desktop server (port 3389), off by default |
+| `rdp [-u user] [-d domain] host[:port]` | Remote Desktop client - a window onto another RDP server |
 | `httpd [status\|start [port]\|stop\|enable [port]\|disable]` | Web server for `/var/www` (port 80, `.php` pages run); `enable` also starts it at boot |
 | `httpd expose [port]` / `httpd unexpose` | Forward a public port on your router (UPnP) to the web server, and back |
 | **Wallpaper / desktop** | |
