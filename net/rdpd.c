@@ -378,7 +378,8 @@ static int send_data_pdu(rdp_t* s, uint8_t pdu_type2, const uint8_t* payload, ui
     rdp_w_t w = { p + 6, 0, 12, 0 };
     rw_le32(&w, SHARE_ID);
     rw_u8(&w, 0); rw_u8(&w, 1);                      /* pad, streamId LOW */
-    rw_le16(&w, (uint16_t)total);                    /* uncompressedLength */
+    rw_le16(&w, (uint16_t)(4 + len));                /* uncompressedLength: from pduType2 on
+                                                        (MS-RDPBCGR 4.1.14 - Windows checks it) */
     rw_u8(&w, pdu_type2);
     rw_u8(&w, 0); rw_le16(&w, 0);                    /* compression */
     memcpy(p + 18, payload, len);
@@ -387,13 +388,15 @@ static int send_data_pdu(rdp_t* s, uint8_t pdu_type2, const uint8_t* payload, ui
 
 static int send_sync(rdp_t* s) {
     uint8_t b[4]; rdp_w_t w = { b, 0, 4, 0 };
-    rw_le16(&w, 1); rw_le16(&w, (uint16_t)s->client_user);
+    rw_le16(&w, 1); rw_le16(&w, SVR_CHANNEL);        /* SYNCMSGTYPE_SYNC, targetUser */
     return send_data_pdu(s, PDUTYPE2_SYNCHRONIZE, b, 4);
 }
 static int send_control(rdp_t* s, uint16_t action) {
     uint8_t b[8]; rdp_w_t w = { b, 0, 8, 0 };
-    rw_le16(&w, action); rw_le16(&w, 0);
-    rw_le32(&w, action == CTRLACTION_GRANTED_CONTROL ? SVR_CHANNEL : 0);
+    /* Granted Control: grantId = the client's user channel, controlId = the server */
+    int granted = action == CTRLACTION_GRANTED_CONTROL;
+    rw_le16(&w, action); rw_le16(&w, granted ? s->client_user : 0);
+    rw_le32(&w, granted ? SVR_CHANNEL : 0);
     return send_data_pdu(s, PDUTYPE2_CONTROL, b, 8);
 }
 static int send_font_map(rdp_t* s) {
@@ -564,10 +567,8 @@ int rdpd_tiles_sent;
 #endif
 
 /* one 64x64 tile as a fast-path uncompressed 32bpp bitmap update */
-static int send_tile(rdp_t* s, int tx, int ty, int tw, int th, const uint8_t* bgrx) {
-#ifdef RDPD_HOST_TEST
-    rdpd_tiles_sent++;
-#endif
+/* one uncompressed 32bpp rectangle (bottom-up BGRX) as a fast-path bitmap update */
+static int send_rect(rdp_t* s, int tx, int ty, int tw, int th, const uint8_t* bgrx) {
     uint32_t bytes = (uint32_t)tw * th * 4;
     uint32_t ulen = 2 + 2 + 18 + bytes;              /* updateType + numberRectangles + TS_BITMAP_DATA */
     uint32_t total = 1 + 2 + 1 + 2 + ulen;           /* header + len16 + updateHeader + size16 */
@@ -592,6 +593,22 @@ static int send_tile(rdp_t* s, int tx, int ty, int tw, int th, const uint8_t* bg
     rw_bytes(&w, bgrx, bytes);
     if (w.err) return -1;
     return tls_send(s, p, w.len);
+}
+
+/* Windows clients refuse a fast-path PDU over 0x3FFF bytes (a 64x64 32bpp
+ * tile is 16 KiB), so a tile goes as bands of rows that fit. The tile is
+ * bottom-up: the band of rows [r, r + h) from the top starts at row th - r - h. */
+#define FASTPATH_MAX 0x3FFF
+static int send_tile(rdp_t* s, int tx, int ty, int tw, int th, const uint8_t* bgrx) {
+#ifdef RDPD_HOST_TEST
+    rdpd_tiles_sent++;
+#endif
+    int band = (FASTPATH_MAX - 32) / (tw * 4);
+    for (int r = 0; r < th; r += band) {
+        int h = th - r < band ? th - r : band;
+        if (send_rect(s, tx, ty + r, tw, h, bgrx + (uint32_t)(th - r - h) * tw * 4) != 0) return -1;
+    }
+    return 0;
 }
 
 /* diff the screen against the shadow; send the changed tiles. Returns the
@@ -820,7 +837,10 @@ static void run_session(int slot, tcp_conn_t* c) {
 
     /* Erect Domain, Attach User -> confirm, Channel Joins -> confirm, then
      * the Client Info PDU (the first Send Data Request) */
-    s->client_user = MCS_USERCHANNEL_BASE + 6;       /* 1007 */
+    /* the user channel comes after the virtual channels (1004...): if it
+     * shared an id with one, Windows clients would loop on Channel Join */
+    s->client_user = MCS_GLOBAL_CHANNEL + 1 + (uint16_t)s->channel_count;
+    if (s->client_user < MCS_USERCHANNEL_BASE + 6) s->client_user = MCS_USERCHANNEL_BASE + 6;   /* 1007 */
     for (;;) {
         if (recv_pdu(s, CONNECT_TIMEOUT)) goto bye;
         if (s->pdu_channel != 0xFFFF) {              /* Send Data Request: Client Info */
