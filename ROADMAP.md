@@ -25,7 +25,7 @@ New features should include a test command that runs inside Banana OS.
 |---|---|---|
 | Wi-Fi | planned | A USB Wi-Fi dongle (Realtek RTL8188/8192) on the existing USB stack first, with WPA2. Intel cards (`iwlwifi`-class) need firmware files and are much bigger. |
 | Sleep (ACPI S3) | planned | Builds on the ACPI code used for power-off: suspend, wake through real mode, devices restored. |
-| IPv6 for TCP and UDP | **done** (build 148) | Optional, off by default; Settings / `toggle6 [on\|off]`. TCP/UDP, AAAA DNS, IPv6 HTTP URLs and `curl` / `wget -6`. User's VM passed all 13 local checks. Host packet tests also passed; real-network VM access remains unverified. Run `selftest ipv6 HOST PORT` to check it. |
+| IPv6 for TCP and UDP | **done** (build 148) | Optional, off by default; Settings / `toggle6 [on\|off]`. TCP/UDP, AAAA DNS, IPv6 HTTP URLs and `curl` / `wget -6`. User's VM passed 13 local checks, then all 16 checks in `selftest ipv6 example.com 80`: SLAAC, AAAA resolution, an IPv6 TCP connection to port 80, and restoration to off. Host packet tests also passed. HTTP response bodies and HTTPS over IPv6 have not yet been verified in the VM. |
 | exFAT | **done** (build 145; test improvements in build 147) | Read and write. The user confirmed `fstest` passes, including folder growth, deleting, remounting and checking file contents. Earlier host checks found a clean volume and an identical binary copy. Run `fstest /mnt/virtio` (or your drive's mount point). |
 | ext2/ext4 and NTFS (read) | planned | To open Linux and Windows disks. |
 | Crash-safe disk filesystem | planned | A journal, so a power cut while saving can't damage the disk. |
