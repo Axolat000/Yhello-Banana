@@ -13,7 +13,7 @@
  * mouse and - while one is in front - the keyboard to them.
  */
 
-#define APPWIN_MAX 6
+#define APPWIN_MAX 32
 #define APPWIN_VT  1002          /* gui_focused_vt() while an app window is in front */
 
 /* ── app side (owner: the app's process id) ── */

@@ -4,8 +4,10 @@
 #include "types.h"
 
 /* main shell + sysmon + the daemons + up to TERM_WIN_MAX (kernel/gui.c)
- * per-window terminal shells + apps and their threads (kernel/app.c). */
-#define TASK_MAX         48
+ * per-window terminal shells + apps and their threads (kernel/app.c).
+ * A task's stack is allocated when it is created, so a free slot costs
+ * only its record. */
+#define TASK_MAX         256
 #define TASK_NAME_MAX    24
 /* 16 KiB stack per created task, matching the boot stack (boot/boot.asm)
  * that task 0 already runs on: created tasks can now run a full shell

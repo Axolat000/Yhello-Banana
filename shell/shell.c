@@ -735,12 +735,17 @@ static void cmd_top(void) {
      * cooperative task with its own call stack, so this needs to be its
      * own per-invocation smoothing buffer rather than shared state that
      * different windows' refreshes would stomp on. */
-    uint32_t last_cpu[TASK_MAX] = {0};
+    uint32_t* last_cpu = (uint32_t*)kzalloc(TASK_MAX * sizeof(uint32_t));
+    task_info_t* procs = (task_info_t*)kmalloc(TASK_MAX * sizeof(task_info_t));
+    if (!last_cpu || !procs) {          /* (too big for a task's stack: on the heap) */
+        kfree(last_cpu); kfree(procs);
+        terminal_writeln("top: out of memory");
+        return;
+    }
     int my_vt = terminal_vt_get_active();
 
     while (1) {
         const sysinfo_t* si = sysinfo_get();
-        task_info_t procs[TASK_MAX];
         int pcount;
 
         terminal_clear();
@@ -861,6 +866,8 @@ static void cmd_top(void) {
 
             if (c == 'q' || c == 'Q' || c == 3) {
                 terminal_clear();
+                kfree(last_cpu);
+                kfree(procs);
                 return;
             }
 

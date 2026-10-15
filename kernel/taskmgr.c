@@ -21,7 +21,7 @@
 #define BODY_Y   (TABS_Y + TAB_H + 6)
 #define ROW_H    14
 #define HIST     60
-#define MAX_ROWS 40
+#define MAX_ROWS 96
 
 #define C_PANEL  0x001D232Cu
 #define C_TITLE  0x00384562u
@@ -103,8 +103,8 @@ static void sample(void) {
 
 /* the Apps tab's rows: open windows, then running apps */
 static void build_rows(void) {
-    gui_win_info_t w[24];
-    int nw = gui_windows(w, 24);
+    static gui_win_info_t w[64];
+    int nw = gui_windows(w, 64);
     g_nrows = 0;
     for (int i = 0; i < nw && g_nrows < MAX_ROWS; i++) {
         row_t* r = &g_rows[g_nrows++];
@@ -113,8 +113,8 @@ static void build_rows(void) {
         kstrlcpy(r->text, w[i].title, sizeof(r->text));
         kstrlcpy(r->info, w[i].minimized ? "window, minimized" : w[i].focused ? "window, active" : "window", sizeof(r->info));
     }
-    app_info_t a[8];
-    int na = app_snapshot(a, 8);
+    static app_info_t a[APP_MAX];
+    int na = app_snapshot(a, APP_MAX);
     for (int i = 0; i < na && g_nrows < MAX_ROWS; i++) {
         row_t* r = &g_rows[g_nrows++];
         r->is_app = 1;

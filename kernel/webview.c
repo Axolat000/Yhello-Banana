@@ -9,7 +9,7 @@
 #include "../web/render.h"
 #include "../web/script.h"
 
-#define WV_MAX    8
+#define WV_MAX    32
 #define WV_CMDS   32
 #define WV_MSGS   32
 #define WV_HIST   16

@@ -29,14 +29,13 @@
 #include "uspace.h"
 #include "idt.h"
 
-#define APP_MAX     8
-#define APP_FD_MAX  16
+#define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
 #define APP_GUARD   (16u << 10)       /* unmapped pages under it (64-bit): an overflow faults */
 #define STACK_CANARY 0xB4A4A5C0u      /* at the bottom of the stack: checked on every system call */
 #define APP_KEYQ    32
 #define APP_MAX_IMAGE (64u << 20)
-#define APP_THREADS 16                /* extra threads per app (api->thread_create) */
+#define APP_THREADS 64                /* extra threads per app (api->thread_create): a thread per core on big machines */
 /* 64-bit: the kernel stack of each app thread - its system calls run there
  * (the app's own stack is in ring 3's reach), with a guard page under it */
 #define APP_KSTACK  (128u << 10)
@@ -1153,7 +1152,7 @@ static int a_cpu_count(void) { return cpu_count(); }
 /* wait / wake: a thread sleeps while *addr == expected, until another one
  * changes it and calls wake (or the timeout passes) - what the SDK builds
  * condition variables and semaphores on */
-#define WAITERS 64
+#define WAITERS 256
 static struct { volatile int* addr; int pid; } g_waiters[WAITERS];
 
 static int waiter_add(volatile int* addr) {

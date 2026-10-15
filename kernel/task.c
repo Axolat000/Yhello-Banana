@@ -46,7 +46,6 @@
 typedef struct task {
     uintptr_t*   sp;                      /* saved stack pointer when not running */
     uintptr_t*   guard;                   /* the bottom of its stack: GUARD_WORDS of GUARD_MAGIC */
-    uintptr_t    stack[TASK_STACK_WORDS] __attribute__((aligned(16))); /* created tasks only */
     uint32_t     pid;
     char         name[TASK_NAME_MAX];
     volatile task_state_t state;
@@ -75,7 +74,7 @@ typedef struct task {
     volatile int came_home;               /* back from another core: vruntime caught up first */
     int          vt;                      /* terminal output target, restored on switch-in */
     int          background;              /* daemon: never reads the keyboard (task_set_background) */
-    void*        stack_mem;               /* kmalloc'd stack (task_create_stack), or NULL */
+    void*        stack_mem;               /* its stack (created tasks), or NULL */
     uint32_t     fault_vec, fault_err;    /* a fault on another core, reported on the boot core */
     uintptr_t    fault_ip, fault_addr;
     uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
@@ -87,6 +86,7 @@ static task_t           g_tasks[TASK_MAX];
 static int              g_count = 0;
 static task_t* volatile g_current = NULL;   /* on the boot core */
 static task_t           g_idle;             /* the boot core's idle loop (see task_offload) */
+static uintptr_t        g_idle_stack[TASK_STACK_WORDS] __attribute__((aligned(16)));
 static task_t*          g_prev;             /* switched away from: finish_switch() */
 static uint64_t         g_min_vr;           /* the smallest vruntime of the runnable tasks */
 static uint64_t         g_tsc_per_ms = 1000000;
@@ -525,8 +525,8 @@ void task_init(const char* main_task_name) {
     g_idle.weight = 1024;
     g_idle.pinned = 1;
     g_idle.prio = TASK_PRIO_NORMAL;
-    g_idle.sp = fake_frame(&g_idle.stack[TASK_STACK_WORDS], task_trampoline);
-    guard_set(&g_idle, g_idle.stack);
+    g_idle.sp = fake_frame(&g_idle_stack[TASK_STACK_WORDS], task_trampoline);
+    guard_set(&g_idle, g_idle_stack);
 
     g_count = 1;
     g_current = t;
@@ -578,15 +578,14 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->rsp0 = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
 
-    uintptr_t* sp = &t->stack[TASK_STACK_WORDS];
-    if (stack_bytes > sizeof(t->stack)) {
-        uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + 16);
-        if (!mem) { t->state = TASK_UNUSED; return -1; }
-        t->stack_mem = mem;
-        sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes) & ~(uintptr_t)15);
-    }
+    /* its stack: TASK_STACK_WORDS words, or what was asked for if more */
+    if (stack_bytes < TASK_STACK_WORDS * sizeof(uintptr_t)) stack_bytes = TASK_STACK_WORDS * sizeof(uintptr_t);
+    uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + 16);
+    if (!mem) { t->state = TASK_UNUSED; return -1; }
+    t->stack_mem = mem;
+    uintptr_t* sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes) & ~(uintptr_t)15);
     t->sp = fake_frame(sp, task_trampoline);
-    guard_set(t, t->stack_mem ? (uintptr_t*)(((uintptr_t)t->stack_mem + 15) & ~(uintptr_t)15) : t->stack);
+    guard_set(t, (uintptr_t*)(((uintptr_t)t->stack_mem + 15) & ~(uintptr_t)15));
 
     t->state = TASK_READY;
     return (int)t->pid;
