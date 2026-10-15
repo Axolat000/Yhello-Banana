@@ -15,6 +15,10 @@
  */
 int mmio_map(uint64_t phys, uint64_t size);
 
+/* 64-bit kernel: identity-maps RAM above 4 GiB ([phys, phys + size), whole
+ * 2 MiB pages, cached) - kernel/hmem.c; 1, or 0 where that is not possible */
+int paging_map_ram(uint64_t phys, uint64_t size);
+
 /* 64-bit kernel: unmaps page 0, so NULL pointer accesses fault */
 void paging_guard_null(void);
 

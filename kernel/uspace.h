@@ -8,8 +8,10 @@
  * tables of its own: a copy of the kernel's identity map (physical address
  * == virtual address, so a pointer means the same thing to the app and to
  * the kernel) in which only the app's memory is open to user mode - its
- * 2 MiB blocks (kernel/umem.c), mapped with 4 KiB pages so pages can be
- * left out (guard pages under stacks). Everything else - the kernel, other
+ * 2 MiB blocks (kernel/umem.c), anywhere in the first 512 GiB, mapped with
+ * 4 KiB pages so pages can be left out (guard pages under stacks). It has
+ * page directories of its own only for the gigabytes it has memory in; the
+ * rest are the kernel's, shared. Everything else - the kernel, other
  * apps, devices - is there for the kernel only: the app faults if it
  * touches it.
  *

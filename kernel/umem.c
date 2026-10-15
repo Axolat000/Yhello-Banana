@@ -2,6 +2,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "serial.h"
+#include "hmem.h"
 
 /*
  * Three sizes of allocation:
@@ -10,7 +11,9 @@
  *  - up to 2 MiB: a run of whole 4 KiB pages inside one block;
  *  - bigger: blocks of their own, in a row. Freed, they become ordinary
  *    blocks the app's other allocations can use.
- * Every block, run and slab is described in kernel memory; g_frame maps a
+ * Blocks come from RAM above 4 GiB first (kernel/hmem.c, 64-bit), then
+ * from the kernel heap.
+ * Every block, run and slab is described in kernel memory; g_dir maps a
  * 2 MiB frame of physical memory to the block that holds it (and to its
  * app: umem_owns checks a system call's pointers against it).
  */
@@ -18,9 +21,13 @@
 #define BLOCK  0x200000u
 #define PAGE   4096u
 #define PAGES  (BLOCK / PAGE)           /* 512 */
-#define FRAMES 2048                     /* 2 MiB frames: the first 4 GiB */
+#ifdef __x86_64__
+#define FRAMES (512u * 512u)            /* 2 MiB frames: the first 512 GiB (hmem.c) */
+#else
+#define FRAMES 2048u                    /* ... the first 4 GiB */
+#endif
 #define SMALL  2048u
-#define LIMIT  (4ull << 30)                /* FRAMES * BLOCK, which a 32-bit uintptr_t cannot hold */
+#define LIMIT  ((uint64_t)FRAMES * BLOCK)   /* (more than a 32-bit uintptr_t holds) */
 
 static const uint16_t g_cls[] = { 16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512, 768, 1024, 1536, 2048 };
 #define NCLS ((int)(sizeof(g_cls) / sizeof(g_cls[0])))
@@ -37,7 +44,8 @@ typedef struct uslab {
 typedef struct uchunk {
     umem_t*        m;
     uintptr_t      base;
-    void*          alloc;               /* what kfree takes (the first block of a row) */
+    void*          alloc;               /* what kfree takes (the first block of a row from the heap) */
+    uint32_t       high;                /* frames of RAM above 4 GiB to give back (hmem_free) */
     uint32_t       nframes;             /* > 1: one big allocation */
     int            big_used;
     int            broken;              /* its tables could not be made: never handed out */
@@ -56,7 +64,32 @@ struct umem {
     uint32_t  used;
 };
 
-static uchunk_t* g_frame[FRAMES];
+/* frame -> its block: a directory of 4 KiB tables (512 frames, 1 GiB each)
+ * made when a gigabyte first has a block */
+static uchunk_t** g_dir[FRAMES / 512];
+
+static uchunk_t* frame_get(uintptr_t f) {
+    uchunk_t** t = g_dir[f / 512];
+    return t ? t[f % 512] : NULL;
+}
+
+static int frame_set(uintptr_t f, uchunk_t* c) {
+    uchunk_t** t = g_dir[f / 512];
+    if (!t) {
+        if (!c) return 0;
+        t = (uchunk_t**)kzalloc(512 * sizeof(uchunk_t*));
+        if (!t) return -1;
+        g_dir[f / 512] = t;
+    }
+    t[f % 512] = c;
+    return 0;
+}
+
+/* the memory of a block back to where it came from */
+static void chunk_release(uchunk_t* c) {
+    if (c->alloc) kfree(c->alloc);
+    if (c->high) hmem_free(c->base, c->high);
+}
 
 umem_t* umem_create(uspace_t* us) {
     umem_t* m = (umem_t*)kzalloc(sizeof(umem_t));
@@ -67,30 +100,45 @@ umem_t* umem_create(uspace_t* us) {
 static uchunk_t* chunk_of(umem_t* m, const void* p) {
     uintptr_t a = (uintptr_t)p;
     if (a / BLOCK >= FRAMES) return NULL;
-    uchunk_t* c = g_frame[a / BLOCK];
+    uchunk_t* c = frame_get(a / BLOCK);
     return c && c->m == m ? c : NULL;
 }
 
-static void link_chunk(umem_t* m, uchunk_t* c) {
-    for (uint32_t k = 0; k < c->nframes; k++) g_frame[c->base / BLOCK + k] = c;
+static int link_chunk(umem_t* m, uchunk_t* c) {
+    for (uint32_t k = 0; k < c->nframes; k++)
+        if (frame_set(c->base / BLOCK + k, c) < 0) {
+            while (k--) frame_set(c->base / BLOCK + k, NULL);
+            return -1;
+        }
     c->next = m->chunks;
     m->chunks = c;
+    return 0;
 }
 
 /* n blocks in a row, zeroed and opened to the app */
 static uchunk_t* new_chunk(umem_t* m, uint32_t n) {
-    uint8_t* mem = (uint8_t*)kmalloc_aligned((size_t)n * BLOCK, BLOCK);
-    if (!mem) return NULL;
-    if ((uint64_t)(uintptr_t)mem + (uint64_t)n * BLOCK > LIMIT) { kfree(mem); return NULL; }
     uchunk_t* c = (uchunk_t*)kzalloc(sizeof(uchunk_t));
-    if (!c) { kfree(mem); return NULL; }
-    memset(mem, 0, (size_t)n * BLOCK);        /* nothing of the kernel's left in it */
+    if (!c) return NULL;
+    uint8_t* mem = NULL;
+#ifdef __x86_64__
+    mem = (uint8_t*)(uintptr_t)hmem_alloc(n);           /* above 4 GiB first */
+    c->high = mem ? n : 0;
+#endif
+    if (!mem) {
+        mem = (uint8_t*)kmalloc_aligned((size_t)n * BLOCK, BLOCK);
+        if (!mem) { kfree(c); return NULL; }
+        c->alloc = mem;
+    }
     c->m = m;
     c->base = (uintptr_t)mem;
-    c->alloc = mem;
     c->nframes = n;
     c->free_pages = n == 1 ? PAGES : 0;
-    link_chunk(m, c);
+    if ((uint64_t)c->base + (uint64_t)n * BLOCK > LIMIT || link_chunk(m, c) < 0) {
+        chunk_release(c);
+        kfree(c);
+        return NULL;
+    }
+    memset(mem, 0, (size_t)n * BLOCK);        /* nothing of the kernel's (or another app's) left in it */
     /* (if the tables cannot be made, the block is still the app's - given
      * back when it exits - but never handed out) */
     if (uspace_map(m->us, (uintptr_t)mem, n * BLOCK) < 0) {
@@ -156,16 +204,18 @@ static void split_big(umem_t* m, uchunk_t* big) {
             big->base += (uintptr_t)k * BLOCK;
             big->alloc = k ? NULL : big->alloc;
             big->nframes -= k;
+            big->high = big->high ? big->nframes : 0;
             big->big_used = 1;
-            link_chunk(m, big);
+            if (link_chunk(m, big) < 0) { chunk_release(big); kfree(big); }   /* (cannot fail: its tables exist) */
             return;
         }
         c->m = m;
         c->base = big->base + (uintptr_t)k * BLOCK;
         c->alloc = k ? NULL : big->alloc;
+        c->high = big->high ? 1 : 0;        /* (above 4 GiB each frame goes back by itself) */
         c->nframes = 1;
         c->free_pages = PAGES;
-        link_chunk(m, c);
+        link_chunk(m, c);                   /* (cannot fail: the frames' tables exist) */
     }
     kfree(big);
 }
@@ -335,7 +385,7 @@ int umem_owns(umem_t* m, const void* p, size_t n) {
     if (!m || !n) n = 1;
     if (!m || (uint64_t)a + n > LIMIT) return 0;
     for (uintptr_t f = a / BLOCK; f <= (uintptr_t)(((uint64_t)a + n - 1) / BLOCK); f++)
-        if (!g_frame[f] || g_frame[f]->m != m) return 0;
+        if (!frame_get(f) || frame_get(f)->m != m) return 0;
     return 1;
 }
 
@@ -344,7 +394,7 @@ int umem_owns_str(umem_t* m, const char* s) {
     for (;;) {
         if (!m || a / BLOCK >= FRAMES) return 0;
         uintptr_t f = a / BLOCK;
-        if (!g_frame[f] || g_frame[f]->m != m) return 0;
+        if (!frame_get(f) || frame_get(f)->m != m) return 0;
         uint64_t end = (uint64_t)(f + 1) * BLOCK;
         for (; (uint64_t)a < end; a++) {
             if (!*(const volatile char*)a) return 1;
@@ -364,8 +414,8 @@ void umem_destroy(umem_t* m) {
     while (m->chunks) {
         uchunk_t* c = m->chunks;
         m->chunks = c->next;
-        for (uint32_t k = 0; k < c->nframes; k++) g_frame[c->base / BLOCK + k] = NULL;
-        kfree(c->alloc);
+        for (uint32_t k = 0; k < c->nframes; k++) frame_set(c->base / BLOCK + k, NULL);
+        chunk_release(c);
         kfree(c);
     }
     kfree(m);

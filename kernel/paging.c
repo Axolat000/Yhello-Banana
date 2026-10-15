@@ -42,8 +42,9 @@ static uint64_t* new_table(void) {
     return t;
 }
 
-int mmio_map(uint64_t phys, uint64_t size) {
-    if (phys + size <= (4ull << 30)) return 1;          /* mapped since boot */
+/* identity-maps [phys, phys + size) above 4 GiB with 2 MiB pages of the
+ * given extra flags (cache attributes) */
+static int map_high(uint64_t phys, uint64_t size, uint64_t flags) {
     if (phys + size > (1ull << 46)) return 0;           /* beyond what we support */
     uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
     for (uint64_t a = phys & ~0x1FFFFFull; a < phys + size; a += 0x200000ull) {
@@ -64,12 +65,23 @@ int mmio_map(uint64_t phys, uint64_t size) {
         if (*e3 & P_LARGE) continue;                    /* a 1 GiB page covers it already */
         uint64_t* pd = (uint64_t*)(uintptr_t)(*e3 & ADDR_MASK);
         uint64_t* e2 = &pd[(a >> 21) & 511];
-        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | P_PCD | P_PWT;   /* device memory: uncached */
+        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | flags;
         __asm__ volatile("invlpg (%0)" :: "r"((uintptr_t)a) : "memory");
     }
     kernel_tables_changed();
+    return 1;
+}
+
+int mmio_map(uint64_t phys, uint64_t size) {
+    if (phys + size <= (4ull << 30)) return 1;          /* mapped since boot */
+    if (!map_high(phys, size, P_PCD | P_PWT)) return 0; /* device memory: uncached */
     klog("paging: mapped device memory at %llx (%llu KiB)\n", phys, size >> 10);
     return 1;
+}
+
+int paging_map_ram(uint64_t phys, uint64_t size) {
+    if (phys < (4ull << 30) || (phys & 0x1FFFFF) || (size & 0x1FFFFF)) return 0;
+    return map_high(phys, size, 0);                     /* RAM: cached */
 }
 
 /* ── write-combining ── */
@@ -171,6 +183,7 @@ void paging_guard_null(void) {
 #else
 
 uintptr_t paging_kernel_cr3(void) { return 0; }
+int paging_map_ram(uint64_t phys, uint64_t size) { (void)phys; (void)size; return 0; }
 void paging_guard_null(void) {}     /* no paging on the 32-bit kernel */
 
 int paging_guard(uintptr_t addr, uint32_t size, int guard) {
