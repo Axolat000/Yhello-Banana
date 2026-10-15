@@ -63,7 +63,7 @@ static void automount_task(void) {
             blockdev_t* bd = &g_bd[i];
             if (!fs_is_ready() || !bd->used || !bd->present || bd->mount_state != 0) continue;
             char err[80];
-            int mnt = fat32_mount(bd, NULL, err, sizeof(err));
+            int mnt = volume_mount(bd, NULL, err, sizeof(err));
             if (mnt > 0) {
                 bd->mnt = mnt;
                 bd->mount_state = 1;

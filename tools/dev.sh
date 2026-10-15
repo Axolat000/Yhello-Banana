@@ -16,7 +16,8 @@
 #   tools/dev.sh clean            make clean
 #
 # Environment: MEM (QEMU memory, default 512M), SMP (cores, default 4),
-# NIC (QEMU NIC model, default e1000), OVMF (UEFI firmware file).
+# NIC (QEMU NIC model, default e1000), OVMF (UEFI firmware file),
+# DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio).
 
 set -uo pipefail
 
@@ -87,6 +88,8 @@ qemu_args() {
         32)   qemu=qemu-system-i386; args=(-cdrom "$ROOT/Banana_OS.iso" -m "$MEM" -nic "user,model=$NIC") ;;
         *)    red "unknown firmware '$fw' (bios, uefi or 32)"; exit 1 ;;
     esac
+    # (-boot d: the CD first - the firmware would try the disk before it)
+    if [ -n "${DISK:-}" ]; then args+=(-drive "file=$DISK,format=raw,if=virtio" -boot d); fi
     QEMU_BIN="$qemu"
     QEMU_ARGS=("${args[@]}")
 }

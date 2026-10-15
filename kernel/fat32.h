@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "blockdev.h"
+#include "volume.h"
 
 /*
  * FAT32 volumes (USB sticks): mounted into the filesystem tree (fs.h's
@@ -11,19 +12,11 @@
  * deletes, renames, new folders) is written straight to the stick, long
  * file names included.
  *
- * The volume is found on the whole device (a "superfloppy") or in the
- * first FAT32 partition of an MBR or GPT partition table.
+ * kernel/volume.c finds the volume: on the whole device (a "superfloppy")
+ * or in a partition of an MBR or GPT partition table.
  */
 
-/* mounts bd's FAT32 volume at path (NULL: the first free /mnt/usb,
- * /mnt/usb2, ...); returns the fs mount id, or -1 with err set */
-int fat32_mount(blockdev_t* bd, const char* path, char* err, int errcap);
-
-/* for `mount`: one line about mount id mnt into out (0 if not FAT32) */
-int fat32_describe(int mnt, char* out, int cap);
-
-/* for `df`: the volume's size and free space (0 if mnt is not FAT32);
- * the first call on a stick counts its free clusters */
-int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes);
+/* its driver for kernel/volume.c */
+extern const volfs_t fat32_volfs;
 
 #endif

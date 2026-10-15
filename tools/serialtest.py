@@ -6,7 +6,10 @@ kept in a log; a command whose output says the kernel panicked or the app
 crashed counts as failed.
 
 usage: serialtest.py [--qemu BIN] [--log FILE] [--timeout S] -- <qemu args...>
-       (the commands: --cmd "..." repeated, or the default app tests)
+       (the commands: --cmd "..." repeated, --cmds-file FILE, or the default
+       app tests). In a commands file: one command a line; "cmd ## text"
+       also fails unless text is in its output; "#wait N" waits N seconds;
+       other lines starting with # are comments.
 """
 import argparse, re, socket, subprocess, sys, time
 
@@ -31,15 +34,22 @@ def main():
     ap.add_argument("--timeout", type=float, default=180, help="seconds per command")
     ap.add_argument("--boot-timeout", type=float, default=180)
     ap.add_argument("--cmd", action="append", help="a command to type (repeatable)")
+    ap.add_argument("--cmds-file", help="commands, one a line (see above)")
+    ap.add_argument("--window", action="store_true", help="show QEMU's window (to watch or debug); the commands still go over serial")
+    ap.add_argument("--keep", action="store_true", help="leave QEMU running after the commands, until its window is closed")
     ap.add_argument("qemu_args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
     qargs = [x for x in a.qemu_args if x != "--"]
     cmds = a.cmd or DEFAULT_CMDS
+    if a.cmds_file:
+        cmds = [l.rstrip("\n") for l in open(a.cmds_file, encoding="utf-8")
+                if l.strip() and (not l.startswith("#") or l.startswith("#wait"))]
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    proc = subprocess.Popen([a.qemu, *qargs, "-display", "none", "-no-reboot",
+    display = [] if a.window else ["-display", "none"]
+    proc = subprocess.Popen([a.qemu, *qargs, *display, "-no-reboot",
                              "-chardev", f"socket,id=s0,host=127.0.0.1,port={port},server=on,wait=on",
                              "-serial", "chardev:s0"])
     sock = None
@@ -98,26 +108,45 @@ def main():
             print("no shell prompt on the serial console (log: %s)" % a.log)
             print(text[-1500:])
             return 1
-        for c in cmds:
+        for line in cmds:
+            if line.startswith("#wait"):
+                end = time.time() + float(line.split()[1])
+                while time.time() < end:
+                    pump()
+                continue
+            c, _, expect = line.partition(" ## ")
             mark = len(text)
             print(f"$ {c}", flush=True)
-            for ch in c + "\r":
-                sock.sendall(ch.encode())
+            for b in c.encode("utf-8") + b"\r":
+                sock.sendall(bytes([b]))
                 time.sleep(0.01)
             ok = wait_prompt(mark + len(c), a.timeout)
             out = text[mark:]
             bad = BAD.search(out)
-            for line in out.splitlines()[1:-1]:
-                print("    " + line)
-            status = "FAIL" if bad or not ok else "ok"
+            for l in out.splitlines()[1:-1]:
+                print("    " + l)
+            why = bad.group(0) if bad else ""
+            if ok and not bad and expect and expect not in out.encode("latin-1", "replace").decode("utf-8", "replace"):
+                why = f"expected {expect!r}"
+            status = "FAIL" if why or not ok else "ok"
             if not ok:
                 print("    (no prompt within %d s)" % a.timeout)
-            results.append((c, status, bad.group(0) if bad else ""))
+            results.append((c, status, why))
             if bad and "PANIC" in bad.group(0).upper():
                 break
     except EOFError:
         results.append(("(QEMU)", "FAIL", "the serial port closed - the VM stopped or reset"))
     finally:
+        if a.keep and proc.poll() is None:
+            print("\nQEMU stays open - close its window to go on", flush=True)
+            try:
+                while proc.poll() is None:
+                    try:
+                        pump()
+                    except EOFError:
+                        break
+            except KeyboardInterrupt:
+                pass
         proc.kill()
         log.close()
 

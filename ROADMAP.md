@@ -20,7 +20,7 @@ Status: **done** (committed and tested) · **testing** (written, not yet confirm
 | Wi-Fi | planned | A USB Wi-Fi dongle (Realtek RTL8188/8192) on the existing USB stack first, with WPA2. Intel cards (`iwlwifi`-class) need firmware files and are much bigger. |
 | Sleep (ACPI S3) | planned | Builds on the ACPI code used for power-off: suspend, wake through real mode, devices restored. |
 | IPv6 for TCP and UDP | planned | IPv6 currently stops at `ping6`. |
-| exFAT | planned | The default on SD cards over 32 GB and many USB sticks. |
+| exFAT | **testing** (build 143) | The default on SD cards over 32 GB and many USB sticks. Read and write. Writing files, appends, a Unicode rename and a 220 KB copy were checked in QEMU (`fsck.exfat` clean, contents identical); folder growth, deleting and remounting are still to be checked (`tools/test-exfat.sh`). |
 | ext2/ext4 and NTFS (read) | planned | To open Linux and Windows disks. |
 | Crash-safe disk filesystem | planned | A journal, so a power cut while saving can't damage the disk. |
 | `fork`, `exec` and `pipe` | planned | Ring-3 isolation (build 139) makes these possible. They unlock porting Unix tools and pipelines between programs. |
