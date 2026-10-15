@@ -8,10 +8,10 @@ Status: **done** (committed and tested) · **testing** (written, not yet confirm
 
 | Feature | Status | Notes |
 |---|---|---|
-| Apps in ring 3, isolated from the kernel | **done** (build 139) | 64-bit kernel: each app has its own page tables, `int 0x80` system calls, and its pointers are checked. Already-built apps work unchanged. The 32-bit kernel keeps apps in ring 0. |
-| Memory above 4 GiB | **done** (build 140) | Apps' memory comes from RAM above 4 GiB first, up to 512 GiB. `free` showed 23 GB in a friend's VM. |
-| Higher process limits | **done** (build 141) | 32 apps (was 8), 64 threads per app (16), 64 open files (16), 32 app windows (6), 32 web views (8), 256 tasks (48). |
-| System calls on every core | **done** (build 142) | Calls that only touch the app's own state (`malloc`/`free`/`realloc`, `wake`, `wait` when nothing needs waiting for, clock, thread ids, text drawing) run on the core that made them instead of moving back to core 0. The heap, the RAM above 4 GiB, app page tables and each app's memory have locks for it. A fully multi-core kernel (locks in the file system, network and GUI) is a much bigger rewrite and isn't planned. |
+| Apps in ring 3, isolated from the kernel | **done** (build 141) | 64-bit kernel: each app has its own page tables, `int 0x80` system calls, and its pointers are checked. Already-built apps work unchanged. The 32-bit kernel keeps apps in ring 0. |
+| Memory above 4 GiB | **done** (build 142) | Apps' memory comes from RAM above 4 GiB first, up to 512 GiB. `free` showed 23 GB in a friend's VM. |
+| Higher process limits | **done** (build 143) | 32 apps (was 8), 64 threads per app (16), 64 open files (16), 32 app windows (6), 32 web views (8), 256 tasks (48). |
+| System calls on every core | **done** (build 144) | Calls that only touch the app's own state (`malloc`/`free`/`realloc`, `wake`, `wait` when nothing needs waiting for, clock, thread ids, text drawing) run on the core that made them instead of moving back to core 0. The heap, the RAM above 4 GiB, app page tables and each app's memory have locks for it. A fully multi-core kernel (locks in the file system, network and GUI) is a much bigger rewrite and isn't planned. |
 
 ## 2. Missing features
 
@@ -20,10 +20,10 @@ Status: **done** (committed and tested) · **testing** (written, not yet confirm
 | Wi-Fi | planned | A USB Wi-Fi dongle (Realtek RTL8188/8192) on the existing USB stack first, with WPA2. Intel cards (`iwlwifi`-class) need firmware files and are much bigger. |
 | Sleep (ACPI S3) | planned | Builds on the ACPI code used for power-off: suspend, wake through real mode, devices restored. |
 | IPv6 for TCP and UDP | planned | IPv6 currently stops at `ping6`. |
-| exFAT | **testing** (build 143) | The default on SD cards over 32 GB and many USB sticks. Read and write. Writing files, appends, a Unicode rename and a 220 KB copy were checked in QEMU (`fsck.exfat` clean, contents identical); folder growth, deleting and remounting are still to be checked (`tools/test-exfat.sh`). |
+| exFAT | **testing** (build 145) | The default on SD cards over 32 GB and many USB sticks. Read and write. Writing files, appends, a Unicode rename and a 220 KB copy were checked in QEMU (`fsck.exfat` clean, contents identical); folder growth, deleting and remounting are still to be checked (`tools/test-exfat.sh`). |
 | ext2/ext4 and NTFS (read) | planned | To open Linux and Windows disks. |
 | Crash-safe disk filesystem | planned | A journal, so a power cut while saving can't damage the disk. |
-| `fork`, `exec` and `pipe` | planned | Ring-3 isolation (build 139) makes these possible. They unlock porting Unix tools and pipelines between programs. |
+| `fork`, `exec` and `pipe` | planned | Ring-3 isolation (build 141) makes these possible. They unlock porting Unix tools and pipelines between programs. |
 
 ## 4. Smaller wins
 
