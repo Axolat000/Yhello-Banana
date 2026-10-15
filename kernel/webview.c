@@ -3,6 +3,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "task.h"
+#include "serial.h"
 #include "timer.h"
 #include "../net/http.h"
 #include "../web/page.h"
@@ -288,11 +289,36 @@ static void free_view(wv_t* v) {
     kfree(v);
 }
 
+/* the web engine crashed (a CPU exception in this task) on view `i`'s page:
+ * that page goes - freed if that works too - and the view shows nothing;
+ * the app, the other views and the system go on */
+static int g_work = -1;
+static void engine_crashed(void) {
+    static kjmp_buf_t again;
+    wv_t* v = g_work >= 0 && g_work < WV_MAX ? g_wv[g_work] : NULL;
+    g_work = -1;
+    if (!v) return;
+    page_t* p = v->page;
+    v->page = NULL;
+    v->loading = 0;
+    if (p && !kjmp_set(&again)) {
+        task_set_recover(&again);
+        page_free(p);
+    }
+    task_set_recover(NULL);
+    klog("webview: a page crashed the web engine - closed it\n");
+    v->render_req = 1;
+}
+
 static void webview_task(void) {
+    static kjmp_buf_t recover;
+    while (kjmp_set(&recover)) engine_crashed();      /* (and armed again) */
     for (;;) {
         int any = 0;
+        task_set_recover(&recover);
         for (int i = 0; i < WV_MAX; i++) {
             wv_t* v = g_wv[i];
+            g_work = i;
             if (!v) continue;
             if (v->closing) { g_wv[i] = NULL; free_view(v); continue; }
             any = 1;
@@ -335,7 +361,7 @@ int webview_open(int owner, int w, int h) {
     v->env.message = on_message;
     kstrlcpy(v->url, "about:blank", sizeof(v->url));
     g_wv[id] = v;
-    if (g_task < 0) g_task = task_create_stack("webview", webview_task, 2u << 20);
+    if (g_task < 0) g_task = task_create_stack("webview", webview_task, 8u << 20);
     v->render_req = 1;
     return id;
 }

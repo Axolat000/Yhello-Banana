@@ -14,6 +14,9 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Browser crashes stay in the browser** - the web engine runs in the kernel, so a page that made it crash used to stop all of Banana OS. Now a crash in the browser (or in an app's web view) - a bad memory access, an invalid instruction, a too-deep recursion running off its stack (guard pages under it now) - closes only the page that caused it: the tab says *This page crashed the browser's engine*, the other tabs and the rest of the system go on. `about:crash` crashes the engine on purpose, to see it
+- **Several keys at once (games)** - the keyboard driver keeps every key held down (PS/2, USB, Remote Desktop). Apps ask `banana_key_down('w')`, `banana_key_down(BANANA_KEY_LEFT)`... (API version 14) and web pages get a real `keydown` when a key goes down and `keyup` when it comes up, with `event.code`, so W + D + Space together work
+- **App Store: your own servers** - *Servers* lists the repositories and adds one (its address and signing key, or trusted without a key after a warning) or removes one (API version 15). The App Store is pinned to the taskbar next to Files
 - **Tests inside Banana OS** - run `selftest` for user mode, memory above 4 GiB, app/thread/file limits and concurrent allocation across cores; select a part with `selftest ring3`, `memory`, `limits` or `cores`. Run `fstest /mnt/virtio` (or your drive's mount point) for FAT32/exFAT writes, appends, Unicode names on exFAT, growing folders, deletion and reading everything back after a remount. `fstest -k` keeps its test folder. Both commands have passed in a VM; `selftest` reported nine checks passed. The tests also caught and helped fix a thread-return bug and an SDK allocation-boundary crash.
 - **exFAT** - the format of SD cards over 32 GB (SDXC) and many USB sticks: read and write, Unicode names (through the volume's own up-case table), new files in one run of clusters where there is room (a FAT chain where not), folders that grow, `df` and `mount` show it. Volumes with two FATs (TexFAT) are mounted read-only. The drives' partitions are now searched by one layer for every filesystem (`kernel/volume.c`): the whole device, then every MBR or GPT partition. `tools/test-exfat.sh` checks it end to end - Banana OS writes to an exFAT image in QEMU, then `fsck.exfat` and an exFAT reader of its own check the result on Linux
 - **System calls on every core** (64-bit) - an app thread running on another processor core used to go back to the boot core for every call it made; now the calls that touch only its own things run right where they are made: `malloc` / `free` / `realloc`, `draw_text`, the clock, `thread_id`, `cpu_count`, the modifier keys, `wake`, and `wait` when there is nothing to wait for. The kernel heap, the RAM above 4 GiB, apps' page tables and each app's memory got locks for it; everything else in the kernel still runs on the boot core. Busy threads (OpenGL's `gears`, OpenCL's `cltest`, `threads`) stay on their cores
@@ -495,7 +498,7 @@ Open it from the desktop (`startx`): the **Browser** icon or Start menu entry, o
 - **Uploads**: an `<input type="file">` (clicked, or `input.click()` from a script) opens *Choose a file to upload* over the page - arrows / Enter / Esc, Tab through the places; the page only ever gets to read the file you chose (its `value` is `C:\fakepath\name`, as in every browser)
 - Real sites: Wikipedia, Hacker News, MDN, BBC News, Bing and catbox.moe (uploads) load with their scripts; big script-heavy apps (GitHub) partly work, within the page's memory
 - Not supported: CSS grid and real flexbox layout, fonts other than the built-in one, `<canvas>`, video, WebSockets, generators (`function*`). A script error is shown in the status bar (with the line and column) and the rest of the page still works
-- Pages run in the browser's own task (a 2 MiB stack); a page gets a fifth of the free memory (16 to 96 MiB), and a script stops after 5 million steps
+- Pages run in the browser's own task (an 8 MiB stack, with guard pages under it); a crash in it closes only that page (see *Latest additions*); a page gets a fifth of the free memory (16 to 96 MiB), and a script stops after 5 million steps
 
 ## USB
 
@@ -1060,6 +1063,10 @@ Building: the Makefile signs with `sbsign` when the private key is at `~/.banana
   - PS/2 mouse AUX packets
   - COM1 serial
 - **Kernel load address**: `0x100000` (1 MiB)
+
+## To do
+
+- **32-bit app isolation** - the 64-bit kernel already runs apps in ring 3 with separate address spaces (build 141). The 32-bit kernel still needs paging and equivalent isolation; its apps currently run in ring 0.
 
 ## 100% Custom Kernel
 

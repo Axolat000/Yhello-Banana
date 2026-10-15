@@ -9,6 +9,8 @@
 #include "serial.h"
 #include "paging.h"
 
+#define KSTACK_GUARD (16u << 10)
+
 /*
  * Real cooperative kernel threads, scheduled fairly.
  *
@@ -74,9 +76,12 @@ typedef struct task {
     volatile int came_home;               /* back from another core: vruntime caught up first */
     int          vt;                      /* terminal output target, restored on switch-in */
     int          background;              /* daemon: never reads the keyboard (task_set_background) */
-    void*        stack_mem;               /* its stack (created tasks), or NULL */
+    void*        stack_mem;               /* kmalloc'd stack (task_create_stack), or NULL */
+    uintptr_t    kguard;                  /* unmapped pages under that stack (64-bit), or 0 */
     uint32_t     fault_vec, fault_err;    /* a fault on another core, reported on the boot core */
     uintptr_t    fault_ip, fault_addr;
+    kjmp_buf_t*  recover;                 /* where a crash in its own code goes (task_set_recover) */
+    char         crash[112];              /* what the last one was */
     uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
     uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
@@ -550,6 +555,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
         g_count++;
     }
     /* the old stack of a reused slot is free now: nothing runs on it */
+    if (t->kguard) { paging_guard(t->kguard, KSTACK_GUARD, 0); t->kguard = 0; }
     if (t->stack_mem) { kfree(t->stack_mem); t->stack_mem = NULL; }
     set_name(t->name, name, TASK_NAME_MAX);
     t->entry = entry;
@@ -561,6 +567,8 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->cpu_pct = 0;
     t->vt = 0;
     t->background = 0;
+    t->recover = NULL;
+    t->crash[0] = 0;
     /* a nice value the user chose is inherited (an app's threads) */
     t->nice_set = g_current && g_current != &g_idle && g_current->nice_set;
     set_nice(t, t->nice_set ? g_current->nice : 0);
@@ -578,14 +586,22 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->rsp0 = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
 
-    /* its stack: TASK_STACK_WORDS words, or what was asked for if more */
-    if (stack_bytes < TASK_STACK_WORDS * sizeof(uintptr_t)) stack_bytes = TASK_STACK_WORDS * sizeof(uintptr_t);
-    uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + 16);
+    /* Keep stacks allocated on demand; large kernel tasks also get the
+     * upstream guard pages underneath them (the browser's recovery path). */
+    uint32_t minimum = TASK_STACK_WORDS * sizeof(uintptr_t);
+    if (stack_bytes < minimum) stack_bytes = minimum;
+    uint32_t extra = stack_bytes > minimum ? KSTACK_GUARD + 4096 : 0;
+    uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + extra + 16);
     if (!mem) { t->state = TASK_UNUSED; return -1; }
     t->stack_mem = mem;
-    uintptr_t* sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes) & ~(uintptr_t)15);
+    if (extra) {
+        uintptr_t g = ((uintptr_t)mem + 4095) & ~(uintptr_t)4095;
+        if (paging_guard(g, KSTACK_GUARD, 1)) t->kguard = g;
+    }
+    uintptr_t* sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes + extra) & ~(uintptr_t)15);
     t->sp = fake_frame(sp, task_trampoline);
-    guard_set(t, (uintptr_t*)(((uintptr_t)t->stack_mem + 15) & ~(uintptr_t)15));
+    guard_set(t, t->kguard ? (uintptr_t*)(t->kguard + KSTACK_GUARD) :
+              (uintptr_t*)(((uintptr_t)mem + 15) & ~(uintptr_t)15));
 
     t->state = TASK_READY;
     return (int)t->pid;
@@ -1003,4 +1019,27 @@ void task_ap_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) 
     /* the faulting context is left behind: back to this core's loop */
     uintptr_t* dropped;
     task_switch(&dropped, a->idle_sp);
+}
+
+/* ── recovery from a crash in a kernel task's own code ── */
+void task_set_recover(kjmp_buf_t* b) {
+    if (g_current) g_current->recover = b;
+}
+
+const char* task_crash_msg(void) {
+    return g_current ? g_current->crash : "";
+}
+
+void task_recover_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) {
+    task_t* t = g_current;
+    if (cpu_id() != 0 || !t || !t->recover || vector == 2 || vector == 8 || vector == 18) return;
+    kjmp_buf_t* b = t->recover;
+    t->recover = NULL;                      /* a crash while recovering: the system stops */
+    ksnprintf(t->crash, sizeof(t->crash), "CPU exception %u at %p (address %p, error %x)",
+              vector, (void*)ip, (void*)addr, err);
+    klog("%s: crashed - %s - recovered\n", t->name, t->crash);
+    /* in through an interrupt gate (interrupts off), maybe on the fault
+     * stack: the task goes on on its own stack, as when it set b */
+    __asm__ volatile("sti");
+    kjmp_jump(b, 1);
 }

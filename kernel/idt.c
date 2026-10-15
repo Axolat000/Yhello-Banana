@@ -221,6 +221,8 @@ void isr_handler(registers_t* regs) {
         uintptr_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         app_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
+        /* a kernel task that can recover (the browser) goes back to its recovery point */
+        task_recover_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
     }
 
     vga_clear_rows(6, 0x4F);

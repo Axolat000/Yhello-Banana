@@ -149,6 +149,21 @@ void task_ipi(void);
 /* a CPU exception on another core: the app is stopped on the boot core
  * (returns only if no task was running there - a kernel bug, then) */
 void task_ap_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr);
+
+/* ── a way back after a crash, for kernel tasks that handle what the
+ * network sends (the browser's web engine) ── */
+typedef struct { uintptr_t r[8]; } kjmp_buf_t;
+int  kjmp_set(kjmp_buf_t* b) __attribute__((returns_twice));   /* 0, then 1 after a crash */
+void kjmp_jump(kjmp_buf_t* b, int val) __attribute__((noreturn));
+/* A CPU exception in the calling task's own code (not an app's) jumps back
+ * to b - kjmp_set returns 1 there - instead of stopping the system. Once
+ * used it is gone: set it again (a crash while recovering stops the system). */
+void task_set_recover(kjmp_buf_t* b);
+/* kernel/idt.c: a CPU exception outside apps - back to the task's recovery
+ * point if it has one (then it does not return) */
+void task_recover_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr);
+/* what the calling task's last crash was ("" if none) */
+const char* task_crash_msg(void);
 /* the boot core's timer, every millisecond */
 void task_smp_tick(void);
 /* another core's loop (kernel/smp.c), interrupts off: never returns */
