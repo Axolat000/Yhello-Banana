@@ -16,6 +16,17 @@ VER=7.1
 SHA=40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
 SRC=$HERE/src/ffmpeg-$VER
 
+# Music and Amethyst Music share one FFmpeg build: under make -j both can
+# start it at once, and two configures / makes in one folder ruin it. The
+# second waits here and then finds it built.
+mkdir -p "$OUT"
+exec 9>"$OUT.lock"
+flock 9
+# the download is shared by every build
+mkdir -p "$HERE/build"
+exec 8>"$HERE/build/src.lock"
+flock 8
+
 if [ ! -d "$SRC" ]; then
     mkdir -p "$HERE/src"
     T=$HERE/src/ffmpeg-$VER.tar.xz
@@ -38,6 +49,7 @@ if ! grep -q "Banana OS: no red zone" "$SRC/libswresample/x86/resample.asm"; the
     sed -i 's/^cglobal deblock_%1_luma_intra_8, 4,6,16,ARCH_X86_64\*0x50-0x50/cglobal deblock_%1_luma_intra_8, 4,6,16,ARCH_X86_64*0x70-0x50/' "$H"
     sed -i 's/%define mask1q \[rsp-24\]/%define mask1q [rsp+0x10]/' "$H"
 fi
+exec 8>&-
 
 case $ARCH in
     # x86_64: with the SIMD assembly of FFmpeg (SSE2..AVX2, chosen at run

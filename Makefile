@@ -117,7 +117,7 @@ SB_KEY  ?= $(HOME)/.banana-secureboot/banana-sb.key
 SB_CERT  = loader/keys/banana-sb.crt
 define efi_finish
 	python3 tools/efi_relocs.py $(1)
-	objcopy -j .text -j .reloc -j .got -j .data -j .dynamic -j .rela -j .rel -j .dynsym --target $(2) --subsystem=10 $(1) $@.unsigned
+	objcopy -j .text -j .reloc -j .got -j .data -j .dynamic -j .rela -j .rel -j .dynsym -O $(2) --subsystem=10 $(1) $@.unsigned
 	@if grep -q "set banana_medium" $@.unsigned; then echo "$@ holds the medium line: install would break its signature"; exit 1; fi
 	@if [ -f "$(SB_KEY)" ]; then sbsign --key "$(SB_KEY)" --cert $(SB_CERT) --output $@ $@.unsigned; \
 	 else cp $@.unsigned $@; echo "note: no Secure Boot key at $(SB_KEY) - $@ is not signed"; fi
