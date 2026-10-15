@@ -20,6 +20,7 @@
  */
 
 extern const uint8_t ex_systest[], ex_systest_end[];
+extern const uint8_t ex_cltest[], ex_cltest_end[];
 
 static int g_fail, g_ok;
 
@@ -126,10 +127,27 @@ static void t_cores(void) {
     else report("they spread over the cores", cores >= 2, cores >= 2 ? "" : "all stayed on one core");
 }
 
+/* Install the matching built-in test, even if an older package is on disk. */
+static void t_opencl(void) {
+    section("OpenCL barriers, shared memory and vectors");
+    const char* tmp = "/tmp/cltest.bpk";
+    char msg[160] = { 0 };
+    if (fs_write_path(tmp, ex_cltest, (uint32_t)(ex_cltest_end - ex_cltest)) < 0 ||
+        pkg_install(tmp, msg, sizeof(msg)) != 0) {
+        fs_delete(tmp, 0);
+        report("install cltest", 0, msg);
+        return;
+    }
+    fs_delete(tmp, 0);
+    char* args[] = { "cltest" };
+    int rc = pkg_run("cltest", 1, args, 0, msg, sizeof(msg));
+    report("OpenCL kernel tests", rc == 0, rc < 0 ? msg : "see individual checks above");
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl")) {
+        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     uint16_t ipv6_port = 80;
@@ -143,9 +161,12 @@ int selftest_cmd(int argc, char** argv) {
     }
     g_ok = g_fail = 0;
     uint32_t t0 = timer_ms();
-    terminal_writeln(only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
+    terminal_writeln(only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
+                     only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if (only && !strcmp(only, "ipv6")) {
+    if (only && !strcmp(only, "opencl")) {
+        t_opencl();
+    } else if (only && !strcmp(only, "ipv6")) {
         section("IPv6 TCP, UDP and toggle checks");
         ipv6test_run(argc > 2 ? argv[2] : NULL, ipv6_port, report);
     } else if (install() == 0) {
@@ -154,6 +175,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
         if (!only) {
+            t_opencl();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

@@ -955,7 +955,7 @@ static void cmd_help(void) {
         "  mount [-a]         mounted USB sticks / NVMe (FAT32: /mnt/usb, /mnt/nvme)",
         "  umount [path]      unmount (eject) a stick so it can be removed",
         "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
-        "  selftest [part]    check the system: ring3, memory, limits, cores, ipv6",
+        "  selftest [part]    check the system: ring3, memory, limits, cores, opencl, ipv6",
         "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
         "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
         "  <app> [args]       run an installed app by its name",

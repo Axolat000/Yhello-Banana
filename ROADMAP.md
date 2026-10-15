@@ -38,7 +38,7 @@ New features should include a test command that runs inside Banana OS.
 | Browser: scrolling inside iframes | planned | |
 | Browser: links inside iframes | planned | |
 | Browser: WebSocket client | planned | Uses the existing TLS. |
-| OpenCL: `barrier()` and vector types (`float4`) | planned | |
+| OpenCL: `barrier()` and vector types (`float4`) | **done** (build 149) | CPU work-group barriers, shared local arrays/arguments, float/int/uint vectors with 2/3/4/8/16 lanes. User's four-core VM passed every check in `selftest opencl`, including reductions, private state across barriers, vector operations and error handling (0 failed; 894 ms). Host kernel tests also pass on x86_64 and i686 with one and four workers. See SDK notes for subset and limits. |
 | Desktop notifications | planned | |
 | Several user accounts on the lock screen | planned | |
 | Screenshots | planned | A key and a `screenshot` command. |

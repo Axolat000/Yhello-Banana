@@ -9,8 +9,9 @@
  * The constants have their standard values. What OpenCL C has here: the
  * address space qualifiers, the work-item functions, scalar types, the
  * math functions, min / max / clamp / mad / mix / step / sign,
- * atomic_* (32-bit), printf. Not (yet): vector types (float4...), images,
- * barrier() and __local shared between work-items.
+ * atomic_* (32-bit), printf, float/int/uint vectors, collective barriers
+ * and shared local arrays. Images and samplers are not implemented.
+ * See sdk/README.md for the supported vector subset and resource limits.
  */
 
 #include <stddef.h>
@@ -36,6 +37,8 @@ typedef uint64_t cl_ulong;
 typedef uint16_t cl_half;
 typedef float    cl_float;
 typedef double   cl_double;
+
+#include "cl_vectors.h"
 
 typedef struct _cl_platform_id*   cl_platform_id;
 typedef struct _cl_device_id*     cl_device_id;

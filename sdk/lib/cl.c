@@ -46,7 +46,7 @@ struct _cl_event { int ref; cl_command_queue q; cl_command_type type; cl_ulong t
 
 typedef struct {                       /* a kernel of a built program */
     char name[96];
-    int nargs;
+    int nargs, collective;
     int is_local[MAXARGS];             /* __local pointer argument */
     int is_mem[MAXARGS];               /* __global / __constant pointer: a cl_mem */
     void (*call)(const void* wi, void** args);
@@ -78,7 +78,7 @@ struct _cl_kernel {
 };
 
 /* the work-item: what get_global_id() and friends read (same layout in the prelude) */
-typedef struct { size_t gid[3], lid[3], grp[3], gsz[3], lsz[3], ngr[3], off[3]; unsigned dim; } WI;
+typedef struct { size_t gid[3], lid[3], grp[3], gsz[3], lsz[3], ngr[3], off[3]; unsigned dim; void* group; unsigned lane; } WI;
 
 /* ══ time, threads ═══════════════════════════════════════════════════ */
 
@@ -108,13 +108,31 @@ typedef struct {
     unsigned dim;
     size_t total;
     volatile long next;
+    volatile int error;
 } JOB;
+
+/* Barrier helpers may be called from ordinary OpenCL helper functions too.
+ * Work-item IDs still use the hidden argument for the common fast path. */
+#ifdef BCL_HOST
+static __thread const WI* g_current_wi;
+static const WI* bcl_current(void) { return g_current_wi; }
+static void set_current_wi(const WI* wi) { g_current_wi = wi; }
+#else
+static const WI* g_current_wi[65]; /* main thread and up to 64 app threads */
+static const WI* bcl_current(void) { int n = banana_thread_id(); return n >= 0 && n <= 64 ? g_current_wi[n] : NULL; }
+static void set_current_wi(const WI* wi) { int n = banana_thread_id(); if (n >= 0 && n <= 64) g_current_wi[n] = wi; }
+#endif
+
+#include "clgroup.h"
 
 static JOB* g_job;
 static int g_nthr;
 #ifdef BCL_HOST
 static sem_t g_start[MAXTHR], g_done;
 static pthread_mutex_t g_build_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
+#define DISPATCH_LOCK() pthread_mutex_lock(&g_dispatch_lock)
+#define DISPATCH_UNLOCK() pthread_mutex_unlock(&g_dispatch_lock)
 #define LOCK() pthread_mutex_lock(&g_build_lock)
 #define UNLOCK() pthread_mutex_unlock(&g_build_lock)
 #define SPOST(s) sem_post(&(s))
@@ -122,6 +140,9 @@ static pthread_mutex_t g_build_lock = PTHREAD_MUTEX_INITIALIZER;
 #else
 static banana_sem_t g_start[MAXTHR], g_done;
 static banana_mutex_t g_build_lock = BANANA_MUTEX_INIT;
+static banana_mutex_t g_dispatch_lock = BANANA_MUTEX_INIT;
+#define DISPATCH_LOCK() banana_lock(&g_dispatch_lock)
+#define DISPATCH_UNLOCK() banana_unlock(&g_dispatch_lock)
 #define LOCK() banana_lock(&g_build_lock)
 #define UNLOCK() banana_unlock(&g_build_lock)
 #define SPOST(s) banana_sem_post(&(s))
@@ -134,11 +155,17 @@ static void run_groups(JOB* j) {
     KINFO* ki = k->info;
     void* args[MAXARGS];
     void* ptrs[MAXARGS];
-    void* local[MAXARGS];
+    void* local[MAXARGS] = { 0 };
+    size_t local_bytes = 0;
     for (int i = 0; i < ki->nargs; i++) {
         local[i] = NULL;
         if (ki->is_local[i]) {
-            local[i] = malloc(k->local_size[i] ? k->local_size[i] : 1);
+            local_bytes += k->local_size[i];
+            if (posix_memalign(&local[i], 64, k->local_size[i] ? k->local_size[i] : 1)) {
+                __sync_val_compare_and_swap(&j->error, 0, CL_OUT_OF_HOST_MEMORY);
+                for (int k2 = 0; k2 < i; k2++) free(local[k2]);
+                return;
+            }
             ptrs[i] = local[i];
             args[i] = &ptrs[i];
         } else if (ki->is_mem[i]) {
@@ -146,17 +173,33 @@ static void run_groups(JOB* j) {
             args[i] = &ptrs[i];
         } else args[i] = k->val[i].b;
     }
+    BCL_GROUP* group = NULL;
+    if (ki->collective) {
+        group = group_new(j->lsz[0] * j->lsz[1] * j->lsz[2], ki, args, local_bytes);
+        if (!group) {
+            __sync_val_compare_and_swap(&j->error, 0, CL_OUT_OF_HOST_MEMORY);
+            for (int i = 0; i < ki->nargs; i++) free(local[i]);
+            return;
+        }
+    }
     WI wi;
     memset(&wi, 0, sizeof(wi));
     wi.dim = j->dim;
+    if (!group) set_current_wi(&wi);
     for (int d = 0; d < 3; d++) { wi.gsz[d] = j->gsz[d]; wi.lsz[d] = j->lsz[d]; wi.ngr[d] = j->ngr[d]; wi.off[d] = j->off[d]; }
     for (;;) {
+        if (j->error) break;
         long g = __sync_fetch_and_add(&j->next, 1);
         if (g < 0 || (size_t)g >= j->total) break;
         size_t gg = (size_t)g;
         wi.grp[0] = gg % j->ngr[0];
         wi.grp[1] = (gg / j->ngr[0]) % j->ngr[1];
         wi.grp[2] = gg / (j->ngr[0] * j->ngr[1]);
+        if (group) {
+            int rc = group_run(group, &wi);
+            if (rc != CL_SUCCESS) { __sync_val_compare_and_swap(&j->error, 0, rc); break; }
+            continue;
+        }
         for (size_t z = 0; z < j->lsz[2]; z++)
             for (size_t y = 0; y < j->lsz[1]; y++)
                 for (size_t x = 0; x < j->lsz[0]; x++) {
@@ -165,6 +208,8 @@ static void run_groups(JOB* j) {
                     ki->call(&wi, args);
                 }
     }
+    set_current_wi(NULL);
+    group_delete(group);
     for (int i = 0; i < ki->nargs; i++) free(local[i]);
 }
 
@@ -209,6 +254,7 @@ static void pool_start(void) {
 }
 
 static void run_job(JOB* j) {
+    DISPATCH_LOCK();
     pool_start();
     int helpers = g_nthr - 1;
     if ((size_t)helpers > j->total - 1) helpers = (int)(j->total ? j->total - 1 : 0);
@@ -216,6 +262,7 @@ static void run_job(JOB* j) {
     for (int i = 1; i <= helpers; i++) SPOST(g_start[i]);
     run_groups(j);
     for (int i = 1; i <= helpers; i++) SWAIT(g_done);
+    DISPATCH_UNLOCK();
 }
 
 /* ══ the info helper ═════════════════════════════════════════════════ */
@@ -563,14 +610,15 @@ static const char* PRELUDE =
     "typedef __SIZE_TYPE__ size_t;\ntypedef unsigned char uchar;\ntypedef unsigned short ushort;\n"
     "typedef unsigned int uint;\ntypedef unsigned long ulong;\ntypedef unsigned short half;\n"
     "#define bool _Bool\n#define true 1\n#define false 0\n#define NULL ((void*)0)\n"
-    "typedef struct { size_t gid[3], lid[3], grp[3], gsz[3], lsz[3], ngr[3], off[3]; unsigned dim; } __bcl_wi;\n"
+    "typedef struct { size_t gid[3], lid[3], grp[3], gsz[3], lsz[3], ngr[3], off[3]; unsigned dim; void* group; unsigned lane; } __bcl_wi;\n"
     "#define get_global_id(d) (__wi->gid[(d)])\n#define get_local_id(d) (__wi->lid[(d)])\n"
     "#define get_group_id(d) (__wi->grp[(d)])\n#define get_global_size(d) (__wi->gsz[(d)])\n"
     "#define get_local_size(d) (__wi->lsz[(d)])\n#define get_num_groups(d) (__wi->ngr[(d)])\n"
     "#define get_global_offset(d) (__wi->off[(d)])\n#define get_work_dim() (__wi->dim)\n"
     "#define CLK_LOCAL_MEM_FENCE 1\n#define CLK_GLOBAL_MEM_FENCE 2\n"
-    "#define barrier(f) __barrier_is_not_supported_on_Banana_OS_yet(f)\n"
-    "#define mem_fence(f) ((void)0)\n#define read_mem_fence(f) ((void)0)\n#define write_mem_fence(f) ((void)0)\n"
+    "void __bcl_barrier(const __bcl_wi*, int, int); void* __bcl_local(const __bcl_wi*, unsigned, size_t);\n"
+    "const __bcl_wi* __bcl_current(void);\n#define barrier(f) __bcl_barrier(__bcl_current(), (f), __COUNTER__)\n"
+    "void __bcl_fence(void);\n#define mem_fence(f) ((void)(f),__bcl_fence())\n#define read_mem_fence(f) mem_fence(f)\n#define write_mem_fence(f) mem_fence(f)\n"
     "double sqrt(double); double sin(double); double cos(double); double tan(double); double asin(double);\n"
     "double acos(double); double atan(double); double atan2(double, double); double exp(double); double exp2(double);\n"
     "double log(double); double log2(double); double log10(double); double pow(double, double); double fabs(double);\n"
@@ -712,6 +760,9 @@ static void sb_put(SB* b, const char* s, size_t n) {
 }
 static void sb_str(SB* b, const char* s) { sb_put(b, s, strlen(s)); }
 
+#include "cllocal.h"
+#include "clvector-prelude.h"
+
 /* one parameter's text: its type (cast form) and what it is */
 static int param(KINFO* k, int i, const char* s, size_t n, SB* tramp) {
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\n')) n--;
@@ -789,6 +840,11 @@ static int scan_kernels(cl_program p, SB* out, SB* tramp) {
         }
         KINFO* k = &p->k[nk];
         memset(k, 0, sizeof(*k));
+        /* Any synchronization/local declaration in this program can also
+         * be in a helper or macro. Conservatively schedule its kernels
+         * collectively rather than silently executing barriers serially. */
+        k->collective = strstr(src, "__bcl_local") != NULL || strstr(src, "barrier") != NULL || strstr(src, "__local") != NULL || strstr(src, "local ") != NULL ||
+                        strstr(p->options, "barrier") != NULL || strstr(p->options, "local") != NULL;
         snprintf(k->name, sizeof(k->name), "%.*s", (int)nl, name);
         char head[256];
         snprintf(head, sizeof(head), "void __bcl_call_%s(const __bcl_wi* w, void** a) { %s(w%s", k->name, k->name, none ? "" : ", ");
@@ -816,7 +872,13 @@ static int scan_kernels(cl_program p, SB* out, SB* tramp) {
     return 0;
 }
 
+static void bcl_fence(void) { __sync_synchronize(); }
+
 static void add_symbols(TCCState* t) {
+    tcc_add_symbol(t, "__bcl_current", (const void*)bcl_current);
+    tcc_add_symbol(t, "__bcl_barrier", (const void*)bcl_barrier);
+    tcc_add_symbol(t, "__bcl_local", (const void*)bcl_local);
+    tcc_add_symbol(t, "__bcl_fence", (const void*)bcl_fence);
 #define SYM(n) tcc_add_symbol(t, #n, (const void*)n)
     SYM(sqrt); SYM(sin); SYM(cos); SYM(tan); SYM(asin); SYM(acos); SYM(atan); SYM(atan2); SYM(exp); SYM(exp2);
     SYM(log); SYM(log2); SYM(log10); SYM(pow); SYM(fabs); SYM(floor); SYM(ceil); SYM(round); SYM(trunc); SYM(fmod);
@@ -871,10 +933,14 @@ cl_int clBuildProgram(cl_program p, cl_uint nd, const cl_device_id* d, const cha
     p->k = NULL;
     p->nk = 0;
     snprintf(p->options, sizeof(p->options), "%s", options ? options : "");
-    SB code = { 0, 0, 0, 0 }, tramp = { 0, 0, 0, 0 };
+    SB code = { 0, 0, 0, 0 }, tramp = { 0, 0, 0, 0 }, local_code = { 0, 0, 0, 0 };
+    char* original = p->src;
+    int lowered = lower_local_arrays(p, &local_code);
+    if (!lowered) p->src = local_code.buf;
     sb_str(&code, PRELUDE);
+    sb_str(&code, VECTOR_PRELUDE);
     cl_int rc = CL_BUILD_PROGRAM_FAILURE;
-    if (scan_kernels(p, &code, &tramp) == 0 && !code.oom && !tramp.oom) {
+    if (!lowered && scan_kernels(p, &code, &tramp) == 0 && !code.oom && !tramp.oom) {
         sb_str(&code, "\n#line 1 \"(kernel entry points)\"\n");
         if (tramp.buf) sb_str(&code, tramp.buf);
         TCCState* t = tcc_new();
@@ -913,6 +979,8 @@ cl_int clBuildProgram(cl_program p, cl_uint nd, const cl_device_id* d, const cha
         } else log_add(p, "out of memory for the compiler");
     }
     if (rc != CL_SUCCESS && !p->log) log_add(p, "the program could not be built");
+    p->src = original;
+    free(local_code.buf);
     free(code.buf);
     free(tramp.buf);
     p->status = rc == CL_SUCCESS ? CL_BUILD_SUCCESS : CL_BUILD_ERROR;
@@ -1080,13 +1148,25 @@ cl_int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, cl_uint dim, cons
             while (g > 1 && j.gsz[0] % g) g--;
             j.lsz[0] = g;
         } else j.lsz[d] = 1;
+        if (j.lsz[d] > 1024 / group_items) return CL_INVALID_WORK_GROUP_SIZE;
+        if (j.off[d] > (size_t)-1 - j.gsz[d]) return CL_INVALID_GLOBAL_OFFSET;
         group_items *= j.lsz[d];
         j.ngr[d] = j.gsz[d] / j.lsz[d];
     }
     if (group_items > 1024) return CL_INVALID_WORK_GROUP_SIZE;
-    j.total = j.ngr[0] * j.ngr[1] * j.ngr[2];
+    size_t bytes = 0;
+    for (int i = 0; i < k->info->nargs; i++) if (k->info->is_local[i]) {
+        if (k->local_size[i] > BCL_LOCAL_LIMIT - bytes) return CL_OUT_OF_RESOURCES;
+        bytes += k->local_size[i];
+    }
+    j.total = 1;
+    for (unsigned d = 0; d < 3; d++) {
+        if (j.ngr[d] > (((size_t)-1) >> 1) / j.total) return CL_INVALID_GLOBAL_WORK_SIZE;
+        j.total *= j.ngr[d];
+    }
     cl_ulong t0 = now_ns();
     run_job(&j);
+    if (j.error) return j.error;
     make_event(q, CL_COMMAND_NDRANGE_KERNEL, t0, ev);
     return CL_SUCCESS;
 }

@@ -10,6 +10,8 @@
 static int fails;
 #define CHECK(c, what) do { if (!(c)) { printf("FAIL: %s\n", what); fails++; } else printf("ok   %s\n", what); } while (0)
 
+#include "collectives.h"
+
 static const char* SRC =
     "// vector addition\n"
     "__kernel void vadd(__global const float* a, __global const float* b, __global float* c, const int n) {\n"
@@ -189,6 +191,7 @@ int main(void) {
     clReleaseMemObject(ma); clReleaseMemObject(mb); clReleaseMemObject(mc); clReleaseMemObject(mo);
     clReleaseMemObject(mv); clReleaseMemObject(mbins); clReleaseMemObject(mm); clReleaseMemObject(ms);
     clReleaseProgram(prog);
+    collective_tests(ctx, dev, q);
     clReleaseCommandQueue(q);
     clReleaseContext(ctx);
     printf("%s (%d failed)\n", fails ? "SOME TESTS FAILED" : "all tests passed", fails);

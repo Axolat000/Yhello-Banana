@@ -306,7 +306,41 @@ draw, `bgl_swap(ctx)`; after `BANANA_EV_RESIZE`, `bgl_resize(ctx)` and
 Set `USE_CL = 1` and `#include <CL/cl.h>`: the OpenCL 1.2 host API, the
 kernels compiled when the program is built (TinyCC inside the app - such
 apps build in the Banana OS source tree, which has `ports/tcc`) and run on
-every core. `examples/cltest` is a complete program.
+every core. `examples/cltest` is a complete program. Run `selftest opencl`
+inside Banana OS to install and run the matching built-in tests; the default
+`selftest` includes them too. Linux checks: `tools/test_opencl.sh` and
+`tools/test_opencl.sh i686` (the latter needs 32-bit development libraries).
+
+`barrier(flags)` supports `CLK_LOCAL_MEM_FENCE`, `CLK_GLOBAL_MEM_FENCE` or
+both. Each work-item preserves its private variables while paused; a group
+can use repeated barriers and call barriers from helper functions. Different
+groups run on different CPU workers. Common divergent barriers return
+`CL_INVALID_OPERATION`; every work-item must reach the same barrier on each
+iteration. This cannot diagnose arbitrary infinite loops or every divergent
+helper call.
+
+Local pointer arguments and block-scope `__local T name[N]` arrays are
+shared by the group. Multidimensional arrays work. Use one array per
+declaration, a literal `local`/`__local` qualifier and no initializer. Arrays
+are lowered to pointers, so `sizeof(array)` is not supported for these local
+arrays; use `sizeof(T) * N` instead. Each group has 32 KiB total local memory
+and a program can contain at most 32 local array declarations. Collective
+kernels use a 16 KiB private stack per work-item (including helper calls and
+compiler temporaries). Allocation failures and local-memory exhaustion are
+reported by the enqueue call.
+
+Vectors: `floatN`, `intN`, `uintN` for N = 2, 3, 4, 8, 16, with matching host
+`cl_floatN`, `cl_intN`, `cl_uintN` unions. Three-lane types have four-lane size;
+`vload3`/`vstore3` still read/write packed triples. Constructors such as
+`(float4)(1,2,3,4)` and `(float4)(2)`, arithmetic, scalar splats, comparisons
+(all bits set for true), integer bitwise operations, single-component stores,
+read swizzles (`.wzyx`, `.s0123`, `.lo`, `.hi`, `.even`, `.odd`) and vector
+loads/stores work. Built-ins include vector `sqrt`, `sin`, `cos`, `fabs`,
+`min`, `max`, `clamp`, `mad`, `mix`, `dot`, `length` and `normalize`.
+Other built-ins retain their scalar behavior; multi-component swizzle stores,
+other vector element types, images and samplers are not implemented. This
+is an OpenCL C subset on the CPU, with vector operations lowered to scalar
+lanes rather than GPU or SIMD execution.
 
 ### Packages (API version 11): what the App Store uses
 
