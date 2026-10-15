@@ -3430,10 +3430,16 @@ static void pins_load(void) {
     g_npins = 0;
     char v[PIN_MAX * (PKG_NAME_MAX + 4)];
     if (!settings_get("taskbar_pins", v, sizeof(v))) {
-        /* like Windows 7: the browser and Files to begin with */
+        /* like Windows 7: the browser and Files to begin with, then the App Store */
         g_pins[0].act = ACT_BROWSER; g_pins[0].app[0] = 0;
         g_pins[1].act = ACT_FILES; g_pins[1].app[0] = 0;
         g_npins = 2;
+        static pkg_info_t store;
+        if (pkg_get("store", &store) == 0) {
+            g_pins[2].act = ACT_RUN_APP;
+            kstrlcpy(g_pins[2].app, "store", PKG_NAME_MAX);
+            g_npins = 3;
+        }
         char s[16];
         if (settings_get("taskbar_style", s, sizeof(s))) { uint32_t n = 0; if (k_parse_u32(s, &n) && n <= 2) g_tb_style = (int)n; }
         return;

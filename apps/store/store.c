@@ -4,8 +4,9 @@
  * shows everything the sources offer, by category; Updates the installed
  * apps that have a newer version; Installed what is on this computer.
  * Click an app for its page: Install (with what it needs), Open, Update,
- * Remove. Refresh fetches the lists again (apt update); the sources are
- * /etc/pkg/sources.list (apt add-repo adds one).
+ * Remove. Refresh fetches the lists again (apt update). Servers lists the
+ * repositories (/etc/pkg/sources.list, as apt sources) and adds or
+ * removes them (API version 15).
  *
  * Keys: type to search, Esc clears it / goes back, Up / Down / Enter pick
  * an app, Tab moves between the pages, F5 refreshes.
@@ -39,7 +40,7 @@
 #define SANS  BANANA_FONT_SANS
 #define BOLD  BANANA_FONT_SANS_BOLD
 
-enum { PG_DISCOVER = 0, PG_UPDATES, PG_INSTALLED, PG_CATEGORY };
+enum { PG_DISCOVER = 0, PG_UPDATES, PG_INSTALLED, PG_CATEGORY, PG_SERVERS };
 enum { JOB_NONE = 0, JOB_UPDATE, JOB_INSTALL, JOB_REMOVE, JOB_UPGRADE_ALL, JOB_ICONS };
 
 static bwin_t win;
@@ -63,6 +64,14 @@ static int    hover_btn = -1;
 
 static char   status[200];
 static int    status_err;
+
+/* the Servers page: the sources, and the form that adds one */
+#define MAXSRC 16
+static banana_repo_source_t srcs[MAXSRC];
+static int    nsrcs = -1;                  /* -1: an older Banana OS (no API version 15) */
+static char   f_url[200], f_key[72];
+static int    f_focus;                     /* 0 none, 1 the address, 2 the key */
+static int    f_trust;                     /* take it without a key */
 
 /* the worker thread: one job at a time */
 static volatile int job, job_done = 1, job_rc;
@@ -397,6 +406,131 @@ static void draw_detail(void) {
     }
 }
 
+/* ── the Servers page ── */
+#define SRC_ROW 46
+static void load_sources(void) {
+    nsrcs = banana_repo_sources(srcs, MAXSRC);
+    if (nsrcs > MAXSRC) nsrcs = MAXSRC;
+}
+
+static int srv_x(void) { return main_x() + 28; }
+static int srv_w(void) { return main_w() - 56; }
+static int srv_rows_y(void) { return 96 - scroll; }
+static int srv_form_y(void) { return srv_rows_y() + (nsrcs > 0 ? nsrcs : 1) * SRC_ROW + 18; }
+
+static void field(int x, int y, int w, const char* text, const char* hint, int focused) {
+    bwin_fill_rect(&win, x, y, w, 30, 0x0F1217u);
+    bwin_rect(&win, x, y, w, 30, focused ? C_ACCENT : C_LINE);
+    if (text[0]) {
+        /* the end of a long text stays in view */
+        const char* s = text;
+        while (*s && banana_font_width(SANS, 13, s) > w - 20) s++;
+        bwin_font(&win, x + 10, y + 8, SANS, 13, s, C_TEXT);
+        if (focused) bwin_fill_rect(&win, x + 10 + banana_font_width(SANS, 13, s) + 1, y + 7, 1, 17, C_TEXT);
+    } else {
+        bwin_font(&win, x + 10, y + 8, SANS, 13, hint, 0x6A7686u);
+        if (focused) bwin_fill_rect(&win, x + 10, y + 7, 1, 17, C_TEXT);
+    }
+}
+
+static void draw_servers(void) {
+    int x = srv_x(), w = srv_w();
+    if (nsrcs < 0) {
+        bwin_font(&win, x, TOP_H + 40, SANS, 15, "This version of Banana OS cannot change the servers here - use apt add-repo.", C_DIM);
+        return;
+    }
+    int max = srv_form_y() + scroll + 230 - (win.h - 24);      /* scrolled to the end at most */
+    if (scroll > max) scroll = max > 0 ? max : 0;
+    int y = 20 - scroll;
+    bwin_font(&win, x, y, BOLD, 22, "Servers", C_TEXT);
+    text_fit(x, y + 36, SANS, 13, "The App Store gets its apps from these repositories. A new one's apps show up once it has been read.",
+             w, C_DIM);
+    y = srv_rows_y();
+    if (!nsrcs) bwin_font(&win, x + 12, y + 14, SANS, 14, "No server - add one below.", C_DIM);
+    for (int i = 0; i < nsrcs; i++, y += SRC_ROW) {
+        bwin_fill_rect(&win, x, y, w, SRC_ROW - 6, C_CARD);
+        text_fit(x + 12, y + 6, BOLD, 14, srcs[i].url, w - 130, C_TEXT);
+        const char* how = srcs[i].has_key ? "signed - its apps are checked with its key" :
+                          !strncmp(srcs[i].url, "file://", 7) ? "a folder on this computer" :
+                          srcs[i].trusted ? "trusted without a key" : "no key - not used until it has one";
+        bwin_font(&win, x + 12, y + 24, SANS, 11, how,
+                  srcs[i].has_key ? C_GREEN : srcs[i].trusted || !strncmp(srcs[i].url, "file://", 7) ? C_WARN : 0xFF8A80u);
+        pill(x + w - 96, y + 6, 84, 28, "Remove", C_LINE, 0xFF8A80u);
+    }
+    y = srv_form_y();
+    bwin_fill_rect(&win, x, y, w, 1, C_LINE);
+    bwin_font(&win, x, y + 14, BOLD, 16, "Add a server", C_TEXT);
+    bwin_font(&win, x, y + 44, SANS, 12, "Address", C_DIM);
+    field(x, y + 60, w, f_url, "https://apps.example.org/banana", f_focus == 1);
+    bwin_font(&win, x, y + 100, SANS, 12, "Key - 64 hex digits, from whoever runs the server (Ctrl+V pastes)", C_DIM);
+    field(x, y + 116, w, f_key, "the server's Ed25519 key", f_focus == 2);
+    bwin_fill_rect(&win, x, y + 158, 16, 16, f_trust ? C_ACCENT : 0x0F1217u);
+    bwin_rect(&win, x, y + 158, 16, 16, f_trust ? C_ACCENT : C_DIM);
+    if (f_trust) bwin_font(&win, x + 3, y + 158, BOLD, 12, "x", 0xFFFFFFu);
+    text_fit(x + 24, y + 158, SANS, 13, "No key: trust it anyway - anyone on the way to it could change its apps", w - 24,
+             f_trust ? C_WARN : C_TEXT);
+    pill(x, y + 188, 100, 32, "Add", C_ACCENT, 0xFFFFFFu);
+}
+
+static void add_server(void) {
+    char m[200];
+    if (busy()) { set_status(1, "%s", "Wait for the current job to finish"); return; }
+    if (!f_url[0]) { set_status(1, "%s", "Type the server's address first"); f_focus = 1; return; }
+    if (banana_repo_add_source(f_url, f_key[0] ? f_key : NULL, f_trust, m, sizeof(m)) != 0) {
+        set_status(1, "%s", m[0] ? m : "it could not be added");
+        return;
+    }
+    set_status(0, "Added %s - getting its apps...", f_url);
+    f_url[0] = f_key[0] = 0;
+    f_trust = 0;
+    f_focus = 0;
+    load_sources();
+    start_job(JOB_UPDATE, NULL);
+}
+
+static void servers_click(int mx, int my) {
+    int x = srv_x(), w = srv_w();
+    if (nsrcs < 0) return;
+    int y = srv_rows_y();
+    for (int i = 0; i < nsrcs; i++, y += SRC_ROW) {
+        if (mx >= x + w - 96 && mx < x + w - 12 && my >= y + 6 && my < y + 34) {
+            char m[200];
+            if (busy()) { set_status(1, "%s", "Wait for the current job to finish"); return; }
+            if (banana_repo_remove_source(srcs[i].url, m, sizeof(m)) == 0) {
+                set_status(0, "Removed %s", srcs[i].url);
+                load_sources();
+                start_job(JOB_UPDATE, NULL);        /* its apps leave the lists */
+            } else set_status(1, "%s", m);
+            return;
+        }
+    }
+    y = srv_form_y();
+    f_focus = 0;
+    if (mx < x || mx >= x + w) return;
+    if (my >= y + 60 && my < y + 90) f_focus = 1;
+    else if (my >= y + 116 && my < y + 146) f_focus = 2;
+    else if (my >= y + 154 && my < y + 178) f_trust = !f_trust;
+    else if (mx < x + 100 && my >= y + 188 && my < y + 220) add_server();
+}
+
+static void servers_key(int k) {
+    char* f = f_focus == 1 ? f_url : f_focus == 2 ? f_key : NULL;
+    int cap = f_focus == 1 ? (int)sizeof(f_url) : (int)sizeof(f_key);
+    if (k == '\n' || k == '\r') { add_server(); return; }
+    if (k == '\t') { f_focus = f_focus == 1 ? 2 : 1; return; }
+    if (k == 27) { f_focus = 0; return; }
+    if (!f) { if (k >= 32 && k < 127) { f_focus = 1; f = f_url; cap = sizeof(f_url); } else return; }
+    int n = (int)strlen(f);
+    if (k == '\b') { if (n) f[n - 1] = 0; return; }
+    if (k == 22) {                              /* Ctrl+V: without spaces and line ends */
+        for (const char* s = banana_paste(); *s && n < cap - 1; s++)
+            if ((unsigned char)*s > ' ' && *s != 0x7F) f[n++] = *s;
+        f[n] = 0;
+        return;
+    }
+    if (k > ' ' && k < 127 && n < cap - 1) { f[n] = (char)k; f[n + 1] = 0; }
+}
+
 static void draw_sidebar(void) {
     bwin_fill_rect(&win, 0, 0, SIDE_W, win.h, C_SIDE);
     bwin_fill_rect(&win, SIDE_W - 1, 0, 1, win.h, C_LINE);
@@ -419,12 +553,15 @@ static void draw_sidebar(void) {
         }
     }
     if (ncats) bwin_font(&win, 22, side_y(3) - 26, BOLD, 11, "CATEGORIES", C_DIM);
+    int sy = win.h - 104, sact = page == PG_SERVERS && detail < 0;
+    if (sact) bwin_fill_rect(&win, 8, sy - 6, SIDE_W - 16, 28, C_SEL);
+    bwin_font(&win, 22, sy, sact ? BOLD : SANS, 14, "Servers", C_TEXT);
     pill(16, win.h - 64, SIDE_W - 32, 30, busy() && job == JOB_UPDATE ? "Refreshing..." : "Refresh", C_LINE, C_TEXT);
 }
 
 static void draw_top(void) {
     int x = main_x() + 16, w = main_w() - 32;
-    if (detail >= 0) return;
+    if (detail >= 0 || page == PG_SERVERS) return;
     /* search box */
     int sw = w > 420 ? 360 : w - 60;
     bwin_fill_rect(&win, x, 12, sw, 32, 0x0F1217u);
@@ -447,7 +584,7 @@ static void draw_list(void) {
         else if (page == PG_UPDATES) m = "Everything is up to date.";
         else if (page == PG_INSTALLED) m = "Nothing installed from a repository yet.";
         else if (busy()) m = "Getting the list of apps...";
-        else m = "No apps yet - Refresh, or add a repository: apt add-repo <url> key=<key>";
+        else m = "No apps yet - Refresh, or add a server (Servers, on the left)";
         int tw = banana_font_width(SANS, 15, m);
         int x = main_x() + (main_w() - tw) / 2;
         if (x < main_x() + 16) x = main_x() + 16;
@@ -468,9 +605,10 @@ static void draw_list(void) {
 static void draw(void) {
     bwin_fill_rect(&win, SIDE_W, 0, win.w - SIDE_W, win.h, C_BG);
     if (detail >= 0) draw_detail();
+    else if (page == PG_SERVERS) draw_servers();
     else draw_list();
     /* cards scrolled under the top bar are covered by it */
-    if (detail < 0) bwin_fill_rect(&win, SIDE_W, 0, win.w - SIDE_W, TOP_H, C_BG);
+    if (detail < 0 && page != PG_SERVERS) bwin_fill_rect(&win, SIDE_W, 0, win.w - SIDE_W, TOP_H, C_BG);
     draw_top();
     draw_sidebar();
     /* progress */
@@ -488,6 +626,7 @@ static void draw(void) {
     bwin_fill_rect(&win, SIDE_W, by, win.w - SIDE_W, 24, C_SIDE);
     char st[220];
     if (status[0]) snprintf(st, sizeof(st), "%s", status);
+    else if (page == PG_SERVERS && detail < 0) snprintf(st, sizeof(st), "%d server%s", nsrcs > 0 ? nsrcs : 0, nsrcs == 1 ? "" : "s");
     else snprintf(st, sizeof(st), "%d app%s", nshown, nshown == 1 ? "" : "s");
     text_fit(main_x() + 12, by + 5, SANS, 12, st, main_w() - 24, status[0] && status_err ? 0xFF8A80u : status[0] ? C_GREEN : C_DIM);
     bwin_update(&win);
@@ -521,6 +660,7 @@ static void click(int mx, int my) {
     /* the sidebar */
     if (mx < SIDE_W) {
         if (my >= win.h - 64 && my < win.h - 34) { if (!busy()) { status[0] = 0; start_job(JOB_UPDATE, NULL); } return; }
+        if (my >= win.h - 110 && my < win.h - 78) { go_page(PG_SERVERS, -1); load_sources(); return; }
         for (int i = 0; i < 3 + ncats; i++) {
             int y = side_y(i);
             if (my >= y - 6 && my < y + 22) { if (i < 3) go_page(i, -1); else go_page(PG_CATEGORY, i - 3); return; }
@@ -538,6 +678,7 @@ static void click(int mx, int my) {
             if (mx >= tx + b * 112 && mx < tx + b * 112 + 100 && my >= y && my < y + 32) { do_action(detail, acts[b]); return; }
         return;
     }
+    if (page == PG_SERVERS) { servers_click(mx, my); return; }
     if (my < TOP_H) {
         int x = main_x() + 16, w = main_w() - 32;
         if (page == PG_UPDATES && updates_count() > 0 && mx >= x + w - 120 && mx < x + w && !busy()) { status[0] = 0; start_job(JOB_UPGRADE_ALL, NULL); }
@@ -563,6 +704,13 @@ static void key(int k) {
         return;
     }
     if (k == BANANA_KEY_F1 + 4) { if (!busy()) start_job(JOB_UPDATE, NULL); return; }
+    if (page == PG_SERVERS && detail < 0) {
+        if (k == BANANA_KEY_PGDN || k == BANANA_KEY_DOWN) scroll += k == BANANA_KEY_DOWN ? 40 : list_h() - 40;
+        else if (k == BANANA_KEY_PGUP || k == BANANA_KEY_UP) { scroll -= k == BANANA_KEY_UP ? 40 : list_h() - 40; if (scroll < 0) scroll = 0; }
+        else if (k == 27 && !f_focus) go_page(PG_DISCOVER, -1);
+        else servers_key(k);
+        return;
+    }
     if (k == '\t') { go_page(page == PG_CATEGORY ? PG_DISCOVER : (page + 1) % 3, -1); return; }
     if (detail >= 0) {
         if (k == '\b') { detail = -1; filter(); }
@@ -621,7 +769,7 @@ int main(int argc, char** argv) {
         if (ev.type == BANANA_EV_CLOSE) break;
         if (ev.type == BANANA_EV_KEY) key(ev.key);
         else if (ev.type == BANANA_EV_MOUSE_DOWN && ev.button == 1) click(ev.x, ev.y);
-        else if (ev.type == BANANA_EV_WHEEL) { if (detail < 0) scroll += ev.y * 48; }
+        else if (ev.type == BANANA_EV_WHEEL) { if (detail < 0) { scroll += ev.y * 48; if (scroll < 0) scroll = 0; } }
         else if (ev.type == BANANA_EV_RESIZE) {}
         else if (ev.type == BANANA_EV_MOUSE_MOVE) redraw = hover_btn != -1 ? (hover_btn = -1, 1) : 0;
         else redraw = 0;

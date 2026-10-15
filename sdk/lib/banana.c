@@ -461,6 +461,20 @@ int bwin_dropped(bwin_t* win, int index, char* path, int cap) {
     return __banana->win_dropped(win->id, index, path, cap);
 }
 
+/* ── version 15: the repositories ── */
+static int has_v15(void) {
+    return __banana->version >= 15 && __banana->size >= __builtin_offsetof(banana_api_t, repo_remove_source) + sizeof(void*);
+}
+int banana_repo_sources(banana_repo_source_t* out, int max) { return has_v15() ? __banana->repo_sources(out, max) : -1; }
+int banana_repo_add_source(const char* url, const char* key_hex, int trusted, char* msg, int mcap) {
+    if (!has_v15()) { too_old(msg, mcap); return -1; }
+    return __banana->repo_add_source(url, key_hex, trusted, msg, mcap);
+}
+int banana_repo_remove_source(const char* url, char* msg, int mcap) {
+    if (!has_v15()) { too_old(msg, mcap); return -1; }
+    return __banana->repo_remove_source(url, msg, mcap);
+}
+
 /* ── version 14: keys held down ── */
 int banana_key_down(int key) {
     if (__banana->version < 14 || __banana->size < __builtin_offsetof(banana_api_t, key_down) + sizeof(void*)) return 0;

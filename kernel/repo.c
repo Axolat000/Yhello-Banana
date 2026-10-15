@@ -230,6 +230,9 @@ int repo_add_source(const char* url, const char* key_hex, int trusted, char* msg
         kstrlcpy(msg, "the address must start with https://, http:// or file://", (size_t)mcap);
         return -1;
     }
+    if (strlen(url) >= sizeof(((repo_source_t*)0)->url)) { kstrlcpy(msg, "the address is too long", (size_t)mcap); return -1; }
+    for (const char* c = url; *c; c++)                   /* one word on its line of sources.list */
+        if ((unsigned char)*c <= ' ' || *c == 0x7F) { kstrlcpy(msg, "the address has a space in it", (size_t)mcap); return -1; }
     uint8_t k[32];
     if (key_hex && (strlen(key_hex) != 64 || unhex(key_hex, k, 32) != 0)) {
         kstrlcpy(msg, "a key is 64 hex digits (banana-repo key prints it)", (size_t)mcap);

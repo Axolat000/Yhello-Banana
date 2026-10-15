@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 14u
+#define BANANA_API_VERSION 15u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -49,6 +49,13 @@ typedef struct {
     unsigned int size;             /* download size */
     int          flags;            /* BANANA_PKG_* */
 } banana_pkg_t;
+
+/* a package repository (repo_sources, version 15) */
+typedef struct {
+    char url[200];
+    int  has_key;                  /* its package list must be signed with its key */
+    int  trusted;                  /* taken without a signature */
+} banana_repo_source_t;
 
 /* a game controller (version 12): the Xbox layout whatever the device */
 #define BANANA_PAD_A      0x0001u
@@ -379,6 +386,16 @@ typedef struct banana_api {
      * Esc - or BANANA_KEY_UP..DELETE, BANANA_KEY_F1..F12,
      * BANANA_KEY_SHIFT / CTRL / ALT. Ask for every key a frame needs. */
     int   (*key_down)(int key);
+
+    /* ── version 15: the repositories (apt sources, the App Store's servers) ── */
+    /* the sources: how many (fills out up to max) */
+    int   (*repo_sources)(banana_repo_source_t* out, int max);
+    /* adds one: url https://, http:// or file://; key_hex its Ed25519
+     * key (64 hex digits) or NULL / "" with trusted = 1 to take it
+     * unsigned. 0, or -1 (msg). Then repo_update() fetches its list. */
+    int   (*repo_add_source)(const char* url, const char* key_hex, int trusted, char* msg, int mcap);
+    /* removes the one with this URL: 0, or -1 (msg) */
+    int   (*repo_remove_source)(const char* url, char* msg, int mcap);
 } banana_api_t;
 
 /* the app's entry point (the SDK's crt0 provides it) */

@@ -104,6 +104,12 @@ int  banana_repo_remove(const char* name, char* msg, int mcap);
 int  banana_repo_status(char* msg, int mcap);
 int  banana_repo_icon(const char* name, char* path, int pcap);   /* 0: path of a picture */
 int  banana_repo_upgrade(char* msg, int mcap);             /* how many, or -1 */
+/* the repositories (API version 15): how many (-1 on an older system);
+ * add one (key_hex: its 64-hex-digit key, or NULL and trusted = 1 to take
+ * it unsigned), remove one by URL - then banana_repo_update() */
+int  banana_repo_sources(banana_repo_source_t* out, int max);
+int  banana_repo_add_source(const char* url, const char* key_hex, int trusted, char* msg, int mcap);
+int  banana_repo_remove_source(const char* url, char* msg, int mcap);
 /* game controller `index` (0-3): 1 and its state (sticks, triggers,
  * BANANA_PAD_* buttons - the Xbox layout whatever the controller), or 0 */
 int  banana_gamepad(int index, banana_gamepad_t* out);

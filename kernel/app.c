@@ -877,6 +877,38 @@ static int a_repo_upgrade(char* msg, int mcap) {
     return repo_upgrade(NULL, NULL, msg, mcap);
 }
 
+static int a_repo_sources(banana_repo_source_t* out, int max) {
+    static repo_source_t src[16];
+    int n = repo_sources(src, 16);
+    if (!out || max <= 0) return n;
+    for (int i = 0; i < n && i < max; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        kstrlcpy(out[i].url, src[i].url, sizeof(out[i].url));
+        out[i].has_key = src[i].has_key;
+        out[i].trusted = src[i].trusted;
+    }
+    return n;
+}
+
+static int a_repo_add_source(const char* url, const char* key_hex, int trusted, char* msg, int mcap) {
+    char m[200];
+    if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
+    if (!url) return -1;
+    if (key_hex && !key_hex[0]) key_hex = NULL;
+    if (!key_hex && !trusted && strncmp(url, "file://", 7)) {
+        kstrlcpy(msg, "give the server's key, or choose to trust it without one", (size_t)mcap);
+        return -1;
+    }
+    return repo_add_source(url, key_hex, trusted, msg, mcap);
+}
+
+static int a_repo_remove_source(const char* url, char* msg, int mcap) {
+    char m[200];
+    if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
+    if (!url || !url[0] || (url[0] >= '0' && url[0] <= '9')) return -1;   /* by URL only, not by number */
+    return repo_remove_source(url, msg, mcap);
+}
+
 static int a_win_dropped(int win, int index, char* path, int cap) {
     app_proc_t* p = cur();
     return appwin_dropped(win, p ? p->id : -1, index, path, cap);
@@ -1242,6 +1274,9 @@ static void api_init(void) {
     g_api.gamepad = G(a_gamepad);
     g_api.win_dropped = G(a_win_dropped);
     g_api.key_down = G(a_key_down);
+    g_api.repo_sources = G(a_repo_sources);
+    g_api.repo_add_source = G(a_repo_add_source);
+    g_api.repo_remove_source = G(a_repo_remove_source);
 }
 
 /* ── the ELF loader ────────────────────────────────────────────────── */
