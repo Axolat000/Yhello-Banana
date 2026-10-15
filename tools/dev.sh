@@ -9,9 +9,9 @@
 #                                 build, then boot without a window for a while
 #                                 (default 60 s) and check the serial log for a panic
 #   tools/dev.sh apps [bios|uefi|32]
-#                                 build, boot without a window and run apps at
-#                                 the serial console (installs and runs the
-#                                 examples: hello, threads, cltest); log in
+#                                 build, boot without a window and run
+#                                 `selftest` and the threads / cltest examples
+#                                 at the serial console; log in
 #                                 build/logs/apps-<firmware>.log
 #   tools/dev.sh clean            make clean
 #

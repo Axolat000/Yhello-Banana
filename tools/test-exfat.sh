@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # exFAT test: makes an empty exFAT image (mkfs.exfat), boots Banana OS in
-# QEMU with it as a virtio disk (/mnt/virtio), and has Banana OS write to it
-# over the serial console: files, a folder, appends, a rename to a Unicode
-# name, a copy of a binary file, 60 files (so a folder outgrows its first
-# cluster), a delete; then it unmounts and mounts the volume again and reads
-# it all back. Afterwards, on Linux: fsck.exfat must find it clean, and an
-# exFAT reader of its own (tools/exfat_check.py) checks the contents.
+# QEMU with it as a virtio disk (/mnt/virtio) and runs `fstest -k` there
+# (shell/fstest.c: files, appends, a Unicode rename, 400 KiB that grows,
+# 300 files in a folder, deletes, a remount, every byte read back). Then on
+# Linux: fsck.exfat must find the volume clean, and an exFAT reader of its
+# own (tools/exfat_check.py) checks what fstest left there.
+#
+# Inside Banana OS the same check runs on any drive: `fstest /mnt/usb`.
 #
 #   tools/test-exfat.sh [bios|uefi]          (needs exfatprogs)
 #
@@ -20,7 +21,6 @@ OUT="$ROOT/build/test"
 mkdir -p "$OUT" "$ROOT/build/logs"
 IMG="$OUT/exfat.img"
 CMDS="$OUT/exfat.cmds"
-GEARS="$ROOT/sdk/examples/gears/gears.bpk"
 
 command -v mkfs.exfat >/dev/null && command -v fsck.exfat >/dev/null || { echo "needs exfatprogs (mkfs.exfat, fsck.exfat)"; exit 1; }
 
@@ -31,23 +31,7 @@ mkfs.exfat -L BANANA "$IMG" >/dev/null || exit 1
 {
     echo "mount ## exFAT"
     echo "df ## exfat"
-    echo "echo hello exfat > /mnt/virtio/hello.txt"
-    echo "cat /mnt/virtio/hello.txt ## hello exfat"
-    echo "echo more >> /mnt/virtio/hello.txt"
-    echo "mkdir /mnt/virtio/folder"
-    echo "cp ~/Examples/gears.bpk /mnt/virtio/folder/gears.bpk"
-    echo "mv /mnt/virtio/hello.txt /mnt/virtio/folder/héllo.txt"
-    echo "mkdir /mnt/virtio/many"
-    for i in $(seq -w 1 60); do echo "echo file $i > /mnt/virtio/many/f$i.txt"; done
-    echo "echo gone > /mnt/virtio/many/delete-me.txt"
-    echo "rm /mnt/virtio/many/delete-me.txt"
-    echo "umount /mnt/virtio"
-    echo "mount -a"
-    echo "#wait 3"
-    echo "ls /mnt/virtio/folder ## gears.bpk"
-    echo "cat /mnt/virtio/folder/héllo.txt ## more"
-    echo "cat /mnt/virtio/many/f60.txt ## file 60"
-    echo "wc /mnt/virtio/folder/gears.bpk"
+    echo "fstest -k /mnt/virtio ## 0 failed"
 } > "$CMDS"
 
 echo "== Booting with an exFAT disk"
@@ -64,11 +48,22 @@ rc=$?
 echo
 echo "== On Linux: fsck.exfat"
 fsck.exfat -n "$IMG" || rc=1
-echo "== On Linux: the files"
-python3 -I "$ROOT/tools/exfat_check.py" "$IMG" list | grep -v '/many/f[0-5]' || rc=1
-n=$(python3 -I "$ROOT/tools/exfat_check.py" "$IMG" list | grep -c '/many/f')
-echo "files in /many: $n (want 60)"; [ "$n" = 60 ] || rc=1
-python3 -I "$ROOT/tools/exfat_check.py" "$IMG" cat /folder/héllo.txt | tee /dev/stderr | grep -q more || rc=1
-python3 -I "$ROOT/tools/exfat_check.py" "$IMG" cmp /folder/gears.bpk "$GEARS" || rc=1
+echo "== On Linux: what fstest left (-k)"
+CHK=(python3 -I "$ROOT/tools/exfat_check.py" "$IMG")
+"${CHK[@]}" list | grep -v '/many/f' || rc=1
+n=$("${CHK[@]}" list | grep -c '/fstest/many/f')
+echo "files in /fstest/many: $n (want 150)"; [ "$n" = 150 ] || rc=1
+[ "$("${CHK[@]}" cat '/fstest/héllo wörld.txt')" = "hello world" ] && echo "héllo wörld.txt: hello world" || { echo "héllo wörld.txt: wrong"; rc=1; }
+# fstest's 400 KiB: the same xorshift bytes, made here
+python3 -I - "$OUT/expected.bin" <<'PY'
+import sys
+x = (7 * 2654435761 + 1) & 0xFFFFFFFF
+out = bytearray()
+for _ in range(400 * 1024):
+    x ^= (x << 13) & 0xFFFFFFFF; x ^= x >> 17; x ^= (x << 5) & 0xFFFFFFFF
+    out.append(x & 0xFF)
+open(sys.argv[1], "wb").write(out)
+PY
+"${CHK[@]}" cmp /fstest/sub/big.bin "$OUT/expected.bin" || rc=1
 [ $rc -eq 0 ] && echo "== exFAT: everything checks out" || echo "== exFAT: something failed (log: build/logs/exfat.log)"
 exit $rc

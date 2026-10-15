@@ -14,13 +14,11 @@ usage: serialtest.py [--qemu BIN] [--log FILE] [--timeout S] -- <qemu args...>
 import argparse, re, socket, subprocess, sys, time
 
 DEFAULT_CMDS = [
-    "pkg install ~/Examples/hello.bpk",
-    "hello",
+    "selftest ## 0 failed",                 # (shell/selftest.c: what the OS checks itself)
     "pkg install ~/Examples/threads.bpk",
     "threads 4 200000",
     "pkg install ~/Examples/cltest.bpk",
     "cltest",
-    "pkg ps",
     "free",
 ]
 

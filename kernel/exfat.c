@@ -45,6 +45,8 @@ typedef struct {
     int      nofat;
     uint32_t pos;                       /* byte offset of its File entry in the parent's data */
     uint8_t  nsec;                      /* secondary entries after it */
+    uint8_t  namelen;                   /* its name in UTF-16 units, and the name's hash: */
+    uint16_t hash;                      /* a new name is compared only with names of the same hash */
 } xnode_t;
 
 typedef struct {
@@ -543,11 +545,14 @@ static int64_t dir_room(xvol_t* v, uint32_t dnode, int need) {
     return -1;
 }
 
-/* is name already in folder dnode (exFAT compares names up-cased)? */
+/* is name already in folder dnode (exFAT compares names up-cased)? Only
+ * names of the same length and hash are read from the volume - not every
+ * name in the folder each time (300 new files took minutes so) */
 static int name_taken(xvol_t* v, uint32_t dnode, const uint16_t* name, int n) {
+    uint16_t h = name_hash(v, name, n);
     for (uint32_t i = 1; i < v->nnodes; i++) {
         xnode_t* x = &v->nodes[i];
-        if (!x->used || x->parent != dnode) continue;
+        if (!x->used || x->parent != dnode || x->namelen != n || x->hash != h) continue;
         uint16_t other[255];
         int on = 0;
         int cnt = x->nsec + 1;
@@ -569,7 +574,8 @@ static int name_taken(xvol_t* v, uint32_t dnode, const uint16_t* name, int n) {
 
 /* writes an entry set for name into folder parent (file + stream from
  * tmpl's first two entries): its offset in *pos, its secondaries in *nsec */
-static int add_set(xvol_t* v, uint32_t parent, const char* name, const uint8_t* tmpl, uint32_t* pos, uint8_t* nsec) {
+static int add_set(xvol_t* v, uint32_t parent, const char* name, const uint8_t* tmpl, uint32_t* pos, uint8_t* nsec,
+                   uint8_t* namelen, uint16_t* hash) {
     uint16_t u[255];
     int n = to_utf16(name, u, 255);
     if (n <= 0) return -1;
@@ -599,6 +605,8 @@ static int add_set(xvol_t* v, uint32_t parent, const char* name, const uint8_t* 
         if (dir_rw(v, parent, (uint32_t)at + (uint32_t)i * 32, set + i * 32, 1) != 0) return -1;
     *pos = (uint32_t)at;
     *nsec = (uint8_t)(cnt - 1);
+    *namelen = (uint8_t)n;
+    *hash = rd16(set + 32 + 4);
     return 0;
 }
 
@@ -724,8 +732,9 @@ static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, u
     wr32(st + 20, first);
     wr64(st + 24, size);
     uint32_t pos;
-    uint8_t nsec;
-    if (add_set(v, parent, name, tmpl, &pos, &nsec) != 0) {
+    uint8_t nsec, nlen;
+    uint16_t hash;
+    if (add_set(v, parent, name, tmpl, &pos, &nsec, &nlen, &hash) != 0) {
         if (first) bmp_set(v, first, 0);
         flush(v);
         return -1;
@@ -739,6 +748,8 @@ static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, u
     n->size = n->valid = size;
     n->pos = pos;
     n->nsec = nsec;
+    n->namelen = nlen;
+    n->hash = hash;
     *node = (uint32_t)ni;
     return flush(v);
 }
@@ -767,8 +778,9 @@ static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, 
     if (dir_rw(v, old.parent, old.pos, tmpl, 0) != 0 || dir_rw(v, old.parent, old.pos + 32, tmpl + 32, 0) != 0) return -1;
     v->nodes[node].used = 0;                                /* (its own name does not count as taken) */
     uint32_t pos;
-    uint8_t nsec;
-    int rc = add_set(v, new_parent, new_name, tmpl, &pos, &nsec);
+    uint8_t nsec, nlen;
+    uint16_t hash;
+    int rc = add_set(v, new_parent, new_name, tmpl, &pos, &nsec, &nlen, &hash);
     v->nodes[node].used = 1;
     if (rc != 0) { flush(v); return -1; }
     if (del_set(v, old.parent, old.pos, old.nsec + 1) != 0) rc = -1;
@@ -776,6 +788,8 @@ static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, 
     n->parent = new_parent;
     n->pos = pos;
     n->nsec = nsec;
+    n->namelen = nlen;
+    n->hash = hash;
     if (flush(v) != 0) rc = -1;
     return rc || v->io_err ? -1 : 0;
 }
@@ -843,6 +857,8 @@ static void scan_dir(xvol_t* v, uint32_t dnode, int fsdir, int depth) {
         n->nofat = (st[1] & F_NOFAT) != 0;
         n->pos = p - (uint32_t)nsec * 32;
         n->nsec = (uint8_t)nsec;
+        n->namelen = st[3];
+        n->hash = rd16(st + 4);
         if (n->first && !valid_clus(v, n->first)) { n->used = 0; continue; }
         uint32_t mt = unstamp(rd32(e + 12)), ct = unstamp(rd32(e + 8));
         if (n->is_dir) {
