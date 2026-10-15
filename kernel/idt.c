@@ -7,6 +7,7 @@
 #include "smp.h"
 #include "task.h"
 #include "timer.h"
+#include "uspace.h"
 
 #define VGA_MEMORY ((volatile uint16_t*)0xB8000)
 
@@ -196,6 +197,13 @@ void isr_handler(registers_t* regs) {
     uint32_t n = regs->int_no;
     const char* name = (n < 32) ? exception_names[n] : "Unknown";
 
+    /* app memory another core still knew as the kernel's: try it again */
+    if (n == 14 && (regs->cs & 3) == 3) {
+        uintptr_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (uspace_fault_is_stale(cr2, (uint32_t)regs->err_code)) return;
+    }
+
     /* on another core it is app code that faulted: the app is stopped on
      * the boot core (kernel/task.c) - this returns only for a kernel bug */
     if (n < 32 && cpu_id() != 0) {
@@ -343,7 +351,7 @@ void irq_handler(registers_t* regs) {
     if (irq >= 8) pic_outb(PIC2_CMD, 0x20);
     pic_outb(PIC1_CMD, 0x20);
     /* app code is safe to switch away from (kernel code is not) */
-    app_preempt((uintptr_t)REG_IP(regs));
+    app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
     task_kpreempt((uintptr_t)REG_IP(regs));     /* (kernel code that may be preempted) */
 }
 
@@ -446,7 +454,17 @@ struct tss64 {
  * knows which one it is (cpu_id(), kernel/smp.h). */
 static struct tss64 g_tss[SMP_MAX_CPUS];
 static uint8_t g_fault_stack[SMP_MAX_CPUS][16384] __attribute__((aligned(16)));
-static uint64_t g_gdt[2 + 2 * SMP_MAX_CPUS];   /* null, 64-bit code (0x08), a TSS (16 bytes) per core */
+/* null, 64-bit code (0x08), a TSS (16 bytes) per core, then ring 3's data
+ * and code (apps: kernel/app.c) */
+#define GDT_USER (2 + 2 * SMP_MAX_CPUS)
+static uint64_t g_gdt[GDT_USER + 2];
+/* the selectors apps run with (kernel/appcall64.asm) */
+uint64_t g_user_ss = (GDT_USER * 8) | 3;
+uint64_t g_user_cs = ((GDT_USER + 1) * 8) | 3;
+
+void tss_set_rsp0(int cpu, uintptr_t rsp0) {
+    if (cpu >= 0 && cpu < SMP_MAX_CPUS) g_tss[cpu].rsp[0] = rsp0;
+}
 
 static void gdt_load_cpu(int cpu) {
     struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gp = { sizeof(g_gdt) - 1, (uint64_t)(uintptr_t)g_gdt };
@@ -471,6 +489,8 @@ static void tss_init(void) {
                            (((limit >> 16) & 0xF) << 48) | (((base >> 24) & 0xFF) << 56);
         g_gdt[3 + 2 * c] = base >> 32;
     }
+    g_gdt[GDT_USER] = 0x00CFF2000000FFFFull;        /* data, ring 3 */
+    g_gdt[GDT_USER + 1] = 0x00AFFA000000FFFFull;    /* 64-bit code, ring 3 */
     gdt_load_cpu(0);
 }
 
@@ -481,6 +501,7 @@ void idt_ap_init(int cpu) {
 }
 
 extern void ipi_stub(void);
+extern void syscall_stub(void);
 extern void stray_stub(void);
 extern void spurious_stub(void);
 extern void lapic_timer_stub(void);
@@ -491,7 +512,7 @@ void ipi_handler(registers_t* regs) {
         /* the boot core's local APIC timer, standing in for the PIT (IRQ 0) */
         for (int i = 0; i < IRQ_CHAIN && irq_handlers[0][i]; i++) irq_handlers[0][i]();
         smp_eoi();
-        app_preempt((uintptr_t)REG_IP(regs));
+        app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
         task_kpreempt((uintptr_t)REG_IP(regs));
         return;
     }
@@ -506,6 +527,8 @@ void irq_timer_from_lapic(int on) {
     else irq_mask &= (uint16_t)~1u;
     pic_apply_mask();
 }
+#else
+void tss_set_rsp0(int cpu, uintptr_t rsp0) { (void)cpu; (void)rsp0; }   /* (apps stay in ring 0) */
 #endif
 
 void idt_init(void) {
@@ -532,6 +555,7 @@ void idt_init(void) {
     idt_set_gate(SMP_VEC_KICK, (uintptr_t)ipi_stub, code_sel, 0x8E);
     idt_set_gate(SMP_VEC_TIMER, (uintptr_t)lapic_timer_stub, code_sel, 0x8E);
     idt_set_gate(SMP_VEC_SPURIOUS, (uintptr_t)spurious_stub, code_sel, 0x8E);
+    idt_set_gate(SYSCALL_VECTOR, (uintptr_t)syscall_stub, code_sel, 0xEE);   /* callable from ring 3 */
 #endif
 
     __asm__ volatile("lidt %0" : : "m"(idtp));

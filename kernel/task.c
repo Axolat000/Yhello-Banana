@@ -7,6 +7,7 @@
 #include "smp.h"
 #include "app.h"
 #include "serial.h"
+#include "paging.h"
 
 /*
  * Real cooperative kernel threads, scheduled fairly.
@@ -78,6 +79,8 @@ typedef struct task {
     uint32_t     fault_vec, fault_err;    /* a fault on another core, reported on the boot core */
     uintptr_t    fault_ip, fault_addr;
     uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
+    uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
+    uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
 } task_t;
 
 static task_t           g_tasks[TASK_MAX];
@@ -390,6 +393,27 @@ static void guard_check(task_t* t) {
         }
 }
 
+/* the page tables and the ring-3 entry stack of task t, on processor core
+ * cpu (kernel/app.c: apps run on their own, kernel/uspace.c) */
+static void enter_space(const task_t* t, int cpu) {
+#ifdef __x86_64__
+    if (t->rsp0) tss_set_rsp0(cpu, t->rsp0);
+    uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(have));
+    if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
+#else
+    (void)t; (void)cpu;
+#endif
+}
+
+void task_set_user(uintptr_t cr3, uintptr_t rsp0) {
+    task_t* t = g_current;
+    if (!t) return;
+    t->cr3 = cr3;
+    t->rsp0 = rsp0;
+    enter_space(t, 0);
+}
+
 static void switch_to(task_t* cur, task_t* nxt) {
     uint64_t now = rdtsc();
     int invol = g_involuntary;
@@ -418,6 +442,7 @@ static void switch_to(task_t* cur, task_t* nxt) {
     g_prev = cur;
     guard_check(cur);
     fpu_save(cur->fpu);
+    enter_space(nxt, 0);
     task_switch(&cur->sp, nxt->sp);
     after_switch(cur);
 }
@@ -549,6 +574,8 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->no_kpreempt = 0;
     t->cpu = 0;
     t->came_home = 0;
+    t->cr3 = 0;
+    t->rsp0 = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
 
     uintptr_t* sp = &t->stack[TASK_STACK_WORDS];
@@ -881,11 +908,14 @@ void task_ap_loop(int cpu) {
         t->cpu = cpu;
         a->task = t;
         if (!a->used) { a->first = t; a->used = 1; }   /* sysmon logs it (the kernel is not ours here) */
+        /* its page tables - loaded again even if the same: the boot core
+         * may have changed them (guard pages) since */
 #ifdef __x86_64__
-        /* the boot core may have changed page tables (guard pages) since */
         __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
 #endif
+        enter_space(t, cpu);
         task_switch(&a->idle_sp, t->sp);
+        enter_space(&g_idle, cpu);          /* the kernel's tables again: t's may go away */
         /* t stopped: a system call, its turn ended, or a fault */
         a->task = NULL;
         t->ap_vr += (timer_ms() - a->since) * 1000u * 1024u / t->weight + 1;

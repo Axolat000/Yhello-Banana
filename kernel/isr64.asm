@@ -179,3 +179,23 @@ ipi_common_stub:
     POP_ALL
     add rsp, 16
     iretq
+
+; ── system calls from apps (ring 3): int 0x80 ─────────────────────────
+; The app's call table points at stubs "mov eax, slot; int 0x80; ret"
+; (kernel/app.c): rax is the slot, the arguments are where the System V
+; ABI puts them (rdi, rsi, rdx, rcx, r8, r9, then the app's stack). The
+; CPU switched to the task's kernel stack (TSS rsp0); app_syscall() gets
+; the saved registers and leaves its result in their rax.
+global syscall_stub
+extern app_syscall
+
+syscall_stub:
+    push qword 0
+    push qword 0x80
+    PUSH_ALL
+    cld
+    mov rdi, rsp
+    call app_syscall
+    POP_ALL
+    add rsp, 16
+    iretq

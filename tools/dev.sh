@@ -8,6 +8,11 @@
 #   tools/dev.sh test [bios|uefi|32] [seconds]
 #                                 build, then boot without a window for a while
 #                                 (default 60 s) and check the serial log for a panic
+#   tools/dev.sh apps [bios|uefi|32]
+#                                 build, boot without a window and run apps at
+#                                 the serial console (installs and runs the
+#                                 examples: hello, threads, cltest); log in
+#                                 build/logs/apps-<firmware>.log
 #   tools/dev.sh clean            make clean
 #
 # Environment: MEM (QEMU memory, default 512M), SMP (cores, default 4),
@@ -116,10 +121,22 @@ do_test() {
     tail -15 "$log"
 }
 
+do_apps() {
+    local fw="${1:-bios}"
+    do_build
+    qemu_args "$fw"
+    bold "== Running apps over the serial console ($fw) - log: build/logs/apps-$fw.log"
+    python3 "$ROOT/tools/serialtest.py" --qemu "$QEMU_BIN" --log "$LOGS/apps-$fw.log" -- "${QEMU_ARGS[@]}"
+    local rc=$?
+    if [ $rc -eq 0 ]; then green "== Every app ran"; else red "== Something failed (see above and build/logs/apps-$fw.log)"; fi
+    return $rc
+}
+
 case "${1:-build}" in
     build) do_build ;;
     run)   do_run "${2:-bios}" ;;
     test)  do_test "${2:-bios}" "${3:-60}" ;;
+    apps)  do_apps "${2:-bios}" ;;
     clean) (cd "$ROOT" && make clean) ;;
-    *)     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

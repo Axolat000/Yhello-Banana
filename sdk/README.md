@@ -202,10 +202,10 @@ The C library also has the POSIX pieces ported code expects: `open`,
 `errno` codes. That is enough for FFmpeg: `ports/ffmpeg/build.sh` builds
 it (libavformat, libavcodec, libswscale, libswresample) as static
 libraries for both CPUs, and `apps/mediaplayer` and `apps/music` show how
-an app links them (`LIBS_i686` / `LIBS_x86_64` in its Makefile). Apps run
-in ring 0, where interrupts use the app's stack: code must not keep data
-below the stack pointer (`-mno-red-zone` - the build script patches the
-two FFmpeg assembly files that did).
+an app links them (`LIBS_i686` / `LIBS_x86_64` in its Makefile). On the
+32-bit kernel apps run in ring 0, where interrupts use the app's stack:
+code must not keep data below the stack pointer (`-mno-red-zone` - the
+build script patches the two FFmpeg assembly files that did).
 
 Since API version 8 any HTTP request can be made: `banana_http_post(url,
 form, ...)` (with `banana_url_encode()` for the form's values) and
@@ -238,8 +238,12 @@ examples in `driver/examples`) into `.bpk` packages of type `driver`.
   and apps are built with `-fstack-clash-protection`, so an overflow is caught
   and reported ("stack overflow"); the 32-bit kernel has no paging and only
   catches small overflows. Use `malloc` for big buffers.
-- Apps still run in ring 0 with the kernel and can reach all memory: a stray
-  write through a wild (non-NULL) pointer can damage the system.
+- On the 64-bit kernel apps run in ring 3, in an address space of their own:
+  only the app's own memory is open to it, a wild pointer stops just the app,
+  and every pointer handed to a `__banana` call is checked to be its memory
+  (passing anything else stops the app). Already-built apps work unchanged.
+  On the 32-bit kernel (no paging) apps still run in ring 0 and a stray write
+  can damage the system.
 - **Resizable windows**: call `bwin_resizable(&win, min_w, min_h)` and handle
   `BANANA_EV_RESIZE` - `bwin_event()` has already updated `win.w`, `win.h`
   and `win.px` then; redraw everything (see `clock.c`, `mandel.c`). Users resize

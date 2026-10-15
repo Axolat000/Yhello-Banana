@@ -168,6 +168,49 @@ void* kmalloc(size_t size) {
     return p;
 }
 
+/* a free block holding `need` bytes that start at a multiple of `align`:
+ * the part before that start stays a free block of its own */
+static void* find_fit_aligned(uint32_t need, uint32_t align) {
+    for (block_t* b = g_head; b; b = b->next) {
+        if (b->used || b->size < need) continue;
+        uintptr_t s = (uintptr_t)b + HDR, end = s + b->size;
+        uintptr_t a = (s + align - 1) & ~(uintptr_t)(align - 1);
+        /* room for the front block's header and a payload worth keeping */
+        while (a != s && a - s < HDR + MIN_SPLIT) a += align;
+        if (a + need > end) continue;
+        if (a != s) {
+            block_t* n = (block_t*)(a - HDR);
+            n->size = (uint32_t)(end - a);
+            n->used = 0;
+            n->prev = b;
+            n->next = b->next;
+            if (b->next) b->next->prev = n;
+            b->next = n;
+            b->size = (uint32_t)((uintptr_t)n - s);
+            b = n;
+        }
+        split(b, need);
+        b->used = HEAP_MAGIC;
+        g_used += b->size;
+        return (uint8_t*)b + HDR;
+    }
+    return NULL;
+}
+
+void* kmalloc_aligned(size_t size, size_t align) {
+    if (align <= ALIGN) return kmalloc(size);
+    if (!g_head || size == 0 || size > 0xF0000000u || (align & (align - 1))) return NULL;
+    uint32_t need = align_up((uint32_t)size, ALIGN);
+    void* p = find_fit_aligned(need, (uint32_t)align);
+    if (!p && may_reclaim()) {
+        g_reclaiming = 1;
+        g_reclaim(need + (uint32_t)align + HDR);
+        g_reclaiming = 0;
+        p = find_fit_aligned(need, (uint32_t)align);
+    }
+    return p;
+}
+
 void* kzalloc(size_t size) {
     void* p = kmalloc(size);
     if (p) memset(p, 0, size);

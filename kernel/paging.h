@@ -31,4 +31,8 @@ int  paging_guard(uintptr_t addr, uint32_t size, int guard);
 void paging_pat_init(void);
 int  paging_set_wc(uint64_t phys, uint64_t size);
 
+/* the kernel's own page tables (64-bit; 0 on the 32-bit kernel, which runs
+ * without paging): what CR3 holds outside of apps (kernel/uspace.c) */
+uintptr_t paging_kernel_cr3(void);
+
 #endif

@@ -18,6 +18,8 @@
 
 /* ── app side (owner: the app's process id) ── */
 int       appwin_open(int owner, const char* title, int w, int h);   /* id, or -1 */
+/* an app's window (owner: its app id): the picture is in the app's memory */
+int       appwin_open_app(int app, const char* title, int w, int h);
 uint32_t* appwin_pixels(int id, int owner);
 void      appwin_update(int id, int owner);
 int       appwin_event(int id, int owner, banana_event_t* ev);

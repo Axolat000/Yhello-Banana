@@ -5,6 +5,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "timer.h"
+#include "app.h"
 
 #define TITLE_H  20
 #define BORDER   3
@@ -20,6 +21,7 @@ typedef struct {
     int       x, y;                /* outer top-left */
     int       cw, ch;              /* client (pixel buffer) size */
     uint32_t* px;                  /* what the app draws into */
+    int       app_mem;             /* px is the app's own memory (kernel/app.c: an app in ring 3) */
     uint32_t* shown;               /* what the desktop shows: px as of the last win_update */
     banana_event_t q[EVQ];
     int       qh, qt;
@@ -111,7 +113,23 @@ static awin_t* front(void) {
 static int max_cw(void) { return scr_w() - 2 * BORDER; }
 static int max_ch(void) { return scr_h() - 28 - TITLE_H - 2 * BORDER; }
 
-int appwin_open(int owner, const char* title, int w, int h) {
+/* the picture an app draws into is its own memory (it may not write the
+ * kernel's); the kernel's windows (Remote Desktop) keep kernel memory */
+static uint32_t* px_alloc(int app, int owner, size_t bytes) {
+    return app ? (uint32_t*)app_mem_alloc(owner, bytes) : (uint32_t*)kmalloc(bytes);
+}
+
+static void px_free(int app, int owner, uint32_t* px) {
+    if (app) app_mem_free(owner, px);
+    else kfree(px);
+}
+
+static int open_win(int owner, const char* title, int w, int h, int app);
+
+int appwin_open(int owner, const char* title, int w, int h) { return open_win(owner, title, w, h, 0); }
+int appwin_open_app(int app, const char* title, int w, int h) { return open_win(app, title, w, h, 1); }
+
+static int open_win(int owner, const char* title, int w, int h, int app) {
     if (w < 32) w = 32;
     if (h < 16) h = 16;
     if (w > max_cw()) w = max_cw();
@@ -119,10 +137,11 @@ int appwin_open(int owner, const char* title, int w, int h) {
     for (int i = 0; i < APPWIN_MAX; i++) {
         awin_t* a = &g_w[i];
         if (a->used) continue;
-        uint32_t* px = (uint32_t*)kmalloc((uint32_t)w * (uint32_t)h * 4);
+        uint32_t* px = px_alloc(app, owner, (size_t)w * (size_t)h * 4);
         uint32_t* shown = (uint32_t*)kmalloc((uint32_t)w * (uint32_t)h * 4);
-        if (!px || !shown) { kfree(px); kfree(shown); return -1; }
+        if (!px || !shown) { if (px) px_free(app, owner, px); kfree(shown); return -1; }
         memset(a, 0, sizeof(*a));
+        a->app_mem = app;
         memset32(px, 0x00FFFFFFu, (size_t)w * (size_t)h);
         memset32(shown, 0x00FFFFFFu, (size_t)w * (size_t)h);
         a->used = 1;
@@ -169,14 +188,14 @@ static void apply_resize(awin_t* w) {
     if (!w->pending) return;
     w->pending = 0;
     if (w->pw == w->cw && w->ph == w->ch) return;
-    uint32_t* np = (uint32_t*)kmalloc((uint32_t)w->pw * (uint32_t)w->ph * 4);
+    uint32_t* np = px_alloc(w->app_mem, w->owner, (size_t)w->pw * (size_t)w->ph * 4);
     uint32_t* ns = (uint32_t*)kmalloc((uint32_t)w->pw * (uint32_t)w->ph * 4);
-    if (!np || !ns) { kfree(np); kfree(ns); return; }   /* no memory: stays as it is */
+    if (!np || !ns) { if (np) px_free(w->app_mem, w->owner, np); kfree(ns); return; }   /* no memory: stays as it is */
     memset32(np, 0x00FFFFFFu, (size_t)w->pw * (size_t)w->ph);
     int cw = w->cw < w->pw ? w->cw : w->pw, ch = w->ch < w->ph ? w->ch : w->ph;
     for (int y = 0; y < ch; y++) memcpy(np + (size_t)y * (size_t)w->pw, w->shown + (size_t)y * (size_t)w->cw, (size_t)cw * 4);
     memcpy(ns, np, (size_t)w->pw * (size_t)w->ph * 4);
-    kfree(w->px);
+    px_free(w->app_mem, w->owner, w->px);
     kfree(w->shown);
     w->px = np;
     w->shown = ns;
@@ -227,7 +246,7 @@ void appwin_set_resizable(int id, int owner, int min_w, int min_h) {
 static void destroy(int id) {
     awin_t* w = &g_w[id];
     if (!w->used) return;
-    kfree(w->px);
+    if (w->px) px_free(w->app_mem, w->owner, w->px);
     kfree(w->shown);
     w->px = w->shown = NULL;
     if (w->drop) { kfree(w->drop); w->drop = NULL; }
