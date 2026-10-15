@@ -568,6 +568,11 @@ int appwin_front_id(void) {
     return w ? (int)(w - g_w) : -1;
 }
 
+int appwin_focused_owner(void) {
+    awin_t* w = g_focused ? front() : NULL;
+    return w ? w->owner : -1;
+}
+
 void appwin_minimize(int id, int min) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
     g_w[id].min = min ? 1 : 0;

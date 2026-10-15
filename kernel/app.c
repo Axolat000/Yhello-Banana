@@ -896,6 +896,31 @@ static int a_gamepad(int index, banana_gamepad_t* out) {
     return r;
 }
 
+/* a key held now, if the app has the keyboard (its terminal or its window in front) */
+static int a_key_down(int key) {
+    app_proc_t* p = cur();
+    if (!p || !(focused(p) || appwin_focused_owner() == p->id)) return 0;
+    switch (key) {                      /* the arrows etc.: the E0 keys, or the keypad's */
+    case BANANA_KEY_UP:     return keyboard_held(0xC8) || keyboard_held(0x48);
+    case BANANA_KEY_DOWN:   return keyboard_held(0xD0) || keyboard_held(0x50);
+    case BANANA_KEY_LEFT:   return keyboard_held(0xCB) || keyboard_held(0x4B);
+    case BANANA_KEY_RIGHT:  return keyboard_held(0xCD) || keyboard_held(0x4D);
+    case BANANA_KEY_HOME:   return keyboard_held(0xC7) || keyboard_held(0x47);
+    case BANANA_KEY_END:    return keyboard_held(0xCF) || keyboard_held(0x4F);
+    case BANANA_KEY_PGUP:   return keyboard_held(0xC9) || keyboard_held(0x49);
+    case BANANA_KEY_PGDN:   return keyboard_held(0xD1) || keyboard_held(0x51);
+    case BANANA_KEY_DELETE: return keyboard_held(0xD3) || keyboard_held(0x53);
+    case BANANA_KEY_SHIFT:  return keyboard_held(0x2A) || keyboard_held(0x36);
+    case BANANA_KEY_CTRL:   return keyboard_held(0x1D) || keyboard_held(0x9D);
+    case BANANA_KEY_ALT:    return keyboard_held(0x38) || keyboard_held(0xB8);
+    }
+    if (key >= BANANA_KEY_F1 && key <= BANANA_KEY_F12) {
+        int i = key - BANANA_KEY_F1;
+        return keyboard_held(i < 10 ? 0x3B + i : 0x57 + (i - 10));
+    }
+    return keyboard_held_char(key);
+}
+
 static int a_app_run(const char* name, int argc, char** argv, char* err, int ecap) {
     char e[128];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
@@ -1216,6 +1241,7 @@ static void api_init(void) {
     g_api.repo_upgrade = G(a_repo_upgrade);
     g_api.gamepad = G(a_gamepad);
     g_api.win_dropped = G(a_win_dropped);
+    g_api.key_down = G(a_key_down);
 }
 
 /* ── the ELF loader ────────────────────────────────────────────────── */

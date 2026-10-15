@@ -268,6 +268,25 @@ static int dispatch(page_t* p, dom_node_t* target, const char* type, const char*
 int jsdom_dispatch(page_t* p, dom_node_t* target, const char* type) { return dispatch(p, target, type, NULL); }
 int jsdom_dispatch_key(page_t* p, dom_node_t* target, const char* type, const char* key) { return dispatch(p, target, type, key); }
 
+int jsdom_dispatch_keyev(page_t* p, dom_node_t* target, const char* type, const char* key,
+                         const char* code, int keycode, int mods) {
+    if (!p->js || !target) return 0;
+    interp_t* I = p->js;
+    obj_t* ev = obj_new(I, OBJ_PLAIN);
+    ev->proto = event_proto(p);
+    obj_set(I, ev, "bubbles", v_bool(1));
+    obj_set(I, ev, "key", v_str(I, key));
+    obj_set(I, ev, "code", v_str(I, code));
+    obj_set(I, ev, "keyCode", v_num(keycode));
+    obj_set(I, ev, "which", v_num(keycode));
+    obj_set(I, ev, "shiftKey", v_bool(mods & 1));
+    obj_set(I, ev, "ctrlKey", v_bool((mods >> 1) & 1));
+    obj_set(I, ev, "altKey", v_bool((mods >> 2) & 1));
+    obj_set(I, ev, "metaKey", v_bool(0));
+    obj_set(I, ev, "repeat", v_bool(0));
+    return dispatch_ev(p, target, type, NULL, ev);
+}
+
 void jsdom_run_handlers_from_attrs(page_t* p) { (void)p; }
 
 /* ══ style ════════════════════════════════════════════════════════════ */

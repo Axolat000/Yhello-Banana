@@ -1271,6 +1271,88 @@ static void paste_now(void) {
     set_status("Click a text field first, then paste", 0);
 }
 
+/* ── keys for games: keydown / keyup as each key goes down and up ──
+ * Typing repeats only the last key held; a game wants every key down at
+ * once. While the page has no text field focused its document gets these
+ * (with event.code) instead of the typed keys. */
+typedef struct { uint8_t sc; uint8_t kc; const char* key; const char* code; } live_key_t;
+static const live_key_t LIVE[] = {     /* key NULL: what the key types */
+    {0x01,27,"Escape","Escape"}, {0x02,49,0,"Digit1"}, {0x03,50,0,"Digit2"}, {0x04,51,0,"Digit3"},
+    {0x05,52,0,"Digit4"}, {0x06,53,0,"Digit5"}, {0x07,54,0,"Digit6"}, {0x08,55,0,"Digit7"},
+    {0x09,56,0,"Digit8"}, {0x0A,57,0,"Digit9"}, {0x0B,48,0,"Digit0"}, {0x0C,189,0,"Minus"},
+    {0x0D,187,0,"Equal"}, {0x0E,8,"Backspace","Backspace"}, {0x0F,9,"Tab","Tab"},
+    {0x10,81,0,"KeyQ"}, {0x11,87,0,"KeyW"}, {0x12,69,0,"KeyE"}, {0x13,82,0,"KeyR"}, {0x14,84,0,"KeyT"},
+    {0x15,89,0,"KeyY"}, {0x16,85,0,"KeyU"}, {0x17,73,0,"KeyI"}, {0x18,79,0,"KeyO"}, {0x19,80,0,"KeyP"},
+    {0x1A,219,0,"BracketLeft"}, {0x1B,221,0,"BracketRight"}, {0x1C,13,"Enter","Enter"},
+    {0x1D,17,"Control","ControlLeft"},
+    {0x1E,65,0,"KeyA"}, {0x1F,83,0,"KeyS"}, {0x20,68,0,"KeyD"}, {0x21,70,0,"KeyF"}, {0x22,71,0,"KeyG"},
+    {0x23,72,0,"KeyH"}, {0x24,74,0,"KeyJ"}, {0x25,75,0,"KeyK"}, {0x26,76,0,"KeyL"},
+    {0x27,186,0,"Semicolon"}, {0x28,222,0,"Quote"}, {0x29,192,0,"Backquote"},
+    {0x2A,16,"Shift","ShiftLeft"}, {0x2B,220,0,"Backslash"},
+    {0x2C,90,0,"KeyZ"}, {0x2D,88,0,"KeyX"}, {0x2E,67,0,"KeyC"}, {0x2F,86,0,"KeyV"}, {0x30,66,0,"KeyB"},
+    {0x31,78,0,"KeyN"}, {0x32,77,0,"KeyM"}, {0x33,188,0,"Comma"}, {0x34,190,0,"Period"},
+    {0x35,191,0,"Slash"}, {0x36,16,"Shift","ShiftRight"}, {0x38,18,"Alt","AltLeft"},
+    {0x39,32," ","Space"},
+    {0x3B,112,"F1","F1"}, {0x3C,113,"F2","F2"}, {0x3D,114,"F3","F3"}, {0x3E,115,"F4","F4"},
+    {0x3F,116,"F5","F5"}, {0x40,117,"F6","F6"}, {0x41,118,"F7","F7"}, {0x42,119,"F8","F8"},
+    {0x43,120,"F9","F9"}, {0x44,121,"F10","F10"}, {0x57,122,"F11","F11"}, {0x58,123,"F12","F12"},
+    {0x9C,13,"Enter","NumpadEnter"}, {0x9D,17,"Control","ControlRight"}, {0xB8,18,"Alt","AltRight"},
+    {0xC7,36,"Home","Home"}, {0xC8,38,"ArrowUp","ArrowUp"}, {0xC9,33,"PageUp","PageUp"},
+    {0xCB,37,"ArrowLeft","ArrowLeft"}, {0xCD,39,"ArrowRight","ArrowRight"}, {0xCF,35,"End","End"},
+    {0xD0,40,"ArrowDown","ArrowDown"}, {0xD1,34,"PageDown","PageDown"}, {0xD3,46,"Delete","Delete"},
+};
+#define NLIVE ((int)(sizeof(LIVE) / sizeof(LIVE[0])))
+static uint8_t g_live_down[NLIVE];     /* the page was told it is down */
+static uint8_t g_live_prev[NLIVE];     /* ... and its keydown prevented the default */
+static page_t* g_live_page;
+
+static int live_send(tab_t* t, int i, int down, int mods) {
+    char kb[2];
+    const char* key = LIVE[i].key;
+    if (!key) { kb[0] = keyboard_us_char(LIVE[i].sc, mods & 1); kb[1] = 0; key = kb; }
+    return page_key_live(t->page, down, key, LIVE[i].code, LIVE[i].kc, mods);
+}
+
+/* tells the page which keys went down or up since the last look */
+static void live_keys(void) {
+    tab_t* t = cur_tab();
+    page_t* p = t && !t->loading ? t->page : NULL;
+    if (p != g_live_page) {             /* another page: it knows of no key */
+        memset(g_live_down, 0, sizeof(g_live_down));
+        memset(g_live_prev, 0, sizeof(g_live_prev));
+        for (int i = 0; i < NLIVE; i++) keyboard_take_pressed(LIVE[i].sc);   /* old taps: not its */
+        g_live_page = p;
+    }
+    int on = p && p->js && !p->focus && !g_addr_focus && !g_alert[0] && !g_pick_on && gui_browser_focused();
+    if (on) p->live_keys = 1;
+    int mods = keyboard_mods(), any = 0;
+    for (int i = 0; i < NLIVE; i++) {
+        int tap = keyboard_take_pressed(LIVE[i].sc);
+        if (!p) continue;
+        int d = on && keyboard_held(LIVE[i].sc);
+        if (on && tap && !d && !g_live_down[i]) {       /* down and up again between two looks */
+            g_live_prev[i] = (uint8_t)live_send(t, i, 1, mods);
+            live_send(t, i, 0, mods);
+            any = 1;
+            continue;
+        }
+        if (d == g_live_down[i]) continue;
+        g_live_down[i] = (uint8_t)d;                    /* (off: what was down goes up) */
+        int pr = live_send(t, i, d, mods);
+        if (d) g_live_prev[i] = (uint8_t)pr;
+        any = 1;
+    }
+    if (any) after_page_event(t);
+}
+
+/* the page's keydown for set-1 key `sc` called preventDefault(): no scrolling */
+static int live_prevented(int sc) {
+    tab_t* t = cur_tab();
+    if (!t || !g_live_page || t->page != g_live_page) return 0;
+    for (int i = 0; i < NLIVE; i++) if (LIVE[i].sc == sc) return g_live_prev[i];
+    return 0;
+}
+
 static void handle_key(char c) {
     tab_t* t = cur_tab();
     if (!t) return;
@@ -1303,12 +1385,15 @@ static void handle_key(char c) {
         return;
     }
     if (t->page && !t->loading && page_key(t->page, c)) { after_page_event(t); return; }
-    if (c == ' ') scroll_by(g_vh - 40);
-    else if (c == '\b') history_go(-1);
+    if (c == ' ' && !live_prevented(0x39)) scroll_by(g_vh - 40);
+    else if (c == '\b' && !live_prevented(0x0E)) history_go(-1);
 }
 
 static void handle_arrow(char a) {
     if (g_addr_focus) return;
+    int sc = a == 'A' ? 0xC8 : a == 'B' ? 0xD0 : (a == 'I' || a == '5') ? 0xC9 :
+             (a == 'G' || a == '6') ? 0xD1 : a == 'H' ? 0xC7 : a == 'F' ? 0xCF : 0;
+    if (sc && live_prevented(sc)) return;            /* a game has the arrows */
     if (a == 'A') scroll_by(-40);
     else if (a == 'B') scroll_by(40);
     else if (a == 'I' || a == '5') scroll_by(-(g_vh - 40));   /* PgUp: ESC [ I (ESC [ 5 ~) */
@@ -1318,9 +1403,11 @@ static void handle_arrow(char a) {
 }
 
 static void read_keys(void) {
+    live_keys();                        /* (also when unfocused: what was down goes up) */
     if (!gui_browser_focused()) return;
     for (int k = 0; k < 64; k++) {
         char c = keyboard_try_getchar();
+        live_keys();                    /* the keydown before the typing it caused */
         if (!c) return;
         if (g_pick_on && fc_active()) {                /* the file chooser has the keys */
             if (c == 27) {

@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 13u
+#define BANANA_API_VERSION 14u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -111,6 +111,9 @@ typedef struct {
 #define BANANA_KEY_STOP   0x121
 #define BANANA_KEY_NEXT   0x122
 #define BANANA_KEY_PREV   0x123
+#define BANANA_KEY_SHIFT  0x130    /* key_down() only: either Shift, Ctrl, Alt */
+#define BANANA_KEY_CTRL   0x131
+#define BANANA_KEY_ALT    0x132
 
 /* web_poll() flags */
 #define BANANA_WEB_DIRTY    1    /* a new picture: web_draw() it */
@@ -368,6 +371,14 @@ typedef struct banana_api {
     /* after BANANA_EV_DROP: path `index` (0..key-1) of the last drop on
      * the window; 0, or -1 if there is no such path */
     int   (*win_dropped)(int win, int index, char* path, int cap);
+
+    /* ── version 14: keys held down, several at once (games) ── */
+    /* 1 while `key` is held and this app has the keyboard, 0 otherwise:
+     * a character by its place on a US keyboard ('w' is the key above
+     * 's' on AZERTY too) - letters, digits, ' ', '\n', '\t', '\b', 27 for
+     * Esc - or BANANA_KEY_UP..DELETE, BANANA_KEY_F1..F12,
+     * BANANA_KEY_SHIFT / CTRL / ALT. Ask for every key a frame needs. */
+    int   (*key_down)(int key);
 } banana_api_t;
 
 /* the app's entry point (the SDK's crt0 provides it) */

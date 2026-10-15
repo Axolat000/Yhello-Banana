@@ -674,6 +674,68 @@ static int translate_scancode(uint8_t sc, char* out) {
     return 1;
 }
 
+/* ── the keys held now (keyboard_held) ─────────────────────────────
+ * Every byte goes through here first, with prefix state of its own:
+ * the decoder below clears its flags as it pleases. */
+static uint8_t g_held[32];           /* bit: set-1 code, + 0x80 for E0 */
+static uint8_t g_pressed[32];        /* went down since keyboard_take_pressed() looked */
+static int     g_held_e0, g_held_break;
+
+static void held_clear(void) {
+    for (int i = 0; i < 32; i++) g_held[i] = g_pressed[i] = 0;
+    g_held_e0 = g_held_break = 0;
+}
+
+/* a set-2 key -> its set-1 position (+ 0x80 for E0), -1 if not tracked */
+static int set2_held_code(uint8_t sc, int e0) {
+    static const uint8_t E[][2] = {
+        {0x75,0x48},{0x72,0x50},{0x74,0x4D},{0x6B,0x4B},{0x6C,0x47},{0x69,0x4F},{0x7D,0x49},
+        {0x7A,0x51},{0x70,0x52},{0x71,0x53},{0x14,0x1D},{0x11,0x38},{0x5A,0x1C},{0x4A,0x35},
+        {0x1F,0x5B},{0x27,0x5C},{0x2F,0x5D},
+    };
+    static const uint8_t N[][2] = {
+        {0x76,0x01},{0x66,0x0E},{0x0D,0x0F},{0x5A,0x1C},{0x14,0x1D},{0x12,0x2A},{0x59,0x36},
+        {0x11,0x38},{0x58,0x3A},{0x7C,0x37},{0x7B,0x4A},{0x79,0x4E},{0x70,0x52},{0x69,0x4F},
+        {0x72,0x50},{0x7A,0x51},{0x6B,0x4B},{0x73,0x4C},{0x74,0x4D},{0x6C,0x47},{0x75,0x48},
+        {0x7D,0x49},{0x71,0x53},{0x77,0x45},{0x7E,0x46},
+    };
+    if (e0) {
+        for (int i = 0; i < (int)(sizeof(E) / sizeof(E[0])); i++) if (E[i][0] == sc) return E[i][1] | 0x80;
+        return -1;
+    }
+    for (int i = 0; i < (int)(sizeof(N) / sizeof(N[0])); i++) if (N[i][0] == sc) return N[i][1];
+    int f = set2_fn(sc);
+    if (f) { int i = f - KEYF_F1; return i < 10 ? 0x3B + i : 0x57 + (i - 10); }
+    int s = set2_to_set1(sc);
+    return s ? s : -1;
+}
+
+static void track_held(uint8_t sc) {
+    if (sc == 0xE0) { g_held_e0 = 1; return; }
+    if (sc == 0xE1 || sc == 0xFA || sc == 0xFE) return;     /* Pause's prefix, ACK, resend */
+    if (sc == 0xF0) {
+        /* a set-2 keyboard: what was read as set 1 before is wrong */
+        if (!use_set2) held_clear();
+        g_held_break = 1;
+        return;
+    }
+    int code, down;
+    if (use_set2 || g_held_break) { code = set2_held_code(sc, g_held_e0); down = !g_held_break; }
+    else { code = (sc & 0x7F) | (g_held_e0 ? 0x80 : 0); down = !(sc & 0x80); }
+    g_held_e0 = g_held_break = 0;
+    if (code < 0) return;
+    if (down) {
+        g_held[code >> 3] |= (uint8_t)(1u << (code & 7));
+        g_pressed[code >> 3] |= (uint8_t)(1u << (code & 7));
+    }
+    else      g_held[code >> 3] &= (uint8_t)~(1u << (code & 7));
+}
+
+char keyboard_us_char(int code, int shift) {
+    if (code <= 0 || code > 0x39) return 0;
+    return shift ? sc_shift[code] : sc_normal[code];
+}
+
 /* ── raw set-1 capture for the RDP client ─────────────────────────── */
 static int      g_raw_on;
 static int      g_raw_e0;
@@ -708,6 +770,7 @@ int keyboard_poll_raw(uint8_t* code, int* down, int* e0) {
 }
 
 static int process_scancode_byte(uint8_t sc, char* out) {
+    track_held(sc);
     if (g_raw_on) { raw_capture(sc); return 0; }   /* the RDP window has the keyboard */
     if (sc == 0xF0) {
         use_set2 = 1;
@@ -820,7 +883,7 @@ void keyboard_feed_scancode(uint8_t sc) {
 void keyboard_feed_set1(uint8_t sc) {
     /* a USB keyboard may have switched the decoder to set 2; the RDP client
      * always sends set-1 scancodes, so force set 1 for these bytes */
-    use_set2 = 0; set2_break = 0; set2_e0 = 0;
+    use_set2 = 0; set2_break = 0; set2_e0 = 0; g_held_break = 0;
     keyboard_feed_scancode(sc);
 }
 
@@ -841,6 +904,28 @@ static char serial_key(void) {
 /* while the screen is locked, only the lock screen's task gets keys */
 static int g_key_owner = -1;
 void keyboard_set_owner(int pid) { g_key_owner = pid; }
+
+int keyboard_held(int code) {
+    if (code < 0 || code > 0xFF) return 0;
+    if (g_key_owner >= 0 && task_current_pid() != g_key_owner) return 0;
+    return (g_held[code >> 3] >> (code & 7)) & 1;
+}
+
+int keyboard_take_pressed(int code) {
+    if (code < 0 || code > 0xFF) return 0;
+    int r = (g_pressed[code >> 3] >> (code & 7)) & 1;
+    g_pressed[code >> 3] &= (uint8_t)~(1u << (code & 7));
+    return r && !(g_key_owner >= 0 && task_current_pid() != g_key_owner);
+}
+
+int keyboard_held_char(int c) {
+    if (c >= 'A' && c <= 'Z') c += 32;
+    if (c <= 0 || c >= 128) return 0;
+    if (c == '\n' && keyboard_held(0x9C)) return 1;          /* the keypad's Enter */
+    for (int i = 1; i <= 0x39; i++)                          /* (the main block, not the keypad) */
+        if (sc_normal[i] == c) return keyboard_held(i);
+    return 0;
+}
 
 char keyboard_try_getchar(void) {
     /* daemons have no keyboard; an SSH session's shell reads its client */
@@ -885,6 +970,7 @@ void keyboard_init(void) {
         g_dead = 0; g_rest_n = 0;
         caps_lock = 0; caps_down = 0;
         q_head = 0; q_tail = 0;
+        held_clear();
         return;
     }
     /*
@@ -920,6 +1006,7 @@ void keyboard_init(void) {
     use_set2 = 0; set2_break = 0; set2_e0 = 0; set1_e0 = 0;
     ctrl_alt_del_pending = 0;
     q_head = 0; q_tail = 0;
+    held_clear();
 }
 
 /* One-shot: returns 1 exactly once per Ctrl+Alt+Delete press, then

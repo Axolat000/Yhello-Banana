@@ -34,6 +34,20 @@ void keyboard_capture_raw(int on);
 /* next captured scancode: 1 and fills *code (set-1), *down (1 press /
  * 0 release), *e0 (extended), or 0 if none waiting */
 int  keyboard_poll_raw(uint8_t* code, int* down, int* e0);
+/* The keys held down now, for games: several at once (the character
+ * stream only repeats the last one pressed). By position: set-1 codes,
+ * + 0x80 for the E0 ones (0xC8 the Up arrow), whatever the keyboard -
+ * PS/2 set 1 or 2, USB, or a Remote Desktop client. 0 for everyone but
+ * the lock screen while the screen is locked. */
+int  keyboard_held(int code);
+/* the key that types c on a US keyboard ('w', '1', ' ', '\n', 27...):
+ * WASD stays under the left hand whatever the layout */
+int  keyboard_held_char(int c);
+/* 1 if set-1 `code` went down since the last call (a tap too short for
+ * keyboard_held to be seen), and forgets it */
+int  keyboard_take_pressed(int code);
+/* what the key at set-1 `code` types on a US keyboard, 0 if nothing */
+char keyboard_us_char(int code, int shift);
 /* queues text as typed input for whoever reads the keyboard next */
 void keyboard_inject(const char* s);
 /* only task `pid` reads the keyboard from now on (-1: everyone again) - the lock screen */

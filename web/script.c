@@ -3607,10 +3607,24 @@ static value_t eval(interp_t* I, node_t* n) {
         return v_str(I, names[v.t]);
     }
     case N_UNARY: {
-        if (n->op == 'D') {                              /* delete o.x */
-            if (n->a->k == N_MEMBER) {
+        if (n->op == 'D') {                              /* delete o.x, delete o[k] */
+            if (n->a->k == N_MEMBER || (n->a->k == N_INDEX && n->a->b)) {
                 value_t ov = eval(I, n->a->a);
-                if (ov.t == V_OBJ) prop_del(ov.o, n->a->s->s);
+                if (I->ctl) return v_undef();
+                const char* key = n->a->k == N_MEMBER ? n->a->s->s : NULL;
+                char kb[24];
+                value_t kv = v_undef();
+                if (!key) {
+                    kv = eval(I, n->a->b);
+                    if (I->ctl) return v_undef();
+                    key_of(I, kv, kb, sizeof(kb), &key);
+                }
+                if (ov.t == V_OBJ) {
+                    if (ov.o->kind == OBJ_ARRAY && kv.t == V_NUM && kv.n >= 0 && (uint32_t)kv.n < ov.o->len &&
+                        num_floor(kv.n) == kv.n)
+                        ov.o->items[(uint32_t)kv.n] = v_undef();     /* (a hole, read as undefined) */
+                    else prop_del(ov.o, key);
+                }
             }
             return v_bool(1);
         }

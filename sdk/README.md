@@ -334,6 +334,26 @@ Files dragged from Files or the desktop and let go over an app's window
 come as `BANANA_EV_DROP`: `ev.key` paths, `ev.x` / `ev.y` where (client
 coordinates). `bwin_dropped(&win, i, path, cap)` gives path `i`.
 
+### Keys held down (API version 14)
+
+Key events are typing: a held key repeats, and only the last one pressed
+does. Games ask instead, once a frame, which keys are down -
+`banana_key_down(key)` is 1 while `key` is held, for as many keys at once
+as the keyboard reports (moving with W and D while holding Space):
+
+```c
+if (banana_key_down('a') || banana_key_down(BANANA_KEY_LEFT))  x -= speed;
+if (banana_key_down('d') || banana_key_down(BANANA_KEY_RIGHT)) x += speed;
+if (banana_key_down(' ')) jump();
+```
+
+Characters go by their place on a US keyboard, so WASD stays WASD on
+AZERTY and QWERTZ keyboards; also `'\n'`, `'\t'`, `'\b'`, 27 (Esc),
+`BANANA_KEY_UP` ... `BANANA_KEY_DELETE`, `BANANA_KEY_F1` ... `F12`, and
+`BANANA_KEY_SHIFT`, `_CTRL`, `_ALT` (either side). It is 0 while the app's
+window (or terminal) is not the one in front. Keep reading the window's
+events too. Web pages get the same as `keydown` / `keyup` with `event.code`.
+
 The C library also has `setjmp` / `longjmp`, `gettimeofday` (`<sys/time.h>`),
 `realpath`, `strtold` and `ldexpl`.
 

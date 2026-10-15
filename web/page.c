@@ -1117,7 +1117,7 @@ int page_key(page_t* p, char c) {
     key_name(c, kn);
     if (!f) {
         /* no field: games and shortcuts listen on the document */
-        if (!p->js) return 0;
+        if (!p->js || p->live_keys) return 0;     /* (they come from page_key_live) */
         int prevented = jsdom_dispatch_key(p, dom_body(p->doc) ? dom_body(p->doc) : p->doc, "keydown", kn);
         jsdom_dispatch_key(p, dom_body(p->doc) ? dom_body(p->doc) : p->doc, "keyup", kn);
         return prevented;
@@ -1165,6 +1165,14 @@ int page_key(page_t* p, char c) {
     jsdom_dispatch_key(p, f, "keyup", kn);
     p->dirty = 1;
     return 1;
+}
+
+int page_key_live(page_t* p, int down, const char* key, const char* code, int keycode, int mods) {
+    if (!p->js) return 0;
+    p->live_keys = 1;
+    dom_node_t* t = dom_body(p->doc) ? dom_body(p->doc) : p->doc;
+    int prevented = jsdom_dispatch_keyev(p, t, down ? "keydown" : "keyup", key, code, keycode, mods);
+    return down && prevented;
 }
 
 int page_tick(page_t* p) {

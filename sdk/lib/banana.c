@@ -461,6 +461,12 @@ int bwin_dropped(bwin_t* win, int index, char* path, int cap) {
     return __banana->win_dropped(win->id, index, path, cap);
 }
 
+/* ── version 14: keys held down ── */
+int banana_key_down(int key) {
+    if (__banana->version < 14 || __banana->size < __builtin_offsetof(banana_api_t, key_down) + sizeof(void*)) return 0;
+    return __banana->key_down(key);
+}
+
 /* ── version 12: game controllers ── */
 int banana_gamepad(int index, banana_gamepad_t* out) {
     if (__banana->version < 12 || __banana->size < __builtin_offsetof(banana_api_t, gamepad) + sizeof(void*)) {

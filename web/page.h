@@ -75,6 +75,7 @@ typedef struct page {
     char         title[128];
     int          dirty;               /* DOM/styles changed: restyle + relayout */
     dom_node_t*  focus;               /* focused text field */
+    int          live_keys;           /* the document's keys come from page_key_live */
     page_timer_t timers[PAGE_TIMERS];
     int          next_timer;
     char         status[200];         /* last script error, for the status bar */
@@ -140,6 +141,11 @@ void    page_update(page_t* p, int width);
 void    page_click(page_t* p, int x, int y);
 /* a key for the focused field: printable, '\b', '\n' (submit) */
 int     page_key(page_t* p, char c);
+/* a key going down (down = 1) or up on its own, for games: keydown /
+ * keyup on the document while no field is focused, several keys at once.
+ * Once used, page_key() leaves the document's keydown / keyup to it.
+ * 1 if a keydown handler prevented the default (scrolling). */
+int     page_key_live(page_t* p, int down, const char* key, const char* code, int keycode, int mods);
 /* runs due timers; 1 if anything happened */
 int     page_tick(page_t* p);
 
@@ -175,6 +181,9 @@ void    mpart_file(mpart_t* m, const char* name, const char* filename, const cha
 void    mpart_end(mpart_t* m);
 int     jsdom_dispatch(page_t* p, dom_node_t* target, const char* type);   /* 1 = default prevented */
 int     jsdom_dispatch_key(page_t* p, dom_node_t* target, const char* type, const char* key);
+/* a KeyboardEvent with .code too; mods: 1 shift, 2 ctrl, 4 alt */
+int     jsdom_dispatch_keyev(page_t* p, dom_node_t* target, const char* type, const char* key,
+                             const char* code, int keycode, int mods);
 void    jsdom_run_handlers_from_attrs(page_t* p);
 void    jsdom_module(page_t* p, const char* url, const char* code, uint32_t len);   /* code NULL: load url */
 void    jsdom_importmap(page_t* p, const char* text, uint32_t len);
