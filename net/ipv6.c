@@ -6,13 +6,15 @@
 #include "timer.h"
 #include "serial.h"
 #include "settings.h"
+#include "tcp.h"
+#include "kheap.h"
 
 /*
  * IPv6, the basics a network needs from a host: addresses (fe80:: from the
  * card's MAC, the global one from the router's prefix - SLAAC), neighbor
  * discovery (RFC 4861: who has an address, the router's advertisement,
  * answering for ours), and ICMPv6 echo. Off by default (`ipv6 on`).
- * TCP / UDP / DNS stay on IPv4 for now.
+ * TCP, UDP and DNS share this path. Off means no IPv6 transport or wire traffic.
  */
 
 #define ETH_TYPE_IP6 0x86DD
@@ -28,10 +30,11 @@ static uint32_t g_rs_ms, g_rs_left;
 typedef struct { ip6_t ip; uint8_t mac[6]; int state; uint32_t ms; } nc_t;   /* state: 0 free, 1 asked, 2 known */
 static nc_t g_nc[NC_MAX];
 
-/* one packet kept while its neighbor is asked for (ping6's first echo) */
-static uint8_t  g_pend[1600];
-static uint32_t g_pend_len;
-static ip6_t    g_pend_hop;
+/* Bounded queues: never overwrite another connection's first packet while
+ * neighbour discovery is in progress. TCP can retransmit if the queue fills. */
+#define IP6_QUEUE 16
+static struct { uint8_t* pkt; uint32_t len, since; ip6_t hop; } g_pending[IP6_QUEUE];
+static struct { uint8_t* pkt; uint32_t len; } g_loop[IP6_QUEUE];
 
 #define ECHO_Q 16
 static struct { uint16_t id; ip6_echo_t e; } g_echo[ECHO_Q];
@@ -41,6 +44,10 @@ static const ip6_t ALL_NODES   = { { 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 static const ip6_t ALL_ROUTERS = { { 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2 } };
 
 static int eq(const ip6_t* a, const ip6_t* b) { return !memcmp(a, b, 16); }
+int ip6_is_loopback(const ip6_t* a) {
+    static const ip6_t loop = { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } };
+    return eq(a, &loop);
+}
 static int is_mcast(const ip6_t* a) { return a->b[0] == 0xff; }
 static int is_ll(const ip6_t* a) { return a->b[0] == 0xfe && (a->b[1] & 0xc0) == 0x80; }
 static int is_zero(const ip6_t* a) { static const ip6_t z; return eq(a, &z); }
@@ -51,6 +58,7 @@ static void eui64(ip6_t* a, const uint8_t* mac) {
 }
 
 static int is_ours(const ip6_t* a) {
+    if (ip6_is_loopback(a)) return 1;
     if (eq(a, &g_ll) || (g_have_global && eq(a, &g_global)) || eq(a, &ALL_NODES)) return 1;
     /* our solicited-node multicast ff02::1:ffXX:XXXX */
     return a->b[0] == 0xff && a->b[1] == 0x02 && a->b[11] == 1 && a->b[12] == 0xff &&
@@ -63,18 +71,25 @@ static void solicited_node(ip6_t* out, const ip6_t* target) {
     out->b[13] = target->b[13]; out->b[14] = target->b[14]; out->b[15] = target->b[15];
 }
 
-/* ICMPv6 checksum: over the pseudo-header and the message */
-static uint16_t csum6(const ip6_t* src, const ip6_t* dst, const uint8_t* msg, uint32_t len) {
+/* RFC 8200 section 8.1: transport/ICMPv6 pseudo-header checksum. */
+uint16_t ip6_checksum(const ip6_t* src, const ip6_t* dst, uint8_t proto, const void* msg, uint32_t len) {
     uint8_t ph[40];
     memcpy(ph, src, 16);
     memcpy(ph + 16, dst, 16);
     wr32(ph + 32, len);
     ph[36] = ph[37] = ph[38] = 0;
-    ph[39] = NH_ICMP6;
+    ph[39] = proto;
     uint32_t s = net_csum_add(0, ph, 40);
     s = net_csum_add(s, msg, len);
     return net_csum_fold(s);
 }
+
+static uint16_t csum6(const ip6_t* src, const ip6_t* dst, const uint8_t* msg, uint32_t len) {
+    return ip6_checksum(src, dst, NH_ICMP6, msg, len);
+}
+
+static void addresses(void);
+static void ipv6_input(const uint8_t* p, uint32_t len, int local);
 
 /* ── the neighbor cache ── */
 
@@ -143,46 +158,95 @@ static int send_raw(const uint8_t* mac, const ip6_t* src, const ip6_t* dst, uint
     return eth_send(mac, ETH_TYPE_IP6, pkt, 40 + len) == 0 ? NET_OK : NET_ERR_NODEV;
 }
 
-/* an ICMPv6 message to dst (checksum filled in here) */
-static int icmp6_send(const ip6_t* dst, uint8_t* msg, uint32_t len) {
-    if (!g_on || !net_if()->dev) return NET_ERR_NODEV;
-    const ip6_t* src = (is_ll(dst) || is_mcast(dst) || !g_have_global) ? &g_ll : &g_global;
-    msg[2] = msg[3] = 0;
-    wr16(msg + 2, csum6(src, dst, msg, len));
+static void make_packet(uint8_t* p, const ip6_t* src, const ip6_t* dst,
+                        uint8_t proto, const void* data, uint32_t len) {
+    p[0] = 0x60; p[1] = p[2] = p[3] = 0;
+    wr16(p + 4, (uint16_t)len); p[6] = proto; p[7] = 64;
+    memcpy(p + 8, src, 16); memcpy(p + 24, dst, 16);
+    memcpy(p + 40, data, len);
+}
+
+int ipv6_source(const ip6_t* dst, ip6_t* src) {
+    if (!g_on) return NET_ERR_NOTREADY;
+    if (!dst || !src || is_zero(dst)) return NET_ERR_NOROUTE;
+    if (ip6_is_loopback(dst)) { *src = *dst; return NET_OK; }
+    if (!net_if()->dev) return NET_ERR_NODEV;
+    addresses();
+    if (is_ll(dst) || (is_mcast(dst) && (dst->b[1] & 15) <= 2) || eq(dst, &g_ll)) *src = g_ll;
+    else if (g_have_global) *src = g_global;
+    else return NET_ERR_NOTREADY;
+    if (!is_ll(dst) && !is_mcast(dst) && !eq(dst, &g_ll) &&
+        !(g_have_global && !memcmp(dst, &g_global, 8)) && !g_have_router)
+        return NET_ERR_NOROUTE;
+    return NET_OK;
+}
+
+int ipv6_send(const ip6_t* src, const ip6_t* dst, uint8_t proto, const void* data, uint32_t len) {
+    if (!g_on) return NET_ERR_NOTREADY;
+    if (!src || !dst || (len && !data) || len > IP6_MAX_PAYLOAD) return NET_ERR_PROTO;
+    int local = ip6_is_loopback(dst) || eq(dst, &g_ll) || (g_have_global && eq(dst, &g_global));
+    if (!local && (ip6_is_loopback(src) || ip6_is_loopback(dst))) return NET_ERR_NOROUTE;
+    if (local) {
+        for (int i = 0; i < IP6_QUEUE; i++) if (!g_loop[i].pkt) {
+            uint8_t* p = kmalloc(40 + len);
+            if (!p) return NET_ERR_NOMEM;
+            make_packet(p, src, dst, proto, data, len);
+            g_loop[i].len = 40 + len; g_loop[i].pkt = p;
+            return NET_OK;
+        }
+        return NET_ERR_NOMEM;
+    }
+    if (!net_if()->dev) return NET_ERR_NODEV;
+    uint8_t pkt[1280];
+    make_packet(pkt, src, dst, proto, data, len);
     if (is_mcast(dst)) {
         uint8_t mac[6] = { 0x33, 0x33, dst->b[12], dst->b[13], dst->b[14], dst->b[15] };
-        return send_raw(mac, src, dst, 64, msg, len);
+        return eth_send(mac, ETH_TYPE_IP6, pkt, 40 + len) == 0 ? NET_OK : NET_ERR_NODEV;
     }
-    /* on the link: the address itself; else through the router */
     const ip6_t* hop = dst;
-    int onlink = is_ll(dst) || (g_have_global && !memcmp(dst, &g_global, 8));
-    if (!onlink) {
+    if (!is_ll(dst) && !(g_have_global && !memcmp(dst, &g_global, 8))) {
         if (!g_have_router) return NET_ERR_NOROUTE;
         hop = &g_router;
     }
     nc_t* e = nc_find(hop);
-    if (e && e->state == 2) return send_raw(e->mac, src, dst, 64, msg, len);
-    /* not known yet: ask, and send this one when the answer comes */
-    if (len + 40 <= sizeof(g_pend)) {
-        g_pend[0] = 0x60; g_pend[1] = g_pend[2] = g_pend[3] = 0;
-        wr16(g_pend + 4, (uint16_t)len);
-        g_pend[6] = NH_ICMP6;
-        g_pend[7] = 64;
-        memcpy(g_pend + 8, src, 16);
-        memcpy(g_pend + 24, dst, 16);
-        memcpy(g_pend + 40, msg, len);
-        g_pend_len = 40 + len;
-        g_pend_hop = *hop;
-    }
-    nc_put(hop, NULL);
-    send_ns(hop);
+    if (e && e->state == 2)
+        return eth_send(e->mac, ETH_TYPE_IP6, pkt, 40 + len) == 0 ? NET_OK : NET_ERR_NODEV;
+    int slot;
+    for (slot = 0; slot < IP6_QUEUE && g_pending[slot].pkt; slot++);
+    if (slot == IP6_QUEUE) return NET_ERR_NOMEM;
+    uint8_t* copy = kmalloc(40 + len);
+    if (!copy) return NET_ERR_NOMEM;
+    memcpy(copy, pkt, 40 + len);
+    g_pending[slot].len = 40 + len; g_pending[slot].since = timer_ms();
+    g_pending[slot].hop = *hop; g_pending[slot].pkt = copy;
+    if (!e || timer_ms() - e->ms >= 1000) { nc_put(hop, NULL); send_ns(hop); }
     return NET_OK;
 }
 
+void ipv6_loopback_drain(void) {
+    for (int i = 0; i < IP6_QUEUE; i++) if (g_loop[i].pkt) {
+        uint8_t* p = g_loop[i].pkt;
+        uint32_t len = g_loop[i].len;
+        g_loop[i].pkt = NULL;
+        if (g_on) ipv6_input(p, len, 1);
+        kfree(p);
+    }
+}
+
+/* an ICMPv6 message to dst (checksum filled in here) */
+static int icmp6_send(const ip6_t* dst, uint8_t* msg, uint32_t len) {
+    ip6_t src;
+    int rc = ipv6_source(dst, &src);
+    if (rc != NET_OK) return rc;
+    msg[2] = msg[3] = 0;
+    wr16(msg + 2, csum6(&src, dst, msg, len));
+    return ipv6_send(&src, dst, NH_ICMP6, msg, len);
+}
+
 static void flush_pending(const ip6_t* hop, const uint8_t* mac) {
-    if (g_pend_len && eq(&g_pend_hop, hop)) {
-        eth_send(mac, ETH_TYPE_IP6, g_pend, g_pend_len);
-        g_pend_len = 0;
+    for (int i = 0; i < IP6_QUEUE; i++) if (g_pending[i].pkt && eq(&g_pending[i].hop, hop)) {
+        eth_send(mac, ETH_TYPE_IP6, g_pending[i].pkt, g_pending[i].len);
+        kfree(g_pending[i].pkt); g_pending[i].pkt = NULL;
     }
 }
 
@@ -270,7 +334,7 @@ static void on_echo_reply(const ip6_t* src, const uint8_t* m, uint32_t len, uint
     g_echo_n++;
 }
 
-void ipv6_rx(const uint8_t* p, uint32_t len) {
+static void ipv6_input(const uint8_t* p, uint32_t len, int local) {
     if (!g_on || len < 40 || (p[0] >> 4) != 6) return;
     uint32_t plen = rd16(p + 4);
     if (40 + plen > len) return;
@@ -278,15 +342,42 @@ void ipv6_rx(const uint8_t* p, uint32_t len) {
     ip6_t src, dst;
     memcpy(&src, p + 8, 16);
     memcpy(&dst, p + 24, 16);
-    if (!is_ours(&dst) && !is_mcast(&dst)) return;
+    if (!local && (ip6_is_loopback(&src) || ip6_is_loopback(&dst))) return;
+    if (!hops || is_mcast(&src)) return;
+    if (!is_ours(&dst)) return;
+    if (ip6_is_loopback(&src) && !ip6_is_loopback(&dst)) return;
     const uint8_t* m = p + 40;
-    if (nh == 0 && plen >= 8) {                /* hop-by-hop options (MLD queries): skipped */
-        uint32_t h = ((uint32_t)m[1] + 1) * 8;
+    /* RFC 8200: bounded extension-header walking. No fragment reassembly:
+     * accept only atomic fragments; unknown mandatory options are dropped. */
+    for (int count = 0; nh == 0 || nh == 60 || nh == 43 || nh == 44; count++) {
+        if (count >= 8 || plen < 8) return;
+        uint32_t h = nh == 44 ? 8 : ((uint32_t)m[1] + 1) * 8;
         if (h > plen) return;
+        if (nh == 44 && (rd16(m + 2) & 0xFFF9)) return;
+        if (nh == 43 && m[3]) return;
+        if (nh == 0 || nh == 60) {
+            for (uint32_t o = 2; o < h;) {
+                uint8_t type = m[o];
+                if (!type) { o++; continue; }
+                if (o + 2 > h || o + 2u + m[o + 1] > h || (type & 0xC0)) return;
+                o += 2u + m[o + 1];
+            }
+        }
         nh = m[0]; m += h; plen -= h;
     }
+    if ((nh == IP_PROTO_TCP || nh == IP_PROTO_UDP) &&
+        (is_zero(&src) || is_mcast(&dst))) return;
+    if (fw_enabled() && !ip6_is_loopback(&src) &&
+        !eq(&src, &g_ll) && !(g_have_global && eq(&src, &g_global))) {
+        char from[48]; ip6_format(&src, from, sizeof(from));
+        if (nh == IP_PROTO_TCP && plen >= 20 &&
+            !fw_in_tcp(from, rd16(m + 2), (m[13] & 0x12) == 0x02)) return;
+        if (nh == IP_PROTO_UDP && plen >= 8 && !fw_in_udp(from, rd16(m), rd16(m + 2))) return;
+    }
+    if (nh == IP_PROTO_TCP) { tcp_rx6(&src, &dst, m, plen); return; }
+    if (nh == IP_PROTO_UDP) { udp6_rx(&src, &dst, m, plen); return; }
     if (nh != NH_ICMP6 || plen < 4) return;
-    if (csum6(&src, &dst, m, plen) != 0) return;
+    if (csum6(&src, &dst, m, plen) != 0 || m[1] != 0) return;
     switch (m[0]) {
     case 128: {                                /* echo request: answered */
         if (is_mcast(&dst) && !eq(&dst, &ALL_NODES)) break;
@@ -319,6 +410,9 @@ static void addresses(void) {
     eui64(&g_ll, g_mac);
     g_have_global = g_have_router = g_have_dns = 0;
     memset(g_nc, 0, sizeof(g_nc));
+    for (int i = 0; i < IP6_QUEUE; i++) {
+        kfree(g_pending[i].pkt); g_pending[i].pkt = NULL;
+    }
     if (nd->set_multicast) nd->set_multicast(nd, 1);
     g_rs_left = 3;
     g_rs_ms = timer_ms() - 4000;
@@ -330,6 +424,14 @@ static void addresses(void) {
 void ipv6_timer(void) {
     if (!g_on) return;
     addresses();
+    for (int i = 0; i < IP6_QUEUE; i++) if (g_pending[i].pkt) {
+        uint32_t age = timer_ms() - g_pending[i].since;
+        if (age >= 4000) { kfree(g_pending[i].pkt); g_pending[i].pkt = NULL; continue; }
+        nc_t* e = nc_find(&g_pending[i].hop);
+        if (!e || timer_ms() - e->ms >= 1000) {
+            nc_put(&g_pending[i].hop, NULL); send_ns(&g_pending[i].hop);
+        }
+    }
     if (g_rs_left && timer_ms() - g_rs_ms >= 4000) {   /* asking for the router */
         g_rs_ms = timer_ms();
         g_rs_left--;
@@ -339,13 +441,25 @@ void ipv6_timer(void) {
 
 int ipv6_enabled(void) { return g_on; }
 
-void ipv6_enable(int on) {
-    settings_set("ipv6", on ? "on" : "off");
+void ipv6_set_runtime(int on) {
+    on = on ? 1 : 0;
     if (on == g_on) return;
     g_on = on;
     memset(g_mac, 0, sizeof(g_mac));
     g_have_global = g_have_router = g_have_dns = 0;
-    if (!on) klog("ipv6: off\n");
+    memset(&g_ll, 0, sizeof(g_ll));
+    memset(g_nc, 0, sizeof(g_nc)); g_rs_left = 0; g_echo_n = 0;
+    for (int i = 0; i < IP6_QUEUE; i++) {
+        kfree(g_pending[i].pkt); g_pending[i].pkt = NULL;
+        kfree(g_loop[i].pkt); g_loop[i].pkt = NULL;
+    }
+    if (!on) { tcp6_disable(); klog("ipv6: off\n"); }
+    else addresses();
+}
+
+void ipv6_enable(int on) {
+    settings_set("ipv6", on ? "on" : "off");
+    ipv6_set_runtime(on);
 }
 
 void ipv6_boot(void) {
@@ -359,7 +473,7 @@ int ipv6_router(ip6_t* out) { if (!g_on || !g_have_router) return 0; *out = g_ro
 int ipv6_dns(ip6_t* out) { if (!g_on || !g_have_dns) return 0; *out = g_dns; return 1; }
 
 int ipv6_echo_send(const ip6_t* dst, uint16_t id, uint16_t seq, uint32_t data_len) {
-    static uint8_t m[1460];
+    static uint8_t m[IP6_MAX_PAYLOAD];
     if (data_len > sizeof(m) - 8) data_len = sizeof(m) - 8;
     m[0] = 128; m[1] = 0;
     wr16(m + 4, id);
@@ -432,3 +546,5 @@ void ip6_format(const ip6_t* a, char* out, int cap) {
     }
     if (!o) ksnprintf(out, (size_t)cap, "::");
 }
+
+void ipv6_rx(const uint8_t* p, uint32_t len) { ipv6_input(p, len, 0); }

@@ -1,4 +1,6 @@
 #include "selftest.h"
+#include "ipv6test.h"
+#include "../net/ipv6.h"
 #include "../kernel/fs.h"
 #include "../kernel/kstring.h"
 #include "../kernel/terminal.h"
@@ -126,18 +128,35 @@ static void t_cores(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6")) {
+        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
+    }
+    uint16_t ipv6_port = 80;
+    if (only && !strcmp(only, "ipv6") && argc > 3) {
+        uint32_t n;
+        int used = k_parse_u32(argv[3], &n);
+        if (!used || argv[3][used] || !n || n > 65535 || argc > 4) {
+            terminal_writeln("usage: selftest ipv6 [host [port]]"); return 1;
+        }
+        ipv6_port = (uint16_t)n;
     }
     g_ok = g_fail = 0;
     uint32_t t0 = timer_ms();
-    terminal_writeln("selftest: checking the system (it runs the systest app a few times)");
-    if (install() == 0) {
+    terminal_writeln(only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
+                     "selftest: checking the system (it runs the systest app a few times)");
+    if (only && !strcmp(only, "ipv6")) {
+        section("IPv6 TCP, UDP and toggle checks");
+        ipv6test_run(argc > 2 ? argv[2] : NULL, ipv6_port, report);
+    } else if (install() == 0) {
         if (!only || !strcmp(only, "ring3")) t_ring3();
         if (!only || !strcmp(only, "memory")) t_memory();
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
+        if (!only) {
+            if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
+            else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
+        }
     }
     char line[96];
     ksnprintf(line, sizeof(line), "selftest: %d passed, %d failed (%u ms)", g_ok, g_fail, timer_ms() - t0);

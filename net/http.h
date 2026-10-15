@@ -50,6 +50,7 @@ typedef struct {
      * one); replaces extra_headers when given. The string must stay valid
      * until the next call. */
     const char* (*headers_for)(void* ctx, const char* url);
+    int      address_family;   /* 0: IPv4 then IPv6 if enabled; 4 or 6: force it */
     int      tls_ciphers;      /* TLS_CIPHERS_* (tls.h), 0 = offer all */
 
     /* all optional */

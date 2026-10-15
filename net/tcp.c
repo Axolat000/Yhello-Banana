@@ -9,6 +9,7 @@
 #define TCP_MAX_CONN  16
 #define TCP_MAX_LISTEN 4
 #define TCP_BACKLOG   4                 /* handshaking + not yet accepted, per listener */
+#define TCP6_MSS      1220              /* 1280-byte minimum IPv6 MTU - 40 - 20 */
 #define TCP_MSS       1460              /* what we accept: 1500 - IP - TCP headers */
 #define RBUF_SIZE     65536u            /* receive ring (window capped at 65535) */
 #define SBUF_SIZE     32768u
@@ -42,6 +43,8 @@ struct tcp_conn {
     int         used;
     tcp_state_t state;
     ip4_t       rip;
+    int         ipv6;
+    ip6_t       lip6, rip6;
     uint16_t    lport, rport;
 
     /* send side. sbuf[0] is the byte at sequence snd_una (SYN/FIN are
@@ -82,7 +85,7 @@ struct tcp_conn {
 };
 
 struct tcp_listener {
-    int      used;
+    int      used, ipv6;
     uint16_t port;
 };
 
@@ -118,7 +121,7 @@ static uint32_t adv_window(const tcp_conn_t* c) {
 
 /* ── segment output ─────────────────────────────────────────────── */
 
-static void send_raw(ip4_t dst, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
+static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
                      uint8_t flags, uint16_t wnd, const uint8_t* data, uint32_t len, int mss_opt) {
     static uint8_t seg[24 + TCP_MSS];   /* not reentrant; see net.h */
     netif_t* nif = net_if();
@@ -134,10 +137,15 @@ static void send_raw(ip4_t dst, uint16_t sport, uint16_t dport, uint32_t seq, ui
     wr16(seg + 18, 0);
     if (mss_opt) {
         seg[20] = 2; seg[21] = 4;
-        wr16(seg + 22, TCP_MSS);
+        wr16(seg + 22, dst6 ? TCP6_MSS : TCP_MSS);
     }
     if (len) memcpy(seg + hl, data, len);
 
+    if (dst6) {
+        wr16(seg + 16, ip6_checksum(src6, dst6, IP_PROTO_TCP, seg, hl + len));
+        ipv6_send(src6, dst6, IP_PROTO_TCP, seg, hl + len);
+        return;
+    }
     uint8_t ph[12];
     /* the source ip_send() will put in the header: loopback packets to
      * 127.x come "from" 127.x (the receiver checks against that) */
@@ -152,7 +160,7 @@ static void send_raw(ip4_t dst, uint16_t sport, uint16_t dport, uint32_t seq, ui
 
 static void send_seg(tcp_conn_t* c, uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t len) {
     uint32_t wnd = adv_window(c);
-    send_raw(c->rip, c->lport, c->rport, seq, (flags & F_ACK) ? c->rcv_nxt : 0,
+    send_raw(c->rip, c->ipv6 ? &c->lip6 : NULL, c->ipv6 ? &c->rip6 : NULL, c->lport, c->rport, seq, (flags & F_ACK) ? c->rcv_nxt : 0,
              flags, (uint16_t)wnd, data, len, (flags & F_SYN) != 0);
     if (flags & F_ACK) {
         c->ack_pending = 0;
@@ -305,20 +313,20 @@ static void parse_mss(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
         if (i + 1 >= len || opt[i + 1] < 2) break;
         if (opt[i] == 2 && opt[i + 1] == 4 && i + 4 <= len) {
             uint32_t mss = rd16(opt + i + 2);
-            if (mss >= 64) c->peer_mss = min_u32(mss, TCP_MSS);
+            if (mss >= 64) c->peer_mss = min_u32(mss, c->ipv6 ? TCP6_MSS : TCP_MSS);
         }
         i += opt[i + 1];
     }
 }
 
-static void send_reset_for(ip4_t src, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
+static void send_reset_for(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
                            uint8_t flags, uint32_t seg_len) {
     if (flags & F_RST) return;
     if (flags & F_ACK) {
-        send_raw(src, dport, sport, ack, 0, F_RST, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, ack, 0, F_RST, 0, NULL, 0, 0);
     } else {
         uint32_t n = seg_len + ((flags & F_SYN) ? 1 : 0) + ((flags & F_FIN) ? 1 : 0);
-        send_raw(src, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, 0);
     }
 }
 
@@ -407,11 +415,11 @@ static tcp_conn_t* conn_alloc(void) {
 /* A SYN for a port somebody listens on: answer with SYN-ACK. The
  * connection waits in SYN_RCVD for the final ACK, then in the listener's
  * queue for tcp_accept(). Returns 0 if nobody listens on that port. */
-static int passive_open(ip4_t src, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t wnd,
+static int passive_open(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t wnd,
                         const uint8_t* seg, uint32_t hl) {
     tcp_listener_t* l = NULL;
     for (int i = 0; i < TCP_MAX_LISTEN; i++)
-        if (g_listeners[i].used && g_listeners[i].port == dport) { l = &g_listeners[i]; break; }
+        if (g_listeners[i].used && g_listeners[i].ipv6 == (src6 != NULL) && g_listeners[i].port == dport) { l = &g_listeners[i]; break; }
     if (!l) return 0;
     int pending = 0;
     for (int i = 0; i < TCP_MAX_CONN; i++)
@@ -422,6 +430,8 @@ static int passive_open(ip4_t src, uint16_t sport, uint16_t dport, uint32_t seq,
     if (!c) return 1;
     c->listener = l;
     c->rip = src;
+    c->ipv6 = src6 != NULL;
+    if (src6) { c->rip6 = *src6; c->lip6 = *dst6; c->peer_mss = TCP6_MSS; }
     c->rport = sport;
     c->lport = dport;
     c->irs = seq;
@@ -438,15 +448,16 @@ static int passive_open(ip4_t src, uint16_t sport, uint16_t dport, uint32_t seq,
     return 1;
 }
 
-void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
+static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6, const uint8_t* seg, uint32_t len) {
     if (len < 20) return;
-    uint8_t ph[12];
-    wr32(ph, src);
-    wr32(ph + 4, dst);
-    ph[8] = 0;
-    ph[9] = IP_PROTO_TCP;
-    wr16(ph + 10, (uint16_t)len);
-    if (net_csum_fold(net_csum_add(net_csum_add(0, ph, 12), seg, len)) != 0) return;
+    if (src6) {
+        if (!ipv6_enabled() || ip6_checksum(src6, dst6, IP_PROTO_TCP, seg, len) != 0) return;
+    } else {
+        uint8_t ph[12];
+        wr32(ph, src); wr32(ph + 4, dst);
+        ph[8] = 0; ph[9] = IP_PROTO_TCP; wr16(ph + 10, (uint16_t)len);
+        if (net_csum_fold(net_csum_add(net_csum_add(0, ph, 12), seg, len)) != 0) return;
+    }
 
     uint16_t sport = rd16(seg), dport = rd16(seg + 2);
     uint32_t seq = rd32(seg + 4), ack = rd32(seg + 8);
@@ -461,12 +472,13 @@ void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
     for (int i = 0; i < TCP_MAX_CONN; i++) {
         tcp_conn_t* k = &g_conns[i];
         if (k->used && k->state != TCP_CLOSED && k->lport == dport &&
-            k->rport == sport && k->rip == src) { c = k; break; }
+            k->rport == sport && k->ipv6 == (src6 != NULL) &&
+            (src6 ? (!memcmp(&k->rip6, src6, 16) && !memcmp(&k->lip6, dst6, 16)) : k->rip == src)) { c = k; break; }
     }
     if (!c) {
-        if ((flags & (F_SYN | F_ACK | F_RST)) == F_SYN && passive_open(src, sport, dport, seq, wnd, seg, hl))
+        if ((flags & (F_SYN | F_ACK | F_RST)) == F_SYN && passive_open(src, src6, dst6, sport, dport, seq, wnd, seg, hl))
             return;
-        send_reset_for(src, sport, dport, seq, ack, flags, dlen);
+        send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
         return;
     }
 
@@ -478,7 +490,7 @@ void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
         }
         if (!(flags & F_ACK)) return;
         if (ack != c->iss + 1) {
-            send_reset_for(src, sport, dport, seq, ack, flags, dlen);
+            send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
             return;
         }
         c->snd_una = ack;
@@ -498,7 +510,7 @@ void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
 
     if (c->state == TCP_SYN_SENT) {
         if ((flags & F_ACK) && ack != c->iss + 1) {
-            send_reset_for(src, sport, dport, seq, ack, flags, dlen);
+            send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
             return;
         }
         if (flags & F_RST) {
@@ -670,16 +682,32 @@ static uint16_t pick_port(void) {
     }
 }
 
-tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err) {
+void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
+    tcp_input(src, dst, NULL, NULL, seg, len);
+}
+void tcp_rx6(const ip6_t* src, const ip6_t* dst, const uint8_t* seg, uint32_t len) {
+    tcp_input(0, 0, src, dst, seg, len);
+}
+
+static tcp_conn_t* connect_to(ip4_t ip, const ip6_t* ip6, uint16_t port, uint32_t timeout_ms, int* err) {
     int e = NET_OK;
     if (!err) err = &e;
     netif_t* nif = net_if();
-    if (!nif->dev) { *err = NET_ERR_NODEV; return NULL; }
-    if (!net_wait_configured(timeout_ms)) { *err = NET_ERR_NOTREADY; return NULL; }
+    *err = NET_OK;
+    ip6_t src6;
+    if (ip6) {
+        *err = ipv6_source(ip6, &src6);
+        if (*err != NET_OK) return NULL;
+    } else {
+        if (!nif->dev) { *err = NET_ERR_NODEV; return NULL; }
+        if (!net_wait_configured(timeout_ms)) { *err = NET_ERR_NOTREADY; return NULL; }
+    }
 
     tcp_conn_t* c = conn_alloc();
     if (!c) { *err = NET_ERR_NOMEM; return NULL; }
     c->rip = ip;
+    c->ipv6 = ip6 != NULL;
+    if (ip6) { c->rip6 = *ip6; c->lip6 = src6; c->peer_mss = TCP6_MSS; }
     c->rport = port;
     c->lport = pick_port();
     c->state = TCP_SYN_SENT;
@@ -703,6 +731,14 @@ tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err) 
     if (*err == NET_OK) *err = c->err ? c->err : NET_ERR_REFUSED;
     conn_free(c);
     return NULL;
+}
+
+tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err) {
+    return connect_to(ip, NULL, port, timeout_ms, err);
+}
+tcp_conn_t* tcp_connect6(const ip6_t* ip, uint16_t port, uint32_t timeout_ms, int* err) {
+    if (!ip) { if (err) *err = NET_ERR_PROTO; return NULL; }
+    return connect_to(0, ip, port, timeout_ms, err);
 }
 
 int tcp_send(tcp_conn_t* c, const void* data, uint32_t len, uint32_t timeout_ms) {
@@ -780,12 +816,12 @@ void tcp_dump(void) {
     for (int i = 0; i < TCP_MAX_CONN; i++) {
         tcp_conn_t* c = &g_conns[i];
         if (!c->used) continue;
-        char lip[16], rip[16], l[24], r[24], line[100];
-        ip4_to_str(nif->ip, lip);
-        ip4_to_str(c->rip, rip);
-        ksnprintf(l, sizeof(l), "%s:%u", lip, c->lport);
-        ksnprintf(r, sizeof(r), "%s:%u", rip, c->rport);
-        ksnprintf(line, sizeof(line), "tcp   %-21s %-21s %-12s %6u %6u",
+        char lip[48], rip[48], l[56], r[56], line[180];
+        if (c->ipv6) { ip6_format(&c->lip6, lip, sizeof(lip)); ip6_format(&c->rip6, rip, sizeof(rip)); }
+        else { ip4_to_str(nif->ip, lip); ip4_to_str(c->rip, rip); }
+        ksnprintf(l, sizeof(l), c->ipv6 ? "[%s]:%u" : "%s:%u", lip, c->lport);
+        ksnprintf(r, sizeof(r), c->ipv6 ? "[%s]:%u" : "%s:%u", rip, c->rport);
+        ksnprintf(line, sizeof(line), c->ipv6 ? "tcp6  %-21s %-21s %-12s %6u %6u" : "tcp   %-21s %-21s %-12s %6u %6u",
                   l, r, tcp_state_str(c->state), c->rb_len, c->sb_len);
         terminal_writeln(line);
         any = 1;
@@ -793,8 +829,8 @@ void tcp_dump(void) {
     for (int i = 0; i < TCP_MAX_LISTEN; i++) {
         if (!g_listeners[i].used) continue;
         char l[24], line[100];
-        ksnprintf(l, sizeof(l), "0.0.0.0:%u", g_listeners[i].port);
-        ksnprintf(line, sizeof(line), "tcp   %-21s %-21s %-12s", l, "*:*", "LISTEN");
+        ksnprintf(l, sizeof(l), g_listeners[i].ipv6 ? "[::]:%u" : "0.0.0.0:%u", g_listeners[i].port);
+        ksnprintf(line, sizeof(line), g_listeners[i].ipv6 ? "tcp6  %-21s %-21s %-12s" : "tcp   %-21s %-21s %-12s", l, "*:*", "LISTEN");
         terminal_writeln(line);
         any = 1;
     }
@@ -803,21 +839,26 @@ void tcp_dump(void) {
 
 /* ── server side ────────────────────────────────────────────────── */
 
-tcp_listener_t* tcp_listen(uint16_t port, int* err) {
+static tcp_listener_t* listen_on(uint16_t port, int ipv6, int* err) {
     int e;
     if (!err) err = &e;
+    if (!port || (ipv6 && !ipv6_enabled())) { *err = NET_ERR_NOTREADY; return NULL; }
     for (int i = 0; i < TCP_MAX_LISTEN; i++)
-        if (g_listeners[i].used && g_listeners[i].port == port) { *err = NET_ERR_PROTO; return NULL; }
+        if (g_listeners[i].used && g_listeners[i].ipv6 == ipv6 && g_listeners[i].port == port) { *err = NET_ERR_PROTO; return NULL; }
     for (int i = 0; i < TCP_MAX_LISTEN; i++) {
         if (g_listeners[i].used) continue;
         g_listeners[i].used = 1;
         g_listeners[i].port = port;
+        g_listeners[i].ipv6 = ipv6;
         *err = NET_OK;
         return &g_listeners[i];
     }
     *err = NET_ERR_NOMEM;
     return NULL;
 }
+
+tcp_listener_t* tcp_listen(uint16_t port, int* err) { return listen_on(port, 0, err); }
+tcp_listener_t* tcp_listen6(uint16_t port, int* err) { return listen_on(port, 1, err); }
 
 tcp_conn_t* tcp_accept(tcp_listener_t* l, uint32_t timeout_ms) {
     if (!l || !l->used) return NULL;
@@ -852,6 +893,22 @@ void tcp_unlisten(tcp_listener_t* l) {
 void tcp_peer(const tcp_conn_t* c, ip4_t* ip, uint16_t* port) {
     if (ip) *ip = c->rip;
     if (port) *port = c->rport;
+}
+
+int tcp_peer6(const tcp_conn_t* c, ip6_t* ip, uint16_t* port) {
+    if (!c || !c->ipv6) return 0;
+    if (ip) *ip = c->rip6;
+    if (port) *port = c->rport;
+    return 1;
+}
+
+void tcp6_disable(void) {
+    for (int i = 0; i < TCP_MAX_CONN; i++) {
+        tcp_conn_t* c = &g_conns[i];
+        if (!c->used || !c->ipv6) continue;
+        if (c->listener || c->user_closed) { conn_free(c); continue; }
+        c->err = NET_ERR_NOTREADY; c->state = TCP_CLOSED; c->timer_on = 0;
+    }
 }
 
 int tcp_readable(const tcp_conn_t* c) {

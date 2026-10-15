@@ -61,7 +61,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
 - **Firewall (optional)** - off unless turned on (`firewall on`, Settings > Network): connections from outside refused but for the ports allowed (`firewall allow tcp 22`), pings only if allowed, everything you start works as before; `firewall log` shows what was blocked
-- **IPv6 (optional)** - off unless `ipv6 on`: link-local and SLAAC addresses, neighbor discovery, `ping6` (TCP / UDP stay on IPv4 for now)
+- **IPv6 (optional)** - off by default; `toggle6 [on|off]`, `ipv6 on/off` and Settings > Network control the same switch. Link-local/SLAAC addresses, neighbour discovery, ping, TCP, UDP and AAAA DNS. IPv4 stays independent. `curl -6` and `wget -6` select IPv6; bracket literal addresses, e.g. `http://[::1]:8080/`. Use `selftest ipv6` for local checks; it restores the previous toggle state without changing saved settings.
 - **Intel Macs** - Apple keyboards (Command works as Ctrl), Apple NVMe SSDs (2015-2017 Macs, T2 Macs), the speakers of Macs' HD Audio codecs (GPIO amplifiers), and the Apple SMC's temperatures and fans in `sensors`
 - **Android phones** - `adb` (devices, shell, push, pull, install, logcat, reboot) and `fastboot` (getvar, flash, erase, boot, reboot, oem, flashing unlock) over USB, with the phone's "Allow USB debugging?" key check (RSA-2048, the key in `~/.android`)
 - **Drag and drop everywhere** - files dragged from Files or the desktop onto a terminal type their paths at the prompt, onto Notepad / the Browser open there, onto an app's window go to the app (Banana Code, Photos, Media Player, Music; API 13 `BANANA_EV_DROP`); held over a taskbar button, that window comes up to drop on
@@ -278,6 +278,44 @@ Banana-OS/
 - Ctrl+Alt+Delete quits the GUI immediately, from anywhere
 
 ## Networking
+
+IPv6 is optional and **off by default**. Settings > Network and `toggle6`
+share the same saved switch; `toggle6 on` / `toggle6 off` set it explicitly.
+With no argument, `toggle6` flips it. `ipv6` displays the current addresses,
+router and DNS. Disabling IPv6 drops its queued packets and ends IPv6 TCP
+sessions while IPv4 continues operating.
+
+After rebuilding, test directly inside Banana OS:
+
+```sh
+selftest ipv6                  # no router/Internet needed; restores the toggle
+ipv6                          # confirm its original on/off state
+```
+
+To test a real IPv6 network, enable it and wait for the router's SLAAC prefix:
+
+```sh
+toggle6 on
+ipv6
+nslookup -6 example.com
+ping6 -c 2 example.com
+curl -6 http://example.com/
+selftest ipv6 example.com 80
+```
+
+HTTP/HTTPS clients (including Browser and SDK apps) accept bracketed IPv6
+literals. By default they try IPv4, then IPv6 if enabled; `curl -4` / `-6`
+and `wget -4` / `-6` force a family. Existing server commands still listen on
+IPv4; the TCP layer exposes a separate `tcp_listen6()` API.
+
+Current limits: no IPv6 fragment reassembly, source fragmentation, or path-MTU
+discovery. TCP uses a 1220-byte MSS and UDP allows 1232 data bytes so packets
+fit the 1280-byte IPv6 minimum MTU. AAAA DNS uses an advertised IPv6 resolver
+when available, or the configured IPv4 DNS server. DNS replies truncated for
+TCP fallback are not supported. Local tests exercise packet validation,
+checksums, transport data/close, and toggle restoration; optional host tests
+require an actual IPv6 route.
+
 
 Banana OS brings up the network card by itself at boot and configures it with **DHCP** in the background - by the time you're at the prompt, `ifconfig` usually already shows an address.
 
@@ -811,7 +849,9 @@ include /path/to/banana-sdk/driver/driver.mk
 | `adb devices / shell / push / pull / install / logcat / reboot` | Android phones over USB (USB debugging on) |
 | `fastboot devices / getvar / flash / erase / boot / reboot` | a phone in its bootloader |
 | `firewall [on/off] / allow / deny / ping / log` | the firewall (off by default) |
-| `ipv6 [on\|off]` / `ping6 ADDRESS` | IPv6 (off by default): its addresses, and echo |
+| `toggle6 [on\|off]` / `ipv6 [on\|off]` | IPv6 switch (off by default; saved), or address/router information |
+| `ping6 HOST` / `nslookup -6 HOST` | IPv6 echo / AAAA DNS lookup |
+| `selftest ipv6 [HOST [PORT]]` | Local IPv6 TCP/UDP checks; optional network lookup and TCP connection (default port 80) |
 | `sensors` | The processor's temperature (Intel and AMD, real hardware) |
 | `gamepad` | The game controllers plugged in: sticks, triggers, buttons held |
 | `sched` | The scheduler's view: load average, and per task its nice value, weight, switches, wait for the processor, longest run |

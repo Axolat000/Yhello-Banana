@@ -2,6 +2,7 @@
 #define TCP_H
 
 #include "net.h"
+#include "ipv6.h"
 
 /*
  * TCP (RFC 793 / 1122 / 6298): active and passive open, reliable
@@ -23,6 +24,9 @@ typedef enum {
 
 /* Opens a connection. Returns NULL and sets *err (NET_ERR_*) on failure. */
 tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err);
+tcp_conn_t* tcp_connect6(const ip6_t* ip, uint16_t port, uint32_t timeout_ms, int* err);
+void tcp_rx6(const ip6_t* src, const ip6_t* dst, const uint8_t* seg, uint32_t len);
+void tcp6_disable(void); /* invalidate IPv6 sessions, preserving IPv4 */
 
 /* Queues all `len` bytes (blocking while the send buffer is full).
  * Returns len, or a NET_ERR_* code. */
@@ -46,10 +50,12 @@ void tcp_abort(tcp_conn_t* c);
  * like tcp_connect() ones. */
 typedef struct tcp_listener tcp_listener_t;
 tcp_listener_t* tcp_listen(uint16_t port, int* err);
+tcp_listener_t* tcp_listen6(uint16_t port, int* err);
 /* waits up to timeout_ms (0: just checks) for a connection; NULL if none */
 tcp_conn_t* tcp_accept(tcp_listener_t* l, uint32_t timeout_ms);
 void tcp_unlisten(tcp_listener_t* l);   /* also resets unaccepted connections */
 void tcp_peer(const tcp_conn_t* c, ip4_t* ip, uint16_t* port);
+int tcp_peer6(const tcp_conn_t* c, ip6_t* ip, uint16_t* port); /* 0 for IPv4 */
 /* bytes waiting to be read; -1 once nothing more can arrive (FIN/RST) */
 int  tcp_readable(const tcp_conn_t* c);
 /* bytes that can be queued with tcp_send() without blocking */
