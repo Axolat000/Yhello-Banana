@@ -14,6 +14,9 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Browser crashes stay in the browser** - the web engine runs in the kernel, so a page that made it crash used to stop all of Banana OS. Now a crash in the browser (or in an app's web view) - a bad memory access, an invalid instruction, a too-deep recursion running off its stack (guard pages under it now) - closes only the page that caused it: the tab says *This page crashed the browser's engine*, the other tabs and the rest of the system go on. `about:crash` crashes the engine on purpose, to see it
+- **Several keys at once (games)** - the keyboard driver keeps every key held down (PS/2, USB, Remote Desktop). Apps ask `banana_key_down('w')`, `banana_key_down(BANANA_KEY_LEFT)`... (API version 14) and web pages get a real `keydown` when a key goes down and `keyup` when it comes up, with `event.code`, so W + D + Space together work
+- **App Store: your own servers** - *Servers* lists the repositories and adds one (its address and signing key, or trusted without a key after a warning) or removes one (API version 15). The App Store is pinned to the taskbar next to Files
 - **`<iframe>` in the web browser** - a page can embed another page: the browser loads the frame's `src` (or its inline `srcdoc`) as a document of its own, lays it out and draws it inside the frame's box, clipped to it, with its own styles and JavaScript. Frames nest (a frame inside a frame), and buttons, checkboxes and `onclick` handlers inside a frame work. Each frame is sandboxed - it has no access to the page around it. (Scrolling a frame's overflow and following links inside it are not there yet.)
 - **Remote Desktop (RDP)** - both a server and a client, speaking the Remote Desktop Protocol (MS-RDPBCGR) over its own TLS 1.2 (written from the RFCs, `net/tls12.c`). The **server** (`rdpd start`, port 3389, off by default like `sshd`) lets Windows' *Remote Desktop Connection* (mstsc), the Microsoft Remote Desktop apps and FreeRDP connect to the Banana OS desktop: it mirrors the screen and takes the keyboard and mouse. Log in as `banana` with the `passwd` password; an RSA key and certificate are made on first start and kept in `/etc/rdp/`. The **client** (`rdp host[:port]`, a desktop window) connects out to Windows, xrdp, FreeRDP or another Banana OS: it draws the remote screen (uncompressed, RDP 6.0 planar and interleaved-RLE bitmaps) and forwards the exact keys and the mouse, with **NLA** (CredSSP / NTLMv2) when a password is given. Both are in *Settings > Startup*. See [Remote Desktop](#remote-desktop-rdp)
 - **Amethyst Music** - the app of [Amethyst Music](https://music.office-works.ch/): the server's whole catalogue streamed (songs are kept in `~/.cache/amethyst`, the next one is fetched while the current one plays, so there is no gap), with the covers (WebP), *Home* (recommendations, recently played, most played), *Songs*, *Albums*, *Artists*, *Playlists*, the queue, shuffle / repeat, an equalizer and a visualizer. The first time it asks for the server's address (any Amethyst server; e.g. `https://music.office-works.ch`) and, optionally, an account: log in (or create one) for your recommendations, history and play counts, and to make playlists (right-click a song > *Add to...*). The account box at the bottom of the sidebar changes both; it comes installed
@@ -451,7 +454,7 @@ Open it from the desktop (`startx`): the **Browser** icon or Start menu entry, o
 - **Uploads**: an `<input type="file">` (clicked, or `input.click()` from a script) opens *Choose a file to upload* over the page - arrows / Enter / Esc, Tab through the places; the page only ever gets to read the file you chose (its `value` is `C:\fakepath\name`, as in every browser)
 - Real sites: Wikipedia, Hacker News, MDN, BBC News, Bing and catbox.moe (uploads) load with their scripts; big script-heavy apps (GitHub) partly work, within the page's memory
 - Not supported: CSS grid and real flexbox layout, fonts other than the built-in one, `<canvas>`, video, WebSockets, generators (`function*`). A script error is shown in the status bar (with the line and column) and the rest of the page still works
-- Pages run in the browser's own task (a 2 MiB stack); a page gets a fifth of the free memory (16 to 96 MiB), and a script stops after 5 million steps
+- Pages run in the browser's own task (an 8 MiB stack, with guard pages under it); a crash in it closes only that page (see *Latest additions*); a page gets a fifth of the free memory (16 to 96 MiB), and a script stops after 5 million steps
 
 ## USB
 
@@ -1012,6 +1015,10 @@ Building: the Makefile signs with `sbsign` when the private key is at `~/.banana
   - PS/2 mouse AUX packets
   - COM1 serial
 - **Kernel load address**: `0x100000` (1 MiB)
+
+## To do
+
+- **Isolate every app from the kernel** - today an app that crashes (a bad pointer, a stack overflow) is stopped and the system goes on, but apps run in ring 0 in the kernel's address space, so a buggy app can still write over the kernel's memory and bring it down later. The plan, keeping every existing app working unchanged: each app's memory (code, data, stacks, heap, window pixels) in chunks of its own, its code run on page tables where the kernel is read-only (CR0.WP), the system call gates and interrupt stubs switching tables, and system calls refusing output buffers outside the app's memory. A first version for the 64-bit kernel is on the `app-isolation` branch (a test app writing into the kernel is stopped, the system goes on); still to do: paging for the 32-bit kernel, and testing every app with it
 
 ## 100% Custom Kernel
 

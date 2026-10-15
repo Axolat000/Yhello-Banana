@@ -40,3 +40,32 @@ app_leave:
     pop ebx
     pop ebp
     ret
+
+; int  kjmp_set(kjmp_buf_t* b);       0 now, `val` again after kjmp_jump(b, val)
+; void kjmp_jump(kjmp_buf_t* b, int val);
+; (kernel/task.h: a task's way back after a CPU exception in its code)
+global kjmp_set
+global kjmp_jump
+
+kjmp_set:
+    mov eax, [esp + 4]
+    mov [eax], ebx
+    mov [eax + 4], esi
+    mov [eax + 8], edi
+    mov [eax + 12], ebp
+    lea ecx, [esp + 4]      ; the stack once kjmp_set has returned
+    mov [eax + 16], ecx
+    mov ecx, [esp]          ; where it returns to
+    mov [eax + 20], ecx
+    xor eax, eax
+    ret
+
+kjmp_jump:
+    mov edx, [esp + 4]
+    mov eax, [esp + 8]
+    mov ebx, [edx]
+    mov esi, [edx + 4]
+    mov edi, [edx + 8]
+    mov ebp, [edx + 12]
+    mov esp, [edx + 16]
+    jmp [edx + 20]

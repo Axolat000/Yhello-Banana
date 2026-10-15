@@ -87,3 +87,34 @@ smp_app_gate:
     pop rax
     popfq
     ret
+; int  kjmp_set(kjmp_buf_t* b);       0 now, `val` again after kjmp_jump(b, val)
+; void kjmp_jump(kjmp_buf_t* b, int val);
+; (kernel/task.h: a task's way back after a CPU exception in its code)
+global kjmp_set
+global kjmp_jump
+
+kjmp_set:
+    mov [rdi], rbx
+    mov [rdi + 8], rbp
+    mov [rdi + 16], r12
+    mov [rdi + 24], r13
+    mov [rdi + 32], r14
+    mov [rdi + 40], r15
+    lea rdx, [rsp + 8]      ; the stack once kjmp_set has returned
+    mov [rdi + 48], rdx
+    mov rdx, [rsp]          ; where it returns to
+    mov [rdi + 56], rdx
+    xor eax, eax
+    ret
+
+kjmp_jump:
+    mov eax, esi
+    mov rbx, [rdi]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    mov rsp, [rdi + 48]
+    jmp [rdi + 56]
+
