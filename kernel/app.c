@@ -106,25 +106,36 @@ static app_proc_t g_procs[APP_MAX];
 static banana_api_t g_api;
 
 
+/* which app - and which of its threads - each task runs (by pid): every
+ * system call asks (cur), on any core, so it is a lookup, not a search */
+static int16_t g_pid_app[TASK_MAX];     /* app id + 1; 0: none */
+static int8_t  g_pid_thr[TASK_MAX];     /* thread index + 1; 0: the app's main thread */
+
+static void pid_set(int pid, int app, int thr) {
+    if (pid < 0 || pid >= TASK_MAX) return;
+    g_pid_thr[pid] = (int8_t)(thr + 1);
+    g_pid_app[pid] = (int16_t)(app + 1);
+}
+
+static void pid_clear(int pid, int app) {
+    if (pid < 0 || pid >= TASK_MAX || g_pid_app[pid] != app + 1) return;
+    g_pid_app[pid] = 0;
+    g_pid_thr[pid] = 0;
+}
+
 static app_proc_t* cur(void) {
     int pid = task_current_pid();
-    for (int i = 0; i < APP_MAX; i++) {
-        app_proc_t* p = &g_procs[i];
-        if (!p->used) continue;
-        if (p->pid == pid) return p;
-        for (int t = 0; t < APP_THREADS; t++)
-            if (p->threads[t].used && p->threads[t].pid == pid) return p;
-    }
-    return NULL;
+    if (pid < 0 || pid >= TASK_MAX || !g_pid_app[pid]) return NULL;
+    app_proc_t* p = &g_procs[g_pid_app[pid] - 1];
+    return p->used ? p : NULL;
 }
 
 /* the calling thread of app p, NULL for its main thread */
 static athread_t* cur_thread(app_proc_t* p) {
     int pid = task_current_pid();
-    if (!p || p->pid == pid) return NULL;
-    for (int t = 0; t < APP_THREADS; t++)
-        if (p->threads[t].used && p->threads[t].pid == pid) return &p->threads[t];
-    return NULL;
+    if (!p || pid < 0 || pid >= TASK_MAX || !g_pid_thr[pid] || g_pid_app[pid] != p->id + 1) return NULL;
+    athread_t* t = &p->threads[g_pid_thr[pid] - 1];
+    return t->used && t->pid == pid ? t : NULL;
 }
 
 /* ends the calling app right away (exit(), Ctrl+C, closed twice) */
@@ -1079,6 +1090,7 @@ static void thread_entry(void) {
      * it did, and a new thread of another app was taken for this one
      * (cur() found this app first) and ran this thread's code again on
      * its old stack - both apps crashed, and then the kernel. */
+    pid_clear(t->pid, p->id);
     t->pid = -1;
     t->done = 1;
 }
@@ -1115,6 +1127,7 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
                 g_procs[i].threads[k].pid = -1;
     }
     t->pid = pid;                           /* it runs once we yield (no preemption in here) */
+    pid_set(pid, p->id, id);
     return id + 1;
 }
 
@@ -1259,6 +1272,16 @@ static sysspec_t g_spec[API_SLOTS];
 
 #define SPEC(f, a, o) (g_spec[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (sysspec_t){ a, o })
 
+/* Calls that may run on whichever core the app thread makes them on - they
+ * touch only the app's own state and what has locks of its own (its
+ * memory: kernel/umem.c, the heap) and never wait or switch tasks. Every
+ * other call first takes the thread back to the boot core, where the rest
+ * of the kernel runs. wait has a quick case here and goes home only
+ * when it really has to sleep (LOCAL_WAIT). */
+enum { LOCAL_NO = 0, LOCAL_YES, LOCAL_WAIT };
+static uint8_t g_local[API_SLOTS];
+#define LOCAL(f, how) (g_local[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (how))
+
 static void spec_init(void) {
     SPEC(exit, "i", 0);
     SPEC(write, "iBi", 0);
@@ -1353,6 +1376,17 @@ static void spec_init(void) {
     SPEC(repo_sources, "ii", 0);        /* out: checked in it */
     SPEC(repo_add_source, "ssibi", 0);
     SPEC(repo_remove_source, "sbi", 0);
+
+    LOCAL(ticks_ms, LOCAL_YES);
+    LOCAL(cpu_count, LOCAL_YES);
+    LOCAL(thread_id, LOCAL_YES);
+    LOCAL(key_mods, LOCAL_YES);
+    LOCAL(malloc, LOCAL_YES);
+    LOCAL(free, LOCAL_YES);
+    LOCAL(realloc, LOCAL_YES);
+    LOCAL(draw_text, LOCAL_YES);
+    LOCAL(wake, LOCAL_YES);             /* (task_wake only moves a deadline: any core may) */
+    LOCAL(wait, LOCAL_WAIT);
 }
 
 /* the pointers of a call, against the app's memory (NULL is left to the call) */
@@ -1392,11 +1426,50 @@ static void __attribute__((noreturn)) bad_call(app_proc_t* p, uint64_t slot, con
     leave(p, 139);
 }
 
+/* the arguments of a call: the first six from the registers, the rest
+ * from the app's stack; 0 if they are not what its spec says */
+static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, uint64_t* a) {
+    a[0] = r->rdi; a[1] = r->rsi; a[2] = r->rdx; a[3] = r->rcx; a[4] = r->r8; a[5] = r->r9;
+    for (int i = 6; i < SYS_ARGS; i++) a[i] = 0;
+    uint32_t nargs = (uint32_t)strlen(sp->args);
+    if (nargs > 6) {
+        /* above the return address of the app's call */
+        const uint64_t* st = (const uint64_t*)(uintptr_t)(r->rsp + 8);
+        if (!umem_owns(p->mem, st, (nargs - 6) * 8)) return 0;
+        for (uint32_t i = 6; i < nargs; i++) a[i] = st[i - 6];
+    }
+    return args_ok(p, sp, a);
+}
+
+/* a call on another core, interrupts off: 1 if it was done here, 0 if it
+ * must go to the boot core (where everything is checked again) */
+static int syscall_here(sysframe_t* r) {
+    uint64_t slot = r->rax;
+    if (slot >= API_SLOTS || !g_local[slot] || !g_spec[slot].args) return 0;
+    app_proc_t* p = cur();
+    if (!p || p->exit_req || p->kill_req) return 0;     /* (the boot core ends it) */
+    uint64_t a[SYS_ARGS];
+    if (!gather_args(p, &g_spec[slot], r, a)) return 0;
+    if (g_local[slot] == LOCAL_WAIT) {
+        /* the value changed already: nothing to wait for */
+        if (!a[0] || *(volatile int*)(uintptr_t)a[0] == (int)a[1]) return 0;
+        r->rax = 0;
+        return 1;
+    }
+    sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
+    r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    return 1;
+}
+
 /* kernel/isr64.asm: int 0x80 from an app, on its thread's kernel stack */
 void app_syscall(sysframe_t* r) {
-    /* the kernel runs on the boot core: a call made elsewhere moves there
-     * (interrupts are still off, as the gate left them) */
-    if (cpu_id() != 0) task_ap_go_home();
+    /* the kernel runs on the boot core: a call made elsewhere moves there,
+     * unless it may run where it was made (interrupts are still off, as the
+     * gate left them - and stay off for those) */
+    if (cpu_id() != 0) {
+        if ((r->cs & 3) == 3 && syscall_here(r)) return;
+        task_ap_go_home();
+    }
     __asm__ volatile("sti");
     app_proc_t* p = cur();
     uint64_t slot = r->rax;
@@ -1411,16 +1484,8 @@ void app_syscall(sysframe_t* r) {
         leave(p, (int)r->rdi);
     }
     if (slot >= API_SLOTS || !g_spec[slot].args) bad_call(p, slot, "an unknown system call");
-    const sysspec_t* sp = &g_spec[slot];
-    uint64_t a[SYS_ARGS] = { r->rdi, r->rsi, r->rdx, r->rcx, r->r8, r->r9 };
-    uint32_t nargs = (uint32_t)strlen(sp->args);
-    if (nargs > 6) {
-        /* the rest are on the app's stack, above the return address of its call */
-        const uint64_t* st = (const uint64_t*)(uintptr_t)(r->rsp + 8);
-        if (!umem_owns(p->mem, st, (nargs - 6) * 8)) bad_call(p, slot, "a bad stack");
-        for (uint32_t i = 6; i < nargs; i++) a[i] = st[i - 6];
-    }
-    if (!args_ok(p, sp, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
+    uint64_t a[SYS_ARGS];
+    if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
     sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
     r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
     __asm__ volatile("cli");
@@ -1741,7 +1806,7 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
         if (bad) {
             if (bad == 1) kstrlcpy(err, "damaged relocations (link it with the SDK or tcc)", (size_t)ecap);
             else kstrlcpy(err, why, (size_t)ecap);
-            if (m) umem_free(m, raw);
+            if (m) umem_free_pages(m, raw, 0);
             else kfree(raw);
             return -1;
         }
@@ -1804,6 +1869,7 @@ static void release(app_proc_t* p) {
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);
+    pid_clear(p->pid, p->id);
     p->used = 0;
 }
 
@@ -1943,6 +2009,7 @@ int app_exec(const char* path, int argc, char** argv, char* err, int ecap) {
     app_proc_t* p = prepare(path, argc, argv, err, ecap);
     if (!p) return -1;
     p->pid = task_current_pid();
+    pid_set(p->pid, p->id, -1);
     p->vt = terminal_vt_get_active();
     p->has_term = !task_is_background();
     p->last_breath = timer_ms();
@@ -1972,6 +2039,7 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     int pid = task_create(p->name, spawned_entry);
     if (pid < 0) { release(p); kstrlcpy(err, "too many tasks", (size_t)ecap); return -1; }
     p->pid = pid;                      /* the new task runs once we yield */
+    pid_set(pid, p->id, -1);
     return 0;
 }
 

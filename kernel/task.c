@@ -630,6 +630,12 @@ void task_sleep_ms(uint32_t ms) {
 }
 
 int task_current_pid(void) {
+    /* on another core: the app task running there (a system call made there, kernel/app.c) */
+    int c = cpu_id();
+    if (c > 0 && c < SMP_MAX_CPUS) {
+        task_t* t = g_ap[c].task;
+        return t ? (int)t->pid : -1;
+    }
     return g_current ? (int)g_current->pid : 0;
 }
 

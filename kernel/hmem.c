@@ -2,6 +2,7 @@
 #include "kheap.h"
 #include "paging.h"
 #include "serial.h"
+#include "spinlock.h"
 
 #define FRAME   0x200000ull
 #define LOW     (4ull << 30)            /* below: the kernel heap's world */
@@ -20,6 +21,7 @@ typedef struct {
 static hrange_t g_r[RANGES];
 static int      g_n;
 static uint64_t g_total, g_used;
+static spinlock_t g_lock = SPINLOCK_INIT;   /* (apps' system calls on other cores allocate too) */
 
 typedef struct { uint32_t type, size; } __attribute__((packed)) mb2_tag_t;
 typedef struct { uint32_t type, size, entry_size, entry_version; } __attribute__((packed)) mb2_tag_mmap_t;
@@ -72,8 +74,7 @@ static void mark(hrange_t* r, uint32_t i, uint32_t n, int used) {
     }
 }
 
-uint64_t hmem_alloc(uint32_t n) {
-    if (!n) return 0;
+static uint64_t alloc_locked(uint32_t n) {
     for (int ri = 0; ri < g_n; ri++) {
         hrange_t* r = &g_r[ri];
         if (r->frames - r->used < n) continue;
@@ -91,17 +92,28 @@ uint64_t hmem_alloc(uint32_t n) {
     return 0;
 }
 
+uint64_t hmem_alloc(uint32_t n) {
+    if (!n) return 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    uint64_t a = alloc_locked(n);
+    spin_unlock_irq(&g_lock, f);
+    return a;
+}
+
 void hmem_free(uint64_t addr, uint32_t n) {
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (int ri = 0; ri < g_n; ri++) {
         hrange_t* r = &g_r[ri];
         if (addr < r->base || addr >= r->base + (uint64_t)r->frames * FRAME) continue;
         uint32_t first = (uint32_t)((addr - r->base) / FRAME);
-        if (first + n > r->frames) return;
-        mark(r, first, n, 0);
-        r->used -= n;
-        g_used -= (uint64_t)n * FRAME;
-        return;
+        if (first + n <= r->frames) {
+            mark(r, first, n, 0);
+            r->used -= n;
+            g_used -= (uint64_t)n * FRAME;
+        }
+        break;
     }
+    spin_unlock_irq(&g_lock, f);
 }
 
 uint64_t hmem_total_bytes(void) { return g_total; }

@@ -3,6 +3,8 @@
 #include "kstring.h"
 #include "serial.h"
 #include "hmem.h"
+#include "spinlock.h"
+#include "smp.h"
 
 /*
  * Three sizes of allocation:
@@ -49,6 +51,8 @@ typedef struct uchunk {
     uint32_t       nframes;             /* > 1: one big allocation */
     int            big_used;
     int            broken;              /* its tables could not be made: never handed out */
+    int            pinned;              /* (a big allocation) the system's: see umem_alloc_pages */
+    uint64_t       pin[PAGES / 64];     /* runs starting at these pages are the system's */
     uint32_t       free_pages;
     uint64_t       used[PAGES / 64];    /* pages in use */
     uint16_t       run[PAGES];          /* pages of the run starting at this page (0: none) */
@@ -57,6 +61,7 @@ typedef struct uchunk {
 } uchunk_t;
 
 struct umem {
+    spinlock_t lock;                    /* its threads allocate on any core (kernel/app.c) */
     uspace_t* us;
     uchunk_t* chunks;
     uslab_t*  partial[NCLS];
@@ -67,6 +72,7 @@ struct umem {
 /* frame -> its block: a directory of 4 KiB tables (512 frames, 1 GiB each)
  * made when a gigabyte first has a block */
 static uchunk_t** g_dir[FRAMES / 512];
+static spinlock_t  g_dir_lock = SPINLOCK_INIT;   /* (two apps may add a gigabyte's table at once) */
 
 static uchunk_t* frame_get(uintptr_t f) {
     uchunk_t** t = g_dir[f / 512];
@@ -77,9 +83,13 @@ static int frame_set(uintptr_t f, uchunk_t* c) {
     uchunk_t** t = g_dir[f / 512];
     if (!t) {
         if (!c) return 0;
-        t = (uchunk_t**)kzalloc(512 * sizeof(uchunk_t*));
-        if (!t) return -1;
-        g_dir[f / 512] = t;
+        uchunk_t** nt = (uchunk_t**)kzalloc(512 * sizeof(uchunk_t*));
+        if (!nt) return -1;
+        uintptr_t fl = spin_lock_irq(&g_dir_lock);
+        if (!g_dir[f / 512]) { g_dir[f / 512] = nt; nt = NULL; }
+        t = g_dir[f / 512];
+        spin_unlock_irq(&g_dir_lock, fl);
+        if (nt) kfree(nt);                  /* (another core made it meanwhile) */
     }
     t[f % 512] = c;
     return 0;
@@ -266,8 +276,11 @@ static void* small_alloc(umem_t* m, int ci) {
     return NULL;                                /* (cannot happen: a listed slab has room) */
 }
 
-void* umem_alloc(umem_t* m, size_t size) {
-    if (!m || size > (1ul << 30)) return NULL;
+/* (a bad free is logged on the boot core only: the log is not for other cores) */
+#define BAD_FREE(msg, p) do { if (cpu_id() == 0) klog(msg, p); } while (0)
+
+static void* alloc_l(umem_t* m, size_t size) {
+    if (size > (1ul << 30)) return NULL;
     if (!size) size = 1;
     if (size <= SMALL) return small_alloc(m, cls_of(size));
     if (size <= BLOCK) {
@@ -284,23 +297,7 @@ void* umem_alloc(umem_t* m, size_t size) {
     return (void*)c->base;
 }
 
-void* umem_alloc_pages(umem_t* m, size_t size, size_t guard) {
-    if (!m || (guard & (PAGE - 1))) return NULL;
-    size_t total = (size + guard + PAGE - 1) & ~(size_t)(PAGE - 1);
-    uint8_t* p = (uint8_t*)umem_alloc(m, total < SMALL + 1 ? SMALL + 1 : total);   /* (whole pages) */
-    if (!p) return NULL;
-    if (guard) uspace_guard(m->us, (uintptr_t)p, (uint32_t)guard, 1);
-    return p + guard;
-}
-
-void umem_free_pages(umem_t* m, void* p, size_t guard) {
-    if (!m || !p) return;
-    uint8_t* base = (uint8_t*)p - guard;
-    if (guard) uspace_guard(m->us, (uintptr_t)base, (uint32_t)guard, 0);
-    umem_free(m, base);
-}
-
-size_t umem_size(umem_t* m, const void* p) {
+static size_t size_l(umem_t* m, const void* p) {
     uchunk_t* c = chunk_of(m, p);
     if (!c) return 0;
     uintptr_t a = (uintptr_t)p;
@@ -319,14 +316,13 @@ size_t umem_size(umem_t* m, const void* p) {
     return (size_t)c->run[pi] * PAGE;
 }
 
-void umem_free(umem_t* m, void* p) {
-    if (!m || !p) return;
+static void free_l(umem_t* m, void* p) {
     uchunk_t* c = chunk_of(m, p);
     uintptr_t a = (uintptr_t)p;
-    if (!c) { klog("app: free() of a pointer that is not its memory (%p)\n", p); return; }
+    if (!c) { BAD_FREE("app: free() of a pointer that is not its memory (%p)\n", p); return; }
     if (c->broken) return;
     if (c->nframes > 1) {
-        if (a != c->base || !c->big_used) { klog("app: free() of a bad pointer (%p)\n", p); return; }
+        if (a != c->base || !c->big_used) { BAD_FREE("app: free() of a bad pointer (%p)\n", p); return; }
         m->used -= c->nframes * BLOCK;
         c->big_used = 0;
         split_big(m, c);
@@ -338,7 +334,7 @@ void umem_free(umem_t* m, void* p) {
         uintptr_t off = a - s->base;
         uint32_t k = (uint32_t)(off / g_cls[s->cls]);
         if (off % g_cls[s->cls] || k >= s->nobj || ((s->map[k >> 6] >> (k & 63)) & 1)) {
-            klog("app: free() of a bad pointer (%p)\n", p);
+            BAD_FREE("app: free() of a bad pointer (%p)\n", p);
             return;
         }
         s->map[k >> 6] |= 1ull << (k & 63);
@@ -360,22 +356,98 @@ void umem_free(umem_t* m, void* p) {
         }
         return;
     }
-    if ((a & (PAGE - 1)) || !c->run[pi]) { klog("app: free() of a bad pointer (%p)\n", p); return; }
+    if ((a & (PAGE - 1)) || !c->run[pi]) { BAD_FREE("app: free() of a bad pointer (%p)\n", p); return; }
     m->used -= c->run[pi] * PAGE;
     run_free(c, pi);
 }
 
-void* umem_realloc(umem_t* m, void* p, size_t size) {
-    if (!p) return umem_alloc(m, size);
-    if (!size) { umem_free(m, p); return NULL; }
-    size_t old = umem_size(m, p);
+static void* realloc_l(umem_t* m, void* p, size_t size) {
+    if (!p) return alloc_l(m, size);
+    if (!size) { free_l(m, p); return NULL; }
+    size_t old = size_l(m, p);
     if (!old) return NULL;
     if (size <= old && (old <= SMALL || size > old / 2)) return p;
-    void* n = umem_alloc(m, size);
+    void* n = alloc_l(m, size);
     if (!n) return NULL;
     memcpy(n, p, old < size ? old : size);
-    umem_free(m, p);
+    free_l(m, p);
     return n;
+}
+
+/* The system's blocks in the app's memory - its code, stacks (with guard
+ * pages), call table - come from umem_alloc_pages and are pinned: free()
+ * and realloc() from the app leave them alone. (Its own code and stack are
+ * not its to free; and a copy over a guard page would fault while the lock
+ * is held, leaving it held for good.) */
+static int pinned(umem_t* m, const void* p) {
+    uchunk_t* c = chunk_of(m, p);
+    if (!c) return 0;
+    if (c->nframes > 1) return c->pinned;
+    uint32_t pi = (uint32_t)(((uintptr_t)p - c->base) / PAGE);
+    return (int)((c->pin[pi >> 6] >> (pi & 63)) & 1);
+}
+
+static void set_pin(umem_t* m, const void* p, int on) {
+    uchunk_t* c = chunk_of(m, p);
+    if (!c) return;
+    if (c->nframes > 1) { c->pinned = on; return; }
+    uint32_t pi = (uint32_t)(((uintptr_t)p - c->base) / PAGE);
+    if (on) c->pin[pi >> 6] |= 1ull << (pi & 63);
+    else c->pin[pi >> 6] &= ~(1ull << (pi & 63));
+}
+
+/* ── what the rest of the kernel calls: each holds the app's lock ── */
+
+void* umem_alloc(umem_t* m, size_t size) {
+    if (!m) return NULL;
+    spin_lock(&m->lock);
+    void* p = alloc_l(m, size);
+    spin_unlock(&m->lock);
+    return p;
+}
+
+void umem_free(umem_t* m, void* p) {
+    if (!m || !p) return;
+    spin_lock(&m->lock);
+    if (!pinned(m, p)) free_l(m, p);
+    spin_unlock(&m->lock);
+}
+
+void* umem_realloc(umem_t* m, void* p, size_t size) {
+    if (!m) return NULL;
+    spin_lock(&m->lock);
+    void* n = p && pinned(m, p) ? NULL : realloc_l(m, p, size);
+    spin_unlock(&m->lock);
+    return n;
+}
+
+size_t umem_size(umem_t* m, const void* p) {
+    if (!m) return 0;
+    spin_lock(&m->lock);
+    size_t n = pinned(m, p) ? 0 : size_l(m, p);
+    spin_unlock(&m->lock);
+    return n;
+}
+
+void* umem_alloc_pages(umem_t* m, size_t size, size_t guard) {
+    if (!m || (guard & (PAGE - 1))) return NULL;
+    size_t total = (size + guard + PAGE - 1) & ~(size_t)(PAGE - 1);
+    spin_lock(&m->lock);
+    uint8_t* p = (uint8_t*)alloc_l(m, total < SMALL + 1 ? SMALL + 1 : total);   /* (whole pages) */
+    if (p) set_pin(m, p, 1);
+    if (p && guard) uspace_guard(m->us, (uintptr_t)p, (uint32_t)guard, 1);
+    spin_unlock(&m->lock);
+    return p ? p + guard : NULL;
+}
+
+void umem_free_pages(umem_t* m, void* p, size_t guard) {
+    if (!m || !p) return;
+    uint8_t* base = (uint8_t*)p - guard;
+    spin_lock(&m->lock);
+    if (guard) uspace_guard(m->us, (uintptr_t)base, (uint32_t)guard, 0);
+    set_pin(m, base, 0);
+    free_l(m, base);
+    spin_unlock(&m->lock);
 }
 
 uint32_t umem_used(umem_t* m) { return m ? m->used : 0; }

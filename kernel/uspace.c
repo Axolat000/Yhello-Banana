@@ -2,6 +2,7 @@
 #include "paging.h"
 #include "kheap.h"
 #include "kstring.h"
+#include "spinlock.h"
 
 #ifdef __x86_64__
 
@@ -27,6 +28,9 @@ struct uspace {
 };
 
 static uspace_t* g_all;                 /* every address space: kernel changes go to each */
+/* the apps' tables: changed on the boot core (kernel changes, new apps) and
+ * on the others (an app's memory growing in a system call made there) */
+static spinlock_t g_lock = SPINLOCK_INIT;
 
 static uint64_t* new_table(void) {
     uint64_t* t = (uint64_t*)kmalloc_aligned(4096, 4096);
@@ -97,16 +101,20 @@ uspace_t* uspace_create(void) {
         kfree(us->pml4); kfree(us->pdpt); kfree(us);
         return NULL;
     }
+    uintptr_t f = spin_lock_irq(&g_lock);
     copy_kernel(us);
     us->next = g_all;
     g_all = us;
+    spin_unlock_irq(&g_lock, f);
     return us;
 }
 
 void uspace_destroy(uspace_t* us) {
     if (!us) return;
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (uspace_t** pp = &g_all; *pp; pp = &(*pp)->next)
         if (*pp == us) { *pp = us->next; break; }
+    spin_unlock_irq(&g_lock, f);
     for (int k = 0; k < GIBS; k++) {
         uslot_t* sl = us->slot[k];
         if (!sl) continue;
@@ -124,24 +132,28 @@ uintptr_t uspace_cr3(uspace_t* us) { return us ? (uintptr_t)us->pml4 : 0; }
 
 int uspace_map(uspace_t* us, uintptr_t addr, uint32_t size) {
     if (!us || (addr & 0x1FFFFF) || (size & 0x1FFFFF) || (uint64_t)addr + size > ((uint64_t)GIBS << 30)) return -1;
+    int rc = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (uintptr_t a = addr; a < addr + size; a += 0x200000) {
         uslot_t* sl = slot_for(us, (uint32_t)(a >> 30));
-        if (!sl) return -1;
+        if (!sl) { rc = -1; break; }
         uint32_t i = (uint32_t)((a >> 21) & 511);
         if (owned(sl, i)) continue;
         uint64_t* pt = new_table();
-        if (!pt) return -1;
+        if (!pt) { rc = -1; break; }
         for (int j = 0; j < 512; j++) pt[j] = ((uint64_t)a + ((uint64_t)j << 12)) | P_PRESENT | P_WRITE | P_USER;
-        sl->pd[i] = (uint64_t)(uintptr_t)pt | P_PRESENT | P_WRITE | P_USER;
         sl->own[i >> 3] |= (uint8_t)(1u << (i & 7));
+        sl->pd[i] = (uint64_t)(uintptr_t)pt | P_PRESENT | P_WRITE | P_USER;
     }
     if (is_current(us)) reload_cr3();
-    return 0;
+    spin_unlock_irq(&g_lock, f);
+    return rc;
 }
 
 void uspace_guard(uspace_t* us, uintptr_t addr, uint32_t size, int guard) {
     if (!us) return;
     int cur = is_current(us);
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (uintptr_t a = addr & ~(uintptr_t)4095; a < addr + size; a += 4096) {
         uint64_t k = a >> 30;
         uslot_t* sl = k < GIBS ? us->slot[k] : NULL;
@@ -153,10 +165,13 @@ void uspace_guard(uspace_t* us, uintptr_t addr, uint32_t size, int guard) {
         else *e |= P_PRESENT;
         if (cur) __asm__ volatile("invlpg (%0)" :: "r"(a) : "memory");
     }
+    spin_unlock_irq(&g_lock, f);
 }
 
 void uspace_kernel_changed(void) {
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (uspace_t* us = g_all; us; us = us->next) copy_kernel(us);
+    spin_unlock_irq(&g_lock, f);
 }
 
 int uspace_fault_is_stale(uintptr_t addr, uint32_t err) {

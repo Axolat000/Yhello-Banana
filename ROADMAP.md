@@ -11,7 +11,7 @@ Status: **done** (committed and tested) · **testing** (written, not yet confirm
 | Apps in ring 3, isolated from the kernel | **done** (build 139) | 64-bit kernel: each app has its own page tables, `int 0x80` system calls, and its pointers are checked. Already-built apps work unchanged. The 32-bit kernel keeps apps in ring 0. |
 | Memory above 4 GiB | **done** (build 140) | Apps' memory comes from RAM above 4 GiB first, up to 512 GiB. `free` showed 23 GB in a friend's VM. |
 | Higher process limits | **done** (build 141) | 32 apps (was 8), 64 threads per app (16), 64 open files (16), 32 app windows (6), 32 web views (8), 256 tasks (48). |
-| System calls on every core | **next** | Calls that only touch the app's own state (`malloc`/`free`, `wait`/`wake`, clock, thread ids, text drawing) run on the core that made them instead of moving back to core 0. A fully multi-core kernel (locks in the file system, network and GUI) is a much bigger rewrite and isn't planned. |
+| System calls on every core | **done** (build 142) | Calls that only touch the app's own state (`malloc`/`free`/`realloc`, `wake`, `wait` when nothing needs waiting for, clock, thread ids, text drawing) run on the core that made them instead of moving back to core 0. The heap, the RAM above 4 GiB, app page tables and each app's memory have locks for it. A fully multi-core kernel (locks in the file system, network and GUI) is a much bigger rewrite and isn't planned. |
 
 ## 2. Missing features
 
