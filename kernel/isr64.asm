@@ -120,24 +120,58 @@ IRQ 15
     pop rax
 %endmacro
 
+; App code runs on page tables of its own, where the kernel is read-only
+; (kernel/appmem.h): every entry switches to the kernel's tables, and the
+; exit goes back to the ones that were in use. The old value is kept on
+; the frame (twice: rsp stays 16-byte aligned), so a task switched away
+; in the handler finds its own when it comes back.
+extern g_kernel_cr3
+
+%macro ENTER_KERNEL_TABLES 0
+    mov rax, cr3
+    push rax
+    push rax
+    mov rdx, [rel g_kernel_cr3]
+    test rdx, rdx
+    jz %%same
+    cmp rax, rdx
+    je %%same
+    mov cr3, rdx
+%%same:
+%endmacro
+
+%macro LEAVE_KERNEL_TABLES 0
+    pop rax
+    pop rax
+    mov rdx, cr3
+    cmp rax, rdx
+    je %%same
+    mov cr3, rax
+%%same:
+%endmacro
+
 extern isr_handler
 extern irq_handler
 
 section .text
 isr_common_stub:
     PUSH_ALL
+    ENTER_KERNEL_TABLES
     cld
-    mov rdi, rsp                    ; registers_t*
+    lea rdi, [rsp + 16]             ; registers_t* (above the saved CR3)
     call isr_handler
+    LEAVE_KERNEL_TABLES
     POP_ALL
     add rsp, 16                     ; int_no + error code
     iretq
 
 irq_common_stub:
     PUSH_ALL
+    ENTER_KERNEL_TABLES
     cld
-    mov rdi, rsp
+    lea rdi, [rsp + 16]
     call irq_handler
+    LEAVE_KERNEL_TABLES
     POP_ALL
     add rsp, 16
     iretq
@@ -173,9 +207,11 @@ spurious_stub:
 
 ipi_common_stub:
     PUSH_ALL
+    ENTER_KERNEL_TABLES
     cld
-    mov rdi, rsp
+    lea rdi, [rsp + 16]
     call ipi_handler
+    LEAVE_KERNEL_TABLES
     POP_ALL
     add rsp, 16
     iretq

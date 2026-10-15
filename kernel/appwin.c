@@ -1,4 +1,5 @@
 #include "appwin.h"
+#include "app.h"
 #include "keyboard.h"
 #include "winframe.h"
 #include "gfx.h"
@@ -119,9 +120,9 @@ int appwin_open(int owner, const char* title, int w, int h) {
     for (int i = 0; i < APPWIN_MAX; i++) {
         awin_t* a = &g_w[i];
         if (a->used) continue;
-        uint32_t* px = (uint32_t*)kmalloc((uint32_t)w * (uint32_t)h * 4);
+        uint32_t* px = (uint32_t*)app_mem_alloc(owner, (uint32_t)w * (uint32_t)h * 4);
         uint32_t* shown = (uint32_t*)kmalloc((uint32_t)w * (uint32_t)h * 4);
-        if (!px || !shown) { kfree(px); kfree(shown); return -1; }
+        if (!px || !shown) { app_mem_free(owner, px); kfree(shown); return -1; }
         memset(a, 0, sizeof(*a));
         memset32(px, 0x00FFFFFFu, (size_t)w * (size_t)h);
         memset32(shown, 0x00FFFFFFu, (size_t)w * (size_t)h);
@@ -169,14 +170,14 @@ static void apply_resize(awin_t* w) {
     if (!w->pending) return;
     w->pending = 0;
     if (w->pw == w->cw && w->ph == w->ch) return;
-    uint32_t* np = (uint32_t*)kmalloc((uint32_t)w->pw * (uint32_t)w->ph * 4);
+    uint32_t* np = (uint32_t*)app_mem_alloc(w->owner, (uint32_t)w->pw * (uint32_t)w->ph * 4);
     uint32_t* ns = (uint32_t*)kmalloc((uint32_t)w->pw * (uint32_t)w->ph * 4);
-    if (!np || !ns) { kfree(np); kfree(ns); return; }   /* no memory: stays as it is */
+    if (!np || !ns) { app_mem_free(w->owner, np); kfree(ns); return; }   /* no memory: stays as it is */
     memset32(np, 0x00FFFFFFu, (size_t)w->pw * (size_t)w->ph);
     int cw = w->cw < w->pw ? w->cw : w->pw, ch = w->ch < w->ph ? w->ch : w->ph;
     for (int y = 0; y < ch; y++) memcpy(np + (size_t)y * (size_t)w->pw, w->shown + (size_t)y * (size_t)w->cw, (size_t)cw * 4);
     memcpy(ns, np, (size_t)w->pw * (size_t)w->ph * 4);
-    kfree(w->px);
+    app_mem_free(w->owner, w->px);
     kfree(w->shown);
     w->px = np;
     w->shown = ns;
@@ -227,7 +228,7 @@ void appwin_set_resizable(int id, int owner, int min_w, int min_h) {
 static void destroy(int id) {
     awin_t* w = &g_w[id];
     if (!w->used) return;
-    kfree(w->px);
+    app_mem_free(w->owner, w->px);
     kfree(w->shown);
     w->px = w->shown = NULL;
     if (w->drop) { kfree(w->drop); w->drop = NULL; }

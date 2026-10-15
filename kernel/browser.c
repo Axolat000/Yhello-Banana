@@ -1043,8 +1043,11 @@ static void pick_chosen(const char* path) {
     g_pick_done = 1;
 }
 
+static tab_t* g_work_tab;               /* whose page the engine works on (engine_crashed) */
+
 static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_len, int add_history) {
     char url[URL_MAX], final_url[URL_MAX], ctype[96], err[200];
+    g_work_tab = t;
     normalize_url(url_in, url, sizeof(url));
     char prev_addr[URL_MAX];
     kstrlcpy(prev_addr, t->page ? t->page->url : "", sizeof(prev_addr));
@@ -1059,6 +1062,9 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     dl_t dl;
     memset(&dl, 0, sizeof(dl));
     /* view-source:URL shows the page's text */
+    /* about:crash - the engine crashes on purpose (what a bad page could do): the
+     * tab shows the crash, the rest of the system goes on */
+    if (!strcmp(url, "about:crash")) __asm__ volatile("ud2");
     int vsrc = strncmp(url, "view-source:", 12) == 0;
     int frc = fetch_url(vsrc ? url + 12 : url, NULL, post, post_len, post && g_load_btype[0] ? g_load_btype : NULL,
                         &data, &len, ctype, sizeof(ctype), final_url, sizeof(final_url), err, sizeof(err), vsrc ? NULL : &dl);
@@ -1652,8 +1658,52 @@ int browser_fetch_document(const char* url_in, const char* post, uint32_t post_l
     return *data ? rc : -1;
 }
 
+/* The web engine crashed - a CPU exception in this task, on something a
+ * page did - while working on g_work_tab's page. That page goes (its memory
+ * freed if that works too) and the tab says what happened; the other tabs,
+ * and the system, go on. */
+static void engine_crashed(void) {
+    static kjmp_buf_t again;
+    tab_t* t = NULL;
+    for (int i = 0; i < g_ntabs; i++) if (g_tabs[i] == (g_work_tab ? g_work_tab : cur_tab())) t = g_tabs[i];
+    g_work_tab = NULL;
+    g_status_tab = NULL;
+    g_live_page = NULL;
+    g_pick_on = 0;
+    g_alert[0] = 0;
+    if (!t) return;
+    page_t* p = t->page;
+    t->page = NULL;
+    t->loading = 0;
+    if (p && !kjmp_set(&again)) {
+        task_set_recover(&again);
+        page_free(p);
+    }
+    task_set_recover(NULL);
+    char why[200];
+    ksnprintf(why, sizeof(why), "This page crashed the browser's engine, so it was closed - the rest of "
+              "Banana OS was not touched. (%s)", task_crash_msg());
+    uint32_t len = 0;
+    char* data = error_page(t->addr, why, &len);
+    page_t* np = data ? page_new(&g_env, g_page_mem) : NULL;
+    if (np) {
+        np->view_h = g_vh;
+        page_load(np, "about:crashed", data, len, g_vw);
+        t->page = np;
+        t->scroll = 0;
+        kstrlcpy(t->title, "Page crashed", sizeof(t->title));
+    }
+    if (data) kfree(data);
+    set_status("The page crashed and was closed", 1);
+    g_render_req = 1;
+    g_gen++;
+}
+
 static void browser_task(void) {
     env_setup();
+    static kjmp_buf_t recover;
+    while (kjmp_set(&recover)) engine_crashed();      /* (and armed again) */
+    task_set_recover(&recover);
     for (;;) {
         if (!g_open) {
             /* closed: drop the tabs (frees their pages), wait */
@@ -1663,6 +1713,8 @@ static void browser_task(void) {
             continue;
         }
         ensure_view();
+        task_set_recover(&recover);         /* (engine_crashed used it) */
+        g_work_tab = cur_tab();
         read_keys();
         run_commands();
         if (!g_ntabs) { g_go_url[0] = 0; new_tab(NULL); }
@@ -1684,11 +1736,13 @@ static void browser_task(void) {
         for (int i = 0; i < g_ntabs; i++) {
             tab_t* t = g_tabs[i];
             if (!t->page || t->loading) continue;
+            g_work_tab = t;
             if (page_tick(t->page)) t->page->dirty = 1;
             if (t->page->dirty || t->page->nav_pending || t->page->alert_pending || t->page->status[0])
                 after_page_event(t);
         }
         cookies_save();                 /* new long-lived cookies (no-op otherwise) */
+        g_work_tab = cur_tab();
         if (g_render_req) render_view();
         task_sleep_ms(10);
     }
@@ -1698,7 +1752,7 @@ static void browser_task(void) {
 
 void browser_open(const char* url) {
     if (g_task < 0) {
-        g_task = task_create_stack("browser", browser_task, 2u << 20);
+        g_task = task_create_stack("browser", browser_task, 8u << 20);
         if (g_task < 0) return;
     }
     if (url && *url) { kstrlcpy(g_go_url, url, sizeof(g_go_url)); push_cmd(g_open && g_ntabs ? CMD_NEWTAB : CMD_GO, 0, 0); }

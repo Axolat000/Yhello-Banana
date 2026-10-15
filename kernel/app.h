@@ -54,5 +54,9 @@ int  app_console_focused(void);
 /* loads a position-independent ELF (an app or a driver module) into the
  * kernel's memory: 0 with *raw (its allocation) and *entry, or -1 with err */
 int  app_load_image(const uint8_t* f, uint32_t size, uint8_t** raw, uintptr_t* entry, char* err, int ecap);
+/* memory of app `id` (kernel/appmem.h) for something the kernel hands it to
+ * write - its windows' pixels; not an app (or none such): kmalloc / kfree */
+void* app_mem_alloc(int id, size_t n);
+void  app_mem_free(int id, void* p);
 
 #endif

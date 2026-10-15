@@ -1,6 +1,8 @@
 #ifndef IDT_H
 #define IDT_H
 
+#include "types.h"
+
 /* Installs handlers for the 32 CPU exception vectors so a fault produces
  * a readable panic screen instead of an unhandled triple-fault reset,
  * and remaps the 8259 PICs to vectors 32-47 with every IRQ masked. */
@@ -19,6 +21,8 @@ void irq_install(int irq, void (*handler)(void));
 void idt_ap_init(int cpu);
 /* 64-bit: the timer (IRQ 0's handlers) runs from the local APIC timer (1) or the PIT (0) */
 void irq_timer_from_lapic(int on);
+/* 64-bit: where the fault stacks are (a 2 MiB page of their own) */
+void idt_fault_stacks(uintptr_t* base, uint32_t* size);
 /* before a restart (in a VM): the local APIC as a BIOS expects it */
 void lapic_before_reset(void);
 /* the firmware handed over with the local APIC in x2APIC mode / locked in it */

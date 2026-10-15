@@ -28,6 +28,7 @@
 #include "acpi.h"
 #include "virtio_blk.h"
 #include "paging.h"
+#include "appmem.h"
 #include "smp.h"
 #include "splash.h"
 #include "../shell/shell.h"
@@ -85,6 +86,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     kheap_init(magic == MULTIBOOT2_MAGIC ? mb_info : 0);
     klog("heap: %u KiB free\n", kheap_total_bytes() / 1024u);
     paging_guard_null();      /* NULL pointers fault (64-bit), after every Multiboot2 reader */
+#ifdef __x86_64__
+    {   /* apps get page tables of their own, where the kernel is read-only (kernel/appmem.h) */
+        uintptr_t fb;
+        uint32_t fs;
+        idt_fault_stacks(&fb, &fs);
+        appmem_init(fb, fs);
+    }
+#endif
     gpu_init();               /* graphics drivers: one may set the screen up (kernel/gpu.h) */
     paging_pat_init();        /* write-combining (64-bit): a framebuffer without a driver gets it */
     gpu_firmware_init();      /* AMD, NVIDIA, Intel Arc / Xe without a driver: named, faster screen */

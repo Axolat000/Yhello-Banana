@@ -12,6 +12,9 @@
 void  kheap_init(uint32_t mb2_info_addr);
 void* kmalloc(size_t size);                 /* 16-byte aligned, NULL on OOM */
 void* kzalloc(size_t size);                 /* zeroed */
+/* the payload on an `align` boundary (a power of two: 4 KiB pages, 4 MiB
+ * app memory chunks), freed with kfree() as usual */
+void* kmalloc_aligned(size_t size, uint32_t align);
 void* krealloc(void* ptr, size_t size);     /* grows in place when it can */
 void  kfree(void* ptr);
 

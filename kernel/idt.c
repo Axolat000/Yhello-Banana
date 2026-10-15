@@ -7,6 +7,7 @@
 #include "smp.h"
 #include "task.h"
 #include "timer.h"
+#include "appmem.h"
 
 #define VGA_MEMORY ((volatile uint16_t*)0xB8000)
 
@@ -196,6 +197,23 @@ void isr_handler(registers_t* regs) {
     uint32_t n = regs->int_no;
     const char* name = (n < 32) ? exception_names[n] : "Unknown";
 
+#ifdef __x86_64__
+    /* a write an app's own tables allow, refused from an old TLB entry: the
+     * return reloads its tables (isr64.asm keeps them under the frame) and
+     * the write is tried again - a few times at most, then it is a fault */
+    if (n == 14 && (regs->err_code & 3) == 3) {
+        static uintptr_t last;
+        static int again;
+        uintptr_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (appmem_tables_allow_write(((uintptr_t*)regs)[-1], cr2)) {
+            again = cr2 == last ? again + 1 : 0;
+            last = cr2;
+            if (again < 4) return;
+        }
+    }
+#endif
+
     /* on another core it is app code that faulted: the app is stopped on
      * the boot core (kernel/task.c) - this returns only for a kernel bug */
     if (n < 32 && cpu_id() != 0) {
@@ -213,6 +231,8 @@ void isr_handler(registers_t* regs) {
         uintptr_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         app_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
+        /* a kernel task that can recover (the browser) goes back to its recovery point */
+        task_recover_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
     }
 
     vga_clear_rows(6, 0x4F);
@@ -445,7 +465,18 @@ struct tss64 {
  * stack; core n's is at selector 0x10 + 16 * n, which is also how a core
  * knows which one it is (cpu_id(), kernel/smp.h). */
 static struct tss64 g_tss[SMP_MAX_CPUS];
-static uint8_t g_fault_stack[SMP_MAX_CPUS][16384] __attribute__((aligned(16)));
+/* the fault stacks: a 2 MiB page of their own - it stays writable while app
+ * code runs (kernel/appmem.h), when the rest of the kernel is read-only */
+static union {
+    uint8_t s[SMP_MAX_CPUS][16384];
+    uint8_t page[2u << 20];
+} g_fault_mem __attribute__((aligned(2u << 20)));
+#define g_fault_stack g_fault_mem.s
+
+void idt_fault_stacks(uintptr_t* base, uint32_t* size) {
+    *base = (uintptr_t)&g_fault_mem;
+    *size = sizeof(g_fault_mem);
+}
 static uint64_t g_gdt[2 + 2 * SMP_MAX_CPUS];   /* null, 64-bit code (0x08), a TSS (16 bytes) per core */
 
 static void gdt_load_cpu(int cpu) {
@@ -478,6 +509,7 @@ static void tss_init(void) {
 void idt_ap_init(int cpu) {
     gdt_load_cpu(cpu);
     __asm__ volatile("lidt %0" : : "m"(idtp));
+    appmem_cpu_init();                     /* read-only pages bind app code here too */
 }
 
 extern void ipi_stub(void);

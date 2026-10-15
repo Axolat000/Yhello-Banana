@@ -25,6 +25,7 @@
 #include "wallpaper.h"
 #include "image.h"
 #include "gamepad.h"
+#include "appmem.h"
 
 #define APP_MAX     8
 #define APP_FD_MAX  16
@@ -37,15 +38,6 @@
 
 /* ── per-app state ─────────────────────────────────────────────────── */
 
-/* every allocation carries this header (a multiple of 16 bytes, so the
- * app's pointer keeps the heap's 16-byte alignment) */
-typedef struct ablock {
-    struct ablock* next;
-    struct ablock* prev;
-    uintptr_t      size;
-    uintptr_t      magic;
-} ablock_t;
-#define ABLOCK_MAGIC ((uintptr_t)0xA110CA7Eu)
 
 typedef struct {
     int      used;
@@ -80,7 +72,7 @@ typedef struct {
     uint8_t*  guard;           /* APP_GUARD bytes, page-aligned */
     uint8_t*  stack;           /* APP_STACK bytes above the guard */
     int       guarded;
-    ablock_t* blocks;
+    appmem_t* mem;             /* everything it may write (kernel/appmem.h) */
     afd_t     fds[APP_FD_MAX];
     uintptr_t saved_sp;        /* the kernel stack app_enter() left: exit() returns there */
     int       exit_code;
@@ -129,7 +121,7 @@ static athread_t* cur_thread(app_proc_t* p) {
 }
 
 /* ends the calling app right away (exit(), Ctrl+C, closed twice) */
-int  app_enter(int (*fn)(void*), void* arg, void* stack_top, uintptr_t* saved_sp);
+int  app_enter(int (*fn)(void*), void* arg, void* stack_top, uintptr_t* saved_sp, uintptr_t cr3);
 void app_leave(uintptr_t saved_sp, int code) __attribute__((noreturn));
 
 static void __attribute__((noreturn)) leave(app_proc_t* p, int code) {
@@ -203,41 +195,55 @@ static void breathe(app_proc_t* p, int force) {
 
 /* ── memory ────────────────────────────────────────────────────────── */
 
+/* from the app's own chunks (kernel/appmem.h): writable while its code runs */
 static void* a_malloc(unsigned long size) {
     app_proc_t* p = cur();
-    if (!p || size > (256ul << 20)) return NULL;
-    ablock_t* b = (ablock_t*)kmalloc(sizeof(ablock_t) + size);
-    if (!b) return NULL;
-    b->size = size;
-    b->magic = ABLOCK_MAGIC;
-    b->prev = NULL;
-    b->next = p->blocks;
-    if (p->blocks) p->blocks->prev = b;
-    p->blocks = b;
-    return b + 1;
+    if (!p || !p->mem || size > (256ul << 20)) return NULL;
+    return appmem_alloc(p->mem, size ? size : 1);
 }
 
 static void a_free(void* ptr) {
     app_proc_t* p = cur();
     if (!p || !ptr) return;
-    ablock_t* b = (ablock_t*)ptr - 1;
-    if (b->magic != ABLOCK_MAGIC) { klog("app %s: free() of a bad pointer\n", p->name); return; }
-    b->magic = 0;
-    if (b->prev) b->prev->next = b->next; else p->blocks = b->next;
-    if (b->next) b->next->prev = b->prev;
-    kfree(b);
+    if (!appmem_size(p->mem, ptr)) { klog("app %s: free() of a bad pointer\n", p->name); return; }
+    appmem_free(p->mem, ptr);
 }
 
 static void* a_realloc(void* ptr, unsigned long size) {
     if (!ptr) return a_malloc(size);
     if (!size) { a_free(ptr); return NULL; }
-    ablock_t* b = (ablock_t*)ptr - 1;
-    if (b->magic != ABLOCK_MAGIC) return NULL;
+    app_proc_t* p = cur();
+    size_t old = p ? appmem_size(p->mem, ptr) : 0;
+    if (!old) return NULL;
+    if (size <= old) return ptr;
     void* n = a_malloc(size);
     if (!n) return NULL;
-    memcpy(n, ptr, b->size < size ? b->size : size);
+    memcpy(n, ptr, old);
     a_free(ptr);
     return n;
+}
+
+/* [ptr, + n) is the calling app's own memory (or ptr is NULL): what a system
+ * call gives back is written only there - a wild pointer gets the call
+ * refused instead of the kernel's memory written over */
+static int out_ok(const void* ptr, unsigned long n) {
+    if (!ptr || !n) return 1;
+    app_proc_t* p = cur();
+    if (!p || !p->mem || appmem_owns(p->mem, ptr, n)) return 1;
+    klog("app %s: a system call was handed memory that is not the app's (%p, %u bytes) - refused\n",
+         p->name, ptr, (uint32_t)n);
+    return 0;
+}
+
+/* app id's memory, for what the kernel hands it to write (window pixels) */
+void* app_mem_alloc(int id, size_t n) {
+    if (id < 0 || id >= APP_MAX || !g_procs[id].used || !g_procs[id].mem) return kmalloc(n);
+    return appmem_alloc(g_procs[id].mem, n);
+}
+void app_mem_free(int id, void* p) {
+    if (!p) return;
+    if (id < 0 || id >= APP_MAX || !g_procs[id].used || !g_procs[id].mem) { kfree(p); return; }
+    appmem_free(g_procs[id].mem, p);
 }
 
 /* ── console ───────────────────────────────────────────────────────── */
@@ -335,6 +341,7 @@ static int a_trygetchar(void) {
 }
 
 static int a_readline(char* buf, int max) {
+    if (!out_ok(buf, max > 0 ? (unsigned long)max : 0)) return -1;
     app_proc_t* p = cur();
     if (!p || max <= 0) return -1;
     int n = 0;
@@ -357,6 +364,7 @@ static int a_readline(char* buf, int max) {
 static void a_set_color(int fg, int bg) { terminal_setcolor((uint8_t)(fg & 15), (uint8_t)(bg & 15)); }
 static void a_clear(void) { terminal_clear(); }
 static void a_term_size(int* c, int* r) {
+    if (!out_ok(c, sizeof(int)) || !out_ok(r, sizeof(int))) return;
     if (c) *c = (int)terminal_get_width();
     if (r) *r = (int)terminal_get_height();
 }
@@ -411,6 +419,7 @@ static int a_open(const char* path, int flags) {
 }
 
 static long a_read(int fd, void* buf, unsigned long len) {
+    if (!out_ok(buf, len)) return -1;
     app_proc_t* p = cur();
     if (fd == 0) {                          /* stdin: a line from the terminal */
         if (!p || !len) return 0;
@@ -491,6 +500,7 @@ static int a_mkdir(const char* path) { return path && fs_mkdir(path) >= 0 ? 0 : 
 static int a_rename(const char* a, const char* b) { return a && b && fs_move(a, b) >= 0 ? 0 : -1; }
 
 static int a_stat(const char* path, banana_stat_t* st) {
+    if (!out_ok(st, sizeof(*st))) return -1;
     if (!path || !st) return -1;
     int f = fs_find_file(path);
     if (f >= 0) { st->size = fs_file_info(f)->size; st->is_dir = 0; return 0; }
@@ -499,6 +509,7 @@ static int a_stat(const char* path, banana_stat_t* st) {
 }
 
 static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
+    if (!out_ok(ent, sizeof(*ent))) return -1;
     static int idx[FS_MAX_FILES];
     if (!path || !ent || index < 0) return -1;
     int nd = fs_list_dirs(path, idx, FS_MAX_DIRS);
@@ -522,6 +533,7 @@ static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
 }
 
 static int a_getcwd(char* buf, int size) {
+    if (!out_ok(buf, size > 0 ? (unsigned long)size : 0)) return -1;
     if (!buf || size <= 0) return -1;
     fs_cwd_path(buf, size);
     return 0;
@@ -556,6 +568,7 @@ static void a_sleep(unsigned int ms) {
 static void a_yield(void) { breathe(cur(), 1); }
 
 static void a_localtime(banana_time_t* t) {
+    if (!out_ok(t, sizeof(*t))) return;
     rtc_datetime_t dt;
     memset(t, 0, sizeof(*t));
     if (rtc_read_datetime(&dt) != 0) { t->year = 2026; t->month = 1; t->day = 1; return; }
@@ -585,6 +598,7 @@ static void a_win_update(int win) {
     breathe(p, 0);
 }
 static int a_win_event(int win, banana_event_t* ev) {
+    if (!out_ok(ev, sizeof(*ev))) return 0;
     app_proc_t* p = cur();
     if (!p || !ev) return 0;
     breathe(p, 0);
@@ -592,7 +606,11 @@ static int a_win_event(int win, banana_event_t* ev) {
 }
 static void a_win_close(int win) { app_proc_t* p = cur(); if (p) appwin_close(win, p->id); }
 static void a_win_set_title(int win, const char* t) { app_proc_t* p = cur(); if (p) appwin_set_title(win, p->id, t); }
-static void a_win_size(int win, int* w, int* h) { app_proc_t* p = cur(); appwin_size(win, p ? p->id : -1, w, h); }
+static void a_win_size(int win, int* w, int* h) {
+    if (!out_ok(w, sizeof(int)) || !out_ok(h, sizeof(int))) return;
+    app_proc_t* p = cur();
+    appwin_size(win, p ? p->id : -1, w, h);
+}
 static void a_win_media_keys(int win) { app_proc_t* p = cur(); if (p) appwin_set_media(win, p->id); }
 static void a_win_wheel(int win) { app_proc_t* p = cur(); if (p) appwin_set_wheel(win, p->id); }
 static void a_win_set_resizable(int win, int mw, int mh) { app_proc_t* p = cur(); if (p) appwin_set_resizable(win, p->id, mw, mh); }
@@ -605,17 +623,30 @@ static int  a_web_load(int v, const char* url) { return webview_load(owner_id(),
 static int  a_web_load_html(int v, const char* h, const char* base) { return webview_load_html(owner_id(), v, h, base); }
 static void a_web_resize(int v, int w, int h) { webview_resize(owner_id(), v, w, h); }
 static int  a_web_poll(int v) { return webview_poll(owner_id(), v); }
-static void a_web_draw(int v, unsigned int* px, int stride, int x, int y, int w, int h) { webview_draw(owner_id(), v, px, stride, x, y, w, h); }
+static void a_web_draw(int v, unsigned int* px, int stride, int x, int y, int w, int h) {
+    if (stride > 0 && h > 0 && !out_ok(px, (unsigned long)stride * (unsigned long)h * 4)) return;
+    webview_draw(owner_id(), v, px, stride, x, y, w, h);
+}
 static void a_web_event(int v, const banana_event_t* ev) { webview_event(owner_id(), v, ev); }
 static void a_web_scroll(int v, int dy) { webview_scroll(owner_id(), v, dy); }
 static void a_web_go(int v, int d) { webview_go(owner_id(), v, d); }
-static int  a_web_info(int v, char* t, int tc, char* u, int uc) { return webview_info(owner_id(), v, t, tc, u, uc); }
-static int  a_web_eval(int v, const char* js, char* out, int cap) { return webview_eval(owner_id(), v, js, out, cap); }
-static int  a_web_message(int v, char* out, int cap) { return webview_message(owner_id(), v, out, cap); }
+static int  a_web_info(int v, char* t, int tc, char* u, int uc) {
+    if (!out_ok(t, tc > 0 ? (unsigned long)tc : 0) || !out_ok(u, uc > 0 ? (unsigned long)uc : 0)) return 0;
+    return webview_info(owner_id(), v, t, tc, u, uc);
+}
+static int  a_web_eval(int v, const char* js, char* out, int cap) {
+    if (!out_ok(out, cap > 0 ? (unsigned long)cap : 0)) return -1;
+    return webview_eval(owner_id(), v, js, out, cap);
+}
+static int  a_web_message(int v, char* out, int cap) {
+    if (!out_ok(out, cap > 0 ? (unsigned long)cap : 0)) return -1;
+    return webview_message(owner_id(), v, out, cap);
+}
 static int  a_web_post(int v, const char* m) { return webview_post(owner_id(), v, m); }
 
 /* ── pictures ── */
 static unsigned int* a_image_load(const char* path, int* w, int* h, char* err, int ecap) {
+    if (!out_ok(w, sizeof(int)) || !out_ok(h, sizeof(int)) || !out_ok(err, ecap > 0 ? (unsigned long)ecap : 0)) return NULL;
     char e[96];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
     err[0] = 0;
@@ -638,6 +669,7 @@ static unsigned int* a_image_load(const char* path, int* w, int* h, char* err, i
 }
 
 static int a_set_wallpaper(const char* path, int mode, char* err, int ecap) {
+    if (!out_ok(err, ecap > 0 ? (unsigned long)ecap : 0)) return -1;
     char e[96];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
     if (!path) return -1;
@@ -652,6 +684,7 @@ static int a_set_wallpaper(const char* path, int mode, char* err, int ecap) {
 /* the system fonts */
 static int clamp_size(int s) { return s < 4 ? 4 : s > 200 ? 200 : s; }
 static int a_font_draw(unsigned int* px, int stride, int w, int h, int x, int y, int font, int size, const char* text, unsigned int color) {
+    if (stride > 0 && h > 0 && !out_ok(px, (unsigned long)stride * (unsigned long)h * 4)) return x;
     if (!px || !text || w <= 0 || h <= 0 || stride < w) return x;
     size = clamp_size(size);
     int asc;
@@ -669,11 +702,13 @@ static int a_audio_volume(int percent) {
 }
 
 static void a_font_metrics(int font, int size, int* ascent, int* descent, int* line_h) {
+    if (!out_ok(ascent, sizeof(int)) || !out_ok(descent, sizeof(int)) || !out_ok(line_h, sizeof(int))) return;
     font_metrics(font, clamp_size(size), ascent, descent, line_h);
 }
 
 static void a_draw_text(unsigned int* px, int stride, int w, int h, int x, int y,
                         const char* s, unsigned int fg, unsigned int bg) {
+    if (stride > 0 && h > 0 && !out_ok(px, (unsigned long)stride * (unsigned long)h * 4)) return;
     if (!px || !s) return;
     for (; *s; s++, x += 8) {
         uint8_t c = (uint8_t)*s;
@@ -714,6 +749,8 @@ static int h_body(void* ctx, const uint8_t* d, uint32_t n) {
 
 static int a_http_request(const char* method, const char* url, const char* body, unsigned long blen, const char* btype,
                           char** data, unsigned long* len, char* ctype, int ccap, char* err, int ecap) {
+    if (!out_ok(data, sizeof(*data)) || !out_ok(len, sizeof(*len)) || !out_ok(ctype, ccap > 0 ? (unsigned long)ccap : 0) ||
+        !out_ok(err, ecap > 0 ? (unsigned long)ecap : 0)) return -1;
     char e[128];
     hbody_t b = { 0, 0, 0, 0 };
     http_request_t req;
@@ -755,6 +792,7 @@ static int a_http_request(const char* method, const char* url, const char* body,
 
 /* any request, any answer (version 10) */
 static int a_http_fetch(const banana_http_req_t* rq, banana_http_resp_t* out) {
+    if (!out_ok(out, sizeof(*out))) return -1;
     if (!rq || !out || !rq->url) return -1;
     memset(out, 0, sizeof(*out));
     hbody_t b = { 0, 0, 0, 0 };
@@ -795,6 +833,7 @@ static int a_http_fetch(const banana_http_req_t* rq, banana_http_resp_t* out) {
 static int a_key_mods(void) { return keyboard_mods(); }
 
 static int a_pkg_install(const char* path, char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[160];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     if (!path) return -1;
@@ -803,6 +842,7 @@ static int a_pkg_install(const char* path, char* msg, int mcap) {
 
 /* ── version 11: the package manager ── */
 static int a_repo_update(char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     return repo_update(NULL, NULL, msg, mcap);
@@ -829,6 +869,7 @@ static void to_api(banana_pkg_t* o, const repo_pkg_t* p, const pkg_info_t* inst)
 }
 
 static int a_repo_list(banana_pkg_t* out, int max) {
+    if (max > 0 && !out_ok(out, (unsigned long)max * sizeof(*out))) return -1;
     if (!out || max <= 0) return 0;
     static pkg_info_t inst[64];
     int ni = pkg_list(inst, 64);
@@ -851,6 +892,7 @@ static int a_repo_list(banana_pkg_t* out, int max) {
 }
 
 static int a_repo_install(const char* name, char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     if (!name) return -1;
@@ -858,26 +900,33 @@ static int a_repo_install(const char* name, char* msg, int mcap) {
 }
 
 static int a_repo_remove(const char* name, char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     if (!name) return -1;
     return repo_remove(name, msg, mcap);
 }
 
-static int a_repo_status(char* msg, int mcap) { return repo_status(msg, mcap); }
+static int a_repo_status(char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
+    return repo_status(msg, mcap);
+}
 
 static int a_repo_icon(const char* name, char* path, int pcap) {
+    if (!out_ok(path, pcap > 0 ? (unsigned long)pcap : 0)) return -1;
     if (!name || !path || pcap <= 0) return -1;
     return repo_icon(name, path, pcap);
 }
 
 static int a_repo_upgrade(char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     return repo_upgrade(NULL, NULL, msg, mcap);
 }
 
 static int a_repo_sources(banana_repo_source_t* out, int max) {
+    if (max > 0 && !out_ok(out, (unsigned long)max * sizeof(*out))) return -1;
     static repo_source_t src[16];
     int n = repo_sources(src, 16);
     if (!out || max <= 0) return n;
@@ -891,6 +940,7 @@ static int a_repo_sources(banana_repo_source_t* out, int max) {
 }
 
 static int a_repo_add_source(const char* url, const char* key_hex, int trusted, char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     if (!url) return -1;
@@ -903,6 +953,7 @@ static int a_repo_add_source(const char* url, const char* key_hex, int trusted, 
 }
 
 static int a_repo_remove_source(const char* url, char* msg, int mcap) {
+    if (!out_ok(msg, mcap > 0 ? (unsigned long)mcap : 0)) return -1;
     char m[200];
     if (!msg || mcap <= 0) { msg = m; mcap = sizeof(m); }
     if (!url || !url[0] || (url[0] >= '0' && url[0] <= '9')) return -1;   /* by URL only, not by number */
@@ -910,11 +961,13 @@ static int a_repo_remove_source(const char* url, char* msg, int mcap) {
 }
 
 static int a_win_dropped(int win, int index, char* path, int cap) {
+    if (!out_ok(path, cap > 0 ? (unsigned long)cap : 0)) return -1;
     app_proc_t* p = cur();
     return appwin_dropped(win, p ? p->id : -1, index, path, cap);
 }
 
 static int a_gamepad(int index, banana_gamepad_t* out) {
+    if (!out_ok(out, sizeof(*out))) return 0;
     gamepad_t g;
     int r = gamepad_get(index, &g);
     if (out) {
@@ -954,6 +1007,7 @@ static int a_key_down(int key) {
 }
 
 static int a_app_run(const char* name, int argc, char** argv, char* err, int ecap) {
+    if (!out_ok(err, ecap > 0 ? (unsigned long)ecap : 0)) return -1;
     char e[128];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
     if (!name) return -1;
@@ -961,6 +1015,7 @@ static int a_app_run(const char* name, int argc, char** argv, char* err, int eca
 }
 
 static int a_http_get(const char* url, char** data, unsigned long* len, char* ctype, int ccap, char* err, int ecap) {
+    if (!out_ok(data, sizeof(*data)) || !out_ok(len, sizeof(*len))) return -1;
     return a_http_request("GET", url, NULL, 0, NULL, data, len, ctype, ccap, err, ecap);
 }
 
@@ -973,6 +1028,7 @@ static void a_audio_beep(int hz, int ms) { audio_beep(hz, ms); }
 static int a_audio_busy(void) { return audio_busy(); }
 static void a_clip_set(const char* t, unsigned long n) { if (t) clipboard_set(t, (uint32_t)n); }
 static const char* a_clip_get(unsigned long* n) {
+    if (!out_ok(n, sizeof(*n))) return "";
     uint32_t l;
     const char* s = clipboard_get(&l);
     if (n) *n = l;
@@ -993,7 +1049,7 @@ static void thread_entry(void) {
     if (p->has_term) terminal_vt_set_active(p->vt);
     else task_set_background();
     t->running = 1;
-    t->ret = app_enter(thread_tramp, t, t->stack_mem + APP_STACK, &t->saved_sp);
+    t->ret = app_enter(thread_tramp, t, t->stack_mem + APP_STACK, &t->saved_sp, appmem_cr3(p->mem));
     t->running = 0;
     /* The task ends now and its slot (and pid) goes to the next task
      * created - another app's thread, a kernel task. The record stays
@@ -1013,7 +1069,7 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
     for (int i = 0; i < APP_THREADS; i++) if (!p->threads[i].used) { t = &p->threads[i]; id = i; break; }
     if (!t) return -1;
     memset(t, 0, sizeof(*t));
-    t->stack_mem = (uint8_t*)kmalloc(APP_STACK + 16);
+    t->stack_mem = (uint8_t*)appmem_alloc(p->mem, APP_STACK + 16);
     if (!t->stack_mem) return -1;
     t->fn = fn;
     t->arg = arg;
@@ -1024,7 +1080,7 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
     kstrlcpy(base, p->name, sizeof(base));
     ksnprintf(name, sizeof(name), "%s/t%d", base, id + 1);
     int pid = task_create(name, thread_entry);
-    if (pid < 0) { kfree(t->stack_mem); t->used = 0; return -1; }
+    if (pid < 0) { appmem_free(p->mem, t->stack_mem); t->used = 0; return -1; }
     /* (no record of an ended thread may still answer to this pid) */
     for (int i = 0; i < APP_MAX; i++) {
         if (!g_procs[i].used) continue;
@@ -1148,27 +1204,30 @@ static void a_exit(int code) {
 }
 
 #ifdef __x86_64__
-/* App code may run on another processor core (kernel/task.h), the kernel
- * only on the boot core: every entry of the table points at a little stub
- * built here - call smp_app_gate (kernel/appcall64.asm), which brings the
- * task back to the boot core if needed, then jump to the function. The
- * few calls that only compute on the app's own memory skip it. */
-extern void smp_app_gate(void);
-#define API_GATES 96
-static uint8_t g_gates[API_GATES][32] __attribute__((aligned(16)));
+/* App code runs on page tables of its own, where the kernel is read-only
+ * (kernel/appmem.h), and may run on another processor core (kernel/task.h)
+ * while the kernel runs only on the boot core: every entry of the table
+ * points at a little stub built here - mov r11, the function; jmp app_gate
+ * (kernel/appcall64.asm), which switches to the kernel's tables, brings
+ * the task back to the boot core if needed, and calls the function. */
+extern void app_gate(void);
+#define API_GATES 192
+static uint8_t g_gates[API_GATES][16] __attribute__((aligned(16)));
 static int     g_ngates;
 
 static void* gate(void* fn) {
-    if (g_ngates >= API_GATES) return fn;
+    if (g_ngates >= API_GATES) {
+        klog("app: more system calls than gates (%d) - raise API_GATES\n", API_GATES);
+        return fn;
+    }
     uint8_t* s = g_gates[g_ngates++];
-    int32_t rel = (int32_t)((intptr_t)smp_app_gate - (intptr_t)(s + 5));
     uint64_t target = (uint64_t)(uintptr_t)fn;
-    s[0] = 0xE8;                                        /* call smp_app_gate */
-    memcpy(s + 1, &rel, 4);
-    s[5] = 0xFF;                                        /* jmp [rip + 0] */
-    s[6] = 0x25;
-    memset(s + 7, 0, 4);
-    memcpy(s + 11, &target, 8);                         /* the function */
+    s[0] = 0x49;                                        /* mov r11, imm64 */
+    s[1] = 0xBB;
+    memcpy(s + 2, &target, 8);
+    int32_t rel = (int32_t)((intptr_t)app_gate - (intptr_t)(s + 15));
+    s[10] = 0xE9;                                       /* jmp app_gate */
+    memcpy(s + 11, &rel, 4);
     return s;
 }
 #define G(fn) ((__typeof__(&fn))gate((void*)fn))
@@ -1206,7 +1265,7 @@ static void api_init(void) {
     g_api.readdir = G(a_readdir);
     g_api.getcwd = G(a_getcwd);
     g_api.chdir = G(a_chdir);
-    g_api.ticks_ms = a_ticks;
+    g_api.ticks_ms = G(a_ticks);
     g_api.sleep_ms = G(a_sleep);
     g_api.yield = G(a_yield);
     g_api.localtime = G(a_localtime);
@@ -1218,7 +1277,7 @@ static void api_init(void) {
     g_api.win_close = G(a_win_close);
     g_api.win_set_title = G(a_win_set_title);
     g_api.win_size = G(a_win_size);
-    g_api.draw_text = a_draw_text;
+    g_api.draw_text = G(a_draw_text);
     g_api.font8x8 = &font8x8_basic[0][0];
     g_api.http_get = G(a_http_get);
     g_api.audio_play = G(a_audio_play);
@@ -1232,7 +1291,7 @@ static void api_init(void) {
     g_api.thread_join = G(a_thread_join);
     g_api.thread_id = G(a_thread_id);
     g_api.thread_exit = G(a_thread_exit);
-    g_api.cpu_count = a_cpu_count;
+    g_api.cpu_count = G(a_cpu_count);
     g_api.wait = G(a_wait);
     g_api.wake = G(a_wake);
     g_api.web_open = G(a_web_open);
@@ -1318,7 +1377,7 @@ typedef struct { int32_t tag; uint32_t val; } dyn_t;
 #endif
 
 
-static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana_entry_t* entry, uintptr_t* base_out,
+static int load_elf(appmem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_out, banana_entry_t* entry, uintptr_t* base_out,
                     uintptr_t* lo_out, uintptr_t* hi_out, char* err, int ecap) {
     const ehdr_t* eh = (const ehdr_t*)f;
     if (size < sizeof(ehdr_t) || memcmp(eh->ident, "\x7f" "ELF", 4) != 0) { kstrlcpy(err, "not an ELF program", (size_t)ecap); return -1; }
@@ -1342,7 +1401,7 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
     if (hi <= lo || hi - lo > APP_MAX_IMAGE) { kstrlcpy(err, "no loadable code (or too big)", (size_t)ecap); return -1; }
     lo &= ~(uintptr_t)4095;
     uint32_t span = (uint32_t)(hi - lo);
-    uint8_t* raw = (uint8_t*)kmalloc(span + 4096);
+    uint8_t* raw = (uint8_t*)(m ? appmem_alloc(m, span + 4096) : kmalloc(span + 4096));
     if (!raw) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
     uint8_t* mem = (uint8_t*)(((uintptr_t)raw + 4095) & ~(uintptr_t)4095);
     memset(mem, 0, span);
@@ -1451,7 +1510,7 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
         if (bad) {
             if (bad == 1) kstrlcpy(err, "damaged relocations (link it with the SDK or tcc)", (size_t)ecap);
             else kstrlcpy(err, why, (size_t)ecap);
-            kfree(raw);
+            if (m) appmem_free(m, raw); else kfree(raw);
             return -1;
         }
     }
@@ -1467,7 +1526,7 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
 int app_load_image(const uint8_t* f, uint32_t size, uint8_t** raw, uintptr_t* entry, char* err, int ecap) {
     banana_entry_t e;
     uintptr_t base, lo, hi;
-    if (load_elf(f, size, raw, &e, &base, &lo, &hi, err, ecap) < 0) return -1;
+    if (load_elf(NULL, f, size, raw, &e, &base, &lo, &hi, err, ecap) < 0) return -1;
     *entry = (uintptr_t)e;
     return 0;
 }
@@ -1489,7 +1548,7 @@ static void stop_threads(app_proc_t* p) {
         task_sleep_ms(2);                   /* a busy one is stopped by the timer (app_preempt) */
     }
     for (int t = 0; t < APP_THREADS; t++) {
-        if (p->threads[t].used) kfree(p->threads[t].stack_mem);
+        if (p->threads[t].used) appmem_free(p->mem, p->threads[t].stack_mem);
         p->threads[t].used = 0;
     }
 }
@@ -1498,23 +1557,15 @@ static void release(app_proc_t* p) {
     stop_threads(p);
     appwin_close_owner(p->id);
     webview_close_owner(p->id);
-    while (p->blocks) {
-        ablock_t* b = p->blocks;
-        extern char _kernel_end[];
-        if (((uintptr_t)b & 15) || (uintptr_t)b < (uintptr_t)_kernel_end || b->magic != ABLOCK_MAGIC) {
-            /* the app wrote over its own memory's bookkeeping: what is left
-             * is not freed (a leak), rather than the kernel crashing on it */
-            klog("app %s: its memory list is damaged - %s\n", p->name, "not freeing the rest");
-            break;
-        }
-        p->blocks = b->next;
-        b->magic = 0;
-        kfree(b);
-    }
-    kfree(p->image);
     if (p->guarded) paging_guard((uintptr_t)p->guard, APP_GUARD, 0);
-    kfree(p->stack_mem);
-    kfree(p->argv);
+    p->guarded = 0;
+    /* its code, data, stacks, heap and pixels: all at once */
+    appmem_t* m = p->mem;
+    p->mem = NULL;
+    appmem_destroy(m);
+    p->image = NULL;
+    p->stack_mem = NULL;
+    p->argv = NULL;
     p->used = 0;
 }
 
@@ -1522,8 +1573,9 @@ static void release(app_proc_t* p) {
 static int run(app_proc_t* p) {
     *(volatile uint32_t*)p->stack = STACK_CANARY;      /* the bottom of the stack: overflow check */
     p->guarded = paging_guard((uintptr_t)p->guard, APP_GUARD, 1);
+    appmem_sync(p->mem);                                /* (its tables get the guard pages too) */
     p->running = 1;
-    p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp);
+    p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp, appmem_cr3(p->mem));
     p->running = 0;
     if (p->crash_msg[0]) {                              /* it crashed (app_fault) */
         klog("app crashed: %s\n", p->crash_msg);
@@ -1595,11 +1647,14 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     p->id = id;
     fs_file_t* f = fs_get_file(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
+    p->mem = appmem_new();
+    if (!p->mem) { kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
     fs_pin(fi);
-    int bad = load_elf((const uint8_t*)f->content, f->size, &p->image, &p->entry, &p->base, &p->code_lo, &p->code_hi, err, ecap) != 0;
+    int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &p->image, &p->entry, &p->base, &p->code_lo, &p->code_hi,
+                       err, ecap) != 0;
     fs_unpin(fi);
-    if (bad) return NULL;
-    p->stack_mem = (uint8_t*)kmalloc(APP_GUARD + APP_STACK + 4096);
+    if (bad) { appmem_destroy(p->mem); p->mem = NULL; return NULL; }
+    p->stack_mem = (uint8_t*)appmem_alloc(p->mem, APP_GUARD + APP_STACK + 4096);
     if (p->stack_mem) {
         p->guard = (uint8_t*)(((uintptr_t)p->stack_mem + 4095) & ~(uintptr_t)4095);
         p->stack = p->guard + APP_GUARD;
@@ -1607,9 +1662,10 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     /* argv: the pointers and the strings in one block */
     uint32_t need = (uint32_t)(argc + 1) * sizeof(char*);
     for (int i = 0; i < argc; i++) need += (uint32_t)strlen(argv[i]) + 1;
-    p->argv = (char**)kmalloc(need);
+    p->argv = (char**)appmem_alloc(p->mem, need);
     if (!p->stack_mem || !p->argv) {
-        kfree(p->image); kfree(p->stack_mem); kfree(p->argv);
+        appmem_destroy(p->mem);
+        p->mem = NULL;
         kstrlcpy(err, "out of memory", (size_t)ecap);
         return NULL;
     }
@@ -1677,8 +1733,7 @@ void app_list(void) {
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
         if (!p->used) continue;
-        uint32_t mem = 0;
-        for (ablock_t* b = p->blocks; b; b = b->next) mem += (uint32_t)b->size;
+        uint32_t mem = appmem_used(p->mem);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
         terminal_writeln(line);
@@ -1699,7 +1754,7 @@ int app_snapshot(app_info_t* out, int max) {
         out[n].mem = 0;
         out[n].threads = 1;
         for (int t = 0; t < APP_THREADS; t++) if (p->threads[t].used && !p->threads[t].done) out[n].threads++;
-        for (ablock_t* b = p->blocks; b; b = b->next) out[n].mem += (uint32_t)b->size;
+        out[n].mem = appmem_used(p->mem);
         n++;
     }
     return n;
