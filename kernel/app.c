@@ -1495,21 +1495,30 @@ void app_syscall(sysframe_t* r) {
  * a stub; the font and the strings copied; the return stub after them */
 static int make_uapi(app_proc_t* p) {
     size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
-    size_t stubs = (API_SLOTS + 1) * 8;
+    size_t stubs = API_SLOTS * 8 + 16;
     uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
     if (!m) return -1;
     banana_api_t* ua = (banana_api_t*)m;
     memcpy(ua, &g_api, sizeof(g_api));
     void** slot = (void**)ua;
     uint8_t* st = m + tab;
-    for (uint32_t k = 0; k <= API_SLOTS; k++, st += 8) {
+    for (uint32_t k = 0; k < API_SLOTS; k++, st += 8) {
         st[0] = 0xB8;                                   /* mov eax, k */
         memcpy(st + 1, &k, 4);
         st[5] = 0xCD; st[6] = SYSCALL_VECTOR;           /* int 0x80 */
         st[7] = 0xC3;                                   /* ret */
-        if (k < API_SLOTS && g_spec[k].args) slot[k] = st;
+        if (g_spec[k].args) slot[k] = st;
     }
     p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * 8;
+    /* A C function returns its int in eax. Preserve it as the syscall's
+     * first argument BEFORE loading the syscall number into eax. Ordinary
+     * call stubs leave rdi alone; it is not the function's return value. */
+    st[0] = 0x89; st[1] = 0xC7;                         /* mov edi, eax */
+    st[2] = 0xB8;                                      /* mov eax, SYS_RETURN */
+    uint32_t ret_slot = SYS_RETURN;
+    memcpy(st + 3, &ret_slot, 4);
+    st[7] = 0xCD; st[8] = SYSCALL_VECTOR;
+    st[9] = 0x0F; st[10] = 0x0B;                        /* ud2: must not return */
     uint8_t* font = m + tab + stubs;
     memcpy(font, font8x8_basic, sizeof(font8x8_basic));
     ua->font8x8 = font;
