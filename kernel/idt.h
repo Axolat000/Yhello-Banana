@@ -8,7 +8,7 @@
  * and remaps the 8259 PICs to vectors 32-47 with every IRQ masked. */
 void idt_init(void);
 /* the panic screen for a kernel bug found by a check (not a CPU exception) */
-void kernel_panic(const char* what);
+void kernel_panic(const char* what) __attribute__((noreturn));
 
 /* Registers `handler` for hardware IRQ line `irq` (0-15) and unmasks it.
  * Handlers run with interrupts off and must be short: the EOI is sent by

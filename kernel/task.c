@@ -77,6 +77,7 @@ typedef struct task {
     int          vt;                      /* terminal output target, restored on switch-in */
     int          background;              /* daemon: never reads the keyboard (task_set_background) */
     void*        stack_mem;               /* kmalloc'd stack (task_create_stack), or NULL */
+    uintptr_t    stack_top;               /* bounds for panic diagnostics */
     uintptr_t    kguard;                  /* unmapped pages under that stack (64-bit), or 0 */
     uint32_t     fault_vec, fault_err;    /* a fault on another core, reported on the boot core */
     uintptr_t    fault_ip, fault_addr;
@@ -523,6 +524,7 @@ void task_init(const char* main_task_name) {
     t->no_kpreempt = 1;                     /* (see task_kpreempt) */
     t->run_start = rdtsc();
     t->switched_in = t->run_start;
+    t->stack_top = (uintptr_t)stack_bottom + 65536;
     guard_set(t, (uintptr_t*)stack_bottom);  /* the boot stack (boot/boot*.asm) */
 
     set_name(g_idle.name, "idle", TASK_NAME_MAX);
@@ -531,6 +533,7 @@ void task_init(const char* main_task_name) {
     g_idle.pinned = 1;
     g_idle.prio = TASK_PRIO_NORMAL;
     g_idle.sp = fake_frame(&g_idle_stack[TASK_STACK_WORDS], task_trampoline);
+    g_idle.stack_top = (uintptr_t)(g_idle_stack + TASK_STACK_WORDS);
     guard_set(&g_idle, g_idle_stack);
 
     g_count = 1;
@@ -600,6 +603,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     }
     uintptr_t* sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes + extra) & ~(uintptr_t)15);
     t->sp = fake_frame(sp, task_trampoline);
+    t->stack_top = (uintptr_t)sp;
     guard_set(t, t->kguard ? (uintptr_t*)(t->kguard + KSTACK_GUARD) :
               (uintptr_t*)(((uintptr_t)mem + 15) & ~(uintptr_t)15));
 
@@ -643,6 +647,20 @@ void task_sleep_ms(uint32_t ms) {
      * READY once its deadline passes (or task_wake()), so one call is
      * enough - no early-wakeup guard loop needed. */
     task_yield();
+}
+
+int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* top) {
+    int c = cpu_id();
+    task_t* t = c > 0 && c < SMP_MAX_CPUS ? g_ap[c].task : g_current;
+    *bottom = *top = 0;
+    name[0] = 0;
+    uintptr_t p = (uintptr_t)t, first = (uintptr_t)g_tasks;
+    if (t != &g_idle && (p < first || p >= (uintptr_t)(g_tasks + TASK_MAX) || (p-first)%sizeof(task_t))) return -1;
+    for (int i=0;i<TASK_NAME_MAX-1;i++) { name[i]=t->name[i]; if(!name[i])break; }
+    name[TASK_NAME_MAX-1]=0;
+    *bottom=(uintptr_t)t->guard+GUARD_WORDS*sizeof(uintptr_t);
+    *top=t->stack_top;
+    return (int)t->pid;
 }
 
 int task_current_pid(void) {

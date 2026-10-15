@@ -17,6 +17,8 @@ int  serial_try_getc(void);          /* -1 if nothing received */
 void serial_kick(void);
 /* everything queued, sent now, waiting for the UART (a panic: no timer to do it) */
 void serial_drain(void);
+/* Bounded, polled emergency output; bypasses the ring buffer and terminal. */
+void serial_panic_write(const char* text);
 
 /* printf to the serial port only (kernel debug log) */
 void klog(const char* fmt, ...);

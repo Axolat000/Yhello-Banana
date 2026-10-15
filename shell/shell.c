@@ -955,6 +955,7 @@ static void cmd_help(void) {
         "  mount [-a]         mounted USB sticks / NVMe (FAT32: /mnt/usb, /mnt/nvme)",
         "  umount [path]      unmount (eject) a stick so it can be removed",
         "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
+        "  crashtest [mode]   crash-screen preview/report; panic/ud2/pagefault halt the OS",
         "  selftest [part]    check the system: ring3, memory, limits, cores, opencl, ipv6",
         "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
         "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
@@ -1389,7 +1390,7 @@ static const char* const known_cmds[] = {
     "ifconfig", "dhcp", "ping", "nslookup", "host", "netstat", "arp", "curl", "wget",
     "cryptotest", "wallpaper", "lsusb", "usb", "httpd", "sshd", "rdpd", "rdp", "passwd", "files", "browser", "notepad",
     /* shell/syscmds.c */
-    "mount", "umount", "eject", "fstest", "selftest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
+    "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
     "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver", (void*)0
 };

@@ -1,6 +1,7 @@
 #include "syscmds.h"
 #include "fstest.h"
 #include "selftest.h"
+#include "crashtest.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"
@@ -191,6 +192,7 @@ int syscmd_dispatch(const char* line) {
     if (strcmp(argv[0], "mount") == 0) { cmd_mount(argc, argv); return 1; }
     if (strcmp(argv[0], "umount") == 0 || strcmp(argv[0], "eject") == 0) { cmd_umount(argc, argv); return 1; }
     if (strcmp(argv[0], "fstest") == 0) return fstest_cmd(argc, argv);
+    if (strcmp(argv[0], "crashtest") == 0) return crashtest_cmd(argc, argv);
     if (strcmp(argv[0], "selftest") == 0) return selftest_cmd(argc, argv);
     if (strcmp(argv[0], "apt") == 0 || strcmp(argv[0], "apt-get") == 0) { cmd_apt(argc, argv); return 1; }
     if (strcmp(argv[0], "adb") == 0) { cmd_adb(argc, argv); return 1; }

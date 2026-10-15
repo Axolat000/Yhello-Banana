@@ -24,6 +24,8 @@ static inline int cpu_id(void) {
 }
 /* an interrupt to another core (vector SMP_VEC_KICK) */
 void smp_send_ipi(int cpu, int vector);
+/* Best-effort, bounded stop notification; peers halt in the interrupt path. */
+void smp_panic_stop_others(void);
 /* end of a local-APIC interrupt (IPIs) */
 void smp_eoi(void);
 /* the cores found in the ACPI tables (including ones not started) */

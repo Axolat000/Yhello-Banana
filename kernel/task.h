@@ -113,6 +113,8 @@ void task_sleep_ms(uint32_t ms);
  * use it to wake whoever is waiting on their device. */
 void task_wake(int pid);
 int  task_current_pid(void);
+/* Read-only panic snapshot; no scheduler/heap locks, no allocations. */
+int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* top);
 
 /* Marks the calling task as a daemon (sshd, httpd, ...): it has no
  * terminal of its own, so it never reads the keyboard and Ctrl+C never

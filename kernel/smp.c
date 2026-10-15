@@ -128,6 +128,7 @@ int smp_threads_per_core(void) { return 1; }
 int smp_x2apic(void) { return 0; }
 void smp_init(void) {}
 void smp_send_ipi(int cpu, int vector) { (void)cpu; (void)vector; }
+void smp_panic_stop_others(void) {}
 void smp_eoi(void) {}
 
 #else
@@ -287,6 +288,24 @@ static void icr_send(uint32_t apic, uint32_t lo) {
 void smp_send_ipi(int cpu, int vector) {
     if (!g_apic_on || cpu < 0 || cpu >= g_cpus) return;
     icr_send(g_apic_id[cpu], (uint32_t)vector | (1u << 14));      /* fixed, assert */
+}
+
+/* A broken APIC must not prevent drawing the crash report. No indefinite
+ * delivery-status spin like the normal IPI path; CLI stays in force. */
+void smp_panic_stop_others(void) {
+    if(!g_apic_on)return;
+    int self=cpu_id();
+    for(int cpu=0;cpu<g_cpus;cpu++)if(cpu!=self) {
+        uint32_t command=SMP_VEC_KICK|(1u<<14);
+        if(g_x2)wrmsr(0x830,command,g_apic_id[cpu]);
+        else {
+            unsigned spins;
+            for(spins=0;spins<10000 && (lapic_rd(LAPIC_ICR_LO)&(1u<<12));spins++)__asm__ volatile("pause");
+            if(spins==10000)return;
+            lapic_wr(LAPIC_ICR_HI,g_apic_id[cpu]<<24);
+            lapic_wr(LAPIC_ICR_LO,command);
+        }
+    }
 }
 
 

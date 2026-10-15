@@ -54,6 +54,10 @@ gpu_t* gpu_active(void);
 int    gpu_register(gpu_t* g);
 /* fb.c: an area was drawn */
 void   gpu_flush(int x, int y, int w, int h);
+/* Built-in drivers may provide a bounded, allocation-free panic update.
+ * Kept outside gpu_t so the driver-module structure ABI stays unchanged. */
+void   gpu_register_panic(gpu_t* g, void (*present)(void));
+void   gpu_panic_present(void);
 /* the screen shows memory a driver gives (it is 32-bit XRGB) */
 void   gpu_set_framebuffer(uintptr_t addr, int w, int h, int pitch);
 

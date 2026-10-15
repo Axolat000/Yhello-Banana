@@ -14,6 +14,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Verbose kernel crash screen** - a blue stop-screen header and a dark diagnostic console show the stop code, exception/error details, full-width registers, CPU/task/uptime, control registers and a bounded raw stack snapshot. Page faults explain the attempted access and protection bits. The fatal path draws directly to the framebuffer and sends the full report to COM1, without entering the desktop or allocator. `crashtest` previews it safely; Enter/Esc returns to the OS. `crashtest report` prints a simulated report. Explicit `crashtest panic`, `ud2` and `pagefault` modes halt the OS for testing (save work first).
+
 - **Browser crashes stay in the browser** - the web engine runs in the kernel, so a page that made it crash used to stop all of Banana OS. Now a crash in the browser (or in an app's web view) - a bad memory access, an invalid instruction, a too-deep recursion running off its stack (guard pages under it now) - closes only the page that caused it: the tab says *This page crashed the browser's engine*, the other tabs and the rest of the system go on. `about:crash` crashes the engine on purpose, to see it
 - **Several keys at once (games)** - the keyboard driver keeps every key held down (PS/2, USB, Remote Desktop). Apps ask `banana_key_down('w')`, `banana_key_down(BANANA_KEY_LEFT)`... (API version 14) and web pages get a real `keydown` when a key goes down and `keyup` when it comes up, with `event.code`, so W + D + Space together work
 - **App Store: your own servers** - *Servers* lists the repositories and adds one (its address and signing key, or trusted without a key after a warning) or removes one (API version 15). The App Store is pinned to the taskbar next to Files
@@ -647,6 +649,47 @@ clEnqueueReadBuffer(q, buf, CL_TRUE, 0, n * 4, data, 0, NULL, NULL);
 
 The one device is the processor (`CL_DEVICE_TYPE_CPU` / `DEFAULT`; asking for a GPU gives `CL_DEVICE_NOT_FOUND`), *Banana OS CPU (N cores)*. Kernels are compiled when the program is built by the TinyCC built into the app (from `ports/tcc`: USE_CL apps are built in the Banana OS source tree), and work-groups run on every core; commands finish before their call returns (in-order queues, events complete at once, with profiling times). OpenCL C here: `__kernel`, `__global`/`__constant`/`__local`/`__private`, `get_global_id` and the other work-item functions, scalar types (`uchar`, `uint`, `size_t`, `half` as storage...), the math functions, `rsqrt`, `native_*`, `mad`, `fma`, `min`, `max`, `clamp`, `mix`, `step`, `smoothstep`, `sign`, `select`, `atomic_*`/`atom_*` on 32-bit ints, `printf`, `-D` options. `barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE)` pauses work-items until the group arrives; `__local` pointer arguments and block-scope arrays are shared within the group. `float`, `int` and `uint` vectors support 2, 3, 4, 8 and 16 lanes, constructors, arithmetic, comparison masks, component access, read swizzles and `vloadN`/`vstoreN`. These operations use scalar CPU code. Images and samplers remain unsupported. See [the SDK notes](sdk/README.md#opencl) for the supported subset and limits. Run `selftest opencl` inside Banana OS; `tools/test_opencl.sh` runs the same kernel tests on Linux with the patched compiler.
 
+### Crash-screen diagnostics
+
+After building with `tools/dev.sh run`, run this inside Banana OS:
+
+```sh
+crashtest                 # safe, simulated full-screen preview; Enter/Esc returns
+crashtest report          # simulated text report, also usable over SSH
+```
+
+For the real fatal paths, save your work first. Each command below stops
+Banana OS and requires restarting the VM or computer:
+
+```sh
+crashtest panic           # explicit kernel check failure
+crashtest ud2             # actual invalid-instruction CPU exception
+crashtest pagefault       # actual unmapped-page access (64-bit kernel only)
+```
+
+The screen stays visible until you restart it; there is no automatic reboot
+or disk dump. The full report is sent to serial COM1 (`tools/dev.sh run`
+keeps it in `build/logs/serial-bios.log`, or the corresponding firmware log).
+Keep the stop code, IP, fault address and the matching kernel binary. The
+raw stack words are bounded to the known task stack, and are **not a call
+trace**. `addr2line -e kernel64.bin -f -C <IP>` can identify symbols in that
+binary; source lines require a build with debug information. Use
+`kernel.bin` for the 32-bit kernel.
+
+The preview lets other tasks run and restores the display when closed.
+Actual faults bypass the desktop and allocator, notify other cores to stop,
+and use bounded emergency serial output. Built-in Virtio and VMware graphics
+also attempt a bounded display update without the normal graphics worker.
+If a Virtio command was already in flight, serial remains the fallback. A nested fault falls back to a
+minimal serial/VGA message. App faults and recoverable browser faults keep
+their existing recovery paths. To check the merged browser recovery, open
+`about:crash` in the browser: the page should report a crash while the OS
+continues.
+
+`python3 tools/test_crashscreen.py` exercises the same formatter and bitmap
+renderer on the host, checks full-width addresses and framebuffer boundaries,
+and writes PNG previews to `build/test/crashscreen/`.
+
 ### Hosting a repository (Linux)
 
 `tools/repo/banana-repo` (Python 3 only) makes and serves repositories:
@@ -854,6 +897,7 @@ include /path/to/banana-sdk/driver/driver.mk
 | `firewall [on/off] / allow / deny / ping / log` | the firewall (off by default) |
 | `toggle6 [on\|off]` / `ipv6 [on\|off]` | IPv6 switch (off by default; saved), or address/router information |
 | `ping6 HOST` / `nslookup -6 HOST` | IPv6 echo / AAAA DNS lookup |
+| `crashtest [preview\|report\|panic\|ud2\|pagefault]` | Safe crash-screen preview/report; the last three modes intentionally halt the OS |
 | `selftest opencl` | Compile and check OpenCL barriers, shared local memory and vectors on the CPU |
 | `selftest ipv6 [HOST [PORT]]` | Local IPv6 TCP/UDP checks; optional network lookup and TCP connection (default port 80) |
 | `sensors` | The processor's temperature (Intel and AMD, real hardware) |
