@@ -25,7 +25,7 @@ typedef struct {
     uint32_t* shown;               /* what the desktop shows: px as of the last win_update */
     banana_event_t q[EVQ];
     int       qh, qt;
-    int       dragging, ddx, ddy;
+    int       dragging, ddx, ddy, dpx, dpy;   /* (dpx, dpy: where the drag started) */
     int       close_clicks;
     int       min;                 /* minimized (taskbar) */
     int       last_mx, last_my, last_left, inside_down;
@@ -35,6 +35,8 @@ typedef struct {
     int       resizing, rdx, rdy;
     int       pending, pw, ph;     /* a new client size, applied when the app reads BANANA_EV_RESIZE */
     int       maxed, sx, sy, sw, sh;
+    int       snapped;             /* in a half or quarter of the screen (sx.. restore it) */
+    int       hidden;              /* on another virtual desktop (kernel/gui.c): not shown */
     uint32_t  title_ms;
     int       wheel;               /* wants BANANA_EV_WHEEL (win_wheel) */
     char    (*drop)[FS_PATH_LEN];  /* the last files dropped on it */
@@ -103,7 +105,7 @@ static void unlink_order(int id) {
 
 /* the topmost window that is not minimized */
 static awin_t* front(void) {
-    for (int i = g_norder - 1; i >= 0; i--) if (!g_w[g_order[i]].min) return &g_w[g_order[i]];
+    for (int i = g_norder - 1; i >= 0; i--) if (!g_w[g_order[i]].min && !g_w[g_order[i]].hidden) return &g_w[g_order[i]];
     return NULL;
 }
 
@@ -287,7 +289,7 @@ int appwin_is_open(void) { return g_norder > 0; }
 static int win_at(int mx, int my) {
     for (int i = g_norder - 1; i >= 0; i--) {
         awin_t* w = &g_w[g_order[i]];
-        if (!w->min && mx >= w->x && mx < w->x + outer_w(w) && my >= w->y && my < w->y + outer_h(w)) return g_order[i];
+        if (!w->min && !w->hidden && mx >= w->x && mx < w->x + outer_w(w) && my >= w->y && my < w->y + outer_h(w)) return g_order[i];
     }
     return -1;
 }
@@ -366,7 +368,7 @@ void appwin_draw(const fb_info_t* fi) {
     (void)fi;
     for (int i = 0; i < g_norder; i++) {
         awin_t* w = &g_w[g_order[i]];
-        if (w->min) continue;
+        if (w->min || w->hidden) continue;
         int active = g_focused && w == front();
         int W = outer_w(w), H = outer_h(w);
         bevel(w->x, w->y, W, H, C_PANEL, 0x00505D72u, 0x0010141Cu);
@@ -395,15 +397,93 @@ void appwin_draw(const fb_info_t* fi) {
 static void toggle_maximize(awin_t* w) {
     if (!w->resizable) return;
     if (!w->maxed) {
-        w->sx = w->x; w->sy = w->y; w->sw = w->cw; w->sh = w->ch;
+        if (!w->snapped) { w->sx = w->x; w->sy = w->y; w->sw = w->cw; w->sh = w->ch; }
         w->x = 0; w->y = 0;
         w->maxed = 1;
+        w->snapped = 0;
         request_resize(w, max_cw(), max_ch());
     } else {
         w->x = w->sx; w->y = w->sy;
         w->maxed = 0;
         request_resize(w, w->sw, w->sh);
     }
+}
+
+/* into a half / quarter (SNAP_HALF) or the whole screen (SNAP_MAX): the
+ * outer rectangle r; the app is asked for the client size that fills it */
+static void snap_to(awin_t* w, const win_rect_t* r, int where) {
+    if (!w->resizable) return;
+    if (!w->maxed && !w->snapped) { w->sx = w->x; w->sy = w->y; w->sw = w->cw; w->sh = w->ch; }
+    w->x = r->x;
+    w->y = r->y;
+    w->maxed = where == SNAP_MAX;
+    w->snapped = where == SNAP_HALF;
+    request_resize(w, r->w - 2 * BORDER, r->h - TITLE_H - 2 * BORDER);
+    g_gen++;
+}
+
+/* ── the window manager's hold on them (kernel/gui.c) ── */
+
+void appwin_set_hidden(int id, int hidden) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used || g_w[id].hidden == (hidden ? 1 : 0)) return;
+    g_w[id].hidden = hidden ? 1 : 0;
+    g_gen++;
+}
+
+int appwin_get_rect(int id, int* x, int* y, int* w, int* h) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return 0;
+    awin_t* a = &g_w[id];
+    *x = a->x; *y = a->y;
+    *w = a->pending ? a->pw + 2 * BORDER : outer_w(a);
+    *h = a->pending ? a->ph + TITLE_H + 2 * BORDER : outer_h(a);
+    return 1;
+}
+
+int appwin_state(int id, int* maxed, int* snapped, int* resizable) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return 0;
+    if (maxed) *maxed = g_w[id].maxed;
+    if (snapped) *snapped = g_w[id].snapped;
+    if (resizable) *resizable = g_w[id].resizable;
+    return 1;
+}
+
+void appwin_snap(int id, const win_rect_t* r, int where) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
+    awin_t* w = &g_w[id];
+    if (where == SNAP_NONE) {                         /* back to its own size */
+        if (!w->maxed && !w->snapped) return;
+        w->x = w->sx; w->y = w->sy;
+        w->maxed = w->snapped = 0;
+        request_resize(w, w->sw, w->sh);
+        g_gen++;
+        return;
+    }
+    snap_to(w, r, where);
+}
+
+void appwin_move(int id, int x, int y) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
+    g_w[id].x = x;
+    g_w[id].y = y;
+    g_gen++;
+}
+
+void appwin_start_drag(int id, int mx, int my) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
+    awin_t* w = &g_w[id];
+    raise(id);
+    w->dragging = 1;
+    w->ddx = mx - w->x;
+    w->ddy = my - w->y;
+    w->dpx = mx;
+    w->dpy = my;
+}
+
+/* the window under (mx, my), -1; *title: the point is on its title bar */
+int appwin_at(int mx, int my, int* title) {
+    int id = win_at(mx, my);
+    if (title) *title = id >= 0 && my < g_w[id].y + TITLE_H + 2;
+    return id;
 }
 
 void appwin_click(int mx, int my) {
@@ -435,6 +515,8 @@ void appwin_click(int mx, int my) {
         w->title_ms = now;
         w->dragging = 1;
         w->ddx = mx - w->x;
+        w->dpx = mx;
+        w->dpy = my;
         w->ddy = my - w->y;
         return;
     }
@@ -471,8 +553,21 @@ void appwin_mouse(int mx, int my, int left) {
         awin_t* w = &g_w[i];
         if (!w->used) continue;
         if (w->dragging) {
-            if (!left) w->dragging = 0;
-            else {
+            win_rect_t r;
+            int z = w->resizable ? winframe_snap_zone(mx, my, &r) : SNAP_NONE;
+            if (!left) {
+                w->dragging = 0;
+                winframe_set_preview(NULL);
+                if (z) snap_to(w, &r, z);            /* let go over a snap zone: it goes there */
+            } else {
+                /* snapped or maximized, dragged away: back to its own size */
+                if ((w->maxed || w->snapped) && (mx - w->dpx > 6 || w->dpx - mx > 6 || my - w->dpy > 6 || w->dpy - my > 6)) {
+                    int ow0 = outer_w(w) > 0 ? outer_w(w) : 1;
+                    w->ddx = w->ddx * (w->sw + 2 * BORDER) / ow0;
+                    w->maxed = w->snapped = 0;
+                    request_resize(w, w->sw, w->sh);
+                }
+                winframe_set_preview(z ? &r : NULL);
                 int nx = mx - w->ddx, ny = my - w->ddy;
                 if (nx < -outer_w(w) + 40) nx = -outer_w(w) + 40;
                 if (nx > scr_w() - 40) nx = scr_w() - 40;

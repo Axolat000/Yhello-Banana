@@ -2,6 +2,7 @@
 #define SETTINGS_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 
 /*
@@ -47,5 +48,8 @@ void settings_boot(void);
 /* saves one setting in /etc/settings.conf (and on the installed disk) */
 void settings_set(const char* key, const char* value);
 int  settings_get(const char* key, char* out, int cap);
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* settings_geom(void);
 
 #endif

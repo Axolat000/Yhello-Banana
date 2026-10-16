@@ -2013,3 +2013,6 @@ void explorer_launch(const char* path) {
 }
 
 void explorer_refresh(void) { if (g_open) { scan(); g_gen++; } }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* explorer_geom(void) { return &g_win; }

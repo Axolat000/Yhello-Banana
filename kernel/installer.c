@@ -524,3 +524,6 @@ uint32_t installer_signature(void) {
     if (t != g_tick && (g_running || (g_page == P_SETUP && g_focus >= 0))) { g_tick = t; g_gen++; }
     return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ (uint32_t)g_page << 28;
 }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* installer_geom(void) { return &g_win; }

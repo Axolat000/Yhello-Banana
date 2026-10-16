@@ -2,6 +2,7 @@
 #define BROWSER_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 
 /*
@@ -46,5 +47,8 @@ int  gui_browser_focused(void);
 
 /* sets up the script engine's clock (kernel_main) */
 void web_init(void);
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* browser_geom(void);
 
 #endif

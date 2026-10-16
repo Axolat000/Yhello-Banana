@@ -1237,3 +1237,6 @@ void settings_boot(void) {
         if (xp && k_parse_u32(v, &w) && k_parse_u32(xp + 1, &h)) display_set_mode((int)w, (int)h);
     }
 }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* settings_geom(void) { return &g_win; }

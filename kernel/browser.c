@@ -2059,3 +2059,6 @@ void browser_mouse(int mx, int my, int left) {
 void browser_fkey(int k) {
     if (KEYF_CODE(k) == KEYF_F1 + 4) push_cmd(CMD_RELOAD, 0, 0);   /* F5 */
 }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* browser_geom(void) { return &g_win; }

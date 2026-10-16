@@ -2,6 +2,7 @@
 #define INSTALLER_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 
 /*
@@ -21,5 +22,8 @@ void installer_mouse(int mx, int my, int left);
 void installer_rclick(int mx, int my);
 void installer_key(char c);
 uint32_t installer_signature(void);
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* installer_geom(void);
 
 #endif

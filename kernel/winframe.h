@@ -19,7 +19,41 @@ typedef struct {
     int dragging, resizing, dx, dy;
     int maxed, sx, sy, sw, sh;      /* geometry to restore */
     uint32_t title_ms;              /* last title-bar click (double-click) */
+    int snapped;                    /* put in a half / quarter of the screen (sx.. restore it) */
+    int px, py;                     /* where a drag started */
 } win_geom_t;
+
+/* ── snapping, like Windows' Aero Snap ─────────────────────────────────
+ * A window dragged by its title bar to the left or right edge of the
+ * screen takes that half (near a corner: that quarter), to the top edge
+ * the whole screen; while it is over such a zone the desktop shows where it
+ * would go (winframe_preview). Dragged away again, a snapped or maximized
+ * window gets back its size. The same zones serve the terminal windows and
+ * the apps' windows (kernel/gui.c, kernel/appwin.c). */
+typedef struct { int x, y, w, h; } win_rect_t;
+
+#define SNAP_NONE 0
+#define SNAP_HALF 1                 /* a half or a quarter */
+#define SNAP_MAX  2
+/* the screen above the taskbar */
+void winframe_work_area(win_rect_t* r);
+/* the zone a drag at (mx, my) is over: SNAP_* and its rectangle */
+int  winframe_snap_zone(int mx, int my, win_rect_t* r);
+/* a named snap: 'l' left half, 'r' right half, '1'..'4' quarters (top-left,
+ * top-right, bottom-left, bottom-right), 'm' the whole screen */
+void winframe_snap_rect(char where, win_rect_t* r);
+/* the preview the desktop draws (one at a time): set (NULL clears) / get */
+void winframe_set_preview(const win_rect_t* r);
+int  winframe_preview(win_rect_t* r);
+/* drawing in the desktop's frame: darkens a rectangle (alpha 0-255 of black),
+ * tints it towards rgb, and a soft shadow under a window's rectangle */
+void winframe_shade(int x, int y, int w, int h, int alpha);
+void winframe_tint(int x, int y, int w, int h, uint32_t rgb, int alpha);
+void winframe_shadow(int x, int y, int w, int h);
+/* the geometry of g put into the half / quarter / whole screen r (where: SNAP_*) */
+void win_snap(win_geom_t* g, const win_rect_t* r, int where);
+/* back to the size it had before it was snapped or maximized */
+void win_unsnap(win_geom_t* g);
 
 /* left button went down in the title bar: starts a drag, or maximizes /
  * restores on a double-click (returns 1 then: the size changed) */

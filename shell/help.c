@@ -271,7 +271,12 @@ static const page_t PAGES[] = {
     { "driver", "apps", "driver load <file>", "load a driver module", NULL, NULL, NULL, "drivers" },
     /* ── desktop ── */
     { "startx", "desktop", "startx", "start the desktop",
-      "Starts the desktop on this screen (not over SSH, nor from a terminal window of the desktop). start is the same.",
+      "Starts the desktop on this screen (not over SSH, nor from a terminal window of the desktop). start is the same.\n"
+      "Windows: drag a title bar to a screen edge to snap it to a half (a corner: a quarter, the top: full screen); "
+      "Win+Left / Right / Up / Down snap, maximize, restore; right-click a title bar for the window menu (always on "
+      "top, move to another desktop); Alt+drag moves a window from anywhere. Four virtual desktops: the switcher on "
+      "the taskbar, Win+Ctrl+Left / Right, Win+Ctrl+Shift+Left / Right takes the front window along. Alt+Tab, Win+Tab "
+      "(task view), Win+D (the desktop), Alt+F4.",
       NULL, NULL, "stopx" },
     { "stopx", "desktop", "stopx", "leave the desktop (stop is the same)", NULL, NULL, NULL, "startx" },
     { "start", "desktop", "start", "the same as startx", NULL, NULL, NULL, "startx" },

@@ -461,3 +461,6 @@ void taskmgr_draw(const fb_info_t* fi) {
     gfx_draw_grip(x + W, y + H);
     kbnav_draw(&g_nav, 0x00FFD34Eu);
 }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* taskmgr_geom(void) { return &g_win; }

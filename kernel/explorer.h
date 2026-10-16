@@ -2,6 +2,7 @@
 #define EXPLORER_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 #include "fs.h"
 
@@ -39,5 +40,8 @@ uint32_t explorer_signature(void);
 void gui_terminal_run(const char* cmd);
 
 void explorer_wheel(int mx, int my, int dz);  /* scrolls the file list (+ = down) */
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* explorer_geom(void);
 
 #endif

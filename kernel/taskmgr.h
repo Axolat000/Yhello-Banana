@@ -2,6 +2,7 @@
 #define TASKMGR_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 
 /*
@@ -22,5 +23,8 @@ void taskmgr_rclick(int mx, int my);
 uint32_t taskmgr_signature(void);
 
 int  taskmgr_navkey(int code);       /* kbnav.h keys */
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* taskmgr_geom(void);
 
 #endif
