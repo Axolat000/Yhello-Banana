@@ -179,7 +179,8 @@ static const page_t PAGES[] = {
       "--full|every app and the examples (the default)\n"
       "--standard|App Store, Media Player, Music, Photos\n"
       "--minimal|the App Store only",
-      "install\ninstall 2\ninstall --minimal", "installer, update, lsblk, apt" },
+      "install\ninstall --full      # the same as install alone\ninstall 2 --standard\ninstall --minimal",
+      "installer, update, lsblk, apt" },
     { "installer", "disks", "installer", "the graphical installer (live CD)", NULL, NULL, NULL, "install" },
     { "update", "disks", "update [number]", "update an installed system from a newer CD",
       "Writes this CD's system over the installed one; your files, settings and password are kept. With "
