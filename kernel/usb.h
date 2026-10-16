@@ -51,6 +51,10 @@ void         mouse_inject(int dx, int dy, int buttons);
 void         mouse_inject_wheel(int dz);      /* + = scroll down */
 /* absolute pointers (tablets): x, y 0..65535 across the screen, top-left 0 */
 void         mouse_inject_abs(int x, int y, int buttons);
+/* the position alone, 0..65535 (VirtualBox: its buttons come through PS/2) */
+void         mouse_set_abs(int x, int y);
+/* 1: PS/2 mouse packets are dropped (VMMouse reports the pointer instead) */
+void         mouse_ps2_mute(int on);
 /* " | Touchpad: Synaptics ClickPad (firmware 8.1)" and the like, for usb_status() */
 void         touchpad_describe(char* out, int cap);
 int          mouse_is_touchpad(void); /* 1 if a Synaptics PS/2 touchpad was detected */

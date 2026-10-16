@@ -77,6 +77,10 @@ int  fsdisk_set_boot_video(const char* value);
 void fsdisk_space(uint64_t* used_bytes, uint64_t* capacity_bytes);
 /* the installed disk's name ("SATA port 0") and model, for df ("" if none) */
 void fsdisk_describe(char* out, int cap);
+/* freezes (1: everything written, then no writes) or thaws (0) the installed
+ * disk, for a hypervisor's backup; FSDISK_OK or an error */
+int  fsdisk_freeze(int on);
+int  fsdisk_frozen(void);
 /* fsck: checks the installed disk - both metadata slots, the extents, the
  * saved records; full: reads every file back against its checksum. Writes
  * a line per finding with out(); the number of problems. */

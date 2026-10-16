@@ -136,7 +136,7 @@ uint16_t vio_queue(vio_t* v, int qi, uint8_t* mem, uint16_t max,
         w64(v, C_QDESC, (uintptr_t)*desc);
         w64(v, C_QDRIVER, (uintptr_t)*avail);
         w64(v, C_QDEVICE, (uintptr_t)*used);
-        if (qi < 8) v->notify_off[qi] = c16(v, C_QNOTIFYOFF);
+        if (qi < 32) v->notify_off[qi] = c16(v, C_QNOTIFYOFF);
         w16(v, C_QENABLE, 1);
     } else {
         outl((uint16_t)(v->io + L_QUEUE_PFN), (uint32_t)((uintptr_t)mem >> 12));
@@ -152,7 +152,7 @@ void vio_failed(vio_t* v) { set_status(v, VIO_S_FAILED); }
 
 void vio_notify(vio_t* v, int qi) {
     __asm__ volatile("" ::: "memory");
-    if (v->modern) *(volatile uint16_t*)(v->notify + (uint32_t)v->notify_off[qi & 7] * v->notify_mul) = (uint16_t)qi;
+    if (v->modern) *(volatile uint16_t*)(v->notify + (uint32_t)v->notify_off[qi & 31] * v->notify_mul) = (uint16_t)qi;
     else outw((uint16_t)(v->io + L_QUEUE_NOTIFY), (uint16_t)qi);
 }
 

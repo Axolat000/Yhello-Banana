@@ -2,6 +2,7 @@
 #include "kstring.h"
 #include "i2chid.h"
 #include "usb.h"
+#include "vmtools.h"
 #include "../usb/usbcore.h"
 #include "terminal.h"
 #include "types.h"
@@ -619,6 +620,22 @@ void mouse_inject_wheel(int dz) { g_usb_dz += dz; }
 
 static int g_abs_x, g_abs_y, g_abs_new;
 
+/* VMMouse (kernel/vmtools.c) owns the pointer: the PS/2 packets the
+ * hypervisor still sends (to raise the interrupt) are dropped unread */
+static volatile int g_ps2_muted;
+void mouse_ps2_mute(int on) { g_ps2_muted = on; }
+
+/* VirtualBox's mouse integration: the position only (the buttons keep
+ * coming through PS/2) */
+void mouse_set_abs(int x, int y) {
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    g_abs_x = x < 0 ? 0 : x > 65535 ? 65535 : x;
+    g_abs_y = y < 0 ? 0 : y > 65535 ? 65535 : y;
+    g_abs_new = 1;
+    if (f & 0x200) __asm__ volatile("sti" ::: "memory");
+}
+
 void mouse_inject_abs(int x, int y, int buttons) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
@@ -689,6 +706,7 @@ int mouse_irq_motion(int* dx, int* dy) {
         if (!((st & 0x01) && (st & 0x20))) break;
         mouse_on_aux_byte(inb(PS2_DATA));
     }
+    if (g_ps2_muted) { mouse_ring_len = 0; return 0; }
     int sx = 0, sy = 0, any = 0;
     while (mouse_ring_len > 0) {
         const uint8_t* p = mouse_ring[mouse_ring_head];
@@ -721,6 +739,7 @@ static mouse_state_t mouse_read_locked(void);
 mouse_state_t mouse_read(void) {
     usb_poll();                  /* USB mice report through here too: every frame */
     i2chid_poll();               /* and I2C touchpads */
+    vmtools_poll_pointer();      /* and a hypervisor's absolute pointer (VMMouse, VirtualBox) */
     uintptr_t f = irq_off();
     mouse_state_t m = mouse_read_locked();
     scale_motion(&m.dx, &m.dy);
@@ -773,6 +792,10 @@ static mouse_state_t mouse_read_locked(void) {
         uint8_t st = inb(PS2_STATUS);
         if (!((st & 0x01) && (st & 0x20))) break;
         mouse_on_aux_byte(inb(PS2_DATA));
+    }
+    if (g_ps2_muted) {
+        while (mouse_pkt_ready()) mouse_pop();
+        return last_mouse;
     }
 
     /* Motion of all queued packets adds up; a button change ends the

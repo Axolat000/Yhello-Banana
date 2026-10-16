@@ -25,6 +25,7 @@
 #include "syscmds.h"
 #include "moncmds.h"
 #include "fscmds.h"
+#include "../kernel/vmtools.h"
 #include "../kernel/serial.h"
 #include "../kernel/kstring.h"
 #include "../kernel/kheap.h"
@@ -1395,7 +1396,9 @@ static const char* const known_cmds[] = {
     /* shell/moncmds.c */
     "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
-    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck", (void*)0
+    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
+    /* kernel/vmtools.c */
+    "vmtools", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
@@ -2678,6 +2681,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (syscmd_dispatch(line)) return;
     if (moncmd_dispatch(line)) return;
     if (fscmd_dispatch(line)) return;
+    if (k_strcmp(line, "vmtools") == 0 || k_strncmp(line, "vmtools ", 8) == 0) { vmtools_command(line + 7); return; }
     if (srvcmd_dispatch(line)) return;
     if (netcmd_dispatch(line)) return;
 
@@ -2814,6 +2818,7 @@ void shell_run(void) {
     klog("boot: settings, servers\n");
     /* saved network settings, services enabled at boot (shell/srvcmds.c) */
     services_boot();
+    vmtools_init();                 /* guest tools: VMware, VirtualBox, the QEMU / Proxmox agent (kernel/vmtools.c) */
     {
         char sk[8];
         if (settings_get("shell", sk, sizeof(sk)))

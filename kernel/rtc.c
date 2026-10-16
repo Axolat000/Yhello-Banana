@@ -127,9 +127,47 @@ void rtc_split_time(uint32_t t, rtc_datetime_t* out) {
     out->second = (uint8_t)(secs % 60u);
 }
 
+static uint32_t base, base_ms;
+static int have;
+
+static uint8_t bin_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
+
+static void cmos_write(uint8_t reg, uint8_t v) {
+    outb(CMOS_ADDR, reg);
+    outb(CMOS_DATA, v);
+}
+
+int rtc_set_time(uint32_t t) {
+    if (t < 946684800u) return -1;                       /* (the clock holds 2000-2099) */
+    rtc_datetime_t dt;
+    rtc_split_time(t, &dt);
+    if (dt.year > 2099) return -1;
+    uint8_t reg_b = cmos_read(0x0B);
+    int bin = reg_b & 0x04, h24 = reg_b & 0x02;
+    int hour = dt.hour;
+    uint8_t hv;
+    if (h24) hv = bin ? (uint8_t)hour : bin_to_bcd(hour);
+    else {
+        int pm = hour >= 12, h12 = hour % 12 ? hour % 12 : 12;
+        hv = (uint8_t)((bin ? h12 : bin_to_bcd(h12)) | (pm ? 0x80 : 0));
+    }
+#define V(x) (bin ? (uint8_t)(x) : bin_to_bcd(x))
+    cmos_write(0x0B, (uint8_t)(reg_b | 0x80));           /* SET: the clock stops while it is written */
+    cmos_write(0x00, V(dt.second));
+    cmos_write(0x02, V(dt.minute));
+    cmos_write(0x04, hv);
+    cmos_write(0x07, V(dt.day));
+    cmos_write(0x08, V(dt.month));
+    cmos_write(0x09, V(dt.year % 100));
+    cmos_write(0x0B, reg_b);
+#undef V
+    base = t;                                            /* rtc_now() counts from here */
+    base_ms = timer_ms();
+    have = 1;
+    return 0;
+}
+
 uint32_t rtc_now(void) {
-    static uint32_t base, base_ms;
-    static int have;
     uint32_t ms = timer_ms();
     if (!have || ms - base_ms > 600000u) {
         rtc_datetime_t dt;

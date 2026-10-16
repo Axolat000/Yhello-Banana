@@ -1376,8 +1376,26 @@ int fsdisk_install(void) {
     return FSDISK_OK;
 }
 
+/* a hypervisor backing the disk up (the guest agent's fsfreeze): everything
+ * is written now, then nothing until thawed - the disk stays as the backup
+ * reads it */
+static volatile int g_frozen;
+static uint32_t     g_frozen_at;
+
+int fsdisk_freeze(int on) {
+    if (!on) { g_frozen = 0; return FSDISK_OK; }
+    if (g_frozen) return FSDISK_OK;
+    int rc = g_have_target ? fsdisk_sync() : FSDISK_OK;
+    g_frozen = 1;
+    g_frozen_at = timer_ms();
+    return rc == FSDISK_ERR_NO_TARGET ? FSDISK_OK : rc;
+}
+
+int fsdisk_frozen(void) { return g_frozen; }
+
 int fsdisk_sync(void) {
     if (!g_have_target) return FSDISK_ERR_NO_TARGET;
+    if (g_frozen) return FSDISK_OK;           /* (frozen for a backup: written once thawed) */
     while (g_busy) task_sleep_ms(10);        /* the autosave task and `sync` take turns */
     g_busy = 1;
     int rc = g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
@@ -1449,7 +1467,11 @@ static void autosave_task(void) {
     for (;;) {
         task_sleep_ms(500);
         fs_trim();                              /* RAM low: cached file data goes */
-        if (!g_have_target) continue;
+        if (g_frozen && timer_ms() - g_frozen_at > 600000u) {     /* never thawed: not forever */
+            klog("fsdisk: frozen for 10 minutes - thawed\n");
+            g_frozen = 0;
+        }
+        if (!g_have_target || g_frozen) continue;
         uint32_t gen = fs_generation();
         if (gen == g_synced_gen) { warned = 0; continue; }
         /* RAM running low: save now, even while things change - a saved file's
