@@ -1,0 +1,37 @@
+<!doctype html><html><head><title>MutationObserver feedback bound</title></head><body>
+<p id="result">RUNNING</p>
+<script>
+var target = document.createElement('div'), calls = 0, passed = true;
+var observer = new MutationObserver(function(records) {
+  calls++;
+  if (records.length !== 1 || records[0].attributeName !== 'data-loop') passed = false;
+  target.setAttribute('data-loop', String(calls));
+});
+observer.observe(target, {attributes:true, attributeOldValue:true});
+target.setAttribute('data-loop', 'start');
+</script>
+<script>
+// A hostile observer cannot monopolize a checkpoint. Its precise remaining
+// record is retained, and a future task may continue observation normally.
+var records = observer.takeRecords();
+passed = passed && calls === 64 && records.length === 1 && records[0].oldValue === '63';
+observer.disconnect();
+observer.observe(target, {attributes:true});
+var recovered = 0;
+var fresh = new MutationObserver(function(records) { recovered += records.length; });
+fresh.observe(target, {attributeFilter:['data-recovered']});
+observer.disconnect(); target.setAttribute('data-recovered', 'yes');
+</script>
+<script>
+passed = passed && recovered === 1; fresh.disconnect();
+// Record overflow is an explicit failure, preserving the queued record prefix.
+var capped = new MutationObserver(function() {}), overflow = false;
+capped.observe(target, {attributes:true, attributeOldValue:true});
+try {
+  for (var i = 0; i < 4097; i++) target.setAttribute('data-cap', String(i));
+} catch (e) { overflow = true; }
+var prefix = capped.takeRecords();
+passed = passed && overflow && prefix.length === 4096 && prefix[0].oldValue === null && prefix[4095].oldValue === '4094';
+capped.disconnect();
+document.getElementById('result').textContent = passed ? 'PASS feedback bounded, checkpoint recovered, record cap explicit' : 'FAIL calls=' + calls + ' recovered=' + recovered;
+</script></body></html>

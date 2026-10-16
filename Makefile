@@ -8,6 +8,7 @@
 # when the CPU can.
 
 CC      = gcc
+.DEFAULT_GOAL := all
 WARN    = -Wall -Wextra
 INCS    = -I kernel -I shell -I net -I crypto -I usb -I web -I media
 COMMON  = -ffreestanding -fno-stack-protector -fno-pic -nostdlib -nostdinc \
@@ -28,11 +29,15 @@ AS      = nasm
 LIBGCC   := $(shell $(CC) -m32 -print-libgcc-file-name)
 LIBGCC64 := $(shell $(CC) -m64 -print-libgcc-file-name)
 
+WEBP_SRCS = $(wildcard third_party/libwebp/src/dec/*.c third_party/libwebp/src/dsp/*.c third_party/libwebp/src/utils/*.c)
+
 C_SRCS   = $(wildcard kernel/*.c) $(wildcard shell/*.c) $(wildcard net/*.c) \
            $(wildcard crypto/*.c) $(wildcard usb/*.c) $(wildcard web/*.c) $(wildcard media/*.c) \
-           third_party/stb/stb_image_impl.c
-ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/fontbin.asm kernel/appbin.asm
-ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm
+           third_party/stb/stb_image_impl.c $(WEBP_SRCS)
+ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm
+ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm
+kernel/frameworkbin.o kernel/frameworkbin.o64: $(wildcard web/fixtures/* web/fixtures/astro/* web/fixtures/astro/_astro/*) $(wildcard web/test/cases/mutation_observer*.html)
+
 # the boot object must come first: it carries the Multiboot2 header
 OBJS     = $(ASM_SRCS:.asm=.o) $(C_SRCS:.c=.o)
 OBJS64   = $(ASM_SRCS64:.asm=.o64) $(C_SRCS:.c=.o64)
@@ -67,6 +72,13 @@ all: Banana_OS.iso
 # themselves (GCC turns copy/fill loops into memcpy/memset calls)
 kernel/kstring.o: CFLAGS += -fno-builtin -fno-tree-loop-distribute-patterns
 kernel/kstring.o64: CFLAGS64 += -fno-builtin -fno-tree-loop-distribute-patterns
+
+# Decoder-only libwebp: scalar C, no host libc, SIMD or OS threads.
+WEBP_FLAGS = -I third_party/libwebp -I third_party/libwebp/libc -DHAVE_CONFIG_H -DNDEBUG
+$(WEBP_SRCS:.c=.o): CFLAGS += $(WEBP_FLAGS)
+$(WEBP_SRCS:.c=.o64): CFLAGS64 += $(WEBP_FLAGS)
+kernel/image.o: CFLAGS += $(WEBP_FLAGS)
+kernel/image.o64: CFLAGS64 += $(WEBP_FLAGS)
 
 # vendored image decoder: only the shim headers in third_party/stb/libc
 STB_FLAGS = -I third_party/stb/libc -Wno-unused-function -Wno-sign-compare \

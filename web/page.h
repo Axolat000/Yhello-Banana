@@ -106,6 +106,10 @@ typedef struct page {
     int          ready;               /* document.readyState: 0 loading, 1 interactive, 2 complete */
     int          js_disabled;
     arena_t      LA;                  /* styles + layout, emptied on each relayout */
+    arena_t      SA;                  /* stylesheet objects, rebuilt when sources change */
+    struct page_css_source* css_sources; /* linked CSS source cache in A */
+    uint32_t     style_fingerprint;
+    int          style_snapshot_valid;
     int          dispatch_depth;      /* jsdom: handlers running (nested dispatch) */
     obj_t*       elem_proto;          /* jsdom: element methods */
     obj_t*       ce_reg;              /* custom elements: tag -> class */
@@ -115,6 +119,7 @@ typedef struct page {
     obj_t*       doc_obj;
     obj_t*       win_obj;
     obj_t*       loc_obj;
+    struct jsdom_mutations* mutations; /* observers/records: owned by the page arena */
     int          view_h;              /* visible height (window.innerHeight) */
     int          media[16];           /* its <audio> streams (closed with the page) */
     int          nmedia;
@@ -157,12 +162,22 @@ int     page_link_at(page_t* p, int x, int y, char* out, int cap);
 
 /* resolves a link against a base URL */
 void    url_resolve(const char* base, const char* rel, char* out, int cap);
+int     url_has_scheme(const char* url);
 /* a data: URL decoded (base64 or %-escaped) into a kmalloc'd buffer: 0, or
  * -1 if it is broken; -2 if url is not a data: URL */
 int     page_data_url(const char* url, char** data, uint32_t* len, char* ctype, int ccap);
 
 /* jsdom.c */
 void    jsdom_install(page_t* p);
+/* Runtime DOM edits only; parsing an initial/detached tree does not notify.
+ * Call detach BEFORE unlinking a subtree; children AFTER the edit, with
+ * snapshots of the affected nodes and the surrounding siblings. */
+void    jsdom_mutation_detach(page_t* p, dom_node_t* node);
+void    jsdom_mutation_children(page_t* p, dom_node_t* target,
+                               dom_node_t** added, int nadded, dom_node_t** removed, int nremoved,
+                               dom_node_t* previous, dom_node_t* next);
+void    jsdom_mutation_attribute(page_t* p, dom_node_t* node, const char* name, const char* old);
+void    jsdom_mutation_character_data(page_t* p, dom_node_t* node, const char* old);
 /* the end of loading: phase 0 DOMContentLoaded (readyState "interactive"),
  * phase 1 load ("complete") - their listeners run, with an event */
 void    jsdom_loaded(page_t* p, int phase);

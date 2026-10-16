@@ -62,6 +62,7 @@ enum {
     N_IMPORT,       /* import ... from s (see parse_import) */
     N_EXPORT,       /* export a / export { b } */
     N_YIELD,        /* yield a; op '*': yield* a */
+    N_WITH,         /* a: scope object, b: statement */
 };
 
 /* binary/unary operator codes (op field) */
@@ -103,6 +104,7 @@ typedef struct var {
 
 typedef struct env {
     var_t*      vars;
+    value_t     with_obj;    /* object environment for a JS with statement */
     struct env* parent;
     int         is_func;     /* function (or global) scope: `var` lives here */
     int         captured;    /* a closure holds it: it must outlive its call */
@@ -163,6 +165,7 @@ struct interp {
     obj_t*    proto_number;
     obj_t*    proto_date;
     obj_t*    proto_func;
+    obj_t*    proto_async_func;
     obj_t*    proto_object;
     uint32_t  running;       /* script_run/script_call nesting (natives calling back) */
     script_ext_fn php_ext;   /* host-provided PHP functions (httpd: header, files) */
@@ -176,6 +179,7 @@ struct interp {
     uint32_t  job_head;
     str_t*    label;         /* break/continue with a label */
     int       draining;      /* es_run_jobs() is running */
+    uint32_t  job_checkpoint; /* incremented once per nonempty microtask checkpoint */
     str_t**   itab;          /* interned identifier names (the lexer) */
     uint32_t  icap, icount;
     obj_t*    module_ns;     /* the module running: its exports */
@@ -211,6 +215,7 @@ value_t v_strv(str_t* s);
 int     v_loose_eq(interp_t* I, value_t a, value_t b);
 int     v_strict_eq(value_t a, value_t b);
 value_t obj_getv(interp_t* I, value_t ov, const char* key);
+obj_t*  func_proto(interp_t* I, func_t* fn);
 value_t prop_get_raw(obj_t* o, const char* key, int* found);
 void    prop_set_raw(interp_t* I, obj_t* o, str_t* key, value_t v);
 int     prop_del(obj_t* o, const char* key);
@@ -233,9 +238,11 @@ void    es_promise_settle(interp_t* I, value_t p, int rejected, value_t v);
 value_t es_promise_resolved(interp_t* I, value_t v);
 int     es_promise_state(interp_t* I, value_t p, value_t* out);   /* 0 pending, 1 fulfilled, 2 rejected, -1 not a promise */
 void    es_run_jobs(interp_t* I);
+void    es_enqueue_job(interp_t* I, value_t fn);   /* schedule a microtask */
 obj_t*  es_to_array(interp_t* I, value_t v);   /* an iterable/array-like as an array (NULL: not iterable) */
 int     es_instanceof(interp_t* I, value_t v, value_t ctor);
 obj_t*  es_proxy_target(obj_t* o);
+value_t es_own_descriptor(interp_t* I, value_t o, const char* key);
 value_t es_generator_new(interp_t* I, value_t fn, value_t self, int argc, value_t* argv);
 int     es_proxy_has(interp_t* I, obj_t* o, const char* key);
 value_t accessor_get(interp_t* I, value_t acc, value_t self);

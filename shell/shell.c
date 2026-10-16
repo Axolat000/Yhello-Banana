@@ -956,7 +956,7 @@ static void cmd_help(void) {
         "  umount [path]      unmount (eject) a stick so it can be removed",
         "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
         "  crashtest [mode]   crash-screen preview/report; panic/ud2/pagefault halt the OS",
-        "  selftest [part]    check the system: ring3, memory, limits, cores, opencl, ipv6",
+        "  selftest [part]    ring3, memory, limits, cores, opencl, ipv6, browser",
         "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
         "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
         "  <app> [args]       run an installed app by its name",

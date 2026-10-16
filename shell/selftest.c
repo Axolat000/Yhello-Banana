@@ -1,4 +1,5 @@
 #include "selftest.h"
+#include "../kernel/browser_test.h"
 #include "ipv6test.h"
 #include "../net/ipv6.h"
 #include "../kernel/fs.h"
@@ -146,11 +147,14 @@ static void t_opencl(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only,"browser")) {
+        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | browser | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     uint16_t ipv6_port = 80;
+    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
+        terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
+    }
     if (only && !strcmp(only, "ipv6") && argc > 3) {
         uint32_t n;
         int used = k_parse_u32(argv[3], &n);
@@ -161,10 +165,19 @@ int selftest_cmd(int argc, char** argv) {
     }
     g_ok = g_fail = 0;
     uint32_t t0 = timer_ms();
-    terminal_writeln(only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
+    terminal_writeln(only && !strcmp(only, "browser") ? (argc==3?"selftest: checking live swm.mxtpasontop.fr":"selftest: checking browser frameworks (offline)") :
+                     only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if (only && !strcmp(only, "opencl")) {
+    if (only && !strcmp(only, "browser")) {
+        if(argc==3) {
+            section("SuperWebManager live website checks");
+            browser_site_test_run(report);
+        } else {
+            section("Tailwind CSS, React, Vue, Alpine, Astro and DOM observers");
+            browser_test_run(report);
+        }
+    } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "ipv6")) {
         section("IPv6 TCP, UDP and toggle checks");
@@ -176,6 +189,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "cores")) t_cores();
         if (!only) {
             t_opencl();
+            browser_test_run(report);
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

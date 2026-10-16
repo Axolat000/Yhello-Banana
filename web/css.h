@@ -18,6 +18,9 @@ enum { ALIGN_LEFT = 0, ALIGN_CENTER, ALIGN_RIGHT };
 enum { LIST_DISC = 0, LIST_CIRCLE, LIST_SQUARE, LIST_DECIMAL, LIST_NONE };
 
 #define LEN_AUTO (-100000)          /* width/height not given */
+#define GRID_MAX_COLS 16
+enum { GRID_PX, GRID_PERCENT, GRID_FR };
+typedef struct { int value, min; uint8_t kind; } grid_track_t;
 
 typedef struct style {
     uint8_t  display;
@@ -42,6 +45,8 @@ typedef struct style {
     uint8_t  clipped;               /* clip: rect(0 0 0 0) / clip-path: inset(50%) - visually hidden */
     uint8_t  flex_row;              /* display: grid (or flex): children side by side as inline-blocks */
     uint8_t  flex;                  /* display: flex - a real flex container (layout_flex) */
+    uint8_t  grid, grid_ncols;      /* explicit columns, row-major automatic placement */
+    grid_track_t grid_cols[GRID_MAX_COLS];
     uint8_t  flex_dir;              /* FLEX_ROW / FLEX_ROW_REV / FLEX_COL / FLEX_COL_REV */
     uint8_t  flex_wrap;
     uint8_t  justify;               /* JUSTIFY_* (main axis) */
@@ -78,12 +83,15 @@ enum { FA_AUTO = 0, FA_STRETCH, FA_START, FA_CENTER, FA_END };   /* flex alignme
 
 typedef struct css_var {
     const char* name;
+    const char* raw;
     const char* value;
+    uint8_t state;                 /* raw / resolving / computed / invalid */
     struct css_var* next;
 } css_var_t;
 
 /* the viewport width @media queries are evaluated against (page.c sets it) */
 extern int css_viewport_w;
+extern int css_viewport_h;          /* viewport units; defaults to 600 until page.c sets it */
 
 typedef struct css_sheet css_sheet_t;
 

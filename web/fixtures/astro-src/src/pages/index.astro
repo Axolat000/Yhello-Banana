@@ -1,0 +1,37 @@
+---
+import Counter from '../components/Counter.jsx';
+const version = '5.13.2';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="generator" content={Astro.generator} />
+    <title>Astro | Banana OS</title>
+    <link rel="stylesheet" href="about:frameworks/tailwind.css" />
+  </head>
+  <body class="bg-slate-100 p-4">
+    <main id="card" class="mx-auto max-w-xl rounded-xl bg-white p-6 text-slate-900">
+      <p class="text-sm font-bold text-blue-600">BANANA OS / BROWSER FRAMEWORKS</p>
+      <h1 class="mt-4 text-2xl font-bold">Astro production build</h1>
+      <p id="astro-static" class="mt-4">Astro {version}: generated HTML works without JavaScript.</p>
+      <p class="mt-4"><a href="about:frameworks">React</a> / <a href="about:frameworks/vue">Vue</a> / <a href="about:frameworks/alpine">Alpine</a> / <a href="about:frameworks/astro">Astro</a></p>
+      <div class="mt-4"><Counter id="astro-load" label="Load" client:load /></div>
+      <div class="mt-4"><Counter id="astro-idle" label="Idle" client:idle /></div>
+      <div class="mt-4"><Counter id="astro-only" label="Only" client:only="preact"><span id="astro-fallback" slot="fallback">Client island waiting</span></Counter></div>
+      <p class="mt-4">The three Preact islands hydrate independently. Their click counts stay separate.</p>
+      <div class="mt-4"><button id="astro-script">Script 0</button></div>
+      <p id="astro-scoped" class="mt-4">Astro-scoped CSS</p>
+      <p class="mt-4 text-sm"><a href="about:frameworks/licenses">Framework licenses</a></p>
+    </main>
+    <script>
+      const button = document.getElementById('astro-script');
+      let count = 0;
+      button?.addEventListener('click', () => { button.textContent = 'Script ' + (++count); });
+    </script>
+  </body>
+</html>
+<style>
+  #astro-scoped { color: #123456; padding: 7px; }
+  button { background: #2563eb; color: white; padding: 8px 16px; border-radius: 8px; }
+</style>

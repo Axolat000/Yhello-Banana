@@ -49,10 +49,14 @@ New features should include a test command that runs inside Banana OS.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Tailwind CSS v3 | planned | CSS variables with `var()` fallbacks, `calc()`, `:is()`/`:where()`, escaped class names (`.md\:flex`). |
+| Compiled Tailwind CSS v3 | **testing** (build 151) | Offline Tailwind 3.4.17 fixtures: escaped arbitrary/fraction/responsive utilities, `rem` spacing, flex layout and resize. Improved computed custom properties with cycle/fallback handling, dimensional `calc()`/`min()`/`max()`/`clamp()`, escaped selectors and `:is()`/`:where()` specificity. Host checks pass; VM confirmation pending. This is a tested subset, not full Tailwind compatibility. |
 | Tailwind CSS v4 | planned | Also `@layer`, `@property`, `oklch()`, `color-mix()`. |
-| Tailwind's script build (`cdn.tailwindcss.com`) | planned | Needs `MutationObserver` and generated `<style>` tags. |
-| React, Vue, Alpine | planned | Mostly modern JavaScript: classes, async/await, Promises, Proxy, modules. Each one gets tested against real pages. |
+| Runtime stylesheet and DOM observer foundations | **testing** (build 151) | Inserted, replaced and removed `<style>` tags; linked-source cache; actual asynchronous MutationObserver records, filters and old values, with bounded feedback/overflow. `selftest browser` checks these offline. The Tailwind CDN compiler itself remains unverified. |
+| React, Vue, Alpine | **testing** (build 151) | Real pinned React 18.3.1, Vue 3.5.13 and Alpine 3.14.9 mount counters and update on clicks in host tests. Fixed template/regex parsing, AsyncFunction construction, Proxy ownership, `with` scope and external `defer` ordering. `selftest browser`; visual demos at `about:frameworks`, `/vue`, `/alpine`. VM verification and broader applications remain pending. |
+| Astro | **testing** (build 151) | Real Astro 5.13.2 production output: static HTML without JavaScript, scoped CSS, a module script, and independent Preact `client:load`, `client:idle` and `client:only` islands. Fixed absolute module specifiers with URL schemes and added `Node.isSameNode()` for slots/templates. `selftest browser`; demo at `about:frameworks/astro`. VM confirmation, other renderers/directives, view transitions and server islands remain pending. |
+| Real-site browser target: SuperWebManager | **testing** (build 151) | https://swm.mxtpasontop.fr/ serves Astro 7.3.5 and Tailwind 4.3.3. Host: all 16 checks pass, including desktop grid, readable heading, hydration/interactions and four decoded images. Fixed Window globals, explicit grid columns, final font-relative lengths and WebP decoding (libwebp 1.6.0, scalar decoder). Retina screenshots fit the bounded eight-million-pixel browser limit; document arena uses about 109 MiB. `selftest browser swm` uses the real browser transport/decoder; host `tools/test_browser.py --swm` exports a preview. User confirmed VM networking/scripts; latest layout/image fixes await VM confirmation. Full Tailwind v4 and visual parity remain incomplete. |
+
+Grid regression coverage includes fixed/percentage/fractional columns, `minmax`, numeric `repeat`, gaps, automatic rows and resize (up to 16 columns). Spans, named lines, auto-fit/auto-fill and explicit row tracks are not implemented. Static lossy/lossless WebP and alpha streams decode; animated WebP is unsupported.
 
 ## Not planned
 

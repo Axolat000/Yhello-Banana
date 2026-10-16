@@ -1,0 +1,8 @@
+ASTRO_RESOURCE("about:frameworks/astro/_astro/Counter.B955c7t-.js",astro_0,"application/javascript")
+ASTRO_RESOURCE("about:frameworks/astro/_astro/client.CCCce9oZ.js",astro_1,"application/javascript")
+ASTRO_RESOURCE("about:frameworks/astro/_astro/hooks.module.CE5GZLJD.js",astro_2,"application/javascript")
+ASTRO_RESOURCE("about:frameworks/astro/_astro/preact.module.BYSHj7yn.js",astro_3,"application/javascript")
+ASTRO_RESOURCE("about:frameworks/astro/_astro/signals.module.BUJf7v_P.js",astro_4,"application/javascript")
+ASTRO_RESOURCE("about:frameworks/astro/index.html",astro_5,"text/html")
+ASTRO_RESOURCE("about:frameworks/astro",astro_5,"text/html")
+ASTRO_RESOURCE("about:frameworks/astro/",astro_5,"text/html")

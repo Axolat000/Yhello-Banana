@@ -1,0 +1,11 @@
+{
+  "name": "banana-browser-astro-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "astro build" },
+  "dependencies": {
+    "astro": "5.13.2",
+    "@astrojs/preact": "4.1.0",
+    "preact": "10.26.9"
+  }
+}
