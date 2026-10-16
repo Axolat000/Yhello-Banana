@@ -40,6 +40,7 @@ void         mouse_init(void);
  * ports then read 0xFF, which looks like a byte waiting forever */
 int          ps2_controller_present(void);
 mouse_state_t mouse_read(void);   /* non-blocking, returns last known state */
+mouse_state_t mouse_read_raw(void); /* games: same devices, no desktop speed scaling */
 /* timer interrupt only (kernel/gui.c): the motion of the waiting PS/2
  * packets that change no button; 1 if there was any */
 int          mouse_irq_motion(int* dx, int* dy);

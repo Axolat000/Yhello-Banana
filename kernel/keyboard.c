@@ -678,6 +678,8 @@ static int translate_scancode(uint8_t sc, char* out) {
  * Every byte goes through here first, with prefix state of its own:
  * the decoder below clears its flags as it pleases. */
 static uint8_t g_held[32];           /* bit: set-1 code, + 0x80 for E0 */
+static uint32_t g_escape_sequence;
+uint32_t keyboard_escape_sequence(void) { return g_escape_sequence; }
 static uint8_t g_pressed[32];        /* went down since keyboard_take_pressed() looked */
 static int     g_held_e0, g_held_break;
 
@@ -725,6 +727,7 @@ static void track_held(uint8_t sc) {
     g_held_e0 = g_held_break = 0;
     if (code < 0) return;
     if (down) {
+        if (code == 1 && !(g_held[0] & 2)) g_escape_sequence++;
         g_held[code >> 3] |= (uint8_t)(1u << (code & 7));
         g_pressed[code >> 3] |= (uint8_t)(1u << (code & 7));
     }

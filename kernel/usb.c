@@ -736,16 +736,19 @@ static inline void irq_on(uintptr_t f) {
 
 static mouse_state_t mouse_read_locked(void);
 
-mouse_state_t mouse_read(void) {
+static mouse_state_t read_pointer(int raw) {
     usb_poll();                  /* USB mice report through here too: every frame */
     i2chid_poll();               /* and I2C touchpads */
     vmtools_poll_pointer();      /* and a hypervisor's absolute pointer (VMMouse, VirtualBox) */
     uintptr_t f = irq_off();
     mouse_state_t m = mouse_read_locked();
-    scale_motion(&m.dx, &m.dy);
+    if(!raw)scale_motion(&m.dx, &m.dy);
     irq_on(f);
     return m;
 }
+
+mouse_state_t mouse_read(void) { return read_pointer(0); }
+mouse_state_t mouse_read_raw(void) { return read_pointer(1); }
 
 static mouse_state_t mouse_read_locked(void) {
     if (mouse_enabled && syn_detected) {

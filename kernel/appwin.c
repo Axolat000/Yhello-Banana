@@ -6,6 +6,7 @@
 #include "kstring.h"
 #include "timer.h"
 #include "app.h"
+#include "mouse_capture.h"
 
 #define TITLE_H  20
 #define BORDER   3
@@ -52,6 +53,8 @@ static int      g_focused;            /* the app windows are the desktop's front
 static uint32_t g_gen;
 static int      g_killed[64];         /* owners whose app must stop (index: owner % 64) */
 static int      g_esc;                /* ESC [ sequence state for the keyboard */
+static mouse_capture_t g_capture = {.win=-1,.owner=-1};
+static uint32_t g_capture_escape;
 static int      g_new_window;         /* a window opened since appwin_take_new() */
 
 static int scr_w(void) { const fb_info_t* fi = fb_info(); return fi && fi->width ? (int)fi->width : 800; }
@@ -70,7 +73,15 @@ static void push(awin_t* w, const banana_event_t* ev) {
         int last = (w->qh + EVQ - 1) % EVQ;
         if (w->q[last].type == BANANA_EV_MOUSE_MOVE) { w->q[last] = *ev; return; }
     }
+    if (ev->type == BANANA_EV_MOUSE_REL && w->qh != w->qt) {
+        int last=(w->qh+EVQ-1)%EVQ;
+        if(w->q[last].type==BANANA_EV_MOUSE_REL && w->q[last].buttons==ev->buttons) {
+            w->q[last].x=mouse_capture_add(w->q[last].x,ev->x);
+            w->q[last].y=mouse_capture_add(w->q[last].y,ev->y);return;
+        }
+    }
     int next = (w->qh + 1) % EVQ;
+    if(next==w->qt && ev->type==BANANA_EV_CAPTURE)w->qt=(w->qt+1)%EVQ;
     if (next == w->qt) return;            /* full: dropped */
     w->q[w->qh] = *ev;
     w->qh = next;
@@ -89,6 +100,7 @@ static void push_simple(awin_t* w, int type, int x, int y, int button, int key) 
 }
 
 static void raise(int id) {
+    if(g_capture.win>=0 && g_capture.win!=id)appwin_release_mouse();
     int pos = -1;
     for (int i = 0; i < g_norder; i++) if (g_order[i] == id) pos = i;
     if (pos < 0) return;
@@ -107,6 +119,63 @@ static void unlink_order(int id) {
 static awin_t* front(void) {
     for (int i = g_norder - 1; i >= 0; i--) if (!g_w[g_order[i]].min && !g_w[g_order[i]].hidden) return &g_w[g_order[i]];
     return NULL;
+}
+
+/* Capture belongs to one foreground window, never just to a process. */
+int appwin_capture_pending(void) { return g_capture.win>=0; }
+void appwin_release_mouse(void) {
+    if(g_capture.win<0)return;
+    awin_t* w=get(g_capture.win,g_capture.owner);int buttons=g_capture.buttons;
+    mouse_capture_reset(&g_capture);
+    if(w) {
+        for(int bit=0;bit<3;bit++)if(buttons&(1<<bit)) {
+            banana_event_t ev={.type=BANANA_EV_MOUSE_UP,.button=bit+1};push(w,&ev);
+        }
+        w->inside_down=w->last_left=0;
+        banana_event_t ev={.type=BANANA_EV_CAPTURE,.x=0};push(w,&ev);
+    }
+    g_gen++;
+}
+int appwin_capture_active(void) {
+    if(g_capture.win<0)return 0;
+    awin_t* w=get(g_capture.win,g_capture.owner);
+    if(!w || !g_focused || w!=front() || w->min || w->hidden ||
+       keyboard_escape_sequence()!=g_capture_escape) { appwin_release_mouse();return 0; }
+    return 1;
+}
+int appwin_mouse_captured(int id,int owner) {
+    if(!get(id,owner))return -1;
+    return appwin_capture_active() && g_capture.win==id;
+}
+int appwin_capture_mouse(int id,int owner,int capture) {
+    awin_t* w=get(id,owner);if(!w)return -1;
+    if(!capture) {
+        if(g_capture.win==id && g_capture.owner==owner)appwin_release_mouse();
+        return 0;
+    }
+    if(!g_focused || w!=front() || w->min || w->hidden || w->dragging || w->resizing || keyboard_held_char(27))return -1;
+    appwin_capture_active();
+    if(g_capture.win==id && g_capture.owner==owner)return 0;
+    if(mouse_capture_begin(&g_capture,id,owner,1))return -1;
+    g_capture_escape=keyboard_escape_sequence();g_capture.buttons=w->last_left?1:0;
+    w->inside_down=0;
+    banana_event_t ev={.type=BANANA_EV_CAPTURE,.x=1,.buttons=g_capture.buttons};push(w,&ev);
+    g_gen++;return 0;
+}
+int appwin_capture_input(const mouse_state_t* m,int width,int height) {
+    if(!appwin_capture_active())return 0;
+    awin_t* w=get(g_capture.win,g_capture.owner);int dx,dy;
+    mouse_capture_motion(&g_capture,m,width,height,&dx,&dy);
+    int buttons=(m->btn_left?1:0)|(m->btn_right?2:0)|(m->btn_middle?4:0);
+    int changed=buttons^g_capture.buttons;
+    for(int bit=0;bit<3;bit++)if(changed&(1<<bit)) {
+        g_capture.buttons=(g_capture.buttons&~(1<<bit))|(buttons&(1<<bit));
+        banana_event_t ev={.type=(buttons&(1<<bit))?BANANA_EV_MOUSE_DOWN:BANANA_EV_MOUSE_UP,
+            .x=w->cw/2,.y=w->ch/2,.button=bit+1,.buttons=g_capture.buttons};push(w,&ev);
+    }
+    if(dx || dy) { banana_event_t ev={.type=BANANA_EV_MOUSE_REL,.x=dx,.y=dy,.buttons=buttons};push(w,&ev); }
+    if(m->dz) { banana_event_t ev={.type=BANANA_EV_WHEEL,.y=m->dz,.buttons=buttons};push(w,&ev); }
+    return 1;
 }
 
 /* ── app side ─────────────────────────────────────────────────────── */
@@ -160,6 +229,7 @@ static int open_win(int owner, const char* title, int w, int h, int app) {
         if (a->y + outer_h(a) > scr_h() - 28) a->y = scr_h() - 28 - outer_h(a);
         if (a->x < 0) a->x = 0;
         if (a->y < 0) a->y = 0;
+        appwin_release_mouse();
         g_order[g_norder++] = i;
         g_new_window = 1;
         g_killed[owner & 63] = 0;
@@ -248,6 +318,7 @@ void appwin_set_resizable(int id, int owner, int min_w, int min_h) {
 static void destroy(int id) {
     awin_t* w = &g_w[id];
     if (!w->used) return;
+    if(g_capture.win==id)appwin_release_mouse();
     if (w->px) px_free(w->app_mem, w->owner, w->px);
     kfree(w->shown);
     w->px = w->shown = NULL;
@@ -426,6 +497,7 @@ static void snap_to(awin_t* w, const win_rect_t* r, int where) {
 
 void appwin_set_hidden(int id, int hidden) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used || g_w[id].hidden == (hidden ? 1 : 0)) return;
+    if(hidden && g_capture.win==id)appwin_release_mouse();
     g_w[id].hidden = hidden ? 1 : 0;
     g_gen++;
 }
@@ -549,6 +621,7 @@ void appwin_rclick(int mx, int my) {
 }
 
 void appwin_mouse(int mx, int my, int left) {
+    if(appwin_capture_active())return;
     for (int i = 0; i < APPWIN_MAX; i++) {
         awin_t* w = &g_w[i];
         if (!w->used) continue;
@@ -612,11 +685,13 @@ void appwin_mouse(int mx, int my, int left) {
 }
 
 void appwin_close_all(void) {
+    appwin_release_mouse();
     for (int i = 0; i < APPWIN_MAX; i++)
         if (g_w[i].used) push_simple(&g_w[i], BANANA_EV_CLOSE, 0, 0, 0, 0);
 }
 
 void appwin_focus(int focused) {
+    if(!focused)appwin_release_mouse();
     if (focused == g_focused) return;
     g_focused = focused;
     awin_t* w = front();
@@ -689,6 +764,7 @@ int appwin_focused_owner(void) {
 
 void appwin_minimize(int id, int min) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
+    if(min && g_capture.win==id)appwin_release_mouse();
     g_w[id].min = min ? 1 : 0;
     g_gen++;
 }
@@ -700,6 +776,7 @@ void appwin_activate(int id) {
 }
 
 void appwin_request_close(int id) {
+    if(g_capture.win==id)appwin_release_mouse();
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
     awin_t* w = &g_w[id];
     if (++w->close_clicks >= 2) g_killed[w->owner & 63] = 1;

@@ -53,6 +53,10 @@ int  bwin_resizable(bwin_t* win, int min_w, int min_h);
 /* the media keys (play / pause, next, previous, stop) come to this window
  * even when another one has the focus (API version 7) */
 void bwin_media_keys(bwin_t* win);
+/* API v20: hide the desktop cursor and receive BANANA_EV_MOUSE_REL deltas.
+ * BANANA_EV_CAPTURE reports acquisition/release; recapture after a new click. */
+int bwin_capture_mouse(bwin_t* win,int capture);
+int bwin_mouse_captured(bwin_t* win);
 
 /* drawing (clipped to the window) */
 void bwin_clear(bwin_t* win, unsigned int color);

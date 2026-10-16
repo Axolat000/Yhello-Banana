@@ -478,3 +478,30 @@ Banana OS loads the ELF, applies its relocations, and calls
 points to the `banana_api_t` table in `include/banana_api.h`. The table only
 ever grows at the end, and `api->size` tells an app how much of it the running
 system has - so apps built today keep working on later Banana OS versions.
+
+## Relative mouse capture for games (API 20)
+
+Call `bwin_capture_mouse(&win, 1)` after a click in the foreground window.
+It returns 0 on success, -1 if denied or the OS is too old. While captured,
+the desktop pointer is hidden and `BANANA_EV_MOUSE_REL` carries raw `ev.x` /
+`ev.y` deltas (positive right/down). Consecutive motion events add their deltas.
+Button events carry button 1/2/3 and a held mask (bits 0/1/2); wheel events
+arrive even without opting into `bwin_wheel()`.
+
+Handle `BANANA_EV_CAPTURE`: `ev.x` is 1 on acquisition, 0 on release.
+Clear held game buttons and pause mouse-look when it becomes 0. The OS
+releases capture on physical Escape (independent of an app polling keys),
+focus loss, minimize, desktop switching, close and process exit. Reacquire
+only on a new user click. Use `bwin_mouse_captured()` to resynchronize, or
+`bwin_capture_mouse(&win, 0)` to release explicitly. These wrappers check
+the table size before accessing API-20 fields, preserving older-system support.
+
+VMMouse switches to relative reports during capture; VirtualBox guest absolute
+integration is suspended. Physical relative mice work beyond desktop edges.
+Absolute-only USB tablets still have the host's coordinate bounds: use a
+relative mouse for unrestricted camera movement. A VM may require the host's
+normal mouse grab before sending unbounded relative motion.
+
+The embedded `mousetest` example shows mouse-look and held button/wheel state.
+Run `selftest mouse` for automatic input-state checks and
+`selftest mouse demo` from a desktop terminal for the interactive demo.

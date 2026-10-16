@@ -886,6 +886,8 @@ static void a_win_close(int win) { app_proc_t* p = cur(); if (p) appwin_close(wi
 static void a_win_set_title(int win, const char* t) { app_proc_t* p = cur(); if (p) appwin_set_title(win, p->id, t); }
 static void a_win_size(int win, int* w, int* h) { app_proc_t* p = cur(); appwin_size(win, p ? p->id : -1, w, h); }
 static void a_win_media_keys(int win) { app_proc_t* p = cur(); if (p) appwin_set_media(win, p->id); }
+static int a_win_capture_mouse(int win,int capture) { app_proc_t* p=cur();return p?appwin_capture_mouse(win,p->id,capture):-1; }
+static int a_win_mouse_captured(int win) { app_proc_t* p=cur();return p?appwin_mouse_captured(win,p->id):-1; }
 static void a_win_wheel(int win) { app_proc_t* p = cur(); if (p) appwin_set_wheel(win, p->id); }
 static void a_win_set_resizable(int win, int mw, int mh) { app_proc_t* p = cur(); if (p) appwin_set_resizable(win, p->id, mw, mh); }
 
@@ -1800,6 +1802,8 @@ static void spec_init(void) {
     SPEC(http_fetch, "ii", 0);          /* checked in it (the request points at more) */
     SPEC(key_mods, "", 0);
     SPEC(win_wheel, "i", 0);
+    SPEC(win_capture_mouse, "ii", 0);
+    SPEC(win_mouse_captured, "i", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2261,6 +2265,8 @@ static void api_init(void) {
     g_api.http_fetch = G(a_http_fetch);
     g_api.key_mods = G(a_key_mods);
     g_api.win_wheel = G(a_win_wheel);
+    g_api.win_capture_mouse = G(a_win_capture_mouse);
+    g_api.win_mouse_captured = G(a_win_mouse_captured);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);

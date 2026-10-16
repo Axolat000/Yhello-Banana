@@ -32,6 +32,9 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
                          float8-16 vectors, refused group sizes
+selftest mouse           deterministic relative-movement, ownership and release-state checks
+selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
+                         click to capture, look around, Escape releases, Q exits
 selftest browser         offline framework, CSS/layout, DOM observer and WebP tests
 selftest browser swm     live SuperWebManager HTTPS, layout, hydration and image tests
 selftest posix [part]    installs and runs the posixtest example: the POSIX layer for
@@ -200,3 +203,10 @@ installed disk, `fstest` on a real stick, and `crashtest` for the screen.
 preview. The live host checks need libcurl development files and pkg-config.
 The OS commands use Banana OS networking; the host transport uses libcurl.
 See [the fixture documentation](../web/fixtures/README.md) for coverage and limits.
+
+### Mouse capture host checks
+
+`python3 tools/test_mouse_capture.py` tests the real app-window event and capture
+implementation, the SDK wrappers on older API tables, and shared input math.
+Use `--32` for the i686 ABI or `--sanitize` for ASan/UBSan. This uses host
+framebuffer/heap stubs; it does not validate physical devices or hypervisor I/O.

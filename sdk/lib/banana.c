@@ -40,6 +40,15 @@ int bwin_resizable(bwin_t* win, int min_w, int min_h) {
     return 0;
 }
 
+int bwin_capture_mouse(bwin_t* win,int capture) {
+    if(!win || win->id<0 || !BANANA_HAS(__banana,win_capture_mouse) || !__banana->win_capture_mouse)return -1;
+    return __banana->win_capture_mouse(win->id,capture);
+}
+int bwin_mouse_captured(bwin_t* win) {
+    if(!win || win->id<0 || !BANANA_HAS(__banana,win_mouse_captured) || !__banana->win_mouse_captured)return 0;
+    return __banana->win_mouse_captured(win->id);
+}
+
 int bwin_wait_event(bwin_t* win, banana_event_t* ev, int timeout_ms) {
     unsigned int start = __banana->ticks_ms();
     for (;;) {
