@@ -33,7 +33,8 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          __local arguments, barrier(), local arrays, float4 / int /
                          float8-16 vectors, refused group sizes
 selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
-                         highlight, countdown, clipping, color, stride and fallback checks
+                         highlight, countdown, clipping, color, stride and fallback checks;
+                         incremental updates preserve unchanged options and header pixels
 selftest ram             firmware RAM reporting: complete maps before/after legacy counts,
                          8/24/64 GiB totals, reserved holes, malformed input and live totals
 selftest mouse           deterministic relative-movement, ownership and release-state checks
@@ -233,6 +234,18 @@ the arrow keys and started the kernel with Enter. The 32-bit UEFI loader was
 compiled, linked and checked for relocations and valid PE conversion; it was not
 run under 32-bit UEFI firmware. Rebuild with `tools/dev.sh run` to see the menu;
 `tools/dev.sh run uefi` selects the UEFI path.
+
+Build 170 adds 22 incremental redraw checks (37 total). Selection, display
+and countdown changes repaint only affected bands, composed in a 3 KiB
+scanline buffer before copying to the framebuffer. Repeated unchanged input
+writes no pixels. Tests compare incremental output with a full render at
+640x480 and 1024x768 and check cache invalidation when the framebuffer or
+menu layout changes. The BIOS linker still enforces the loader's 64 KiB
+address-space limit.
+
+The updated renderer passed ASan/UBSan and i686 host checks, both kernel
+links, BIOS/UEFI32/UEFI64 loader builds, BIOS/UEFI64 QEMU menu navigation
+and kernel handoff, and all 37 `selftest boot` checks in a 64-bit BIOS VM.
 
 ### RAM reporting
 

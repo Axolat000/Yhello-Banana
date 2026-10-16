@@ -9,6 +9,7 @@
 #include "common.h"
 #include "boot_ui.h"
 static boot_ui_fb g_menu_fb;
+static boot_ui_state g_menu_ui;
 
 typedef struct {
     u32 eax, ebx, ecx, edx, esi, edi, ebp;
@@ -396,7 +397,7 @@ static void draw_menu(int sel, int secs) {
         boot_ui_menu m={.count=ENTRIES,.selected=sel,.seconds=secs,.video=video,
             .firmware=g_cd?"BIOS / CD or DVD":"BIOS / disk or USB",.status="Keyboard ready"};
         for(int i=0;i<ENTRIES;i++)m.labels[i]=i<KERNEL_ENTRIES?boot_ui_kernel_label(i):label(i);
-        boot_ui_draw(&g_menu_fb,&m);return;
+        boot_ui_update(&g_menu_fb,&m,&g_menu_ui);return;
     }
 
     fill_row(1, 0x0E);
@@ -427,6 +428,7 @@ static void draw_menu(int sel, int secs) {
 }
 
 static int menu(int def) {
+    g_menu_ui.valid=0;
     int sel = def, ticks = 30;                  /* 3 s, by 100 ms */
     draw_menu(sel, 3);
     for (;;) {

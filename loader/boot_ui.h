@@ -22,6 +22,9 @@ typedef struct {
     int count,selected,seconds;
 } boot_ui_menu;
 typedef struct { int x,y,w,h,row,top,footer,compact; } boot_ui_layout;
+/* Labels/firmware/status are immutable while the menu is open. Video is a
+ * caller-owned temporary string, so keep our own copy. Reset valid on entry. */
+typedef struct { boot_ui_fb fb; boot_ui_menu menu; char video[80]; int valid; } boot_ui_state;
 static int boot_ui_valid(const boot_ui_fb* f) {
     return f && f->pixels && !((unsigned long)f->pixels&3) && f->w>=640 && f->h>=480 && f->w<=8192 && f->h<=8192 &&
         f->pitch>=f->w*4 && f->pitch<=65536 && !(f->pitch&3) &&
@@ -63,10 +66,14 @@ static void boot_ui_text(const boot_ui_fb* f,int x,int y,const char* s,int scale
         unsigned int ch=(unsigned char)*s;if(ch<32 || ch>126)ch='?';
         const boot_glyph_t* g=&boot_glyphs[ch-32];
         if(x+g->advance*scale>start+max_width)break;
-        for(int yy=0;yy<g->h;yy++)for(int xx=0;xx<g->w;xx++) {
-            unsigned int i=(unsigned int)yy*g->w+xx;
-            int a=(boot_font_bits[g->offset+i/4]>>((i%4)*2))&3;
-            if(a)boot_ui_rect(f,x+(xx+g->x)*scale,y+(yy+g->y+16)*scale,scale,scale,boot_ui_mix(bg,color,a));
+        for(int yy=0;yy<g->h;yy++) {
+            int gy=y+(yy+g->y+16)*scale;
+            if(gy>=f->h || gy+scale<=0)continue;
+            for(int xx=0;xx<g->w;xx++) {
+                unsigned int i=(unsigned int)yy*g->w+xx;
+                int a=(boot_font_bits[g->offset+i/4]>>((i%4)*2))&3;
+                if(a)boot_ui_rect(f,x+(xx+g->x)*scale,gy,scale,scale,boot_ui_mix(bg,color,a));
+            }
         }
         x+=g->advance*scale;
     }
@@ -93,8 +100,33 @@ static void boot_ui_wordmark(const boot_ui_fb* f,int x,int y) {
         if(a)boot_ui_rect(f,x+xx,y+yy,1,1,boot_ui_mix(BOOT_BG,BOOT_TEXT,a));
     }
 }
+static int boot_ui_menu_valid(const boot_ui_fb* f,const boot_ui_menu* m) {
+    return boot_ui_valid(f) && m && m->count>=1 && m->count<=BOOT_UI_MAX_ENTRIES && m->selected>=0 && m->selected<m->count;
+}
+static void boot_ui_option(const boot_ui_fb* f,const boot_ui_menu* m,int i,int x,int y,int w,int h) {
+    int selected=i==m->selected;unsigned int bg=selected?BOOT_ACCENT:BOOT_PANEL;
+    unsigned int fg=selected?BOOT_PANEL:BOOT_TEXT;
+    boot_ui_rect(f,x,y,w,h,bg);
+    if(selected)boot_ui_text(f,x+12,y+(h-20)/2,">",1,16,fg,bg);
+    boot_ui_text(f,x+38,y+(h-20)/2,m->labels[i],1,w-56,fg,bg);
+}
+static void boot_ui_video(const boot_ui_fb* f,const boot_ui_menu* m,int x,int y,int w) {
+    boot_ui_rect(f,x,y,w,24,BOOT_BG);
+    boot_ui_text(f,x,y,m->video,1,w,BOOT_MUTED,BOOT_BG);
+}
+static void boot_ui_countdown(const boot_ui_fb* f,const boot_ui_menu* m,int x,int y,int w) {
+    boot_ui_rect(f,x,y,w,34,BOOT_BG);
+    if(m->seconds>=0) {
+        char countdown[]="Starting in 0 seconds - any key pauses";
+        countdown[12]=(char)('0'+(m->seconds>9?9:m->seconds));
+        boot_ui_text(f,x,y,countdown,1,w,BOOT_TEXT,BOOT_BG);
+        int bars=m->seconds>3?3:m->seconds;
+        boot_ui_rect(f,x,y+30,w,3,BOOT_SURFACE);
+        boot_ui_rect(f,x,y+30,w*bars/3,3,BOOT_ACCENT);
+    } else boot_ui_text(f,x,y,"Automatic start paused",1,w,BOOT_TEXT,BOOT_BG);
+}
 static int boot_ui_draw(const boot_ui_fb* f,const boot_ui_menu* m) {
-    if(!boot_ui_valid(f) || !m || m->count<1 || m->count>BOOT_UI_MAX_ENTRIES || m->selected<0 || m->selected>=m->count)return -1;
+    if(!boot_ui_menu_valid(f,m))return -1;
     boot_ui_layout l=boot_ui_geometry(f,m->count);
     boot_ui_rect(f,0,0,f->w,f->h,BOOT_BG);
     boot_ui_logo(f,l.x,l.y+3);
@@ -103,25 +135,56 @@ static int boot_ui_draw(const boot_ui_fb* f,const boot_ui_menu* m) {
     if(!l.compact)boot_ui_text(f,l.x+2,l.y+76,m->firmware,1,l.w/2,BOOT_MUTED,BOOT_BG);
     int ry=l.y+l.top;
     for(int i=0;i<m->count;i++) {
-        int selected=i==m->selected;unsigned int bg=selected?BOOT_ACCENT:BOOT_PANEL;
-        unsigned int fg=selected?BOOT_PANEL:BOOT_TEXT;
-        int rh=l.row-4;
-        boot_ui_rect(f,l.x,ry+i*l.row,l.w,rh,bg);
-        if(selected)boot_ui_text(f,l.x+12,ry+i*l.row+(rh-20)/2,">",1,16,fg,bg);
-        boot_ui_text(f,l.x+38,ry+i*l.row+(rh-20)/2,m->labels[i],1,l.w-56,fg,bg);
+        boot_ui_option(f,m,i,l.x,ry+i*l.row,l.w,l.row-4);
     }
     int fy=l.y+l.footer;
-    boot_ui_text(f,l.x,fy,m->video,1,l.w,BOOT_MUTED,BOOT_BG);
+    boot_ui_video(f,m,l.x,fy,l.w);
     boot_ui_text(f,l.x,fy+24,"Up/Down  Choose    Left/Right  Display    Enter  Start",1,l.w,BOOT_MUTED,BOOT_BG);
-    if(m->seconds>=0) {
-        char countdown[]="Starting in 0 seconds - any key pauses";
-        countdown[12]=(char)('0'+(m->seconds>9?9:m->seconds));
-        boot_ui_text(f,l.x,fy+50,countdown,1,l.w,BOOT_TEXT,BOOT_BG);
-        int bars=m->seconds>3?3:m->seconds;
-        boot_ui_rect(f,l.x,fy+80,l.w,3,BOOT_SURFACE);
-        boot_ui_rect(f,l.x,fy+80,l.w*bars/3,3,BOOT_ACCENT);
-    } else boot_ui_text(f,l.x,fy+50,"Automatic start paused",1,l.w,BOOT_TEXT,BOOT_BG);
+    boot_ui_countdown(f,m,l.x,fy+50,l.w);
     if(m->status && !l.compact)boot_ui_text(f,l.x+l.w/2,l.y+76,m->status,1,l.w/2,BOOT_MUTED,BOOT_BG);
+    return 0;
+}
+/* Compose each changed scanline completely before it reaches video memory.
+ * A 3 KiB line buffer also fits the BIOS loader's small stack/address space. */
+static void boot_ui_band(const boot_ui_fb* f,const boot_ui_menu* m,boot_ui_layout l,int which) {
+    unsigned int pixels[760];
+    boot_ui_fb line={(volatile unsigned char*)pixels,l.w,1,l.w*4,f->rp,f->gp,f->bp};
+    int y=l.y+l.footer,h=24;
+    if(which>=0){y=l.y+l.top+which*l.row;h=l.row-4;}
+    else if(which==-2){y+=50;h=34;}
+    for(int yy=0;yy<h;yy++) {
+        if(which>=0)boot_ui_option(&line,m,which,0,-yy,l.w,h);
+        else if(which==-1)boot_ui_video(&line,m,0,-yy,l.w);
+        else boot_ui_countdown(&line,m,0,-yy,l.w);
+        if(y+yy<0 || y+yy>=f->h)continue;
+        volatile unsigned int* row=(volatile unsigned int*)(f->pixels+(unsigned long)(y+yy)*f->pitch)+l.x;
+        for(int x=0;x<l.w;x++)row[x]=pixels[x];
+    }
+}
+static int boot_ui_same_text(const char* a,const char* b) {
+    if(!a)a="";
+    if(!b)b="";
+    while(*a && *a==*b){a++;b++;}return *a==*b;
+}
+static int boot_ui_update(const boot_ui_fb* f,const boot_ui_menu* m,boot_ui_state* s) {
+    if(!s)return -1;
+    if(!boot_ui_menu_valid(f,m)){s->valid=0;return -1;}
+    boot_ui_fb* old=&s->fb;
+    if(!s->valid || old->pixels!=f->pixels || old->w!=f->w || old->h!=f->h || old->pitch!=f->pitch ||
+       old->rp!=f->rp || old->gp!=f->gp || old->bp!=f->bp || s->menu.count!=m->count ||
+       s->menu.firmware!=m->firmware || s->menu.status!=m->status)boot_ui_draw(f,m);
+    else {
+        boot_ui_layout l=boot_ui_geometry(f,m->count);
+        for(int i=0;i<m->count;i++)
+            if(s->menu.labels[i]!=m->labels[i] || (s->menu.selected!=m->selected && (i==m->selected || i==s->menu.selected)))
+                boot_ui_band(f,m,l,i);
+        if(!boot_ui_same_text(s->video,m->video))boot_ui_band(f,m,l,-1);
+        if(s->menu.seconds!=m->seconds)boot_ui_band(f,m,l,-2);
+    }
+    s->fb=*f;s->menu=*m;s->valid=1;
+    const char* v=m->video;unsigned int i=0;
+    if(v)for(;i<sizeof(s->video)-1 && v[i];i++)s->video[i]=v[i];
+    s->video[i]=0;s->menu.video=s->video;
     return 0;
 }
 #endif

@@ -162,6 +162,7 @@ static const char* extra_label(int x) {
     }
 }
 
+static boot_ui_state g_menu_ui;
 static void draw_menu(int sel, int secs) {
     if(g_gop && g_gop->Mode && g_gop->Mode->Info) {
         EFI_GOP_MODE* mode=g_gop->Mode;EFI_GOP_MODE_INFO* info=mode->Info;
@@ -181,7 +182,7 @@ static void draw_menu(int sel, int secs) {
             boot_ui_menu m={.count=KERNEL_ENTRIES+g_nextra,.selected=sel,.seconds=secs,.video=video,
                 .firmware=FIRMWARE_NAME,.status=g_secure?"Secure Boot: on":g_setup?"Secure Boot: setup":"Secure Boot: off"};
             for(int i=0;i<m.count;i++)m.labels[i]=i<KERNEL_ENTRIES?boot_ui_kernel_label(i):extra_label(g_extra[i-KERNEL_ENTRIES]);
-            boot_ui_draw(&fb,&m);return;
+            boot_ui_update(&fb,&m,&g_menu_ui);return;
         }
     }
 
@@ -216,6 +217,7 @@ static void draw_menu(int sel, int secs) {
 }
 
 static int menu(int def) {
+    g_menu_ui.valid=0;
     int sel = def, ticks = 30, n = KERNEL_ENTRIES + g_nextra;   /* 3 s, by 100 ms */
     ST->ConOut->ClearScreen(ST->ConOut);
     ST->ConOut->EnableCursor(ST->ConOut, 0);
