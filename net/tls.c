@@ -1,6 +1,7 @@
 #include "tls.h"
 #include "sha256.h"
 #include "x25519.h"
+#include "p256.h"
 #include "aead.h"
 #include "kstring.h"
 #include "kheap.h"
@@ -271,7 +272,13 @@ static void hs_consume(tls_conn_t* t, uint32_t n) {
 
 /* ── ClientHello (section 4.1.2) ────────────────────────────────── */
 
-static uint32_t build_client_hello(uint8_t* m, const char* host, const uint8_t pub[32], int ciphers) {
+#define GROUP_X25519    0x001d
+#define GROUP_SECP256R1 0x0017
+
+/* one key share (X25519: 32 bytes, P-256: 65), and the cookie of a
+ * HelloRetryRequest when answering one */
+static uint32_t build_client_hello(uint8_t* m, const char* host, uint16_t group, const uint8_t* pub, uint32_t publen,
+                                   int ciphers, const uint8_t* cookie, uint32_t cookie_len) {
     uint32_t o = 4;   /* handshake header filled in at the end */
     m[o++] = 3; m[o++] = 3;                         /* legacy_version TLS 1.2 */
     random_bytes(m + o, 32); o += 32;               /* random */
@@ -301,9 +308,12 @@ static uint32_t build_client_hello(uint8_t* m, const char* host, const uint8_t p
         wr16(m + o, (uint16_t)hl); o += 2;
         memcpy(m + o, host, hl); o += hl;
     }
-    /* supported_groups: x25519 */
-    m[o++] = 0x00; m[o++] = 0x0a; m[o++] = 0; m[o++] = 4; m[o++] = 0; m[o++] = 2;
-    m[o++] = 0x00; m[o++] = 0x1d;
+    /* supported_groups: x25519, then P-256 - the first key share is X25519
+     * (cheap); a server that only takes P-256 (piston-meta.mojang.com,
+     * some CDNs) asks for it with a HelloRetryRequest */
+    m[o++] = 0x00; m[o++] = 0x0a; m[o++] = 0; m[o++] = 6; m[o++] = 0; m[o++] = 4;
+    wr16(m + o, GROUP_X25519); o += 2;
+    wr16(m + o, GROUP_SECP256R1); o += 2;
     /* signature_algorithms (we don't verify, but must offer the usual ones) */
     static const uint16_t sigs[] = { 0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501,
                                      0x0806, 0x0601, 0x0807, 0x0201, 0x0203 };
@@ -316,10 +326,20 @@ static uint32_t build_client_hello(uint8_t* m, const char* host, const uint8_t p
     m[o++] = 0x00; m[o++] = 0x2b; m[o++] = 0; m[o++] = 3; m[o++] = 2; m[o++] = 3; m[o++] = 4;
     /* psk_key_exchange_modes: psk_dhe_ke */
     m[o++] = 0x00; m[o++] = 0x2d; m[o++] = 0; m[o++] = 2; m[o++] = 1; m[o++] = 1;
-    /* key_share: one x25519 share */
-    m[o++] = 0x00; m[o++] = 0x33; m[o++] = 0; m[o++] = 38; m[o++] = 0; m[o++] = 36;
-    m[o++] = 0x00; m[o++] = 0x1d; m[o++] = 0; m[o++] = 32;
-    memcpy(m + o, pub, 32); o += 32;
+    /* key_share: one share */
+    m[o++] = 0x00; m[o++] = 0x33;
+    wr16(m + o, (uint16_t)(2 + 4 + publen)); o += 2;
+    wr16(m + o, (uint16_t)(4 + publen)); o += 2;
+    wr16(m + o, group); o += 2;
+    wr16(m + o, (uint16_t)publen); o += 2;
+    memcpy(m + o, pub, publen); o += publen;
+    /* cookie: echoed from a HelloRetryRequest (section 4.2.2) */
+    if (cookie_len) {
+        m[o++] = 0x00; m[o++] = 0x2c;
+        wr16(m + o, (uint16_t)(cookie_len + 2)); o += 2;
+        wr16(m + o, (uint16_t)cookie_len); o += 2;
+        memcpy(m + o, cookie, cookie_len); o += cookie_len;
+    }
     /* ALPN: http/1.1 */
     m[o++] = 0x00; m[o++] = 0x10; m[o++] = 0; m[o++] = 11; m[o++] = 0; m[o++] = 9;
     m[o++] = 8; memcpy(m + o, "http/1.1", 8); o += 8;
@@ -339,17 +359,24 @@ static const uint8_t HRR_RANDOM[32] = {
     0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
 };
 
-static int parse_server_hello(tls_conn_t* t, const uint8_t* m, uint32_t len, uint8_t server_pub[32]) {
+typedef struct {
+    int            hrr;              /* a HelloRetryRequest */
+    uint16_t       group;            /* ServerHello: its share's group; HRR: the group it wants */
+    uint8_t        pub[65];          /* ServerHello: its share */
+    uint32_t       publen;
+    const uint8_t* cookie;           /* HRR: inside the message */
+    uint32_t       cookie_len;
+} server_hello_t;
+
+static int parse_server_hello(tls_conn_t* t, const uint8_t* m, uint32_t len, server_hello_t* sh) {
+    memset(sh, 0, sizeof(*sh));
     if (len < 4 + 2 + 32 + 1 || m[0] != HS_SERVER_HELLO) {
         fail(t, "expected ServerHello");
         return NET_ERR_PROTO;
     }
     const uint8_t* p = m + 4;
     const uint8_t* end = m + len;
-    if (memcmp(p + 2, HRR_RANDOM, 32) == 0) {
-        fail(t, "server asked for a HelloRetryRequest (it doesn't support X25519)");
-        return NET_ERR_PROTO;
-    }
+    sh->hrr = memcmp(p + 2, HRR_RANDOM, 32) == 0;
     p += 2 + 32;
     uint32_t sid = *p++;
     if (p + sid + 3 > end) goto bad;
@@ -372,14 +399,30 @@ static int parse_server_hello(tls_conn_t* t, const uint8_t* m, uint32_t len, uin
         const uint8_t* v = e + 4;
         if (v + l > p + elen) goto bad;
         if (type == 0x002b && l == 2 && rd16(v) == 0x0304) version_ok = 1;
-        if (type == 0x0033 && l >= 4 && rd16(v) == 0x001d && rd16(v + 2) == 32 && l >= 36) {
-            memcpy(server_pub, v + 4, 32);
+        if (type == 0x0033 && sh->hrr && l == 2) {                  /* HRR: the group it wants */
+            sh->group = rd16(v);
             have_key = 1;
+        } else if (type == 0x0033 && !sh->hrr && l >= 4) {
+            uint16_t g = rd16(v), kl = rd16(v + 2);
+            uint32_t want = g == GROUP_X25519 ? 32 : g == GROUP_SECP256R1 ? 65 : 0;
+            if (want && kl == want && l >= 4 + want) {
+                sh->group = g;
+                memcpy(sh->pub, v + 4, want);
+                sh->publen = want;
+                have_key = 1;
+            }
+        }
+        if (type == 0x002c && sh->hrr && l >= 2 && rd16(v) + 2u <= l) {
+            sh->cookie = v + 2;
+            sh->cookie_len = rd16(v);
         }
         e = v + l;
     }
     if (!version_ok) { fail(t, "server does not speak TLS 1.3"); return NET_ERR_PROTO; }
-    if (!have_key) { fail(t, "ServerHello without an X25519 key share"); return NET_ERR_PROTO; }
+    if (!have_key) {
+        fail(t, sh->hrr ? "HelloRetryRequest without a key share group" : "ServerHello without an X25519 or P-256 key share");
+        return NET_ERR_PROTO;
+    }
     return NET_OK;
 bad:
     fail(t, "malformed ServerHello");
@@ -388,35 +431,93 @@ bad:
 
 /* ── handshake ──────────────────────────────────────────────────── */
 
-static int handshake(tls_conn_t* t, const char* host) {
-    uint8_t priv[32], pub[32], server_pub[32], shared[32];
+/* a key pair for group into priv / pub; pub's length */
+static uint32_t make_share(uint16_t group, uint8_t priv[32], uint8_t pub[65]) {
     random_bytes(priv, 32);
     task_maybe_yield();
+    if (group == GROUP_SECP256R1) { p256_public(pub, priv); task_maybe_yield(); return 65; }
     x25519_base(pub, priv);
     task_maybe_yield();
+    return 32;
+}
 
-    uint8_t* ch = (uint8_t*)kmalloc(1024);
+/* a ClientHello with one share of group, into the transcript and sent */
+static int send_client_hello(tls_conn_t* t, const char* host, uint16_t group, const uint8_t* pub, uint32_t publen,
+                             const uint8_t* cookie, uint32_t cookie_len) {
+    uint8_t* ch = (uint8_t*)kmalloc(1024 + cookie_len);
     if (!ch) return NET_ERR_NOMEM;
-    uint32_t ch_len = build_client_hello(ch, host, pub, t->ciphers);
+    uint32_t ch_len = build_client_hello(ch, host, group, pub, publen, t->ciphers, cookie, cookie_len);
     sha256_update(&t->transcript, ch, ch_len);
     int r = send_record(t, CT_HANDSHAKE, ch, ch_len);
     kfree(ch);
-    if (r != NET_OK) { fail(t, "could not send ClientHello: %s", net_strerror(r)); return r; }
+    if (r != NET_OK) fail(t, "could not send ClientHello: %s", net_strerror(r));
+    return r;
+}
 
-    uint8_t* msg;
-    uint32_t mlen;
-    r = next_hs_msg(t, &msg, &mlen);
+/* the next ServerHello (or HelloRetryRequest), parsed */
+static int read_server_hello(tls_conn_t* t, uint8_t** msg, uint32_t* mlen, server_hello_t* sh) {
+    int r = next_hs_msg(t, msg, mlen);
     if (r != NET_OK) {
         if (t->errmsg && !t->errmsg[0]) fail(t, "no ServerHello (%s)", net_strerror(r));
         return r;
     }
-    r = parse_server_hello(t, msg, mlen, server_pub);
+    return parse_server_hello(t, *msg, *mlen, sh);
+}
+
+static int handshake(tls_conn_t* t, const char* host) {
+    uint8_t priv[32], pub[65], shared[32];
+    uint16_t group = GROUP_X25519;
+    uint32_t publen = make_share(group, priv, pub);
+    int r = send_client_hello(t, host, group, pub, publen, NULL, 0);
     if (r != NET_OK) return r;
+
+    uint8_t* msg;
+    uint32_t mlen;
+    server_hello_t sh;
+    r = read_server_hello(t, &msg, &mlen, &sh);
+    if (r != NET_OK) return r;
+    if (sh.hrr) {
+        /* HelloRetryRequest (section 4.1.4): the server wants another group.
+         * The transcript restarts from a hash of the first ClientHello. */
+        if (sh.group != GROUP_SECP256R1) {
+            fail(t, "server asked for key share group 0x%04x (only X25519 and P-256 are supported)", sh.group);
+            return NET_ERR_PROTO;
+        }
+        uint8_t ch1[32], mh[4] = { 254, 0, 0, 32 };     /* message_hash */
+        transcript_hash(t, ch1);
+        sha256_init(&t->transcript);
+        sha256_update(&t->transcript, mh, 4);
+        sha256_update(&t->transcript, ch1, 32);
+        sha256_update(&t->transcript, msg, mlen);
+        uint8_t* cookie = NULL;
+        uint32_t cookie_len = sh.cookie_len;
+        if (cookie_len) {
+            if (!(cookie = (uint8_t*)kmalloc(cookie_len))) return NET_ERR_NOMEM;
+            memcpy(cookie, sh.cookie, cookie_len);
+        }
+        uint16_t hrr_suite = t->suite;
+        hs_consume(t, mlen);
+        memset(priv, 0, sizeof(priv));
+        group = GROUP_SECP256R1;
+        publen = make_share(group, priv, pub);
+        r = send_client_hello(t, host, group, pub, publen, cookie, cookie_len);
+        kfree(cookie);
+        if (r != NET_OK) return r;
+        r = read_server_hello(t, &msg, &mlen, &sh);
+        if (r != NET_OK) return r;
+        if (sh.hrr) { fail(t, "server sent a second HelloRetryRequest"); return NET_ERR_PROTO; }
+        if (t->suite != hrr_suite) { fail(t, "server changed its cipher suite after a HelloRetryRequest"); return NET_ERR_PROTO; }
+    }
+    if (sh.group != group) { fail(t, "server answered with a key share we did not send"); return NET_ERR_PROTO; }
     sha256_update(&t->transcript, msg, mlen);
     hs_consume(t, mlen);
 
     /* handshake secrets */
-    x25519(shared, priv, server_pub);
+    if (group == GROUP_SECP256R1) {
+        if (p256_ecdh(shared, priv, sh.pub) != 0) { fail(t, "server's P-256 key share is not on the curve"); return NET_ERR_PROTO; }
+    } else {
+        x25519(shared, priv, sh.pub);
+    }
     task_maybe_yield();
     memset(priv, 0, sizeof(priv));
     uint8_t zeros[32], empty_hash[32], early[32], derived[32], hs_secret[32], th[32];

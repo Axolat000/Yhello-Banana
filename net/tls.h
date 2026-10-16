@@ -6,7 +6,8 @@
 /*
  * TLS 1.3 client (RFC 8446) over a connected TCP stream, for HTTPS.
  *
- * Key exchange: X25519. Ciphers: TLS_AES_128_GCM_SHA256 and
+ * Key exchange: X25519, or NIST P-256 when the server asks for it with a
+ * HelloRetryRequest (Mojang's servers, some CDNs). Ciphers: TLS_AES_128_GCM_SHA256 and
  * TLS_CHACHA20_POLY1305_SHA256. The handshake transcript, Finished MACs
  * and all record protection are fully verified - but the server's
  * certificate chain is NOT validated (Banana OS ships no CA store), so
