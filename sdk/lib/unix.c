@@ -1,7 +1,7 @@
 /* Banana OS SDK: the rest of the Unix and Linux C library that ported
  * programs (OpenJDK...) expect - the environment, folders, the user,
  * uname, limits, locale, wide characters, file odds and ends. Where Banana
- * OS has no such thing (other processes, pipes, shared memory) the call
+ * OS has no such thing (other processes, shared memory) the call
  * fails the way Linux would with the feature missing. */
 #include <dirent.h>
 #include <errno.h>
@@ -243,9 +243,7 @@ ssize_t pwrite(int fd, const void* buf, size_t n, off_t off) {
     return r;
 }
 
-int dup(int fd) { (void)fd; errno = EMFILE; return -1; }
-int dup2(int fd, int to) { if (fd == to) return to; errno = EBADF; return -1; }
-int pipe(int fds[2]) { (void)fds; errno = ENOSYS; return -1; }
+/* (dup, dup2, pipe: ufd.c) */
 
 int mkstemp(char* tmpl) {
     size_t n = strlen(tmpl);
@@ -842,12 +840,7 @@ int posix_spawnattr_destroy(posix_spawnattr_t* a) { (void)a; return 0; }
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* fa) { fa->__n = 0; return 0; }
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* fa) { (void)fa; return 0; }
 
-/* epoll, eventfd, inotify: not here yet (Java's selectors and file watching fail cleanly) */
-int epoll_create(int size) { (void)size; errno = ENOSYS; return -1; }
-int epoll_create1(int flags) { (void)flags; errno = ENOSYS; return -1; }
-int epoll_ctl(int ep, int op, int fd, struct epoll_event* ev) { (void)ep; (void)op; (void)fd; (void)ev; errno = EBADF; return -1; }
-int epoll_wait(int ep, struct epoll_event* evs, int max, int timeout) { (void)ep; (void)evs; (void)max; (void)timeout; errno = EBADF; return -1; }
-int eventfd(unsigned int initval, int flags) { (void)initval; (void)flags; errno = ENOSYS; return -1; }
+/* (epoll, eventfd: ufd.c) inotify: not here yet (Java's file watching fails cleanly) */
 int inotify_init(void) { errno = ENOSYS; return -1; }
 int inotify_init1(int flags) { (void)flags; errno = ENOSYS; return -1; }
 int inotify_add_watch(int fd, const char* path, uint32_t mask) { (void)fd; (void)path; (void)mask; errno = EBADF; return -1; }

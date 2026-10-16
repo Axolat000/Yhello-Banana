@@ -4,7 +4,8 @@
 # Out: <output>/jdk - a JDK image with java.base (copy it to /jdk, or a
 # disk's jdk folder: the java app finds /jdk, /mnt/usb/jdk, /mnt/virtio/jdk,
 # /mnt/sata/jdk, or JAVA_HOME) - and <output>/jdkdisk.img, a FAT32 disk with
-# jdk/, java.bpk and Hello.class for QEMU (-drive file=...,if=virtio).
+# jdk/, java.bpk and the test classes (Hello, NetTest) for QEMU
+# (-drive file=...,if=virtio).
 #
 # How: OpenJDK is first built for Linux (configure + make images, the
 # reference build, ~1 h); then every C/C++ object of HotSpot and of
@@ -105,7 +106,7 @@ S=$OUT/disk
 rm -rf "$S" && mkdir -p "$S"
 cp -r "$OUT/jdk" "$S/jdk"
 cp "$HERE/launcher/java.bpk" "$S/"
-"$BOOT/bin/javac" --release 17 -d "$S" "$HERE/test/Hello.java"
+"$BOOT/bin/javac" --release 17 -d "$S" "$HERE"/test/*.java
 IMG=$OUT/jdkdisk.img
 rm -f "$IMG"
 truncate -s 256M "$IMG"

@@ -35,18 +35,24 @@ int open(const char* path, int flags, ...) {
 /* (socket.c: a socket's O_NONBLOCK) */
 int __sock_getfl(int fd);
 int __sock_setfl(int fd, int fl);
+/* (ufd.c: the C library's own descriptors) */
+int __ufd_is(int fd);
+int __ufd_fcntl(int fd, int cmd, long arg);
+int __ufd_fstat(int fd, struct stat* st);
 
 int fcntl(int fd, int cmd, ...) {
     va_list ap;
     va_start(ap, cmd);
     long arg = va_arg(ap, long);
     va_end(ap);
+    if (__ufd_is(fd)) return __ufd_fcntl(fd, cmd, arg);
     if (cmd == F_GETFL) { int f = fd > 2 ? __sock_getfl(fd) : -1; return O_RDWR | (f > 0 ? f : 0); }
     if (cmd == F_SETFL) { if (fd > 2) __sock_setfl(fd, (int)arg); return 0; }
     return 0;
 }
 
 off_t lseek(int fd, off_t off, int whence) {
+    if (__ufd_is(fd)) { errno = ESPIPE; return -1; }
     long r = __banana->seek(fd, off, whence);
     if (r < 0) { errno = fd <= 2 ? ESPIPE : EINVAL; return -1; }
     return r;
@@ -55,6 +61,7 @@ off_t lseek(int fd, off_t off, int whence) {
 int isatty(int fd) { return fd >= 0 && fd <= 2; }
 
 int fstat(int fd, struct stat* st) {
+    if (__ufd_is(fd)) return __ufd_fstat(fd, st);
     memset(st, 0, sizeof(*st));
     st->st_blksize = 4096;
     if (fd <= 2) { st->st_mode = 0020000; return 0; }     /* a character device */

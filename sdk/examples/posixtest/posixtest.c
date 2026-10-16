@@ -6,6 +6,7 @@
  *   posixtest mmap     mmap / munmap / mprotect
  *   posixtest threads  pthreads, __thread, semaphores, clocks
  *   posixtest sockets  TCP and UDP on the loopback, poll / select, names
+ *   posixtest epoll    epoll, eventfd, pipes, socket pairs, dup2
  *   posixtest signals  handlers, faults as signals, masks, pthread_kill
  *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
  */
@@ -27,6 +28,9 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <setjmp.h>
 #include <ucontext.h>
@@ -583,6 +587,186 @@ static void t_sockets(void) {
     free(in);
 }
 
+/* ── epoll, eventfd, pipes, socket pairs ──────────────────────────── */
+
+static int g_evfd;
+
+/* wakes an epoll_wait from another thread, as Java's Selector.wakeup does */
+static void* late_wake(void* a) {
+    banana_sleep((int)(long)a);
+    eventfd_write(g_evfd, 1);
+    return NULL;
+}
+
+#define PIPE_BULK 200000
+static char g_pipe_out[PIPE_BULK], g_pipe_in[PIPE_BULK];
+static int g_pipe_wfd;
+
+static void* pipe_writer(void* a) {
+    (void)a;
+    ssize_t w = write(g_pipe_wfd, g_pipe_out, PIPE_BULK);       /* (blocks while the pipe is full) */
+    return (void*)(long)w;
+}
+
+static void t_epoll(void) {
+    printf("epoll, eventfd, pipes, socket pairs\n");
+    char note[96];
+    eventfd_t v = 0;
+
+    /* eventfd: a counter */
+    int ev = eventfd(0, EFD_NONBLOCK);
+    int ok = ev >= 0 && eventfd_write(ev, 3) == 0 && eventfd_write(ev, 4) == 0 && eventfd_read(ev, &v) == 0 && v == 7;
+    ssize_t r = read(ev, &v, sizeof(v));
+    int e = errno;
+    struct pollfd pf = { ev, POLLIN | POLLOUT, 0 };
+    int pr = poll(&pf, 1, 0);
+    ok = ok && r == -1 && e == EAGAIN && pr == 1 && pf.revents == POLLOUT;
+    int sem = eventfd(2, EFD_SEMAPHORE);
+    ok = ok && eventfd_read(sem, &v) == 0 && v == 1 && eventfd_read(sem, &v) == 0 && v == 1;
+    close(sem);
+    snprintf(note, sizeof(note), "fd %d", ev);
+    check("eventfd: write adds, read takes all (EFD_SEMAPHORE: one), EAGAIN when 0", ok, note);
+
+    /* epoll over the eventfd */
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    struct epoll_event ee = { 0 }, out[8];
+    ee.events = EPOLLIN;
+    ee.data.u64 = 0x1122334455667788ull;
+    ok = ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, ev, &ee) == 0;
+    int r0 = epoll_wait(ep, out, 8, 0);
+    long t0 = ms_now();
+    int r1 = epoll_wait(ep, out, 8, 100);
+    long took = ms_now() - t0;
+    eventfd_write(ev, 1);
+    int r2 = epoll_wait(ep, out, 8, 1000);
+    ok = ok && r0 == 0 && r1 == 0 && took >= 90 && r2 == 1 && out[0].events == EPOLLIN && out[0].data.u64 == 0x1122334455667788ull;
+    int again = epoll_wait(ep, out, 8, 0);              /* level-triggered: still there */
+    eventfd_read(ev, &v);
+    int gone = epoll_wait(ep, out, 8, 0);
+    snprintf(note, sizeof(note), "waited %ld ms for 100", took);
+    check("epoll_wait on an eventfd: times out, then sees it (level-triggered)", ok && again == 1 && gone == 0, note);
+
+    ok = epoll_ctl(ep, EPOLL_CTL_ADD, ev, &ee) == -1 && errno == EEXIST &&
+         epoll_ctl(ep, EPOLL_CTL_MOD, 1000, &ee) == -1 && errno == EBADF &&
+         epoll_ctl(ep, EPOLL_CTL_DEL, 5, NULL) == -1 && (errno == ENOENT || errno == EBADF) &&
+         epoll_ctl(ep, EPOLL_CTL_ADD, ep, &ee) == -1 && errno == EINVAL &&
+         epoll_ctl(12345, EPOLL_CTL_ADD, ev, &ee) == -1 && errno == EBADF;
+    check("epoll_ctl errors: EEXIST, EBADF, ENOENT, EINVAL", ok, "");
+
+    /* the TCP side: a listening socket and a connection, with the eventfd */
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    socklen_t sl = sizeof(sa);
+    ok = l >= 0 && bind(l, (struct sockaddr*)&sa, sizeof(sa)) == 0 && listen(l, 4) == 0 &&
+         getsockname(l, (struct sockaddr*)&sa, &sl) == 0;
+    ee.events = EPOLLIN;
+    ee.data.fd = l;
+    int stage = 0;
+    ok = ok && epoll_ctl(ep, EPOLL_CTL_ADD, l, &ee) == 0;
+    if (ok) stage++;
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);              /* (getsockname: 0.0.0.0) */
+    ok = ok && connect(c, (struct sockaddr*)&sa, sizeof(sa)) == 0;
+    if (ok) stage++;
+    int n = epoll_wait(ep, out, 8, 2000);
+    ok = ok && n == 1 && out[0].data.fd == l && (out[0].events & EPOLLIN);
+    if (ok) stage++;
+    int s = ok ? accept(l, NULL, NULL) : -1;
+    ee.events = EPOLLIN | EPOLLONESHOT;
+    ee.data.fd = s;
+    ok = ok && s >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, s, &ee) == 0 && epoll_wait(ep, out, 8, 0) == 0;
+    if (ok) stage++;
+    ok = ok && send(c, "ping", 4, 0) == 4;
+    if (ok) stage++;
+    n = epoll_wait(ep, out, 8, 2000);
+    ok = ok && n == 1 && out[0].data.fd == s && out[0].events == EPOLLIN;
+    if (ok) stage++;
+    int quiet = epoll_wait(ep, out, 8, 50);             /* one-shot: off until MOD */
+    ee.events = EPOLLIN | EPOLLOUT;
+    int back = epoll_ctl(ep, EPOLL_CTL_MOD, s, &ee) == 0 ? epoll_wait(ep, out, 8, 0) : -1;
+    snprintf(note, sizeof(note), "stage %d, n %d, quiet %d, back %d, events %#x", stage, n, quiet, back, (unsigned)out[0].events);
+    check("epoll over TCP: accept ready, data ready, EPOLLONESHOT, EPOLL_CTL_MOD", ok && quiet == 0 && back == 1 && out[0].events == (EPOLLIN | EPOLLOUT), note);
+
+    /* a wakeup from another thread while it waits on sockets and the eventfd */
+    char b[16];
+    recv(s, b, sizeof(b), 0);
+    epoll_ctl(ep, EPOLL_CTL_DEL, s, NULL);
+    g_evfd = ev;
+    pthread_t th;
+    pthread_create(&th, NULL, late_wake, (void*)150L);
+    t0 = ms_now();
+    n = epoll_wait(ep, out, 8, 5000);
+    took = ms_now() - t0;
+    pthread_join(th, NULL);
+    snprintf(note, sizeof(note), "woken after %ld ms (150)", took);
+    check("epoll_wait woken by an eventfd write from another thread", n == 1 && out[0].data.u64 == 0x1122334455667788ull && took >= 140 && took < 1000, note);
+    eventfd_read(ev, &v);
+
+    /* the epoll fd itself in poll() */
+    struct pollfd pe = { ep, POLLIN, 0 };
+    int p0 = poll(&pe, 1, 0);
+    eventfd_write(ev, 1);
+    int p1 = poll(&pe, 1, 0);
+    eventfd_read(ev, &v);
+    check("poll() on an epoll fd: readable when one of its own is", p0 == 0 && p1 == 1 && (pe.revents & POLLIN), "");
+
+    /* close takes a descriptor out of the set */
+    close(ev);
+    ok = epoll_wait(ep, out, 8, 0) == 0 && epoll_ctl(ep, EPOLL_CTL_DEL, ev, NULL) == -1;
+    close(s);
+    n = epoll_wait(ep, out, 8, 0);
+    check("close() takes a descriptor out of the epoll set", ok && n == 0, "");
+
+    /* pipes */
+    int pp[2];
+    struct stat st;
+    ok = pipe(pp) == 0 && write(pp[1], "hello", 5) == 5 && fstat(pp[0], &st) == 0 && S_ISFIFO(st.st_mode);
+    struct pollfd pq[2] = { { pp[0], POLLIN, 0 }, { pp[1], POLLOUT, 0 } };
+    ok = ok && poll(pq, 2, 0) == 2 && read(pp[0], b, sizeof(b)) == 5 && !memcmp(b, "hello", 5);
+    ok = ok && fcntl(pp[0], F_SETFL, fcntl(pp[0], F_GETFL) | O_NONBLOCK) == 0 && read(pp[0], b, 1) == -1 && errno == EAGAIN;
+    check("pipe: write, poll, read, O_NONBLOCK", ok, "");
+
+    /* 200 KB through a 64 KB pipe: the writer thread blocks, the reader drains */
+    fcntl(pp[0], F_SETFL, 0);
+    for (int i = 0; i < PIPE_BULK; i++) g_pipe_out[i] = (char)(i * 13 + (i >> 8));
+    g_pipe_wfd = pp[1];
+    pthread_t wt;
+    pthread_create(&wt, NULL, pipe_writer, NULL);
+    size_t got = 0;
+    while (got < PIPE_BULK) {
+        ssize_t k = read(pp[0], g_pipe_in + got, PIPE_BULK - got);
+        if (k <= 0) break;
+        got += (size_t)k;
+    }
+    void* wr = NULL;
+    pthread_join(wt, &wr);
+    snprintf(note, sizeof(note), "%lu bytes", (unsigned long)got);
+    ok = got == PIPE_BULK && (long)wr == PIPE_BULK && !memcmp(g_pipe_in, g_pipe_out, PIPE_BULK);
+    close(pp[1]);
+    struct pollfd ph = { pp[0], POLLIN, 0 };
+    ok = ok && poll(&ph, 1, 0) == 1 && (ph.revents & POLLHUP) && read(pp[0], b, 1) == 0;
+    close(pp[0]);
+    check("pipe: 200 KB from a blocked writer thread, then the end (POLLHUP, 0)", ok, note);
+
+    /* a socket pair, and dup2 of one over a TCP socket (Java's preClose) */
+    int sp[2];
+    ok = socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0 && send(sp[0], "ab", 2, 0) == 2 && write(sp[1], "xyz", 3) == 3 &&
+         recv(sp[1], b, sizeof(b), 0) == 2 && !memcmp(b, "ab", 2) && read(sp[0], b, sizeof(b)) == 3 && !memcmp(b, "xyz", 3);
+    ok = ok && shutdown(sp[1], SHUT_WR) == 0 && read(sp[0], b, 1) == 0;
+    close(sp[1]);
+    check("socketpair: both ways, shutdown gives the other end its end", ok, "");
+    int d = dup(sp[0]);
+    int d2 = dup2(sp[0], c);
+    ok = d >= 0 && d2 == c && recv(c, b, sizeof(b), 0) == 0 && close(c) == 0 && close(d) == 0;
+    check("dup, and dup2 over a TCP socket: shut down, then closed", ok, "");
+    close(sp[0]);
+    close(l);
+    close(ep);
+}
+
 /* ── signals ──────────────────────────────────────────────────────── */
 
 static volatile int g_sig_seen, g_sig_code;
@@ -819,6 +1003,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "mmap")) t_mmap();
     if (!only || !strcmp(only, "threads")) t_threads();
     if (!only || !strcmp(only, "sockets")) t_sockets();
+    if (!only || !strcmp(only, "epoll")) t_epoll();
     if (!only || !strcmp(only, "signals")) t_signals();
     if (!only || !strcmp(only, "dlopen")) t_dlopen();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);

@@ -52,7 +52,9 @@ selftest posix [part]    installs and runs the posixtest example: the POSIX laye
                          sockets: TCP echo of 100 KB and UDP on the loopback, poll,
                          select, FIONREAD, SO_RCVTIMEO, ECONNREFUSED, getaddrinfo,
                          inet_pton/ntop, and an HTTP request to example.com if the
-                         network reaches it (posix sockets)
+                         network reaches it (posix sockets); epoll and eventfd over
+                         TCP sockets (one-shot, a wakeup from another thread), pipes,
+                         socket pairs, dup2 over a socket (posix epoll)
                          signals (64-bit): SIGSEGV / SIGFPE / SIGILL from faults with
                          siginfo, a handler changing RIP/RAX, PROT_READ enforced, masks,
                          pthread_kill to a busy and a sleeping thread, sigaltstack, a

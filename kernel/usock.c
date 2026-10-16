@@ -72,6 +72,7 @@ struct usock {
     tcp_conn_t*     c;
     tcp_listener_t* l;
     uint16_t        lport;
+    int             auto_port;     /* lport picked by bind (port 0): listen may pick another */
     ip4_t           rip;
     uint16_t        rport;
     int             has_peer;
@@ -187,7 +188,8 @@ int usock_bind(usock_t* s, const void* sa, int len) {
     if (rc) return rc;
     if (s->state != S_NEW) return -EINVAL;
     if (s->type == SOCK_DGRAM) return udp_bind_port(s, port);
-    s->lport = port;                                 /* (taken by listen) */
+    s->lport = port ? port : ephemeral();            /* (taken by listen; getsockname shows it now) */
+    s->auto_port = !port;
     s->state = S_BOUND;
     return 0;
 }
@@ -199,10 +201,10 @@ int usock_listen(usock_t* s, int backlog) {
     if (s->state == S_CONN) return -EINVAL;
     int err = 0;
     for (int tries = 0; tries < 64; tries++) {
-        uint16_t p = s->lport ? s->lport : ephemeral();
+        uint16_t p = s->lport && (!s->auto_port || !tries) ? s->lport : ephemeral();
         s->l = tcp_listen(p, &err);
         if (s->l) { s->lport = p; s->state = S_LISTEN; return 0; }
-        if (s->lport) break;
+        if (s->lport && !s->auto_port) break;
     }
     return -EADDRINUSE;
 }

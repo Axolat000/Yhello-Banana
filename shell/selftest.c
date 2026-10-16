@@ -155,7 +155,7 @@ static void t_opencl(void) {
 
 /* posixtest (the POSIX layer for ported programs), from the kernel's copy */
 static void t_posix(const char* part) {
-    section("the POSIX layer: mmap (162), pthreads (163), sockets (164), signals (165), dlopen (166)");
+    section("the POSIX layer: mmap (162), pthreads (163), sockets (164), signals (165), dlopen (166), epoll (172)");
     const char* tmp = "/tmp/posixtest.bpk";
     char msg[160] = { 0 };
     if (fs_write_path(tmp, ex_posixtest, (uint32_t)(ex_posixtest_end - ex_posixtest)) < 0 ||

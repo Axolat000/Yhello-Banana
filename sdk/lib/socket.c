@@ -34,12 +34,24 @@ static long ret(long r) {
 
 #define NEED_SOCK(bad) do { if (!has_sock()) { errno = ENOSYS; return bad; } } while (0)
 
+/* ufd.c: the descriptors the C library makes itself (socket pairs, pipes,
+ * eventfd, epoll) */
+int __ufd_is(int fd);
+ssize_t __ufd_read(int fd, void* buf, size_t n, int dontwait);
+ssize_t __ufd_write(int fd, const void* buf, size_t n, int dontwait);
+int __ufd_poll(struct pollfd* fds, nfds_t n, int timeout_ms);
+int __ufd_shutdown(int fd, int how);
+int __ufd_ioctl(int fd, unsigned long req, void* arg);
+
 int socket(int family, int type, int proto) { NEED_SOCK(-1); return (int)ret(__banana->sock_open(family, type, proto)); }
-int socketpair(int f, int t, int p, int fds[2]) { (void)f; (void)t; (void)p; (void)fds; errno = EOPNOTSUPP; return -1; }
 int bind(int fd, const struct sockaddr* sa, socklen_t len) { NEED_SOCK(-1); return (int)ret(__banana->sock_bind(fd, sa, (int)len)); }
 int listen(int fd, int backlog) { NEED_SOCK(-1); return (int)ret(__banana->sock_listen(fd, backlog)); }
 int connect(int fd, const struct sockaddr* sa, socklen_t len) { NEED_SOCK(-1); return (int)ret(__banana->sock_connect(fd, sa, (int)len)); }
-int shutdown(int fd, int how) { NEED_SOCK(-1); return (int)ret(__banana->sock_shutdown(fd, how)); }
+int shutdown(int fd, int how) {
+    if (__ufd_is(fd)) return __ufd_shutdown(fd, how);
+    NEED_SOCK(-1);
+    return (int)ret(__banana->sock_shutdown(fd, how));
+}
 
 int accept4(int fd, struct sockaddr* sa, socklen_t* len, int flags) {
     NEED_SOCK(-1);
@@ -54,12 +66,17 @@ int accept4(int fd, struct sockaddr* sa, socklen_t* len, int flags) {
 int accept(int fd, struct sockaddr* sa, socklen_t* len) { return accept4(fd, sa, len, 0); }
 
 ssize_t sendto(int fd, const void* buf, size_t len, int flags, const struct sockaddr* sa, socklen_t salen) {
+    if (__ufd_is(fd)) return __ufd_write(fd, buf, len, (flags & MSG_DONTWAIT) != 0);
     NEED_SOCK(-1);
     return ret(__banana->sock_send(fd, buf, len, flags, sa, (int)salen));
 }
 ssize_t send(int fd, const void* buf, size_t len, int flags) { return sendto(fd, buf, len, flags, NULL, 0); }
 
 ssize_t recvfrom(int fd, void* buf, size_t len, int flags, struct sockaddr* sa, socklen_t* salen) {
+    if (__ufd_is(fd)) {
+        if (salen) *salen = 0;
+        return __ufd_read(fd, buf, len, (flags & MSG_DONTWAIT) != 0);
+    }
     NEED_SOCK(-1);
     int l = salen ? (int)*salen : 0;
     long r = ret(__banana->sock_recv(fd, buf, len, flags, sa, salen ? &l : NULL));
@@ -129,12 +146,19 @@ int getpeername(int fd, struct sockaddr* sa, socklen_t* len) { return sockname(f
 
 /* ── poll, select, ioctl ──────────────────────────────────────────── */
 
-int poll(struct pollfd* fds, nfds_t n, int timeout_ms) {
+/* the system's poll (its files, sockets and the terminal) */
+int __kpoll(struct pollfd* fds, nfds_t n, int timeout_ms) {
     if (!has_sock()) {                       /* an older system: files and the terminal are ready */
         for (nfds_t i = 0; i < n; i++) fds[i].revents = fds[i].events & (POLLIN | POLLOUT);
         return (int)n;
     }
     return (int)ret(__banana->poll(fds, (int)n, timeout_ms));
+}
+
+int poll(struct pollfd* fds, nfds_t n, int timeout_ms) {
+    for (nfds_t i = 0; i < n; i++)
+        if (__ufd_is(fds[i].fd)) return __ufd_poll(fds, n, timeout_ms);
+    return __kpoll(fds, n, timeout_ms);
 }
 
 int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
@@ -184,6 +208,7 @@ int ioctl(int fd, unsigned long req, ...) {
         w->ws_xpixel = w->ws_ypixel = 0;
         return 0;
     }
+    if (__ufd_is(fd)) return __ufd_ioctl(fd, req, arg);
     NEED_SOCK(-1);
     if (req == FIONREAD) {
         int r = (int)ret(__banana->sock_ctl(fd, 3, 0));

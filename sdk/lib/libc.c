@@ -21,6 +21,8 @@ int* __errno_location(void) {
     unsigned id = __banana && __banana->version >= 3 ? (unsigned)__banana->thread_id() : 0;
     return id ? &g_errno[id < 129 ? id : 129] : &errno;
 }
+/* (from here on errno is per thread again, in this file too) */
+#define errno (*__errno_location())
 
 /* ── memory / strings ─────────────────────────────────────────────── */
 
@@ -476,13 +478,22 @@ size_t strftime(char* buf, size_t max, const char* fmt, const struct tm* tm) {
 
 unsigned int sleep(unsigned int s) { __banana->sleep_ms(s * 1000); return 0; }
 int usleep(unsigned long us) { __banana->sleep_ms((unsigned int)((us + 999) / 1000)); return 0; }
+int __ufd_is(int fd);
+ssize_t __ufd_read(int fd, void* buf, size_t n, int dontwait);
+int __ufd_close(int fd);
+void __ufd_forget(int fd);
 /* (a socket's errors come as -errno; a file's as -1) */
 ssize_t read(int fd, void* buf, size_t n) {
+    if (__ufd_is(fd)) return __ufd_read(fd, buf, n, 0);
     long r = __banana->read(fd, buf, n);
     if (r < 0) { errno = r < -1 ? (int)-r : EIO; return -1; }
     return r;
 }
-int close(int fd) { return __banana->close(fd); }
+int close(int fd) {
+    if (__ufd_is(fd)) return __ufd_close(fd);
+    __ufd_forget(fd);                                /* (out of epoll sets) */
+    return __banana->close(fd);
+}
 char* getcwd(char* buf, size_t size) { return __banana->getcwd(buf, (int)size) == 0 ? buf : NULL; }
 int chdir(const char* path) { return __banana->chdir(path); }
 int unlink(const char* path) { return __banana->remove(path); }

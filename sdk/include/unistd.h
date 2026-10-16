@@ -65,7 +65,9 @@ ssize_t pwrite(int fd, const void* buf, size_t n, off_t off);
 #define ftruncate64 ftruncate
 int     dup(int fd);
 int     dup2(int fd, int to);
+int     dup3(int fd, int to, int flags);
 int     pipe(int fds[2]);
+int     pipe2(int fds[2], int flags);
 pid_t   fork(void);
 pid_t   vfork(void);
 int     execve(const char* path, char* const argv[], char* const envp[]);

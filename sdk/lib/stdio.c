@@ -53,7 +53,11 @@ int fflush(FILE* f) {
 
 void __stdio_flush_all(void) { fflush(NULL); }
 
+int __ufd_is(int fd);
+ssize_t __ufd_write(int fd, const void* buf, size_t n, int dontwait);
+
 ssize_t write(int fd, const void* buf, size_t n) {
+    if (__ufd_is(fd)) return __ufd_write(fd, buf, n, 0);
     if (fd == 1) fflush(stdout);
     if (fd == 2) fflush(stderr);
     long r = __banana->write(fd, buf, n);

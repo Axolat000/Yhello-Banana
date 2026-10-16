@@ -5,6 +5,7 @@ extern "C" {
 #endif
 /* epoll: watch many file descriptors (made with poll()) */
 #include <stdint.h>
+#include <signal.h>
 #define EPOLLIN      0x001
 #define EPOLLPRI     0x002
 #define EPOLLOUT     0x004
@@ -30,6 +31,7 @@ int epoll_create(int size);
 int epoll_create1(int flags);
 int epoll_ctl(int ep, int op, int fd, struct epoll_event* ev);
 int epoll_wait(int ep, struct epoll_event* evs, int max, int timeout);
+int epoll_pwait(int ep, struct epoll_event* evs, int max, int timeout, const sigset_t* mask);
 #ifdef __cplusplus
 }
 #endif
