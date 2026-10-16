@@ -1,0 +1,169 @@
+<!doctype html><html><head><title>MutationObserver record regression</title></head><body>
+<p id="result">RUNNING</p><div id="root"></div>
+<script>
+var failedNames = [], checks = 0, failures = 0, callbacks = 0;
+function assert(value, name) {
+  checks++;
+  if (!value) { failures++; failedNames.push(name); console.log('FAIL: ' + name); }
+}
+function observer() { return new MutationObserver(function() { callbacks++; }); }
+var root = document.getElementById('root');
+var o = observer();
+assert(o instanceof MutationObserver, 'native observer prototype');
+var error = false;
+try { MutationObserver(function() {}); } catch (e) { error = true; }
+assert(error, 'constructor requires new');
+error = false;
+try { new MutationObserver(null); } catch (e) { error = true; }
+assert(error, 'callback validation');
+var invalid = [{}, {attributes:false, attributeOldValue:true}, {characterData:false, characterDataOldValue:true}, {attributes:false, attributeFilter:[]}];
+for (var i = 0; i < invalid.length; i++) {
+  error = false;
+  try { o.observe(root, invalid[i]); } catch (e) { error = true; }
+  assert(error, 'invalid options ' + i);
+}
+error = false;
+try { o.observe({}, {childList:true}); } catch (e) { error = true; }
+assert(error, 'target validation');
+
+// Exact attributes, case normalization, filter snapshot and oldValue sequence.
+var filter = ['data-x'];
+o.observe(root, {attributeFilter:filter, attributeOldValue:true});
+filter[0] = 'ignored';
+root.setAttribute('DATA-X', 'one');
+root.setAttribute('data-x', 'two');
+root.setAttribute('data-x', 'two');
+root.setAttribute('ignored', 'value');
+root.removeAttribute('DATA-X');
+root.removeAttribute('data-x');
+var r = o.takeRecords();
+assert(r.length === 4, 'filtered attribute count includes same-value write, excludes absent remove');
+assert(r[0].type === 'attributes' && r[0].target === root, 'attribute type and target');
+assert(r[0].oldValue === null && r[1].oldValue === 'one' && r[2].oldValue === 'two' && r[3].oldValue === 'two', 'attribute old values are snapshots');
+assert(r[0].attributeName === 'data-x' && r[0].attributeNamespace === null, 'attribute name and namespace');
+assert(r[0].addedNodes.length === 0 && r[0].removedNodes.length === 0 && r[0].previousSibling === null && r[0].nextSibling === null, 'attribute non-applicable fields');
+assert(o.takeRecords().length === 0, 'takeRecords drains');
+o.observe(root, {attributes:true});
+root.setAttribute('data-x', 'three');
+r = o.takeRecords();
+assert(r.length === 1 && r[0].oldValue === null, 'observe replaces options without duplicate registration');
+o.disconnect();
+
+// Reflected attributes, classList, CSSOM, boolean and toggle paths.
+o.observe(root, {attributes:true, attributeOldValue:true});
+root.id = 'root'; root.className = 'a'; root.classList.add('b');
+root.style.color = 'red'; var styleBefore = root.getAttribute('style'); root.style.setProperty('display', 'block');
+root.style.removeProperty('color'); root.hidden = true; root.hidden = false;
+root.toggleAttribute('DATA-ON', true); root.toggleAttribute('data-on', true);
+root.toggleAttribute('data-on', false);
+r = o.takeRecords();
+assert(r.length === 10, 'reflected/style/class/boolean/toggle writes observed');
+assert(r[1].attributeName === 'class' && r[2].oldValue === 'a', 'classList old value');
+assert(r[3].attributeName === 'style' && r[4].oldValue === styleBefore, 'style old value');
+assert(r[8].attributeName === 'data-on' && r[9].oldValue === '', 'toggle no redundant writes');
+o.disconnect();
+
+// Child insertion/removal, sibling identity, move and replace records.
+root.innerHTML = '<i></i><b></b>';
+var a = root.firstChild, b = root.lastChild, c = document.createElement('em');
+o.observe(root, {childList:true});
+root.insertBefore(c, b);
+r = o.takeRecords();
+assert(r.length === 1 && r[0].type === 'childList', 'insert record');
+assert(r[0].target === root && r[0].addedNodes[0] === c && r[0].removedNodes.length === 0, 'insert nodes');
+assert(r[0].previousSibling === a && r[0].nextSibling === b, 'insert sibling snapshots');
+root.removeChild(c);
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes[0] === c && r[0].addedNodes.length === 0, 'remove record');
+assert(r[0].previousSibling === a && r[0].nextSibling === b, 'remove sibling snapshots survive detach');
+root.appendChild(a);
+r = o.takeRecords();
+assert(r.length === 2 && r[0].removedNodes[0] === a && r[1].addedNodes[0] === a, 'move emits removal then insertion');
+root.replaceChild(c, b);
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes[0] === b && r[0].addedNodes[0] === c, 'replaceChild combined record');
+assert(r[0].previousSibling === null && r[0].nextSibling === a, 'replace sibling snapshots');
+c.replaceWith('x', 'y');
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes[0] === c && r[0].addedNodes.length === 2, 'replaceWith combined record');
+root.append('z', 'w');
+r = o.takeRecords();
+assert(r.length === 1 && r[0].addedNodes.length === 2, 'append variadic aggregate');
+root.prepend('u', 'v');
+r = o.takeRecords();
+assert(r.length === 1 && r[0].addedNodes.length === 2 && r[0].nextSibling.data === 'x', 'prepend variadic aggregate');
+root.firstChild.remove();
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes[0].data === 'u', 'remove method');
+o.disconnect();
+
+// Fragment: one removal on fragment, one aggregate insertion on destination.
+var fragment = document.createDocumentFragment();
+var f1 = document.createElement('span'), f2 = document.createTextNode('two');
+fragment.appendChild(f1); fragment.appendChild(f2);
+var fo = observer(); fo.observe(fragment, {childList:true});
+o.observe(root, {childList:true}); root.appendChild(fragment);
+r = o.takeRecords(); var fr = fo.takeRecords();
+assert(r.length === 1 && r[0].addedNodes.length === 2 && r[0].addedNodes[0] === f1 && r[0].addedNodes[1] === f2, 'fragment insertion');
+assert(fr.length === 1 && fr[0].removedNodes.length === 2 && fragment.childNodes.length === 0, 'fragment removal');
+assert(fr[0].target.nodeType === 11, 'fragment target has document fragment type');
+fo.disconnect(); o.disconnect();
+
+// Replacement and parser operations notify only actual edits, never detached parsing.
+o.observe(root, {childList:true, attributes:true, characterData:true, subtree:true});
+var oldNodes = Array.from(root.childNodes);
+root.innerHTML = '<strong data-z="1">new</strong><small>end</small>';
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes.length === oldNodes.length && r[0].addedNodes.length === 2, 'innerHTML aggregate only');
+assert(oldNodes[0].parentNode === null && oldNodes[0].nextSibling === null, 'replaced children truly detached');
+var strong = root.firstChild;
+strong.outerHTML = '<a>A</a><b>B</b>';
+r = o.takeRecords();
+assert(r.length === 1 && r[0].removedNodes[0] === strong && r[0].addedNodes.length === 2, 'outerHTML aggregate only');
+root.insertAdjacentHTML('beforeend', '<u>U</u><s>S</s>');
+r = o.takeRecords();
+assert(r.length === 1 && r[0].addedNodes.length === 2 && r[0].nextSibling === null, 'insertAdjacentHTML aggregate only');
+root.textContent = 'plain';
+r = o.takeRecords();
+assert(r.length === 1 && r[0].addedNodes[0].data === 'plain' && r[0].removedNodes.length === 5, 'textContent replacement is childList');
+root.textContent = '';
+r = o.takeRecords();
+assert(r.length === 1 && r[0].addedNodes.length === 0 && r[0].removedNodes.length === 1, 'empty textContent removal');
+root.textContent = '';
+assert(o.takeRecords().length === 0, 'empty to empty has no child mutation');
+var detached = document.createElement('div'); detached.innerHTML = '<i>detached</i>'; detached.firstChild.setAttribute('a','b');
+assert(o.takeRecords().length === 0, 'unrelated detached parser mutations excluded');
+o.disconnect();
+
+// CharacterData and overlapping registrations, including oldValue union.
+root.innerHTML = '<span>old</span>';
+var span = root.firstChild, text = span.firstChild;
+o.observe(root, {characterData:true, subtree:true});
+o.observe(span, {characterDataOldValue:true, subtree:true});
+text.data = 'new'; text.nodeValue = 'latest'; text.textContent = 'final';
+r = o.takeRecords();
+assert(r.length === 3 && r[0].type === 'characterData' && r[0].target === text, 'character data target and count');
+assert(r[0].oldValue === 'old' && r[1].oldValue === 'new' && r[2].oldValue === 'latest', 'overlap oldValue union, no duplicates');
+assert(r[0].attributeName === null && r[0].addedNodes.length === 0, 'characterData non-applicable fields');
+text.nodeValue = null; text.data = null; text.data = undefined;
+r = o.takeRecords();
+assert(r.length === 3 && r[0].oldValue === 'final' && r[1].oldValue === '' && r[2].oldValue === '' && text.data === 'undefined', 'nullable nodeValue and DOMString data conversions');
+var comment = document.createComment('before');
+o.observe(comment, {characterDataOldValue:true}); comment.data = 'after';
+r = o.takeRecords();
+assert(r.length === 1 && r[0].oldValue === 'before' && r[0].target.nodeType === 8, 'comment characterData');
+o.disconnect();
+o.observe(root, {attributes:true}); span.setAttribute('hidden', '');
+assert(o.takeRecords().length === 0, 'subtree false excludes descendant');
+o.observe(span, {attributes:true}); span.setAttribute('hidden', ''); root.setAttribute('hidden', '');
+assert(o.takeRecords().length === 2, 'multiple targets share one queue');
+o.disconnect();
+o.observe(root, {attributeFilter:[]}); root.setAttribute('data-x', 'ignored');
+assert(o.takeRecords().length === 0, 'empty filter matches no attributes');
+o.disconnect();
+var select = document.createElement('select'); select.innerHTML = '<option value="a">A</option><option value="b">B</option>';
+o.observe(select, {attributes:true, childList:true, subtree:true}); select.value = 'b';
+assert(o.takeRecords().length === 0, 'live select value is not an attribute mutation'); o.disconnect();
+assert(callbacks === 0, 'callbacks never fire synchronously and takeRecords prevents delivery');
+document.getElementById('result').textContent = failures ? 'FAIL ' + failures + '/' + checks + ': ' + failedNames.join('; ') : 'PASS ' + checks;
+</script></body></html>

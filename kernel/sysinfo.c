@@ -1,6 +1,7 @@
 #include "sysinfo.h"
 #include "serial.h"
 #include "types.h"
+#include "bootmem.h"
 
 /* Multiboot info structure (partial) */
 typedef struct {
@@ -147,32 +148,6 @@ typedef struct {
     uint32_t size;
 } __attribute__((packed)) mb2_tag_t;
 
-typedef struct {
-    uint32_t type;   /* 4 */
-    uint32_t size;
-    uint32_t mem_lower;
-    uint32_t mem_upper;
-} __attribute__((packed)) mb2_tag_basic_mem_t;
-
-typedef struct {
-    uint64_t base_addr;
-    uint64_t length;
-    uint32_t type;      /* 1 = available RAM */
-    uint32_t reserved;
-} __attribute__((packed)) mb2_mmap_entry_t;
-
-typedef struct {
-    uint32_t type;       /* 6 */
-    uint32_t size;
-    uint32_t entry_size;
-    uint32_t entry_version;
-    /* entries[] */
-} __attribute__((packed)) mb2_tag_mmap_t;
-
-static uint32_t align_up8(uint32_t v) {
-    return (v + 7u) & ~7u;
-}
-
 void sysinfo_init_mb2(uint32_t mb2_info_addr) {
     /* Keep CPU fields from cpuid() logic */
     sysinfo_init(0);
@@ -182,13 +157,13 @@ void sysinfo_init_mb2(uint32_t mb2_info_addr) {
 
     mb2_info_t* mb2 = (mb2_info_t*)(uintptr_t)mb2_info_addr;
     uint32_t total = mb2->total_size;
-    uint32_t off = 8;
+    info.mem_kb = bootmem_kb_mb2(mb2, total);
 
     /* the boot loader passes the EFI system table (tag 11/12) only when it was
      * started by UEFI firmware */
-    for (uint32_t o = 8; o + 8 <= total;) {
+    for (uint32_t o = 8; o <= total && total-o >= 8;) {
         mb2_tag_t* t = (mb2_tag_t*)(uintptr_t)(mb2_info_addr + o);
-        if (t->type == 0 || t->size < 8) break;
+        if (t->type == 0 || t->size < 8 || t->size > total-o || t->size > 0xfffffff8u) break;
         if (t->type == 11 || t->type == 12) info.uefi = 1;
         if (t->type == 1) {                      /* the command line */
             const char* s = (const char*)t + 8;
@@ -207,45 +182,11 @@ void sysinfo_init_mb2(uint32_t mb2_info_addr) {
             for (uint32_t i = 0; i < sizeof(info.rsdp); i++) info.rsdp[i] = i < n ? s[i] : 0;
             info.has_rsdp = 1;
         }
-        o += (t->size + 7u) & ~7u;
+        uint32_t advance = (t->size + 7u) & ~7u;
+        if (advance > total-o) break;
+        o += advance;
     }
 
-    while (off + 8 <= total) {
-        mb2_tag_t* tag = (mb2_tag_t*)(uintptr_t)(mb2_info_addr + off);
-        if (tag->type == 0) break;
-
-        if (tag->type == 6 && tag->size >= sizeof(mb2_tag_mmap_t)) {
-            mb2_tag_mmap_t* mm = (mb2_tag_mmap_t*)tag;
-            if (mm->entry_size >= sizeof(mb2_mmap_entry_t)) {
-                /* the usable RAM: all the "available" ranges added up (the
-                 * highest address would count the PCI hole below 4 GB too) */
-                uint64_t usable = 0;
-                uint32_t pos = sizeof(mb2_tag_mmap_t);
-                while (pos + mm->entry_size <= mm->size) {
-                    mb2_mmap_entry_t* e = (mb2_mmap_entry_t*)((uintptr_t)mm + pos);
-                    if (e->type == 1) usable += e->length;
-                    pos += mm->entry_size;
-                }
-                if (usable > 0) {
-                    info.mem_kb = (uint32_t)(usable >> 10);
-                    return;
-                }
-            }
-        }
-
-        if (tag->type == 4 && tag->size >= sizeof(mb2_tag_basic_mem_t)) {
-            mb2_tag_basic_mem_t* mem = (mb2_tag_basic_mem_t*)tag;
-            /* mem_upper is KiB above 1MB; add 1024 for the first MB */
-            info.mem_kb = mem->mem_upper + 1024u;
-            return;
-        }
-
-        /* Every valid tag is at least 8 bytes (its own type+size header).
-         * Guard against a malformed/zero-size tag stalling the scan forever. */
-        uint32_t adv = align_up8(tag->size);
-        if (adv < 8) adv = 8;
-        off += adv;
-    }
 }
 
 /* (called once at boot, for the log) */

@@ -9,6 +9,7 @@
 #include "fb.h"
 #include "rtc.h"
 #include "usb.h"
+#include "vmtools.h"
 #include "task.h"
 #include "fs.h"
 #include "kstring.h"
@@ -994,6 +995,7 @@ static int cursor_shape(int mx, int my);
 static int g_drawn_shape;
 
 static void draw_cursor(int mx, int my) {
+    if(appwin_capture_pending()) { hw_cursor_hide();return; }
     g_drawn_shape = cursor_shape(mx, my);
     if (hw_cursor(mx, my, g_drawn_shape)) return;
     draw_cursor_shape(mx, my, g_drawn_shape);
@@ -1006,7 +1008,7 @@ static void draw_cursor(int mx, int my) {
  * Clicks, the wheel and what the pointer is over are still the desktop
  * loop's, next time it runs; it finds the pointer already in place. */
 void gui_cursor_tick(void) {
-    if(crash_preview_active() || crash_in_progress())return;
+    if(crash_preview_active() || crash_in_progress() || appwin_capture_pending())return;
     if (g_gui_busy || !g_gui_enabled || !g_backbuf_active || g_in_lock || g_lock_pending) return;
     if (g_ptr_drawn_x < 0 || g_scr_w <= 0 || g_scr_h <= 0) return;
     int dx, dy;
@@ -2017,6 +2019,7 @@ static void sm_program_icon(int sm, const char* app, int x, int y, int big, uint
 
 /* the Start menu opens (graphics mode) */
 static void start_open(void) {
+    appwin_release_mouse();
     static int ready;
     if (!ready) {
         startmenu_host_t h = { sm_action, sm_run_app, sm_open_path, sm_close, sm_program_icon, installer_available };
@@ -2515,6 +2518,8 @@ static void gui_poll_body(void) {
     /* (background tasks - the servers, app windows - call this too, but read no keys) */
     if (g_lock_pending && g_gui_enabled && !task_is_background()) {
         g_lock_pending = 0;
+        appwin_release_mouse();
+        vmtools_capture_pointer(0);
         g_in_lock = 1;
         g_menu_open = 0;
         login_lock(&g_cur_mx, &g_cur_my);
@@ -2640,6 +2645,7 @@ static void gui_poll_body(void) {
             }
         }
         gui_fkeys(fi);
+        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_tv_open && !g_sw_open && !g_bar_kb);
 
         if (!g_backbuf_active) {
             size_desktop(fi);
@@ -2655,7 +2661,13 @@ static void gui_poll_body(void) {
         g_scr_h = (int)fi->height;
         uintptr_t fl;
         __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
-        mouse_state_t ms = mouse_read();
+        int captured=appwin_capture_active();
+        static int was_captured;
+        if(captured!=was_captured) { vmtools_capture_pointer(captured);g_force_redraw=1;was_captured=captured; }
+        mouse_state_t ms = captured?mouse_read_raw():mouse_read();
+        if(captured && appwin_capture_input(&ms,(int)fi->width,(int)fi->height)) {
+            ms.dx=ms.dy=ms.abs=ms.dz=0;
+        }
         g_mouse_from_lock = 0;               /* (the lock screen moved g_cur_mx/my itself) */
         if (ms.abs) {                        /* a tablet says where the pointer is */
             g_cur_mx = (int)((int64_t)ms.ax * ((int)fi->width - 1) / 65535);
@@ -2693,6 +2705,7 @@ static void gui_poll_body(void) {
         int right = ms.btn_right ? 1 : 0;
         int rclick = right && !prev_right;
         prev_right = right;
+        if(captured) { click=rclick=0;left=0; }
         /* task view / switcher / taskbar focus: a click picks a window or leaves */
         if ((click || rclick) && (g_tv_open || g_sw_open || g_bar_kb)) {
             if (click && g_tv_open) { int i = tv_card_at(fi, mx, my); if (i >= 0) tv_activate(i); }
@@ -2937,6 +2950,7 @@ static void gui_poll_body(void) {
         int changed = g_force_redraw || memcmp(&view, &g_last_view, sizeof(view)) != 0;
 
         if (!changed) {
+            if(captured)return;
             /* only the mouse moved (or its shape changed): restore its old spot, draw it anew */
             if (mx != g_ptr_drawn_x || my != g_ptr_drawn_y || cursor_shape(mx, my) != g_drawn_shape) {
                 fb_present_rect(g_ptr_drawn_x + CURSOR_X0, g_ptr_drawn_y + CURSOR_Y0, CURSOR_W, CURSOR_H);
@@ -2972,6 +2986,7 @@ static void gui_poll_body(void) {
 }
 
 void gui_set_enabled(int enabled) {
+    if(!enabled) { appwin_release_mouse();vmtools_capture_pointer(0); }
     if (!enabled) hw_cursor_hide();
     while (keyboard_take_fkey()) {}          /* (pressed while the desktop was off) */
     g_gui_enabled = enabled ? 1 : 0;

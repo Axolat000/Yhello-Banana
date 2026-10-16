@@ -1,0 +1,103 @@
+<!doctype html><html><head><title>MutationObserver asynchronous regression</title></head><body>
+<p id="result">RUNNING</p><div id="root"><span>old</span></div>
+<script>
+var failedNames = [], checks = 0, failures = 0;
+function assert(value, name) { checks++; if (!value) { failures++; failedNames.push(name); console.log('FAIL: ' + name); } }
+var root = document.getElementById('root'), span = root.firstChild, text = span.firstChild;
+var order = ['sync'], batches = [], depth = 0, callbackThis = false, callbackArg = false;
+var o = new MutationObserver(function(records, observer) {
+  depth++; assert(depth === 1, 'callback not recursively entered');
+  callbackThis = this === o; callbackArg = observer === o;
+  order.push('observer'); batches.push(records);
+  if (batches.length === 1) root.setAttribute('data-x', 'callback');
+  depth--;
+});
+o.observe(root, {attributes:true, attributeOldValue:true});
+Promise.resolve().then(function() { order.push('promise'); });
+root.setAttribute('data-x', 'one'); root.setAttribute('data-x', 'two');
+queueMicrotask(function() { order.push('queued'); });
+assert(batches.length === 0, 'callback pending until checkpoint');
+
+var disconnectedCalls = 0;
+var disconnected = new MutationObserver(function() { disconnectedCalls++; });
+disconnected.observe(root, {attributes:true}); root.setAttribute('data-y', 'one');
+disconnected.disconnect(); root.setAttribute('data-y', 'two');
+assert(disconnected.takeRecords().length === 0, 'disconnect discards queued records');
+var takenCalls = 0;
+var taken = new MutationObserver(function() { takenCalls++; });
+taken.observe(root, {attributes:true}); root.setAttribute('data-y', 'three');
+assert(taken.takeRecords().length === 1, 'takeRecords gets pending record synchronously');
+taken.disconnect();
+
+var detachedBatches = [], detachedObserver = new MutationObserver(function(records) { detachedBatches.push(records); });
+detachedObserver.observe(root, {childList:true, attributes:true, characterDataOldValue:true, subtree:true});
+root.removeChild(span); span.setAttribute('data-detached', 'yes'); text.data = 'removed';
+assert(detachedBatches.length === 0, 'removed subtree records pending');
+
+// Transient registrations expire at the checkpoint even without childList.
+var onlyRoot = document.createElement('div'), onlyChild = document.createElement('b'), onlyCalls = 0;
+onlyRoot.appendChild(onlyChild);
+var only = new MutationObserver(function() { onlyCalls++; });
+only.observe(onlyRoot, {attributes:true, subtree:true}); onlyChild.remove();
+
+// One callback may discard another observer's queued records before delivery.
+var interrupted = 0, interruptTarget = document.createElement('div');
+var interrupter = new MutationObserver(function() { interruptedObserver.disconnect(); });
+var interruptedObserver = new MutationObserver(function() { interrupted++; });
+interrupter.observe(interruptTarget, {attributes:true}); interruptedObserver.observe(interruptTarget, {attributes:true});
+interruptTarget.id = 'pending';
+
+// Pending observers run in construction order, even when mutations arrive in reverse.
+var deliveryOrder = [];
+var n1 = document.createElement('i'), n2 = document.createElement('b');
+var first = new MutationObserver(function() { deliveryOrder.push('first'); });
+var second = new MutationObserver(function() { deliveryOrder.push('second'); });
+first.observe(n1, {attributes:true}); second.observe(n2, {attributes:true});
+n2.id = 'two'; n1.id = 'one';
+
+// A throwing observer cannot prevent a different observer from receiving its batch.
+var survived = 0;
+var throwing = new MutationObserver(function() { throw new Error('expected observer exception'); });
+var survivor = new MutationObserver(function() { survived++; });
+var nt = document.createElement('div');
+throwing.observe(nt, {attributes:true}); survivor.observe(nt, {attributes:true}); nt.id = 'test';
+</script>
+<script>
+onlyChild.id = 'past-checkpoint';
+assert(only.takeRecords().length === 0 && onlyCalls === 0, 'attributes-only transient ends at checkpoint without callback'); only.disconnect();
+assert(interrupted === 0, 'disconnect from another observer cancels pending callback'); interrupter.disconnect();
+assert(callbackThis && callbackArg, 'callback this and second argument are observer');
+assert(batches.length === 2, 'callback mutation delivered in later batch');
+assert(batches[0].length === 5 && batches[1].length === 1, 'synchronous writes batched');
+assert(batches[0][0].oldValue === null && batches[0][1].oldValue === 'one', 'batch preserves mutation-time old values');
+assert(batches[1][0].oldValue === 'two', 'callback mutation old value');
+assert(order.join(',') === 'sync,promise,observer,queued,observer', 'FIFO microtask ordering');
+assert(disconnectedCalls === 0 && takenCalls === 0, 'disconnect and takeRecords suppress empty callbacks');
+assert(detachedBatches.length === 1 && detachedBatches[0].length === 4, 'detached subtree retained until delivery, includes callback attribute');
+assert(detachedBatches[0][0].type === 'childList' && detachedBatches[0][0].removedNodes[0] === span, 'detached removal record');
+assert(detachedBatches[0][1].target === span && detachedBatches[0][2].target === text && detachedBatches[0][2].oldValue === 'old', 'detached descendant records');
+text.data = 'after delivery'; span.id = 'outside';
+assert(detachedObserver.takeRecords().length === 0, 'removed subtree observation ends after callback');
+assert(deliveryOrder.join(',') === 'first,second', 'pending observers run in creation order');
+assert(survived === 1, 'observer exceptions isolated');
+o.disconnect(); detachedObserver.disconnect(); first.disconnect(); second.disconnect(); throwing.disconnect(); survivor.disconnect();
+
+// takeRecords does not prematurely stop transient subtree observation.
+var transient = new MutationObserver(function() {});
+var tr = document.createElement('div'), tc = document.createElement('b'); tr.appendChild(tc);
+transient.observe(tr, {childList:true, attributes:true, subtree:true}); tc.remove();
+assert(transient.takeRecords().length === 1, 'takeRecords consumes removal'); tc.id = 'still-observed';
+assert(transient.takeRecords().length === 1, 'takeRecords leaves transient observation until checkpoint');
+// Re-observing the root clears its previous transient registrations.
+transient.observe(tr, {attributes:true, subtree:true}); tc.id = 'no-longer-observed';
+assert(transient.takeRecords().length === 0, 'observe updates clear transients'); transient.disconnect();
+
+// A disconnected observer can be used again without stale registrations.
+disconnected.observe(root, {attributeFilter:['restart']});
+root.id = 'root'; root.setAttribute('restart', 'yes');
+assert(disconnectedCalls === 0, 're-observation remains asynchronous');
+</script>
+<script>
+assert(disconnectedCalls === 1, 'disconnect followed by observe works'); disconnected.disconnect();
+document.getElementById('result').textContent = failures ? 'FAIL ' + failures + '/' + checks + ': ' + failedNames.join('; ') : 'PASS ' + checks;
+</script></body></html>

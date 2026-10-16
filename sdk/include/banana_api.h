@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 19u
+#define BANANA_API_VERSION 20u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -87,9 +87,9 @@ typedef struct {
 /* window events */
 #define BANANA_EV_NONE        0
 #define BANANA_EV_KEY         1    /* key: ASCII, or one of BANANA_KEY_* */
-#define BANANA_EV_MOUSE_DOWN  2    /* x, y (window client coordinates), button 1 left / 2 right */
+#define BANANA_EV_MOUSE_DOWN  2    /* x,y client coordinates; button 1 left / 2 right / 3 middle */
 #define BANANA_EV_MOUSE_UP    3
-#define BANANA_EV_MOUSE_MOVE  4    /* buttons: bit 0 left held */
+#define BANANA_EV_MOUSE_MOVE  4    /* buttons: bit 0 left, 1 right, 2 middle (capture) */
 #define BANANA_EV_CLOSE       5    /* the close button: clean up and exit */
 #define BANANA_EV_FOCUS       6    /* x = 1 gained / 0 lost */
 #define BANANA_EV_RESIZE      7    /* (resizable windows) x, y = the new size: fetch
@@ -97,6 +97,8 @@ typedef struct {
 #define BANANA_EV_WHEEL       8    /* (after win_wheel) y = notches, + = toward the user */
 #define BANANA_EV_DROP        9    /* (version 13) files dropped on the window: x, y where,
                                       key = how many - win_dropped() gives their paths */
+#define BANANA_EV_MOUSE_REL   10   /* v20: captured motion, x/y = dx/dy, right/down positive */
+#define BANANA_EV_CAPTURE     11   /* v20: x = 1 captured / 0 released; buttons = held mask */
 
 /* key_mods() */
 #define BANANA_MOD_SHIFT 1
@@ -476,6 +478,10 @@ typedef struct banana_api {
     int   (*sig_altstack)(const void* ss, void* old);
     /* the signals pending for the calling thread (or the app), bit sig - 1 */
     unsigned long long (*sig_pending)(void);
+    /* v20: only a foreground window may capture. Escape and focus loss,
+     * minimize, desktop switch, close or app exit release it. 0 / -1. */
+    int   (*win_capture_mouse)(int win,int capture);
+    int   (*win_mouse_captured)(int win); /* 1 active, 0 released, -1 invalid */
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

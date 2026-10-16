@@ -30,6 +30,8 @@ void vmtools_init(void);
 const char* vmtools_hypervisor(void);
 /* the absolute pointer, every frame (kernel/usb.c mouse_read) */
 void vmtools_poll_pointer(void);
+/* Temporarily ask mouse integration for relative reports; restore on release. */
+void vmtools_capture_pointer(int capture);
 /* the host's clock, seconds since 1970 (UTC), or 0 if the hypervisor gives none */
 uint32_t vmtools_host_time(void);
 /* the `vmtools` shell command: status, on / off, time */

@@ -10,6 +10,7 @@ extern const uint8_t ex_gears[], ex_gears_end[];
 extern const uint8_t ex_cltest[], ex_cltest_end[];
 extern const uint8_t ex_systest[], ex_systest_end[];
 extern const uint8_t ex_posixtest[], ex_posixtest_end[];
+extern const uint8_t ex_mousetest[], ex_mousetest_end[];
 
 static const struct { const char* name; const uint8_t* start; const uint8_t* end; } g_examples[] = {
     { "hello.bpk", ex_hello, ex_hello_end },
@@ -24,6 +25,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "cltest.bpk", ex_cltest, ex_cltest_end },
     { "systest.bpk", ex_systest, ex_systest_end },
     { "posixtest.bpk", ex_posixtest, ex_posixtest_end },
+    { "mousetest.bpk", ex_mousetest, ex_mousetest_end },
 };
 
 void examples_seed(void) {

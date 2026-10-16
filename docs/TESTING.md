@@ -18,7 +18,8 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits and cores (about 5 s)
+selftest                 ring3, memory, limits, cores, OpenCL, offline browser,
+                         POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
                          holds, and it is given back when the app ends
@@ -31,6 +32,16 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
                          float8-16 vectors, refused group sizes
+selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
+                         highlight, countdown, clipping, color, stride and fallback checks;
+                         incremental updates preserve unchanged options and header pixels
+selftest ram             firmware RAM reporting: complete maps before/after legacy counts,
+                         8/24/64 GiB totals, reserved holes, malformed input and live totals
+selftest mouse           deterministic relative-movement, ownership and release-state checks
+selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
+                         click to capture, look around, Escape releases, Q exits
+selftest browser         offline framework, CSS/layout, DOM observer and WebP tests
+selftest browser swm     live SuperWebManager HTTPS, layout, hydration and image tests
 selftest posix [part]    installs and runs the posixtest example: the POSIX layer for
                          ported programs - mmap: a 1 GiB reservation, mprotect, holes
                          mapped again, file mappings, system calls on mapped buffers,
@@ -192,3 +203,61 @@ python3 tools/test_crashscreen.py
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an
 installed disk, `fstest` on a real stick, and `crashtest` for the screen.
+
+### Browser host checks
+
+`python3 tools/test_browser.py` runs the offline suite; add `--32` for i686,
+`--sanitize` for ASan/UBSan, or `--swm` for the live website checks and a PNG
+preview. The live host checks need libcurl development files and pkg-config.
+The OS commands use Banana OS networking; the host transport uses libcurl.
+See [the fixture documentation](../web/fixtures/README.md) for coverage and limits.
+
+### Mouse capture host checks
+
+`python3 tools/test_mouse_capture.py` tests the real app-window event and capture
+implementation, the SDK wrappers on older API tables, and shared input math.
+Use `--32` for the i686 ABI or `--sanitize` for ASan/UBSan. This uses host
+framebuffer/heap stubs; it does not validate physical devices or hypervisor I/O.
+
+### Boot menu host checks
+
+`python3 tools/test_bootmenu.py` runs the same renderer checks as `selftest boot`
+and exports 640x480, 1024x768 and 1920x1080 PNG previews under `build/test/boot/`.
+Use `--32` or `--sanitize` for the i686 ABI or ASan/UBSan. These renderer tests
+need neither QEMU nor Pillow. `tools/build_boot_font.py` optionally regenerates
+the committed atlas from `fonts/DejaVuSans.ttf` (Pillow required; license in
+`fonts/LICENSE`). Normal OS builds consume the atlas directly.
+
+Firmware smoke coverage for build 168: an isolated ISO booted under SeaBIOS and
+64-bit OVMF, detected the graphical menu, paused the timer, moved selection with
+the arrow keys and started the kernel with Enter. The 32-bit UEFI loader was
+compiled, linked and checked for relocations and valid PE conversion; it was not
+run under 32-bit UEFI firmware. Rebuild with `tools/dev.sh run` to see the menu;
+`tools/dev.sh run uefi` selects the UEFI path.
+
+Build 170 adds 22 incremental redraw checks (37 total). Selection, display
+and countdown changes repaint only affected bands, composed in a 3 KiB
+scanline buffer before copying to the framebuffer. Repeated unchanged input
+writes no pixels. Tests compare incremental output with a full render at
+640x480 and 1024x768 and check cache invalidation when the framebuffer or
+menu layout changes. The BIOS linker still enforces the loader's 64 KiB
+address-space limit.
+
+The updated renderer passed ASan/UBSan and i686 host checks, both kernel
+links, BIOS/UEFI32/UEFI64 loader builds, BIOS/UEFI64 QEMU menu navigation
+and kernel handoff, and all 37 `selftest boot` checks in a 64-bit BIOS VM.
+
+### RAM reporting
+
+`python3 tools/test_bootmem.py --sanitize` (or `--32`) runs the same 16
+memory-map regression checks as `selftest ram`. The in-OS command also checks
+that the detected total covers the RAM managed by the allocators. Rebuild and
+boot with `MEM=8G tools/dev.sh run`, then run `selftest ram` and `neofetch`;
+Settings > About reads the same total. These are usable firmware RAM totals:
+reserved memory and the PCI hole are excluded. A 32-bit kernel can report RAM
+above 4 GiB even though it cannot allocate from it.
+
+Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
+64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
+BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
+maps; those larger guest sizes were not run on this host.

@@ -1,4 +1,11 @@
 #include "selftest.h"
+#include "../kernel/bootmenu_test.h"
+#include "../kernel/bootmem_test.h"
+#include "../kernel/sysinfo.h"
+#include "../kernel/kheap.h"
+#include "../kernel/mouse_capture.h"
+#include "../kernel/gui.h"
+#include "../kernel/browser_test.h"
 #include "ipv6test.h"
 #include "../net/ipv6.h"
 #include "../kernel/fs.h"
@@ -22,6 +29,7 @@
 extern const uint8_t ex_systest[], ex_systest_end[];
 extern const uint8_t ex_cltest[], ex_cltest_end[];
 extern const uint8_t ex_posixtest[], ex_posixtest_end[];
+extern const uint8_t ex_mousetest[], ex_mousetest_end[];
 
 static int g_fail, g_ok;
 
@@ -162,13 +170,43 @@ static void t_posix(const char* part) {
     report("POSIX checks", rc == 0, rc < 0 ? msg : "see the checks above");
 }
 
+static void mouse_demo(void) {
+    if(!gui_is_enabled()) { report("mouse capture demo",0,"startx first, then selftest mouse demo in a terminal");return; }
+    const char* tmp="/tmp/mousetest.bpk";char msg[160]={0};
+    if(fs_write_path(tmp,ex_mousetest,(uint32_t)(ex_mousetest_end-ex_mousetest))<0 || pkg_install(tmp,msg,sizeof(msg))) {
+        fs_delete(tmp,0);report("install mouse demo",0,msg);return;
+    }
+    fs_delete(tmp,0);char* args[]={"mousetest"};
+    int rc=pkg_run("mousetest",1,args,1,msg,sizeof(msg));
+    report("mouse demo launched",rc>=0,rc<0?msg:"click to look around; Escape releases; Q quits (interactive check)");
+}
+
+static void t_ram(void) {
+    section("firmware RAM reporting (build 169)");
+    bootmem_tests_run(report);
+    uint32_t kb=sysinfo_get()->mem_kb;
+    uint64_t managed=(hmem_total_bytes()>>10)+(kheap_total_bytes()>>10);
+    char note[128];
+    ksnprintf(note,sizeof(note),"%u MiB usable RAM; %llu MiB above 4 GiB managed for apps",
+              kb/1024u,hmem_total_bytes()>>20);
+    report("live firmware total covers the managed RAM",kb>0 && kb>=managed,note);
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
+    if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
+        terminal_writeln("usage: selftest mouse [demo]");return 1;
+    }
+    if(only && !strcmp(only,"boot") && argc!=2) { terminal_writeln("usage: selftest boot");return 1; }
+    if(only && !strcmp(only,"ram") && argc!=2) { terminal_writeln("usage: selftest ram");return 1; }
     uint16_t ipv6_port = 80;
+    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
+        terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
+    }
     if (only && !strcmp(only, "ipv6") && argc > 3) {
         uint32_t n;
         int used = k_parse_u32(argv[3], &n);
@@ -179,11 +217,28 @@ int selftest_cmd(int argc, char** argv) {
     }
     g_ok = g_fail = 0;
     uint32_t t0 = timer_ms();
-    terminal_writeln(only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
+    terminal_writeln(only && !strcmp(only, "browser") ? (argc==3?"selftest: checking live swm.mxtpasontop.fr":"selftest: checking browser frameworks (offline)") :
+                     only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
+                     only && !strcmp(only, "ram") ? "selftest: checking RAM reporting" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if (only && !strcmp(only, "opencl")) {
+    if(only && !strcmp(only,"ram")) {
+        t_ram();
+    } else if(only && !strcmp(only,"boot")) {
+        section("graphical boot menu rendering");bootmenu_tests_run(report);
+    } else if(only && !strcmp(only,"mouse")) {
+        section("mouse capture and relative movement");mouse_capture_tests(report);
+        if(argc==3)mouse_demo();
+    } else if (only && !strcmp(only, "browser")) {
+        if(argc==3) {
+            section("SuperWebManager live website checks");
+            browser_site_test_run(report);
+        } else {
+            section("Tailwind CSS, React, Vue, Alpine, Astro and DOM observers");
+            browser_test_run(report);
+        }
+    } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "posix")) {
         t_posix(argc > 2 ? argv[2] : NULL);
@@ -197,6 +252,10 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "cores")) t_cores();
         if (!only) {
             t_opencl();
+            browser_test_run(report);
+            mouse_capture_tests(report);
+            bootmenu_tests_run(report);
+            t_ram();
             t_posix(NULL);
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");

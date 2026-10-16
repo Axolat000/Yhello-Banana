@@ -19,6 +19,7 @@
  * the Makefile checks): it runs wherever the firmware puts it. */
 #include "efi.h"
 #include "sha256.h"
+#include "boot_ui.h"
 #include "kernel_hashes.h"
 
 static EFI_SYSTEM_TABLE*  ST;
@@ -161,7 +162,30 @@ static const char* extra_label(int x) {
     }
 }
 
+static boot_ui_state g_menu_ui;
 static void draw_menu(int sel, int secs) {
+    if(g_gop && g_gop->Mode && g_gop->Mode->Info) {
+        EFI_GOP_MODE* mode=g_gop->Mode;EFI_GOP_MODE_INFO* info=mode->Info;
+        int rp=16,gp=8,bp=0,usable=info->PixelFormat<2;
+        if(info->PixelFormat==0) { rp=0;bp=16; }
+        if(info->PixelFormat==2) {
+            u32 masks[3]={info->RedMask,info->GreenMask,info->BlueMask};int positions[3];usable=1;
+            for(int k=0;k<3;k++) { int shift=0;u32 mask=masks[k];while(mask && !(mask&1)){mask>>=1;shift++;}
+                positions[k]=shift;if(mask!=255)usable=0; }
+            rp=positions[0];gp=positions[1];bp=positions[2];
+        }
+        boot_ui_fb fb={(volatile u8*)(UINTN)mode->FrameBufferBase,(int)info->HorizontalResolution,
+            (int)info->VerticalResolution,info->PixelsPerScanLine<=16384?(int)info->PixelsPerScanLine*4:0,rp,gp,bp};
+        if(usable && (u64)(UINTN)mode->FrameBufferBase==mode->FrameBufferBase &&
+           (u64)info->PixelsPerScanLine*info->VerticalResolution*4<=mode->FrameBufferSize && boot_ui_valid(&fb)) {
+            char video[80];vmode_label(video,g_modes,g_nmodes,g_vsel);
+            boot_ui_menu m={.count=KERNEL_ENTRIES+g_nextra,.selected=sel,.seconds=secs,.video=video,
+                .firmware=FIRMWARE_NAME,.status=g_secure?"Secure Boot: on":g_setup?"Secure Boot: setup":"Secure Boot: off"};
+            for(int i=0;i<m.count;i++)m.labels[i]=i<KERNEL_ENTRIES?boot_ui_kernel_label(i):extra_label(g_extra[i-KERNEL_ENTRIES]);
+            boot_ui_update(&fb,&m,&g_menu_ui);return;
+        }
+    }
+
     print_at(2, 1, "Banana Boot  (" FIRMWARE_NAME ")", 0x0E);
     print_at(48, 1, g_secure ? "Secure Boot: on   " : g_setup ? "Secure Boot: setup" : "Secure Boot: off  ", g_secure ? 0x0A : 0x08);
     int n = KERNEL_ENTRIES + g_nextra;
@@ -193,6 +217,7 @@ static void draw_menu(int sel, int secs) {
 }
 
 static int menu(int def) {
+    g_menu_ui.valid=0;
     int sel = def, ticks = 30, n = KERNEL_ENTRIES + g_nextra;   /* 3 s, by 100 ms */
     ST->ConOut->ClearScreen(ST->ConOut);
     ST->ConOut->EnableCursor(ST->ConOut, 0);

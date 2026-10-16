@@ -782,6 +782,12 @@ static int regex_ok(lexer_t* L) {
     tok_t* t = &L->toks[L->ntok - 1];
     if (t->t == T_NUM || t->t == T_STR || t->t == T_TPL || t->t == T_REGEX || t->t == T_VAR) return 0;
     if (t->t == T_ID) {
+        /* Keywords used as property names still end an operand. */
+        if (L->ntok > 1) {
+            tok_t* prev = t - 1;
+            if (prev->t == T_OP && ((prev->len == 1 && prev->p[0] == '.') ||
+                (prev->len == 2 && memcmp(prev->p, "?.", 2) == 0))) return 0;
+        }
         static const char* const kws[] = { "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
                                            "throw", "case", "do", "else", "yield", "await" };
         for (uint32_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++)
@@ -793,6 +799,20 @@ static int regex_ok(lexer_t* L) {
         if (t->len == 2 && (memcmp(t->p, "++", 2) == 0 || memcmp(t->p, "--", 2) == 0)) return 0;
     }
     return 1;
+}
+
+/* Closing slash of a regex, shared by the lexer and template boundary scan.
+ * Quotes, backticks and braces have no special meaning inside a regex. */
+static const char* regex_end(const char* p, const char* end) {
+    int cls = 0;
+    while (p < end && *p != '\n' && *p != '\r') {
+        if (*p == '\\' && p + 1 < end) { p += 2; continue; }
+        if (*p == '[') cls = 1;
+        else if (*p == ']') cls = 0;
+        else if (*p == '/' && !cls) return p;
+        p++;
+    }
+    return end;
 }
 
 /* one shared copy of each identifier name (big scripts repeat them a lot) */
@@ -845,24 +865,67 @@ static const char* tpl_end(const char* p, const char* end) {
 /* given p just past "${", the '}' that closes it (or end) */
 static const char* tpl_expr_end(const char* p, const char* end) {
     int depth = 1;
+    /* Keep the last two tokens, without allocating strings or AST nodes.
+     * The same lexical goal as lex_all distinguishes /regex/ from division. */
+    tok_t recent[2];
+    lexer_t L;
+    memset(&L, 0, sizeof(L));
+    L.toks = recent;
     while (p < end) {
+        const char* start = p;
         char ch = *p;
+        int type = T_OP;
+        if (is_space(ch)) { p++; continue; }
         if (ch == '"' || ch == '\'') {
             p++;
             while (p < end && *p != ch && *p != '\n') { if (*p == '\\' && p + 1 < end) p++; p++; }
             if (p < end) p++;
+            type = T_STR;
+        } else if (ch == '`') {
+            p = tpl_end(p + 1, end);
+            if (p < end) p++;
+            type = T_TPL;
+        } else if (ch == '/' && p + 1 < end && p[1] == '/') {
+            while (p < end && *p != '\n' && *p != '\r') p++;
             continue;
-        }
-        if (ch == '`') { p = tpl_end(p + 1, end); if (p < end) p++; continue; }
-        if (ch == '/' && p + 1 < end && p[1] == '*') {
+        } else if (ch == '/' && p + 1 < end && p[1] == '*') {
             p += 2;
             while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
-            p += 2;
+            p = p + 1 < end ? p + 2 : end;
             continue;
+        } else if (ch == '/' && regex_ok(&L)) {
+            p = regex_end(p + 1, end);
+            if (p == end) return end;
+            p++;
+            while (p < end && id_char((unsigned char)*p, 0)) p++;
+            type = T_REGEX;
+        } else if (id_start((unsigned char)ch, 0)) {
+            do { p++; } while (p < end && id_char((unsigned char)*p, 0));
+            type = T_ID;
+        } else if (is_digit(ch) || (ch == '.' && p + 1 < end && is_digit(p[1]))) {
+            /* Keep an exponent sign inside the numeric token. */
+            do {
+                char last = *p++;
+                if ((last == 'e' || last == 'E') && p < end && (*p == '+' || *p == '-')) p++;
+            } while (p < end && (id_char((unsigned char)*p, 0) || *p == '.'));
+            type = T_NUM;
+        } else {
+            if (ch == '{') depth++;
+            else if (ch == '}' && --depth == 0) return p;
+            uint32_t len = 1;
+            for (uint32_t i = 0; i < sizeof(OPS) / sizeof(OPS[0]); i++) {
+                uint32_t n = (uint32_t)strlen(OPS[i]);
+                if ((uint32_t)(end - p) >= n && memcmp(p, OPS[i], n) == 0) { len = n; break; }
+            }
+            p += len;
         }
-        if (ch == '{') depth++;
-        else if (ch == '}' && --depth == 0) return p;
-        p++;
+        if (L.ntok == 2) recent[0] = recent[1];
+        else L.ntok++;
+        tok_t* t = &recent[L.ntok - 1];
+        memset(t, 0, sizeof(*t));
+        t->t = (uint8_t)type;
+        t->p = start;
+        t->len = (uint32_t)(p - start);
     }
     return end;
 }
@@ -973,15 +1036,7 @@ static void lex_all(lexer_t* L) {
         }
         /* regular expression literals */
         if (!php && c == '/' && regex_ok(L)) {
-            const char* p = s + 1;
-            int cls = 0;
-            while (p < end && *p != '\n') {
-                if (*p == '\\' && p + 1 < end) { p += 2; continue; }
-                if (*p == '[') cls = 1;
-                else if (*p == ']') cls = 0;
-                else if (*p == '/' && !cls) break;
-                p++;
-            }
+            const char* p = regex_end(s + 1, end);
             if (p < end && *p == '/') {
                 const char* fs = p + 1;
                 const char* fe = fs;
@@ -2230,6 +2285,15 @@ static node_t* parse_stmt(parser_t* P) {
             return n;
         }
         if (kw(P, "if")) { nx(P); return parse_if(P); }
+        if (!P->php && kw(P, "with")) {
+            nx(P);
+            n = mk(P, N_WITH);
+            expect(P, "(");
+            n->a = parse_expr(P);
+            expect(P, ")");
+            n->b = parse_stmt(P);
+            return n;
+        }
         if (kw(P, "while")) {
             nx(P);
             n = mk(P, N_WHILE);
@@ -2552,6 +2616,78 @@ static var_t* env_lookup(interp_t* I, env_t* e, const char* name) {
     return NULL;
 }
 
+/* HasProperty without invoking getters on ordinary properties. Proxies must
+ * receive their has trap before a with binding is read or written. */
+static int has_property(interp_t* I, value_t v, const char* key) {
+    if (v.t == V_FUNC) {
+        int found = 0;
+        if (v.f->statics) prop_get_raw(v.f->statics, key, &found);
+        if (found || strcmp(key, "name") == 0) return 1;
+        for (obj_t* p = func_proto(I, v.f); p; p = p->proto) {
+            prop_get_raw(p, key, &found);
+            if (found) return 1;
+        }
+        return 0;
+    }
+    if (v.t != V_OBJ) return 0;
+    obj_t* o = v.o;
+    if (es_proxy_target(o)) return es_proxy_has(I, o, key);
+    if (o->kind == OBJ_ARRAY) {
+        uint32_t idx;
+        if (key_index(key, &idx)) return idx < o->len;
+        if (strcmp(key, "length") == 0) return 1;
+    }
+    if (o->kind == OBJ_HOST && o->hc && o->hc->get) {
+        int found = 0;
+        o->hc->get(I, o, key, &found);
+        if (found || I->ctl) return found;
+    }
+    for (obj_t* p = o; p; p = p->proto) {
+        int found = 0;
+        prop_get_raw(p, key, &found);
+        if (found) return 1;
+    }
+    int found = 0;
+    lib_member(I, v, key, &found);
+    return found;
+}
+
+static var_t* resolve_binding(interp_t* I, const char* name, value_t* base) {
+    *base = v_undef();
+    for (env_t* e = I->cur; e; e = e->parent) {
+        var_t* v = env_find_local(e, name);
+        if (v) return v->ref ? v->ref : v;
+        if (e->with_obj.t == V_UNDEF) continue;
+        int has = has_property(I, e->with_obj, name);
+        if (I->ctl) return NULL;
+        if (!has) continue;
+        if (e != I->global) {                 /* global object records are not with scopes */
+            value_t excluded = obj_getv(I, e->with_obj, "@@unscopables");
+            if (I->ctl) return NULL;
+            if ((excluded.t == V_OBJ || excluded.t == V_FUNC) && v_truthy(I, obj_getv(I, excluded, name))) continue;
+            if (I->ctl) return NULL;
+        }
+        *base = e->with_obj;
+        return NULL;
+    }
+    if (I->lang == LANG_PHP && name[0] == '_') return env_find_local(I->global, name);
+    return NULL;
+}
+
+static value_t read_binding(interp_t* I, const char* name, int quiet, value_t* receiver) {
+    value_t base;
+    var_t* v = resolve_binding(I, name, &base);
+    if (receiver) *receiver = base;
+    if (I->ctl) return v_undef();
+    if (v) return v->v;
+    if (base.t != V_UNDEF) return obj_getv(I, base, name);
+    if (I->lang == LANG_PHP) return v_null();
+    if (strcmp(name, "NaN") == 0) { num_t z = 0; return v_num(z / z); }
+    if (strcmp(name, "Infinity") == 0) return v_num(num_inf());
+    if (!quiet) throwf(I, "ReferenceError: %s is not defined", name);
+    return v_undef();
+}
+
 static var_t* env_define(interp_t* I, env_t* e, str_t* name, value_t v) {
     var_t* x = env_find_local(e, name->s);
     if (x) {
@@ -2769,6 +2905,11 @@ static void super_call(interp_t* I, func_t* cls, int argc, value_t* argv) {
 }
 
 /* property read with string/array/number methods */
+obj_t* func_proto(interp_t* I, func_t* fn) {
+    if (fn->is_async && fn->decl && !(fn->decl->flags & NF_GEN)) return I->proto_async_func;
+    return I->proto_func;
+}
+
 value_t obj_getv(interp_t* I, value_t ov, const char* key) {
     int found = 0;
     if (ov.t == V_OBJ) {
@@ -2803,16 +2944,17 @@ value_t obj_getv(interp_t* I, value_t ov, const char* key) {
             value_t m = prop_get_raw(ov.f->statics, key, &f);
             if (f) return m;
         }
-        if (strcmp(key, "prototype") == 0 && !ov.f->native) {   /* created on first use */
+        if (strcmp(key, "prototype") == 0 && !ov.f->native && !ov.f->has_bound &&
+            (!ov.f->is_async || (ov.f->decl->flags & NF_GEN))) {   /* created on first use */
             if (!ov.f->statics) ov.f->statics = obj_new(I, OBJ_PLAIN);
             value_t p = v_obj(obj_new(I, OBJ_PLAIN));
             obj_set(I, p.o, "constructor", ov);           /* F.prototype.constructor === F */
             obj_set(I, ov.f->statics, "prototype", p);
             return p;
         }
-        if (I->proto_func) {
-            value_t m = prop_get_raw(I->proto_func, key, &f);
-            if (f) return m;
+        for (obj_t* p = func_proto(I, ov.f); p; p = p->proto) {
+            value_t m = prop_get_raw(p, key, &f);
+            if (f) return (m.t == V_OBJ && m.o->kind == OBJ_ACCESSOR) ? accessor_get(I, m, ov) : m;
         }
         if (strcmp(key, "name") == 0) return v_str(I, ov.f->name ? ov.f->name : "");
         if (strcmp(key, "constructor") == 0) return script_get_global(I, "Function");
@@ -2856,7 +2998,15 @@ static void store_member(interp_t* I, node_t* target, value_t ov, value_t kv, va
 static void assign_to(interp_t* I, node_t* target, value_t v) {
     if (target->k == N_ARRAY || target->k == N_OBJECT) { destructure(I, target, v, 0); return; }
     if (target->k == N_IDENT) {
-        var_t* x = env_lookup(I, I->cur, target->s->s);
+        value_t base;
+        var_t* x = resolve_binding(I, target->s->s, &base);
+        if (I->ctl) return;
+        if (base.t != V_UNDEF) {
+            obj_t* o = base.t == V_OBJ ? base.o : base.f->statics;
+            if (!o && base.t == V_FUNC) o = base.f->statics = obj_new(I, OBJ_PLAIN);
+            obj_set(I, o, target->s->s, v);
+            return;
+        }
         if (x) {
             if (x->is_const) { script_throw(I, "TypeError: assignment to constant variable"); return; }
             x->v = v;
@@ -3284,7 +3434,7 @@ static value_t eval_call(interp_t* I, node_t* n) {
             return v_undef();
         }
     } else {
-        fn = eval(I, c);
+        fn = I->lang == LANG_JS && c->k == N_IDENT ? read_binding(I, c->s->s, 0, &self) : eval(I, c);
         if (I->ctl) return v_undef();
         if (fn.t != V_FUNC) {
             if (n->op == 1 && (fn.t == V_UNDEF || fn.t == V_NULL)) return v_undef();   /* f?.() */
@@ -3428,13 +3578,7 @@ static value_t eval(interp_t* I, node_t* n) {
             throwf(I, "Error: Undefined constant \"%s\"", c);
             return v_undef();
         }
-        var_t* x = env_lookup(I, I->cur, n->s->s);
-        if (x) return x->v;
-        if (I->lang == LANG_PHP) return v_null();     /* warning in PHP, not fatal */
-        if (strcmp(n->s->s, "NaN") == 0) { num_t z = 0; return v_num(z / z); }
-        if (strcmp(n->s->s, "Infinity") == 0) return v_num(num_inf());
-        throwf(I, "ReferenceError: %s is not defined", n->s->s);
-        return v_undef();
+        return read_binding(I, n->s->s, 0, NULL);
     }
     case N_ARRAY: {
         if (I->lang == LANG_PHP) {
@@ -3578,6 +3722,10 @@ static value_t eval(interp_t* I, node_t* n) {
                    n->a->k == N_IDENT || (n->a->k == N_MEMBER && n->a->s) ? n->a->s->s : "value");
             return v_undef();
         }
+        if (!fn.f->native && fn.f->is_async) {
+            script_throw(I, "TypeError: async function is not a constructor");
+            return v_undef();
+        }
         if (fn.f->native) {
             value_t marker = v_undef();
             marker.t = V_NULL;
@@ -3596,8 +3744,8 @@ static value_t eval(interp_t* I, node_t* n) {
     case N_TYPEOF: {
         value_t v;
         if (n->a->k == N_IDENT) {
-            var_t* x = env_lookup(I, I->cur, n->a->s->s);
-            v = x ? x->v : v_undef();
+            v = read_binding(I, n->a->s->s, 1, NULL);
+            if (I->ctl) return v_undef();
         } else {
             v = eval(I, n->a);
             if (I->ctl) return v_undef();
@@ -3690,10 +3838,7 @@ static value_t eval(interp_t* I, node_t* n) {
         } else {
             value_t old;
             if (n->a->k == N_IDENT) {
-                var_t* x = env_lookup(I, I->cur, n->a->s->s);
-                if (x) old = x->v;
-                else if (I->lang == LANG_PHP) old = v_null();
-                else { throwf(I, "ReferenceError: %s is not defined", n->a->s->s); return v_undef(); }
+                old = read_binding(I, n->a->s->s, 0, NULL);
             } else {
                 old = eval(I, n->a);
             }
@@ -3718,10 +3863,7 @@ static value_t eval(interp_t* I, node_t* n) {
     case N_UPDATE: {
         value_t old;
         if (n->a->k == N_IDENT) {
-            var_t* x = env_lookup(I, I->cur, n->a->s->s);
-            if (x) old = x->v;
-            else if (I->lang == LANG_PHP) old = v_null();
-            else { throwf(I, "ReferenceError: %s is not defined", n->a->s->s); return v_undef(); }
+            old = read_binding(I, n->a->s->s, 0, NULL);
         } else {
             old = eval(I, n->a);
         }
@@ -3917,6 +4059,34 @@ static void exec(interp_t* I, node_t* n) {
         I->cur = env_new(I, saved, 0);
         hoist(I, n->a, I->cur);
         exec_list(I, n->a);
+        env_release(I, I->cur);
+        I->cur = saved;
+        return;
+    }
+    case N_WITH: {
+        value_t scope = eval(I, n->a);
+        if (I->ctl) return;
+        if (scope.t == V_NULL || scope.t == V_UNDEF) {
+            script_throw(I, "TypeError: with needs an object");
+            return;
+        }
+        if (scope.t != V_OBJ && scope.t != V_FUNC) {
+            obj_t* box = obj_new(I, OBJ_PLAIN);
+            box->proto = scope.t == V_STR ? I->proto_string : scope.t == V_NUM ? I->proto_number : I->proto_object;
+            if (scope.t == V_STR) {
+                obj_set(I, box, "length", v_num(scope.s->len));
+                for (uint32_t i = 0; i < scope.s->len; i++) {
+                    char key[16];
+                    ksnprintf(key, sizeof(key), "%u", i);
+                    obj_set(I, box, key, v_strn(I, scope.s->s + i, 1));
+                }
+            }
+            scope = v_obj(box);
+        }
+        env_t* saved = I->cur;
+        I->cur = env_new(I, saved, 0);
+        I->cur->with_obj = scope;
+        exec(I, n->b);
         env_release(I, I->cur);
         I->cur = saved;
         return;
@@ -4317,6 +4487,10 @@ static int run_program(interp_t* I, const char* src, uint32_t len, const char* n
 
 int script_run(interp_t* I, const char* src, uint32_t len, const char* name) {
     return run_program(I, src, len, name, NULL, NULL);
+}
+
+void script_checkpoint(interp_t* I) {
+    if (I && I->lang == LANG_JS && !I->running) es_run_jobs(I);
 }
 
 int script_run_module(interp_t* I, const char* src, uint32_t len, const char* name, const char* url, obj_t* ns) {

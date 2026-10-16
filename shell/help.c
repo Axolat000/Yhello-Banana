@@ -361,18 +361,24 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|limits|cores|opencl|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
-      "ring3, memory, limits and cores (a few seconds); a part name runs only that part. The app side is "
+      "ring3, memory, limits, cores, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
       "ring3|an app runs in user mode (64-bit kernel)\n"
       "memory|RAM above 4 GiB: 64 MiB for an app, given back after\n"
       "limits|60 threads, 60 open files, 24 apps at once\n"
       "cores|malloc / free / a lock from threads on every core\n"
       "opencl|the cltest example: barriers, local memory, vectors...\n"
+      "browser|offline Tailwind, React, Vue, Alpine, Astro, grid and WebP checks\n"
+      "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"
+      "ram|firmware RAM totals, above-4-GiB maps and live accounting\n"
+      "mouse [demo]|relative mouse capture tests; demo opens a look-around window\n"
+      "browser swm|live checks against https://swm.mxtpasontop.fr/\n"
+      "posix [PART]|mmap, threads, sockets, signals and dlopen (the posixtest example)\n"
       "ipv6|IPv6 UDP / TCP on ::1, parsing, URLs; IPv6 is put back as it was\n"
       "ipv6 HOST [PORT]|also an AAAA lookup and a TCP connection (port 80)",
-      "selftest\nselftest opencl\nselftest ipv6 example.com", "fstest, crashtest, fsck, vmtools" },
+      "selftest\nselftest browser\nselftest browser swm\nselftest posix\nselftest ipv6 example.com", "fstest, crashtest, fsck, vmtools" },
 };
 #define NPAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 

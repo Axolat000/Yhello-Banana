@@ -90,6 +90,8 @@ void      script_set_php_ext(interp_t* I, script_ext_fn fn);
 
 /* parses and runs a program; 0 = ok, -1 = error (script_error()) */
 int         script_run(interp_t* I, const char* src, uint32_t len, const char* name);
+/* Flush host-generated microtasks between scripts (e.g. document.write). */
+void        script_checkpoint(interp_t* I);
 const char* script_error(interp_t* I);
 /* ES modules: runs src in a scope of its own, its exports going into ns; the
  * host loads what it imports (returning the namespace object, or throwing) */

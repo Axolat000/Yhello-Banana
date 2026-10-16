@@ -3,8 +3,8 @@
 
 #include "types.h"
 
-/* Runtime image decoding (PNG, JPEG incl. progressive, BMP, GIF - via
- * the vendored stb_image) and resampling, for user wallpapers. */
+/* Runtime image decoding: PNG, JPEG, BMP, GIF (stb_image), static lossy and
+ * lossless WebP (libwebp), and resampling for browser images and wallpapers. */
 
 typedef struct {
     uint8_t* rgb;     /* RGB888, row 0 first */
@@ -22,7 +22,7 @@ typedef enum {
 const char* image_mode_name(image_mode_t m);
 int         image_mode_parse(const char* s, image_mode_t* out);   /* 1 = ok */
 
-/* "PNG", "JPEG", "BMP", "GIF" or NULL, from the file's magic bytes */
+/* "PNG", "JPEG", "BMP", "GIF", "WebP" or NULL, from magic bytes */
 const char* image_format(const uint8_t* data, uint32_t len);
 
 /* Decodes into out->rgb (kmalloc'd). Returns 0, or -1 with a reason in err. */

@@ -2,6 +2,7 @@
 #include "kstring.h"
 
 int css_viewport_w = 800;
+int css_viewport_h = 600;
 
 /* ══ data ═════════════════════════════════════════════════════════════ */
 
@@ -9,6 +10,14 @@ int css_viewport_w = 800;
 #define MAX_ATTRS 4
 
 typedef struct selector selector_t;
+
+/* Each functional pseudo is a separate condition on the same element. */
+typedef struct func_cond {
+    selector_t* sels;
+    int nsels, negate;
+    int nth_kind, nth_a, nth_b;
+    struct func_cond* next;
+} func_cond_t;
 
 typedef struct {
     char* name;                 /* lowercase */
@@ -26,12 +35,7 @@ typedef struct {
     int   nattr;
     uint8_t first_child, last_child, only_child, first_type, last_type, only_type;
     uint8_t link, checked, disabled, enabled, empty, never;
-    int   nth_kind;             /* 0 none, 1 nth-child, 2 nth-last-child, 3 nth-of-type, 4 nth-last-of-type */
-    int   nth_a, nth_b;
-    selector_t* not_list;       /* :not(...) - none of these */
-    int   nnot;
-    selector_t* is_list;        /* :is(...) / :where(...) - one of these */
-    int   nis;
+    func_cond_t* funcs;         /* conjunctive :not/:is/:where and nth conditions */
 } simple_t;
 
 struct selector {
@@ -96,15 +100,79 @@ static char* dup_lc(arena_t* A, const char* s, uint32_t n) {
     return d;
 }
 
-/* an identifier with CSS escapes removed (.md\:flex -> "md:flex") */
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    c = lc(c);
+    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+/* Past a CSS escape, including the optional hex terminator (CRLF is one). */
+static uint32_t escape_end(const char* s, uint32_t i, uint32_t n) {
+    i++;
+    if (i >= n) return n;
+    if (hex_digit(s[i]) < 0) return i + 1;
+    int digits = 0;
+    while (i < n && digits < 6 && hex_digit(s[i]) >= 0) { i++; digits++; }
+    if (i < n && is_ws(s[i])) {
+        if (s[i++] == '\r' && i < n && s[i] == '\n') i++;
+    }
+    return i;
+}
+
+static uint32_t ident_end(const char* s, uint32_t i, uint32_t n) {
+    while (i < n && is_ident(s[i])) {
+        if (s[i] != '\\') { i++; continue; }
+        if (i + 1 >= n || s[i + 1] == '\n' || s[i + 1] == '\r' || s[i + 1] == '\f') break;
+        i = escape_end(s, i, n);
+    }
+    return i;
+}
+
+/* Decode CSS escapes to UTF-8; invalid scalar values become U+FFFD. */
 static char* ident_dup(arena_t* A, const char* s, uint32_t n) {
-    char* d = (char*)arena_alloc(A, n + 1);
+    /* Only a two-byte escape such as \0 can expand (to three UTF-8 bytes). */
+    char* d = (char*)arena_alloc(A, n + n / 2 + 1);
     uint32_t k = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        if (s[i] == '\\' && i + 1 < n) i++;
-        d[k++] = s[i];
+    for (uint32_t i = 0; i < n; ) {
+        if (s[i] != '\\') { d[k++] = s[i++]; continue; }
+        uint32_t end = escape_end(s, i, n);
+        i++;
+        if (i >= n) break;
+        if (hex_digit(s[i]) < 0) {
+            /* Escaped newlines are string continuations, not characters. */
+            if (s[i] == '\r' && end < n && s[end] == '\n') end++;
+            if (s[i] != '\n' && s[i] != '\r' && s[i] != '\f') d[k++] = s[i];
+        } else {
+            uint32_t cp = 0;
+            int digits = 0;
+            while (i < n && digits < 6 && hex_digit(s[i]) >= 0) {
+                cp = cp * 16 + (uint32_t)hex_digit(s[i++]);
+                digits++;
+            }
+            if (!cp || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
+            if (cp < 0x80) d[k++] = (char)cp;
+            else {
+                if (cp < 0x800) d[k++] = (char)(0xc0 | (cp >> 6));
+                else {
+                    if (cp < 0x10000) d[k++] = (char)(0xe0 | (cp >> 12));
+                    else {
+                        d[k++] = (char)(0xf0 | (cp >> 18));
+                        d[k++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+                    }
+                    d[k++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+                }
+                d[k++] = (char)(0x80 | (cp & 0x3f));
+            }
+        }
+        i = end;
     }
     d[k] = 0;
+    return d;
+}
+
+static char* ident_lc(arena_t* A, const char* s, uint32_t n) {
+    char* d = ident_dup(A, s, n);
+    for (char* p = d; *p; p++) *p = lc(*p);
     return d;
 }
 
@@ -143,10 +211,16 @@ static void parse_nth(const char* s, uint32_t n, int* a, int* b) {
 
 /* the end of a (...) group starting at s[i] == '(' */
 static uint32_t paren_end(const char* s, uint32_t i, uint32_t n) {
-    int d = 0;
+    int d = 0, brackets = 0;
+    char q = 0;
     for (; i < n; i++) {
-        if (s[i] == '(') d++;
-        else if (s[i] == ')') { if (--d == 0) return i; }
+        if (s[i] == '\\') { i = escape_end(s, i, n) - 1; continue; }
+        if (q) { if (s[i] == q) q = 0; continue; }
+        if (s[i] == '"' || s[i] == '\'') { q = s[i]; continue; }
+        if (s[i] == '[') brackets++;
+        else if (s[i] == ']' && brackets) brackets--;
+        else if (!brackets && s[i] == '(') d++;
+        else if (!brackets && s[i] == ')') { if (--d == 0) return i; }
     }
     return n;
 }
@@ -200,7 +274,8 @@ static int parse_selector_into(arena_t* A, const char* s, uint32_t n, selector_t
             if (s[i] == '#' || s[i] == '.') {
                 char k = s[i++];
                 uint32_t st = i;
-                while (i < n && is_ident(s[i])) { if (s[i] == '\\') i++; i++; }
+                i = ident_end(s, i, n);
+                if (i == st) return 0;
                 char* name = ident_dup(A, s + st, i - st);
                 if (k == '#') { p->id = name; out->spec += 0x10000; }
                 else if (ncls < 16) { cls[ncls++] = name; out->spec += 0x100; }
@@ -211,10 +286,11 @@ static int parse_selector_into(arena_t* A, const char* s, uint32_t n, selector_t
                 uint32_t st = ++i;
                 while (i < n && is_ws(s[i])) i++;
                 st = i;
-                while (i < n && s[i] != ']' && s[i] != '=' && s[i] != '~' && s[i] != '|' && s[i] != '^' && s[i] != '$' && s[i] != '*' && !is_ws(s[i])) i++;
+                i = ident_end(s, i, n);
+                if (i == st) return 0;
                 attr_cond_t ac;
                 memset(&ac, 0, sizeof(ac));
-                ac.name = dup_lc(A, s + st, i - st);
+                ac.name = ident_lc(A, s + st, i - st);
                 while (i < n && is_ws(s[i])) i++;
                 if (i < n && s[i] != ']') {
                     if (s[i] != '=') ac.op = s[i++]; else ac.op = '=';
@@ -222,14 +298,18 @@ static int parse_selector_into(arena_t* A, const char* s, uint32_t n, selector_t
                     while (i < n && is_ws(s[i])) i++;
                     char q = (i < n && (s[i] == '"' || s[i] == '\'')) ? s[i++] : 0;
                     uint32_t vs = i;
-                    while (i < n && (q ? s[i] != q : (s[i] != ']' && !is_ws(s[i])))) i++;
-                    ac.val = arena_strdup(A, s + vs, i - vs);
-                    if (q && i < n) i++;
+                    while (i < n && (q ? s[i] != q : (s[i] != ']' && !is_ws(s[i])))) {
+                        if (s[i] == '\\') i = escape_end(s, i, n);
+                        else i++;
+                    }
+                    ac.val = ident_dup(A, s + vs, i - vs);
+                    if (q) { if (i >= n) return 0; i++; }
                     while (i < n && is_ws(s[i])) i++;
                     if (i < n && (s[i] == 'i' || s[i] == 'I')) { ac.icase = 1; i++; }
                 }
                 while (i < n && s[i] != ']') i++;
-                if (i < n) i++;
+                if (i >= n) return 0;
+                i++;
                 if (p->nattr < MAX_ATTRS) T->attrs[out->n][p->nattr++] = ac;
                 else p->never = 1;
                 out->spec += 0x100;
@@ -241,10 +321,17 @@ static int parse_selector_into(arena_t* A, const char* s, uint32_t n, selector_t
                 int element = 0;
                 if (i < n && s[i] == ':') { i++; element = 1; }
                 uint32_t st = i;
-                while (i < n && is_ident(s[i])) i++;
-                char* ps = dup_lc(A, s + st, i - st);
+                i = ident_end(s, i, n);
+                if (i == st) return 0;
+                char* ps = ident_lc(A, s + st, i - st);
                 uint32_t as = 0, ae = 0;
-                if (i < n && s[i] == '(') { as = i + 1; ae = paren_end(s, i, n); i = ae < n ? ae + 1 : n; }
+                if (i < n && s[i] == '(') {
+                    as = i + 1;
+                    ae = paren_end(s, i, n);
+                    if (ae == n) return 0;
+                    i = ae + 1;
+                }
+                uint32_t ps_spec = element ? 1 : 0x100;
                 if (element) p->never = 1;                              /* ::before & co: not real elements */
                 else if (strcmp(ps, "first-child") == 0) p->first_child = 1;
                 else if (strcmp(ps, "last-child") == 0) p->last_child = 1;
@@ -261,26 +348,37 @@ static int parse_selector_into(arena_t* A, const char* s, uint32_t n, selector_t
                 else if (strcmp(ps, "scope") == 0) { }
                 else if (as && (strcmp(ps, "nth-child") == 0 || strcmp(ps, "nth-last-child") == 0 ||
                                 strcmp(ps, "nth-of-type") == 0 || strcmp(ps, "nth-last-of-type") == 0)) {
-                    p->nth_kind = ps[4] == 'c' ? 1 : ps[4] == 'l' ? (ps[9] == 'c' ? 2 : 4) : 3;
+                    func_cond_t* f = (func_cond_t*)arena_alloc(A, sizeof(func_cond_t));
+                    f->nth_kind = ps[4] == 'c' ? 1 : ps[4] == 'l' ? (ps[9] == 'c' ? 2 : 4) : 3;
                     uint32_t ofs = ae;
-                    for (uint32_t k = as; k < ae; k++) if (s[k] == 'o' && strncmp(s + k, "of ", 3) == 0) { ofs = k; break; }
-                    parse_nth(s + as, ofs - as, &p->nth_a, &p->nth_b);
+                    for (uint32_t k = as; k + 2 < ae; k++) if (s[k] == 'o' && strncmp(s + k, "of ", 3) == 0) { ofs = k; break; }
+                    parse_nth(s + as, ofs - as, &f->nth_a, &f->nth_b);
+                    f->next = p->funcs;
+                    p->funcs = f;
                 }
-                else if (as && strcmp(ps, "not") == 0) p->nnot = parse_sel_list(A, s + as, ae - as, &p->not_list);
-                else if (as && (strcmp(ps, "is") == 0 || strcmp(ps, "where") == 0 || strcmp(ps, "matches") == 0 ||
+                else if (as && (strcmp(ps, "not") == 0 || strcmp(ps, "is") == 0 || strcmp(ps, "where") == 0 || strcmp(ps, "matches") == 0 ||
                                 strcmp(ps, "-webkit-any") == 0 || strcmp(ps, "-moz-any") == 0)) {
-                    p->nis = parse_sel_list(A, s + as, ae - as, &p->is_list);
-                    if (!p->nis) p->never = 1;
+                    func_cond_t* f = (func_cond_t*)arena_alloc(A, sizeof(func_cond_t));
+                    f->nsels = parse_sel_list(A, s + as, ae - as, &f->sels);
+                    f->negate = strcmp(ps, "not") == 0;
+                    f->next = p->funcs;
+                    p->funcs = f;
+                    if (!f->nsels) p->never = 1;
+                    ps_spec = 0;
+                    if (strcmp(ps, "where") != 0)
+                        for (int k = 0; k < f->nsels; k++)
+                            if (f->sels[k].spec > ps_spec) ps_spec = f->sels[k].spec;
                 }
                 else p->never = 1;                   /* :hover, :focus, ... */
-                if (strcmp(ps, "where") != 0) out->spec += 0x100;
+                out->spec += ps_spec;
                 any = 1;
                 continue;
             }
             if (is_ident(s[i])) {
                 uint32_t st = i;
-                while (i < n && is_ident(s[i])) i++;
-                p->tag = dup_lc(A, s + st, i - st);
+                i = ident_end(s, i, n);
+                if (i == st) return 0;
+                p->tag = ident_lc(A, s + st, i - st);
                 out->spec += 1;
                 any = 1;
                 continue;
@@ -367,15 +465,15 @@ static int match_simple(const simple_t* p, dom_node_t* e) {
     if (p->last_child || p->only_child) for (dom_node_t* s = e->next; s; s = s->next) if (s->type == DOM_ELEM) return 0;
     if ((p->first_type || p->only_type) && sib_index(e, 1, 0) != 1) return 0;
     if ((p->last_type || p->only_type) && sib_index(e, 1, 1) != 1) return 0;
-    if (p->nth_kind) {
-        int k = sib_index(e, p->nth_kind >= 3, p->nth_kind == 2 || p->nth_kind == 4);
-        if (!nth_ok(p->nth_a, p->nth_b, k)) return 0;
-    }
-    for (int i = 0; i < p->nnot; i++) if (sel_matches(&p->not_list[i], e)) return 0;
-    if (p->nis) {
+    for (const func_cond_t* f = p->funcs; f; f = f->next) {
+        if (f->nth_kind) {
+            int k = sib_index(e, f->nth_kind >= 3, f->nth_kind == 2 || f->nth_kind == 4);
+            if (!nth_ok(f->nth_a, f->nth_b, k)) return 0;
+            continue;
+        }
         int ok = 0;
-        for (int i = 0; i < p->nis && !ok; i++) ok = sel_matches(&p->is_list[i], e);
-        if (!ok) return 0;
+        for (int i = 0; i < f->nsels && !ok; i++) ok = sel_matches(&f->sels[i], e);
+        if (f->negate ? ok : !ok) return 0;
     }
     return 1;
 }
@@ -412,7 +510,7 @@ static int sel_matches(const selector_t* sel, dom_node_t* e) {
     return match_from(sel, sel->n - 1, e);
 }
 
-/* splits "a, b > c" into selectors (commas inside (...) do not split) */
+/* Split only unescaped commas outside strings, attributes and functions. */
 static int parse_sel_list(arena_t* A, const char* s, uint32_t n, selector_t** out) {
     int count = 1;
     for (uint32_t i = 0; i < n; i++) if (s[i] == ',') count++;
@@ -422,6 +520,7 @@ static int parse_sel_list(arena_t* A, const char* s, uint32_t n, selector_t** ou
     char q = 0;
     for (uint32_t i = 0; i <= n; i++) {
         if (i < n) {
+            if (s[i] == '\\') { i = escape_end(s, i, n) - 1; continue; }
             if (q) { if (s[i] == q) q = 0; continue; }
             if (s[i] == '"' || s[i] == '\'') { q = s[i]; continue; }
             if (s[i] == '(' || s[i] == '[') depth++;
@@ -623,6 +722,8 @@ static void parse_block_list(arena_t* A, css_sheet_t* sh, const char* s, uint32_
         uint32_t st = i;
         char q = 0;
         while (i < n && (q || (s[i] != '{' && s[i] != ';'))) {
+            /* Selector punctuation and escaped quotes belong to the token. */
+            if (s[i] == '\\') { i = escape_end(s, i, n); continue; }
             if (q) { if (s[i] == q) q = 0; }
             else if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') { i = skip_comment(s, n, i); continue; }
             else if (s[i] == '"' || s[i] == '\'') q = s[i];
@@ -720,7 +821,10 @@ static void build_index(css_sheet_t* sh) {
             int ref = r << 8 | k;
             if (last->never) continue;
             if (last->id) bucket_add(A, bucket_get(A, sh->by_id, last->id, 1), ref);
-            else if (last->ncls) bucket_add(A, bucket_get(A, sh->by_class, last->cls[0], 1), ref);
+            /* collect's class buffer holds 95 bytes; long arbitrary utility
+             * names must use a tag bucket or the unkeyed bucket instead. */
+            else if (last->ncls && strlen(last->cls[0]) < 96)
+                bucket_add(A, bucket_get(A, sh->by_class, last->cls[0], 1), ref);
             else if (last->tag) bucket_add(A, bucket_get(A, sh->by_tag, last->tag, 1), ref);
             else bucket_add(A, &sh->any, ref);
         }
@@ -914,110 +1018,81 @@ uint32_t css_color(const char* s, int* ok) {
     return 0;
 }
 
-/* one length term: "12px", "50%", "2em" (pct_of < 0: percentages unknown) */
-static int len_term(const char** ps, int font_px, int pct_of, int* is_pct, int* bad) {
-    const char* s = *ps;
-    while (is_ws(*s)) s++;
-    const char* b = s;
-    long milli = num_milli(&s);
-    if (s == b) { *bad = 1; return 0; }
-    long px;
-    if (strncasecmp(s, "rem", 3) == 0) { px = milli * 16 / 1000; s += 3; }
-    else if (strncasecmp(s, "em", 2) == 0) { px = milli * font_px / 1000; s += 2; }
-    else if (strncasecmp(s, "px", 2) == 0) { px = milli / 1000; s += 2; }
-    else if (strncasecmp(s, "pt", 2) == 0) { px = milli * 4 / 3000; s += 2; }
-    else if (strncasecmp(s, "vw", 2) == 0) { px = milli * css_viewport_w / 100000; s += 2; }
-    else if (strncasecmp(s, "vh", 2) == 0) { px = milli * 6 / 1000; s += 2; }
-    else if (strncasecmp(s, "vmin", 4) == 0 || strncasecmp(s, "vmax", 4) == 0) { px = milli * 6 / 1000; s += 4; }
-    else if (strncasecmp(s, "ch", 2) == 0 || strncasecmp(s, "ex", 2) == 0) { px = milli * font_px / 2000; s += 2; }
-    else if (*s == '%') {
-        s++;
-        if (is_pct) *is_pct = (int)(milli / 1000);
-        if (pct_of < 0) { *bad = 2; *ps = s; return 0; }
-        px = milli * pct_of / 100000;
-    } else px = milli / 1000;                       /* unitless */
-    *ps = s;
-    return (int)px;
-}
-
-/* calc(): + - * / over lengths and numbers, left to right with * / first */
-static int calc_expr(const char** ps, int font_px, int pct_of, int* bad);
-static int calc_factor(const char** ps, int font_px, int pct_of, int* bad) {
-    const char* s = *ps;
-    while (is_ws(*s)) s++;
-    if (*s == '(') {
-        s++;
-        int v = calc_expr(&s, font_px, pct_of, bad);
-        while (is_ws(*s)) s++;
-        if (*s == ')') s++;
-        *ps = s;
-        return v;
-    }
-    if (strncasecmp(s, "var(", 4) == 0 || strncasecmp(s, "env(", 4) == 0) { *bad = 1; return 0; }
-    int v = len_term(&s, font_px, pct_of, NULL, bad);
-    *ps = s;
-    return v;
-}
-static int calc_term(const char** ps, int font_px, int pct_of, int* bad) {
-    int v = calc_factor(ps, font_px, pct_of, bad);
-    for (;;) {
-        const char* s = *ps;
-        while (is_ws(*s)) s++;
-        if (*s != '*' && *s != '/') return v;
-        char op = *s++;
-        const char* b = s;
-        while (is_ws(*b)) b++;
-        int m = num_milli(&b);                       /* the other side is a plain number */
-        *ps = b;
-        if (op == '*') v = (int)((long)v * m / 1000);
-        else if (m) v = (int)((long)v * 1000 / m);
-    }
-}
-static int calc_expr(const char** ps, int font_px, int pct_of, int* bad) {
-    int v = calc_term(ps, font_px, pct_of, bad);
-    for (;;) {
-        const char* s = *ps;
-        while (is_ws(*s)) s++;
-        if ((*s != '+' && *s != '-') || !is_ws(s[1])) return v;
-        char op = *s++;
-        *ps = s;
-        int r = calc_term(ps, font_px, pct_of, bad);
-        v = op == '+' ? v + r : v - r;
-    }
-}
+#include "css_math.h"
 
 /* a length in px; pct_of: base for %, -1 = percentages unknown (returns LEN_AUTO) */
-static int parse_len(const char* s, int font_px, int pct_of, int* is_pct) {
+static int parse_len_kind(const char* s, int font_px, int pct_of, int* is_pct, int* kind) {
     if (is_pct) *is_pct = 0;
+    if (kind) *kind = CSS_MATH_NUMBER;
+    if (!s) return LEN_AUTO;
+    /* Bound token scanning as well as recursion and arithmetic work. */
+    int size = 0;
+    while (s[size]) { if (++size > 4096) return LEN_AUTO; }
     while (is_ws(*s)) s++;
-    if (strncasecmp(s, "auto", 4) == 0 || !*s) return LEN_AUTO;
-    int bad = 0;
-    if (strncasecmp(s, "calc(", 5) == 0 || strncasecmp(s, "min(", 4) == 0 || strncasecmp(s, "max(", 4) == 0 ||
-        strncasecmp(s, "clamp(", 6) == 0) {
-        /* min()/max()/clamp(): the first argument is a fair guess */
-        const char* p = strchr(s, '(') + 1;
-        int v;
-        if (strncasecmp(s, "clamp(", 6) == 0) {               /* clamp(min, preferred, max): the preferred */
-            const char* c1 = strchr(p, ',');
-            if (c1) p = c1 + 1;
-        }
-        v = calc_expr(&p, font_px, pct_of < 0 ? 0 : pct_of, &bad);
-        if (bad || pct_of < 0) {
-            /* percentages of an unknown base: take the absolute part */
-            if (bad == 2 || pct_of < 0) {
-                int pct = 0;
-                for (const char* q = s; *q; q++) if (*q == '%') { pct = 1; break; }
-                if (pct) { if (is_pct) { int dummy = 0; const char* q = strchr(s, '(') + 1; len_term(&q, font_px, -1, is_pct, &dummy); } return LEN_AUTO; }
-            }
-            if (bad) return LEN_AUTO;
-        }
-        return v;
+    css_math_parser p = { s, font_px, pct_of, 0, 0, 0, 0 };
+    int math = strncasecmp(s, "calc(", 5) == 0 || strncasecmp(s, "min(", 4) == 0 ||
+               strncasecmp(s, "max(", 4) == 0 || strncasecmp(s, "clamp(", 6) == 0;
+    css_math_value v;
+    if (math) v = calc_factor(&p);
+    else {
+        int neg = *p.s == '-';
+        if (*p.s == '+' || *p.s == '-') p.s++;
+        v = len_term(&p);
+        if (neg) { v.n = -v.n; p.percent = -p.percent; }
     }
-    const char* p = s;
-    int v = len_term(&p, font_px, pct_of, is_pct, &bad);
-    if (bad == 2) return LEN_AUTO;
-    if (bad) return LEN_AUTO;
-    return v;
+    const char* end = p.s;
+    css_math_ws(&p);
+    if (p.bad || *p.s) return LEN_AUTO;
+    if (math && v.dim == CSS_MATH_NUMBER && v.n) return LEN_AUTO;
+    if (kind) *kind = v.dim;
+    if (v.dim == CSS_MATH_PERCENT) {
+        /* The style ABI has an integer percentage slot, not a px/% pair.
+         * Keep pure percentages; never pass a mixed expression to its
+         * viewport-based max-width fallback. */
+        if (is_pct) *is_pct = (int)(v.n / CSS_MATH_ONE);
+        return LEN_AUTO;
+    }
+    if (!math && end > s && end[-1] == '%' && is_pct) *is_pct = p.percent;
+    return (int)(v.n / CSS_MATH_ONE);
+}
+
+static int parse_len(const char* s, int font_px, int pct_of, int* is_pct) {
+    return parse_len_kind(s, font_px, pct_of, is_pct, NULL);
+}
+
+/* Shorthands need whole component values, including spaces inside functions
+ * and strings. Never parse a truncated token. Separators / and , are tokens
+ * only at depth zero; quoted URLs and divisions inside calc stay intact.
+ * Bound the complete list to 4096 bytes and each component to 511 bytes. */
+#define CSS_VALUE_TOKEN 512
+typedef struct { const char* p; int left; } css_value_tokens;
+
+/* 1 token, 0 end, -1 malformed/over limit. */
+static int css_next_value(css_value_tokens* it, char* out) {
+    while (is_ws(*it->p)) {
+        if (--it->left < 0) return -1;
+        it->p++;
+    }
+    int n = 0, depth = 0;
+    char quote = 0;
+    while (*it->p) {
+        char c = *it->p;
+        if (!quote && !depth && (is_ws(c) || (n && (c == '/' || c == ',')))) break;
+        if (--it->left < 0 || n == CSS_VALUE_TOKEN - 1) return -1;
+        out[n++] = c;
+        it->p++;
+        if (c == '\\') {
+            if (!*it->p || --it->left < 0 || n == CSS_VALUE_TOKEN - 1) return -1;
+            out[n++] = *it->p++;
+        } else if (quote) {
+            if (c == quote) quote = 0;
+        } else if (c == '\'' || c == '"') quote = c;
+        else if (c == '(') { if (++depth > CSS_MATH_DEPTH) return -1; }
+        else if (c == ')') { if (!depth) return -1; depth--; }
+        else if (!depth && (c == '/' || c == ',')) break;
+    }
+    out[n] = 0;
+    return quote || depth ? -1 : n != 0;
 }
 
 static int scale_for(int px) {
@@ -1044,23 +1119,18 @@ static int is_mono_family(const char* v) {
 
 /* line-height: normal | 1.5 | 150% | 24px | 1.2em */
 static void set_line_height(style_t* st, const char* v) {
-    while (is_ws(*v)) v++;
-    if (strncasecmp(v, "normal", 6) == 0) { st->lh_px = 0; st->lh_pct = 0; return; }
-    const char* e = v;
-    while ((*e >= '0' && *e <= '9') || *e == '.') e++;
-    if (e == v) return;
-    if (*e == 0 || is_ws(*e) || *e == '%' || *e == ';' || *e == '!') {
-        int whole = 0, frac = 0, div = 1;
-        const char* p = v;
-        while (*p >= '0' && *p <= '9') whole = whole * 10 + (*p++ - '0');
-        if (*p == '.') { p++; while (*p >= '0' && *p <= '9' && div < 1000) { frac = frac * 10 + (*p++ - '0'); div *= 10; } }
-        int pct = whole * 100 + frac * 100 / div;
-        if (*e != '%') {} else pct = whole + frac / div;
-        if (pct > 0 && pct < 1000) { st->lh_pct = (int16_t)pct; st->lh_px = 0; }
-        return;
-    }
-    int px = parse_len(v, st->font_px, -1, NULL);
-    if (px != LEN_AUTO && px > 0 && px < 1000) { st->lh_px = (int16_t)px; st->lh_pct = 0; }
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN], extra[CSS_VALUE_TOKEN];
+    if (css_next_value(&it, token) != 1 || css_next_value(&it, extra) != 0) return;
+    if (strcasecmp(token, "normal") == 0) { st->lh_px = 0; st->lh_pct = 0; return; }
+    css_math_parser p = { token, st->font_px, -1, 0, 0, 0, 0 };
+    css_math_value value = calc_factor(&p);
+    css_math_ws(&p);
+    if (p.bad || *p.s || value.n < 0) return;
+    int64_t n = value.n / (value.dim == CSS_MATH_NUMBER ? CSS_MATH_ONE / 100 : CSS_MATH_ONE);
+    if (n <= 0 || n >= 1000) return;
+    st->lh_px = value.dim == CSS_MATH_LENGTH ? (int16_t)n : 0;
+    st->lh_pct = value.dim == CSS_MATH_LENGTH ? 0 : (int16_t)n;
 }
 
 static void set_font_px(style_t* st, int px) {
@@ -1074,17 +1144,17 @@ static void set_font_px(style_t* st, int px) {
 static void four(const char* v, int font_px, int* out, int* auto_lr) {
     int vals[4], n = 0;
     int autos[4] = { 0, 0, 0, 0 };
-    const char* p = v;
-    while (*p && n < 4) {
-        while (is_ws(*p)) p++;
-        if (!*p) break;
-        int l = parse_len(p, font_px, -1, NULL);
-        autos[n] = (l == LEN_AUTO);
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN];
+    int got;
+    while ((got = css_next_value(&it, token)) == 1) {
+        if (n == 4) return;
+        int l = parse_len(token, font_px, -1, NULL);
+        autos[n] = strcasecmp(token, "auto") == 0;
+        if (l == LEN_AUTO && !autos[n]) return;
         vals[n++] = l == LEN_AUTO ? 0 : l;
-        int paren = 0;
-        while (*p && (paren || !is_ws(*p))) { if (*p == '(') paren++; else if (*p == ')') paren--; p++; }
     }
-    if (n == 0) return;
+    if (got < 0 || n == 0) return;
     if (n == 1) { vals[1] = vals[2] = vals[3] = vals[0]; autos[1] = autos[2] = autos[3] = autos[0]; }
     else if (n == 2) { vals[2] = vals[0]; vals[3] = vals[1]; autos[2] = autos[0]; autos[3] = autos[1]; }
     else if (n == 3) { vals[3] = vals[1]; autos[3] = autos[1]; }
@@ -1103,26 +1173,30 @@ static int has_word(const char* v, const char* w) {
 static void border_side(style_t* st, const char* v, int side) {
     int width = 0, have_w = 0, ok = 0;
     uint32_t color = st->color;
-    const char* p = v;
-    int none = has_word(v, "none") || has_word(v, "hidden");
-    while (*p) {
-        while (is_ws(*p)) p++;
-        if (!*p) break;
-        const char* tok = p;
-        while (*p && !is_ws(*p)) {
-            if (*p == '(') { while (*p && *p != ')') p++; }
-            if (*p) p++;
-        }
-        if ((*tok >= '0' && *tok <= '9') || *tok == '.') { width = parse_len(tok, st->font_px, -1, NULL); have_w = 1; if (width == LEN_AUTO) width = 1; }
-        else if (strncasecmp(tok, "thin", 4) == 0) { width = 1; have_w = 1; }
-        else if (strncasecmp(tok, "medium", 6) == 0) { width = 2; have_w = 1; }
-        else if (strncasecmp(tok, "thick", 5) == 0) { width = 4; have_w = 1; }
+    css_value_tokens it = { v, 4096 };
+    char tok[CSS_VALUE_TOKEN];
+    int none = 0, got, count = 0;
+    while ((got = css_next_value(&it, tok)) == 1) {
+        if (++count > 3) return;
+        int l = parse_len(tok, st->font_px, -1, NULL);
+        if (l != LEN_AUTO) { if (have_w || l < 0) return; width = l; have_w = 1; }
+        else if (strcasecmp(tok, "thin") == 0) { width = 1; have_w = 1; }
+        else if (strcasecmp(tok, "medium") == 0) { width = 2; have_w = 1; }
+        else if (strcasecmp(tok, "thick") == 0) { width = 4; have_w = 1; }
+        else if (strcasecmp(tok, "none") == 0 || strcasecmp(tok, "hidden") == 0) none = 1;
+        else if (strcasecmp(tok, "solid") == 0 || strcasecmp(tok, "dashed") == 0 ||
+                 strcasecmp(tok, "dotted") == 0 || strcasecmp(tok, "double") == 0 ||
+                 strcasecmp(tok, "groove") == 0 || strcasecmp(tok, "ridge") == 0 ||
+                 strcasecmp(tok, "inset") == 0 || strcasecmp(tok, "outset") == 0) {}
+        else if (strcasecmp(tok, "currentcolor") == 0) color = st->color;
         else {
             uint32_t c = css_color(tok, &ok);
             if (ok == 1) color = c;
             else if (ok == 2) none = 1;              /* a transparent border draws nothing */
+            else return;
         }
     }
+    if (got < 0 || !count) return;
     if (!have_w) width = none ? 0 : 2;
     if (none) width = 0;
     if (width > 20) width = 20;
@@ -1136,69 +1210,27 @@ static void border_side(style_t* st, const char* v, int side) {
 
 /* ── custom properties ────────────────────────────────────────────── */
 
-static const char* var_lookup(const style_t* st, const char* name, uint32_t n) {
-    for (const css_var_t* v = st->vars; v; v = v->next)
-        if (strlen(v->name) == n && strncmp(v->name, name, n) == 0) return v->value;
-    return NULL;
-}
-
-/* replaces var(--x, fallback) in a value; returns v itself when there is none */
-static const char* subst_vars(arena_t* A, const style_t* st, const char* v, int depth) {
-    const char* at = strstr(v, "var(");
-    if (!at || depth > 6) return v;
-    char buf[1024];
-    uint32_t o = 0;
-    const char* p = v;
-    while ((at = strstr(p, "var(")) && o < sizeof(buf) - 1) {
-        uint32_t pre = (uint32_t)(at - p);
-        if (o + pre >= sizeof(buf) - 1) break;
-        memcpy(buf + o, p, pre);
-        o += pre;
-        const char* q = at + 4;
-        while (is_ws(*q)) q++;
-        const char* ns = q;
-        while (*q && *q != ',' && *q != ')' && !is_ws(*q)) q++;
-        uint32_t nl = (uint32_t)(q - ns);
-        while (is_ws(*q)) q++;
-        /* the fallback: up to the matching ')' */
-        const char* fb = NULL;
-        uint32_t fbl = 0;
-        int d = 1;
-        const char* e = q;
-        if (*e == ',') { fb = ++e; }
-        for (; *e; e++) { if (*e == '(') d++; else if (*e == ')' && --d == 0) break; }
-        if (fb) fbl = (uint32_t)(e - fb);
-        const char* val = var_lookup(st, ns, nl);
-        char tmp[512];
-        if (!val && fb) {
-            uint32_t k = fbl < sizeof(tmp) - 1 ? fbl : sizeof(tmp) - 1;
-            memcpy(tmp, fb, k);
-            tmp[k] = 0;
-            val = tmp;
-        }
-        if (val) {
-            val = subst_vars(A, st, val, depth + 1);
-            uint32_t vl = (uint32_t)strlen(val);
-            if (o + vl >= sizeof(buf) - 1) vl = (uint32_t)sizeof(buf) - 1 - o;
-            memcpy(buf + o, val, vl);
-            o += vl;
-        }
-        p = *e ? e + 1 : e;
-    }
-    uint32_t rest = (uint32_t)strlen(p);
-    if (o + rest >= sizeof(buf)) rest = (uint32_t)sizeof(buf) - 1 - o;
-    memcpy(buf + o, p, rest);
-    o += rest;
-    return arena_strdup(A, buf, o);
-}
+#include "css_vars.h"
 
 /* "1", "0.5", "2" -> x100 */
+static int flex_number(const char* v, int* number) {
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN], extra[CSS_VALUE_TOKEN];
+    if (css_next_value(&it, token) != 1 || css_next_value(&it, extra) != 0) return 0;
+    css_math_parser p = { token, 16, -1, 0, 0, 0, 0 };
+    css_math_value value = calc_factor(&p);
+    css_math_ws(&p);
+    if (p.bad || *p.s || value.dim != CSS_MATH_NUMBER || value.n < 0) return 0;
+    int64_t scaled = value.n / (CSS_MATH_ONE / 100);
+    if (scaled > 2147483647) return 0;
+    *number = (int)scaled;
+    return 1;
+}
+
 static int flex_num(const char* v) {
-    while (is_ws(*v)) v++;
-    int n = 0, frac = 0, div = 1;
-    while (*v >= '0' && *v <= '9') n = n * 10 + (*v++ - '0');
-    if (*v == '.') { v++; while (*v >= '0' && *v <= '9' && div < 1000) { frac = frac * 10 + (*v++ - '0'); div *= 10; } }
-    return n * 100 + frac * 100 / div;
+    int n = 0;
+    flex_number(v, &n);
+    return n;
 }
 
 static int flex_align(const char* v) {
@@ -1267,56 +1299,167 @@ static void bg_repeat_of(style_t* st, const char* v) {
     else if (has_word(v, "repeat") || has_word(v, "space") || has_word(v, "round")) st->bg_repeat = BG_REPEAT;
 }
 
-static void bg_size_of(style_t* st, const char* v) {
-    if (has_word(v, "cover")) { st->bg_size = BG_SIZE_COVER; return; }
-    if (has_word(v, "contain")) { st->bg_size = BG_SIZE_CONTAIN; return; }
-    int w = parse_len(v, st->font_px, -1, NULL);
-    if (w == LEN_AUTO) { st->bg_size = BG_SIZE_AUTO; return; }
-    const char* p = v;
-    while (*p && !is_ws(*p)) p++;
-    while (is_ws(*p)) p++;
-    st->bg_size = BG_SIZE_PX;
-    st->bg_size_w = w;
-    st->bg_size_h = *p ? parse_len(p, st->font_px, -1, NULL) : LEN_AUTO;
+static void bg_size_of(style_t* st, const char* v, int shorthand) {
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN];
+    int sizes[2] = { LEN_AUTO, LEN_AUTO }, n = 0, got, mode = BG_SIZE_PX;
+    while (n < 2 && (got = css_next_value(&it, token)) == 1) {
+        if (!n && (strcasecmp(token, "cover") == 0 || strcasecmp(token, "contain") == 0)) {
+            mode = strcasecmp(token, "cover") == 0 ? BG_SIZE_COVER : BG_SIZE_CONTAIN;
+            n++;
+            break;
+        }
+        int l = parse_len(token, st->font_px, -1, NULL);
+        if (strcasecmp(token, "auto") != 0 && (l == LEN_AUTO || l < 0)) {
+            if (shorthand && n) break; /* repeat/color after position / size */
+            return;
+        }
+        sizes[n++] = l;
+    }
+    if (got < 0 || !n || (!shorthand && css_next_value(&it, token) != 0)) return;
+    if (mode == BG_SIZE_PX && sizes[0] == LEN_AUTO && sizes[1] == LEN_AUTO) mode = BG_SIZE_AUTO;
+    st->bg_size = (uint8_t)mode;
+    st->bg_size_w = sizes[0];
+    st->bg_size_h = sizes[1];
 }
 
 /* "center", "left top", "50% 20%", "-32px 0" */
-static void bg_pos_of(style_t* st, const char* v) {
-    int vals[2] = { 0, 0 }, pct[2] = { 0, 0 }, n = 0;
-    const char* p = v;
-    while (*p && n < 2) {
-        while (is_ws(*p)) p++;
-        if (!*p) break;
-        const char* t = p;
-        while (*p && !is_ws(*p)) p++;
-        int axis = n;
-        if (strncmp(t, "left", 4) == 0) { axis = 0; vals[0] = 0; pct[0] = 1; }
-        else if (strncmp(t, "right", 5) == 0) { axis = 0; vals[0] = 100; pct[0] = 1; }
-        else if (strncmp(t, "top", 3) == 0) { axis = 1; vals[1] = 0; pct[1] = 1; }
-        else if (strncmp(t, "bottom", 6) == 0) { axis = 1; vals[1] = 100; pct[1] = 1; }
-        else if (strncmp(t, "center", 6) == 0) { vals[axis] = 50; pct[axis] = 1; if (n == 0) { vals[1] = 50; pct[1] = 1; } }
+static void bg_pos_of(style_t* st, const char* v, int shorthand) {
+    int vals[2] = { 50, 50 }, pct[2] = { 1, 1 }, seen = 0, n = 0, got;
+    css_value_tokens it = { v, 4096 };
+    char t[CSS_VALUE_TOKEN];
+    while ((got = css_next_value(&it, t)) == 1) {
+        if (shorthand && (strcmp(t, "/") == 0 || strcmp(t, ",") == 0)) break;
+        int axis = seen & 1 ? 1 : 0, value = 0, percent = 1;
+        if (strcasecmp(t, "left") == 0) { axis = 0; value = 0; }
+        else if (strcasecmp(t, "right") == 0) { axis = 0; value = 100; }
+        else if (strcasecmp(t, "top") == 0) { axis = 1; value = 0; }
+        else if (strcasecmp(t, "bottom") == 0) { axis = 1; value = 100; }
+        else if (strcasecmp(t, "center") == 0) value = 50;
         else {
-            int is_pct = 0;
-            int l = (t[0] >= '0' && t[0] <= '9') || t[0] == '-' || t[0] == '.' ? parse_len(t, st->font_px, 100, &is_pct) : LEN_AUTO;
-            if (l == LEN_AUTO) continue;             /* not a position (a colour, url(), repeat, ...) */
-            vals[axis] = l;
-            pct[axis] = is_pct;
+            int is_pct = 0, kind;
+            int l = parse_len_kind(t, st->font_px, -1, &is_pct, &kind);
+            if (l == LEN_AUTO && kind != CSS_MATH_PERCENT) {
+                if (shorthand) continue; /* color, url(), repeat, ... */
+                return;
+            }
+            percent = kind == CSS_MATH_PERCENT;
+            value = percent ? is_pct : l;
         }
+        if (n == 2 || (seen & (1 << axis))) return;
+        vals[axis] = value;
+        pct[axis] = percent;
+        seen |= 1 << axis;
         n++;
     }
+    if (got < 0 || !n) return;
     st->bg_pos_x = vals[0];
     st->bg_pos_y = vals[1];
     st->bg_pos_pct = (uint8_t)((pct[0] ? 1 : 0) | (pct[1] ? 2 : 0));
 }
 
+/* Find a top-level position/size separator, not a slash in url(), strings,
+ * or calc(). The source pointer stays in the arena for background URLs. */
+static void bg_geometry(style_t* st, const char* v) {
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN];
+    int got;
+    while ((got = css_next_value(&it, token)) == 1) {
+        if (strcmp(token, ",") == 0) break; /* one background layer */
+        if (strcmp(token, "/") == 0) { bg_size_of(st, it.p, 1); break; }
+    }
+    if (got >= 0) bg_pos_of(st, v, 1);
+}
+
+static int font_size_token(const char* token, int base) {
+    static const struct { const char* name; int px; } sizes[] = {
+        { "xx-small", 9 }, { "x-small", 10 }, { "small", 13 }, { "medium", 16 },
+        { "large", 18 }, { "x-large", 24 }, { "xx-large", 32 }, { "xxx-large", 48 }
+    };
+    for (uint32_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
+        if (strcasecmp(token, sizes[i].name) == 0) return sizes[i].px;
+    if (strcasecmp(token, "smaller") == 0) return base * 5 / 6;
+    if (strcasecmp(token, "larger") == 0) return base * 6 / 5;
+    int kind, px = parse_len_kind(token, base, base, NULL, &kind);
+    return kind == CSS_MATH_LENGTH && px >= 0 ? px : LEN_AUTO;
+}
+
+static void font_shorthand(style_t* st, const char* v, int base) {
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN];
+    int bold = 0, italic = 0, size = LEN_AUTO, got;
+    while ((got = css_next_value(&it, token)) == 1) {
+        size = font_size_token(token, base);
+        if (size != LEN_AUTO) break;
+        int weight;
+        if (strcasecmp(token, "bold") == 0 || strcasecmp(token, "bolder") == 0) bold = 1;
+        else if (strcasecmp(token, "italic") == 0 || strcasecmp(token, "oblique") == 0) italic = 1;
+        else if (strcasecmp(token, "normal") == 0 || strcasecmp(token, "small-caps") == 0 ||
+                 strcasecmp(token, "lighter") == 0) {}
+        else if (flex_number(token, &weight) && weight >= 100 && weight <= 100000) bold = weight >= 60000;
+        else return;
+    }
+    if (got != 1 || size == LEN_AUTO) return;
+    style_t next = *st;
+    set_font_px(&next, size);
+    next.bold = (uint8_t)bold;
+    next.italic = (uint8_t)italic;
+    next.lh_px = next.lh_pct = 0;
+    const char* family = it.p;
+    if (css_next_value(&it, token) != 1) return;
+    if (strcmp(token, "/") == 0) {
+        if (css_next_value(&it, token) != 1) return;
+        set_line_height(&next, token);
+        family = it.p;
+        if (css_next_value(&it, token) != 1) return;
+    }
+    /* Validate the remaining quoted family list without splitting its strings. */
+    while ((got = css_next_value(&it, token)) == 1) {}
+    if (got < 0) return;
+    next.mono = (uint8_t)is_mono_family(family);
+    *st = next;
+}
+
+static void flex_shorthand(style_t* st, const char* v) {
+    if (strcasecmp(v, "none") == 0) { st->flex_grow = 0; st->flex_shrink = 0; st->flex_basis = LEN_AUTO; return; }
+    if (strcasecmp(v, "auto") == 0) { st->flex_grow = 100; st->flex_shrink = 100; st->flex_basis = LEN_AUTO; return; }
+    css_value_tokens it = { v, 4096 };
+    char token[CSS_VALUE_TOKEN];
+    int grow = 100, shrink = 100, basis = 0, numbers = 0, have_basis = 0, count = 0, got;
+    while ((got = css_next_value(&it, token)) == 1) {
+        if (++count > 3) return;
+        int num;
+        if (flex_number(token, &num) && numbers < 2) {
+            if (!numbers++) grow = num;
+            else shrink = num;
+        } else {
+            if (have_basis) return;
+            if (strcasecmp(token, "auto") == 0 || strcasecmp(token, "content") == 0) basis = LEN_AUTO;
+            else if (strcmp(token, "0%") == 0) basis = 0; /* Tailwind flex-1 */
+            else {
+                int kind;
+                basis = parse_len_kind(token, st->font_px, -1, NULL, &kind);
+                if (basis == LEN_AUTO || basis < 0 || (kind == CSS_MATH_NUMBER && basis)) return;
+            }
+            have_basis = 1;
+        }
+    }
+    if (got < 0 || !count) return;
+    st->flex_grow = grow;
+    st->flex_shrink = shrink;
+    st->flex_basis = basis;
+}
+
 /* flexbox properties that are not keyed by the switch below; 1 if handled */
 static int flex_decl(style_t* st, const char* prop, const char* v) {
     if (strcmp(prop, "gap") == 0 || strcmp(prop, "grid-gap") == 0) {
-        int a = parse_len(v, st->font_px, -1, NULL);
-        const char* sp = v;
-        while (*sp && !is_ws(*sp)) sp++;
-        while (is_ws(*sp)) sp++;
-        int b = *sp ? parse_len(sp, st->font_px, -1, NULL) : a;
+        css_value_tokens it = { v, 4096 };
+        char token[CSS_VALUE_TOKEN];
+        if (css_next_value(&it, token) != 1) return 1;
+        int a = parse_len(token, st->font_px, -1, NULL);
+        int got = css_next_value(&it, token), b = a;
+        if (got == 1) b = parse_len(token, st->font_px, -1, NULL);
+        if (got < 0 || css_next_value(&it, token) != 0 || a == LEN_AUTO || b == LEN_AUTO) return 1;
         st->gap_row = a == LEN_AUTO || a < 0 ? 0 : a;
         st->gap_col = b == LEN_AUTO || b < 0 ? 0 : b;
         return 1;
@@ -1343,8 +1486,8 @@ static int flex_decl(style_t* st, const char* prop, const char* v) {
         return 1;
     }
     if (strcmp(prop, "background-repeat") == 0) { bg_repeat_of(st, v); return 1; }
-    if (strcmp(prop, "background-size") == 0) { bg_size_of(st, v); return 1; }
-    if (strcmp(prop, "background-position") == 0) { bg_pos_of(st, v); return 1; }
+    if (strcmp(prop, "background-size") == 0) { bg_size_of(st, v, 0); return 1; }
+    if (strcmp(prop, "background-position") == 0) { bg_pos_of(st, v, 0); return 1; }
     if (strcmp(prop, "border-radius") == 0) {
         int is_pct = 0;
         int r = parse_len(v, st->font_px, 100, &is_pct);
@@ -1357,9 +1500,10 @@ static int flex_decl(style_t* st, const char* prop, const char* v) {
     return 0;
 }
 
+#include "css_grid.h"
+
 static void apply_decl(style_t* st, const style_t* parent, const char* prop, const char* v) {
     int ok;
-    if (flex_decl(st, prop, v)) return;
     if (strcasecmp(v, "inherit") == 0) {
         if (!parent) return;
         if (strcmp(prop, "color") == 0) st->color = parent->color;
@@ -1369,6 +1513,8 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
         else if (strcmp(prop, "text-align") == 0) st->align = parent->align;
         else if (strcmp(prop, "display") == 0) st->display = parent->display;
         else if (strcmp(prop, "visibility") == 0) st->visible = parent->visible;
+        else if (strcmp(prop, "width") == 0) { st->width = parent->width; st->width_pct = parent->width_pct; }
+        else if (strcmp(prop, "height") == 0) st->height = parent->height;
         return;
     }
     if (strcasecmp(v, "initial") == 0 || strcasecmp(v, "unset") == 0 || strcasecmp(v, "revert") == 0) {
@@ -1376,8 +1522,21 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
         else if (strcmp(prop, "background-color") == 0 || strcmp(prop, "background") == 0) st->has_bg = 0;
         else if (strcmp(prop, "display") == 0) st->display = DISP_INLINE;
         else if (strcmp(prop, "border") == 0) for (int i = 0; i < 4; i++) st->border[i] = 0;
+        else if (strcmp(prop, "width") == 0 || strcmp(prop, "inline-size") == 0) { st->width = LEN_AUTO; st->width_pct = 0; }
+        else if (strcmp(prop, "height") == 0 || strcmp(prop, "block-size") == 0) st->height = LEN_AUTO;
+        else if (strcmp(prop, "max-width") == 0) st->max_width = LEN_AUTO;
+        else if (strcmp(prop, "padding") == 0 || strcmp(prop, "margin") == 0) {
+            int* sides = prop[0] == 'p' ? st->padding : st->margin;
+            for (int i = 0; i < 4; i++) sides[i] = 0;
+            if (prop[0] == 'm') st->margin_auto_lr = 0;
+        }
+        else if (strcmp(prop, "font-weight") == 0) st->bold = parent && strcasecmp(v, "initial") ? parent->bold : 0;
+        else if (strcmp(prop, "font-size") == 0) set_font_px(st, parent && strcasecmp(v, "initial") ? parent->font_px : 16);
+        else if (strcmp(prop, "visibility") == 0) st->visible = parent && strcasecmp(v, "initial") ? parent->visible : 1;
         return;
     }
+    if (!strcmp(prop, "grid-template-columns")) { grid_columns(st, v); return; }
+    if (flex_decl(st, prop, v)) return;
     switch (prop[0]) {
     case 'b':
         if (strcmp(prop, "background-color") == 0 || strcmp(prop, "background") == 0) {
@@ -1387,12 +1546,7 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
                 st->bg_repeat = BG_REPEAT;
                 bg_layers(st, v);
                 bg_repeat_of(st, v);
-                const char* sl = strchr(v, '/');     /* position / size */
-                if (sl && !strstr(v, "url(")) sl = NULL;
-                if (sl && st->bg_url) { const char* ue = st->bg_url + st->bg_url_len; sl = strchr(ue, '/'); }
-                if (sl) bg_size_of(st, sl + 1);
-                if (has_word(v, "center") || has_word(v, "top") || has_word(v, "left") || has_word(v, "right") || has_word(v, "bottom"))
-                    bg_pos_of(st, v);
+                bg_geometry(st, v);
                 if (st->bg_grad && !strchr(v, '#') && !strstr(v, "rgb")) return;   /* the colour came from the gradient */
             }
             if (has_word(v, "none") && !strchr(v, '#') && !strstr(v, "rgb")) { st->has_bg = 0; return; }
@@ -1449,13 +1603,14 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
         if (strcmp(prop, "display") == 0) {
             st->flex_row = 0;
             st->flex = 0;
+            st->grid = 0;
             if (has_word(v, "none")) st->display = DISP_NONE;
             else if (has_word(v, "contents")) st->display = DISP_INLINE;
             else if (has_word(v, "inline-block") || has_word(v, "inline-flex") || has_word(v, "inline-grid") ||
                      has_word(v, "inline-table")) {
                 st->display = DISP_INLINE_BLOCK;
                 if (has_word(v, "inline-flex")) st->flex = 1;
-                else if (has_word(v, "inline-grid")) st->flex_row = 1;
+                else if (has_word(v, "inline-grid")) st->grid = 1;
             }
             else if (has_word(v, "inline")) st->display = DISP_INLINE;
             else if (has_word(v, "list-item")) st->display = DISP_LIST_ITEM;
@@ -1467,7 +1622,7 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
             else {
                 st->display = DISP_BLOCK;                /* block, flow-root, flex, grid, ... */
                 if (has_word(v, "flex")) st->flex = 1;
-                else if (has_word(v, "grid")) st->flex_row = 1;
+                else if (has_word(v, "grid")) st->grid = 1;
             }
         }
         return;
@@ -1479,27 +1634,10 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
         }
         if (strcmp(prop, "font-style") == 0) { st->italic = has_word(v, "italic") || has_word(v, "oblique"); return; }
         if (strcmp(prop, "font-family") == 0) { st->mono = is_mono_family(v); return; }
-        if (strcmp(prop, "line-height") == 0) { set_line_height(st, v); return; }
         if (strcmp(prop, "font-size") == 0 || strcmp(prop, "font") == 0) {
             int base = parent ? parent->font_px : 16;
             if (strcmp(prop, "font") == 0) {
-                if (has_word(v, "bold")) st->bold = 1;
-                if (has_word(v, "italic")) st->italic = 1;
-                st->mono = is_mono_family(v);
-                const char* sl = strchr(v, '/');            /* 14px/1.5 */
-                if (sl) set_line_height(st, sl + 1);
-                /* the size is the token before an optional /line-height */
-                const char* p = v;
-                while (*p) {
-                    while (is_ws(*p)) p++;
-                    if ((*p >= '0' && *p <= '9') || *p == '.') {
-                        int px = parse_len(p, base, base, NULL);
-                        if (px != LEN_AUTO && !(p[0] >= '1' && p[0] <= '9' && p[1] == '0' && p[2] == '0' && (is_ws(p[3]) || !p[3])))
-                            set_font_px(st, px);
-                        break;
-                    }
-                    while (*p && !is_ws(*p)) p++;
-                }
+                font_shorthand(st, v, base);
                 return;
             }
             static const struct { const char* k; int px; } sizes[] = {
@@ -1532,24 +1670,7 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
             return;
         }
         if (strcmp(prop, "flex") == 0) {
-            /* flex: none | auto | <grow> [<shrink>] [<basis>] */
-            if (has_word(v, "none")) { st->flex_grow = 0; st->flex_shrink = 0; st->flex_basis = LEN_AUTO; return; }
-            if (has_word(v, "auto")) { st->flex_grow = 100; st->flex_shrink = 100; st->flex_basis = LEN_AUTO; return; }
-            const char* p = v;
-            int n = 0;
-            st->flex_basis = 0;                  /* flex: 1 means a basis of 0 */
-            while (*p) {
-                while (is_ws(*p)) p++;
-                if (!*p) break;
-                const char* tok = p;
-                while (*p && !is_ws(*p)) p++;
-                int unitless = 1;
-                for (const char* q = tok; q < p; q++) if ((*q < '0' || *q > '9') && *q != '.') unitless = 0;
-                if (unitless && n == 0) st->flex_grow = flex_num(tok);
-                else if (unitless && n == 1) st->flex_shrink = flex_num(tok);
-                else st->flex_basis = strncmp(tok, "auto", 4) == 0 ? LEN_AUTO : parse_len(tok, st->font_px, -1, NULL);
-                n++;
-            }
+            flex_shorthand(st, v);
             return;
         }
         return;
@@ -1570,6 +1691,7 @@ static void apply_decl(style_t* st, const style_t* parent, const char* prop, con
         }
         return;
     case 'l':
+        if (strcmp(prop, "line-height") == 0) { set_line_height(st, v); return; }
         if (strcmp(prop, "list-style-type") == 0 || strcmp(prop, "list-style") == 0) {
             if (has_word(v, "none")) st->list_style = LIST_NONE;
             else if (has_word(v, "decimal")) st->list_style = LIST_DECIMAL;
@@ -1777,60 +1899,72 @@ typedef struct {
     int*     seen;              /* per rule: the element serial it last matched (dedupe) */
     int      seen_cap;
     int      serial;
+    int      font_pass, computed_font;
 } cascade_t;
 
-/* every rule of one sheet that matches e, into the buffer */
+/* Process one bucket at a time, sharing the sheet's deduplication range. */
+static int collect_bucket(cascade_t* K, css_sheet_t* sh, dom_node_t* e,
+                          const bucket_t* bk, int base, int nm) {
+    if (!bk) return nm;
+    for (int k = 0; k < bk->n; k++) {
+        int ref = bk->refs[k];
+        int r = ref >> 8, si = ref & 255;
+        rule_t* rule = &sh->rules[r];
+        if (rule->media_min && css_viewport_w < rule->media_min) continue;
+        if (rule->media_max && css_viewport_w > rule->media_max) continue;
+        if (!sel_matches(&rule->sels[si], e)) continue;
+        uint32_t spec = rule->sels[si].spec;
+        if (K->seen[r] == K->serial) {
+            /* the rule already matched through another selector: keep the highest specificity */
+            for (int i = base; i < nm; i++)
+                if (K->buf[i].order >> 12 == (uint32_t)r && (K->buf[i].spec & 0xFFFFFF) < spec)
+                    K->buf[i].spec = spec | (K->buf[i].spec & 0x1000000u);
+            continue;
+        }
+        K->seen[r] = K->serial;
+        for (int d = 0; d < rule->ndecls; d++) {
+            /* Many utility classes can also exceed the initial match
+             * capacity. Grow both sort buffers in the arena, not on stack. */
+            if (nm == K->cap) {
+                int nc = K->cap * 2;
+                match_t* nb = (match_t*)arena_alloc(K->A, (uint32_t)nc * (uint32_t)sizeof(match_t));
+                memcpy(nb, K->buf, (size_t)nm * sizeof(match_t));
+                K->buf = nb;
+                K->tmp = (match_t*)arena_alloc(K->A, (uint32_t)nc * (uint32_t)sizeof(match_t));
+                K->cap = nc;
+            }
+            K->buf[nm].d = &rule->decls[d];
+            K->buf[nm].spec = spec | (rule->decls[d].important ? 0x1000000u : 0);
+            K->buf[nm].order = (uint32_t)r << 12 | (uint32_t)(d & 0xFFF);
+            nm++;
+        }
+    }
+    return nm;
+}
+
+/* Every rule of one sheet that matches e, without a class-count limit. */
 static int collect(cascade_t* K, css_sheet_t* sh, dom_node_t* e, int nm, uint32_t* order) {
     if (sh->n > K->seen_cap) return nm;
-    bucket_t* lists[24];
-    int nl = 0;
+    int base = nm;
     const char* id = dom_attr(e, "id");
-    bucket_t* b;
-    if (id && (b = bucket_get(NULL, sh->by_id, id, 0))) lists[nl++] = b;
+    if (id) nm = collect_bucket(K, sh, e, bucket_get(NULL, sh->by_id, id, 0), base, nm);
     const char* cls = dom_attr(e, "class");
     if (cls) {
         char word[96];
-        for (const char* p = cls; *p && nl < 20; ) {
+        for (const char* p = cls; *p; ) {
             while (*p == ' ' || *p == '\t' || *p == '\n') p++;
-            int l = 0;
+            size_t l = 0;
             while (p[l] && p[l] != ' ' && p[l] != '\t' && p[l] != '\n') l++;
-            if (l && l < 96) {
-                memcpy(word, p, (size_t)l);
+            if (l && l < sizeof(word)) {
+                memcpy(word, p, l);
                 word[l] = 0;
-                if ((b = bucket_get(NULL, sh->by_class, word, 0))) lists[nl++] = b;
+                nm = collect_bucket(K, sh, e, bucket_get(NULL, sh->by_class, word, 0), base, nm);
             }
             p += l;
         }
     }
-    if ((b = bucket_get(NULL, sh->by_tag, e->tag, 0))) lists[nl++] = b;
-    lists[nl++] = &sh->any;
-    int base = nm;
-    for (int li = 0; li < nl; li++) {
-        bucket_t* bk = lists[li];
-        for (int k = 0; k < bk->n; k++) {
-            int ref = bk->refs[k];
-            int r = ref >> 8, si = ref & 255;
-            rule_t* rule = &sh->rules[r];
-            if (rule->media_min && css_viewport_w < rule->media_min) continue;
-            if (rule->media_max && css_viewport_w > rule->media_max) continue;
-            if (!sel_matches(&rule->sels[si], e)) continue;
-            uint32_t spec = rule->sels[si].spec;
-            if (K->seen[r] == K->serial) {
-                /* the rule already matched through another selector: keep the highest specificity */
-                for (int i = base; i < nm; i++)
-                    if (K->buf[i].order >> 12 == (uint32_t)r && (K->buf[i].spec & 0xFFFFFF) < spec)
-                        K->buf[i].spec = spec | (K->buf[i].spec & 0x1000000u);
-                continue;
-            }
-            K->seen[r] = K->serial;
-            for (int d = 0; d < rule->ndecls && nm < K->cap; d++) {
-                K->buf[nm].d = &rule->decls[d];
-                K->buf[nm].spec = spec | (rule->decls[d].important ? 0x1000000u : 0);
-                K->buf[nm].order = (uint32_t)r << 12 | (uint32_t)(d & 0xFFF);
-                nm++;
-            }
-        }
-    }
+    nm = collect_bucket(K, sh, e, bucket_get(NULL, sh->by_tag, e->tag, 0), base, nm);
+    nm = collect_bucket(K, sh, e, &sh->any, base, nm);
     (void)order;
     return nm;
 }
@@ -1839,27 +1973,33 @@ static void apply_list(cascade_t* K, style_t* st, const style_t* parent, match_t
     for (int i = from; i < to; i++) {
         const char* prop = m[i].d->prop;
         if (prop[0] == '-' && prop[1] == '-') continue;
+        if (K->font_pass && strcmp(prop, "font") && strcmp(prop, "font-size")) continue;
         const char* v = m[i].d->val;
-        if (strstr(v, "var(")) v = subst_vars(K->A, st, v, 0);
-        apply_decl(st, parent, prop, v);
+        if (var_next(v)) {
+            v = subst_vars(K->A, st, v, 0);
+            if (v && !*v) v = NULL;
+        }
+        apply_decl(st, parent, prop, v ? v : "unset");
+        if (K->computed_font) set_font_px(st, K->computed_font);
     }
 }
 
 /* custom properties first (they are inherited and used by everything else) */
-static void apply_vars(cascade_t* K, style_t* st, match_t* m, int n, decl_t* inl, int ninl) {
-    for (int i = 0; i < n + ninl; i++) {
-        const decl_t* d = i < n ? m[i].d : &inl[i - n];
-        if (d->prop[0] != '-' || d->prop[1] != '-') continue;
-        css_var_t* v = (css_var_t*)arena_alloc(K->A, sizeof(css_var_t));
-        v->name = d->prop;
-        v->value = strstr(d->val, "var(") ? subst_vars(K->A, st, d->val, 0) : d->val;
-        v->next = st->vars;
-        st->vars = v;
-    }
+static void apply_vars(cascade_t* K, style_t* st, const style_t* parent, match_t* m, int n, decl_t* inl, int ninl) {
+    int important = 0;
+    while (important < n && !m[important].d->important) important++;
+    for (int i = 0; i < important; i++) var_store(K->A, st, parent, m[i].d);
+    for (int i = 0; i < ninl; i++) if (!inl[i].important) var_store(K->A, st, parent, &inl[i]);
+    for (int i = important; i < n; i++) var_store(K->A, st, parent, m[i].d);
+    for (int i = 0; i < ninl; i++) if (inl[i].important) var_store(K->A, st, parent, &inl[i]);
+    css_var_t* path[CSS_VAR_DEPTH];
+    for (css_var_t* v = st->vars; v && (!parent || v != parent->vars); v = v->next)
+        var_resolve(K->A, st, v, path, 0);
 }
 
 static void style_element(cascade_t* K, dom_node_t* e, const style_t* parent, css_sheet_t** sheets, int nsheets) {
     arena_t* A = K->A;
+    K->font_pass = K->computed_font = 0;
     style_t* st = (style_t*)arena_alloc(A, sizeof(style_t));   /* A may be a fresh arena each restyle */
     e->style = st;
     inherit(st, parent);
@@ -1889,19 +2029,42 @@ static void style_element(cascade_t* K, dom_node_t* e, const style_t* parent, cs
     decl_t* inl = NULL;
     int ninl = 0;
     if (inl_src) ninl = parse_decls(A, inl_src, (uint32_t)strlen(inl_src), &inl);
-    apply_vars(K, st, K->buf, nm, inl, ninl);
+    apply_vars(K, st, parent, K->buf, nm, inl, ninl);
+    /* Compute the winning font size before em/ch lengths, independently of
+     * declaration order. Repeat the same cascade, including inline/important. */
+    for (int pass = 0; pass < 2; pass++) {
+    K->font_pass = pass == 0;
+    K->computed_font = pass == 1 ? st->font_px : 0;
     /* page rules, then style="" (beats everything but !important) */
     int i = 0;
     while (i < nm && !(K->buf[i].spec & 0x1000000u)) i++;
     apply_list(K, st, parent, K->buf, 0, i);
     for (int k = 0; k < ninl; k++) {
+        if (inl[k].important) continue;
         if (inl[k].prop[0] == '-' && inl[k].prop[1] == '-') continue;
-        const char* v = strstr(inl[k].val, "var(") ? subst_vars(A, st, inl[k].val, 0) : inl[k].val;
-        apply_decl(st, parent, inl[k].prop, v);
+        if (K->font_pass && strcmp(inl[k].prop, "font") && strcmp(inl[k].prop, "font-size")) continue;
+        const char* v = var_next(inl[k].val) ? subst_vars(A, st, inl[k].val, 0) : inl[k].val;
+        if (v && !*v && var_next(inl[k].val)) v = NULL;
+        apply_decl(st, parent, inl[k].prop, v ? v : "unset");
+        if (K->computed_font) set_font_px(st, K->computed_font);
     }
     apply_list(K, st, parent, K->buf, i, nm);
+    for (int k = 0; k < ninl; k++) {
+        if (!inl[k].important || (inl[k].prop[0] == '-' && inl[k].prop[1] == '-')) continue;
+        if (K->font_pass && strcmp(inl[k].prop, "font") && strcmp(inl[k].prop, "font-size")) continue;
+        const char* v = var_next(inl[k].val) ? subst_vars(A, st, inl[k].val, 0) : inl[k].val;
+        if (v && !*v && var_next(inl[k].val)) v = NULL;
+        apply_decl(st, parent, inl[k].prop, v ? v : "unset");
+        if (K->computed_font) set_font_px(st, K->computed_font);
+    }
 
-    /* flex/grid items are laid out side by side (as inline-blocks); floats too */
+    }
+    K->font_pass = K->computed_font = 0;
+
+    /* Grid owns placement. Blockify inline items so inline text bounds cannot
+     * overwrite the grid's border-box geometry after layout. */
+    if (parent && parent->grid && (st->display == DISP_INLINE || st->display == DISP_INLINE_BLOCK))
+        st->display = DISP_BLOCK;
     if (parent && parent->flex_row && (st->display == DISP_BLOCK || st->display == DISP_INLINE ||
                                        st->display == DISP_LIST_ITEM || st->display == DISP_TABLE))
         st->display = DISP_INLINE_BLOCK;

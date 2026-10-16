@@ -350,9 +350,34 @@ static int rx_flag(interp_t* I, value_t re, char f) {
     return fl.t == V_STR && strchr(fl.s->s, f) != NULL;
 }
 
+typedef struct { char* s; uint32_t n, cap; arena_t* A; } sb_t;
+static void sb_add(sb_t* b, const char* s, uint32_t n);
+
 value_t es_regexp_new(interp_t* I, const char* pattern, uint32_t len, const char* flags) {
     const char* err = NULL;
-    regex_t* re = rx_compile(I->A, pattern, len, flags, &err);
+    /* JS [^] matches every character, including newlines. The shared regex
+     * parser uses a different empty-class grammar; lower it without changing
+     * the observable source or consuming escaped/class-contained brackets. */
+    sb_t normalized = { NULL, 0, 0, I->A };
+    int cls = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (pattern[i] == '\\' && i + 1 < len) {
+            if (normalized.s) sb_add(&normalized, pattern + i, 2);
+            i++;
+            continue;
+        }
+        if (!cls && pattern[i] == '[' && i + 2 < len && pattern[i + 1] == '^' && pattern[i + 2] == ']') {
+            if (!normalized.s) sb_add(&normalized, pattern, i);
+            sb_add(&normalized, "[\\s\\S]", 6);
+            i += 2;
+            continue;
+        }
+        if (pattern[i] == '[') cls = 1;
+        else if (pattern[i] == ']') cls = 0;
+        if (normalized.s) sb_add(&normalized, pattern + i, 1);
+    }
+    regex_t* re = rx_compile(I->A, normalized.s ? normalized.s : pattern,
+                            normalized.s ? normalized.n : len, flags, &err);
     if (!re) {
         char msg[160];
         ksnprintf(msg, sizeof(msg), "SyntaxError: invalid regular expression /%.*s/: %s", (int)(len > 60 ? 60 : len), pattern, err);
@@ -441,7 +466,6 @@ static value_t re_toString(interp_t* I, value_t self, int argc, value_t* argv) {
 
 /* ── string methods with a RegExp ── */
 
-typedef struct { char* s; uint32_t n, cap; arena_t* A; } sb_t;
 static void sb_add(sb_t* b, const char* s, uint32_t n) {
     if (b->n + n + 1 > b->cap) {
         uint32_t nc = (b->n + n + 1) * 2 + 64;
@@ -755,8 +779,9 @@ static value_t pr_finally(interp_t* I, value_t self, int argc, value_t* argv) {
 }
 
 void es_run_jobs(interp_t* I) {
-    if (!I->jobs || I->draining) return;
+    if (!I->jobs || I->draining || I->job_head >= I->jobs->len) return;
     I->draining = 1;
+    I->job_checkpoint++;
     I->running++;                              /* handlers run nested: no recursive draining */
     int budget = 100000;
     while (I->job_head < I->jobs->len && budget-- > 0) {
@@ -883,9 +908,13 @@ static value_t pr_allSettled(interp_t* I, value_t self, int argc, value_t* argv)
 static value_t pr_race(interp_t* I, value_t self, int argc, value_t* argv) { (void)self; return combine(I, argc, argv, 2); }
 static value_t pr_any(interp_t* I, value_t self, int argc, value_t* argv) { (void)self; return combine(I, argc, argv, 3); }
 
+void es_enqueue_job(interp_t* I, value_t fn) {
+    if (fn.t == V_FUNC) queue_job(I, fn, es_promise_new(I), 0, 0, v_undef());
+}
+
 static value_t js_queueMicrotask(interp_t* I, value_t self, int argc, value_t* argv) {
     (void)self;
-    if (ARG(0).t == V_FUNC) queue_job(I, ARG(0), es_promise_new(I), 0, 0, v_undef());
+    es_enqueue_job(I, ARG(0));
     return v_undef();
 }
 
@@ -1094,6 +1123,7 @@ static value_t o_create(interp_t* I, value_t self, int argc, value_t* argv) {
 static value_t o_getPrototypeOf(interp_t* I, value_t self, int argc, value_t* argv) {
     (void)self;
     value_t v = ARG(0);
+    if (v.t == V_FUNC) return v_obj(func_proto(I, v.f));
     if (v.t == V_OBJ && v.o->proto) return v_obj(v.o->proto);
     if (v.t == V_OBJ && v.o->kind == OBJ_ARRAY && I->proto_array) return v_obj(I->proto_array);
     return v_null();
@@ -1139,12 +1169,29 @@ static value_t o_defineProperties(interp_t* I, value_t self, int argc, value_t* 
     for (uint32_t i = 0; i < props.o->n; i++) define_prop(I, o.o, props.o->props[i].key->s, props.o->props[i].v);
     return o;
 }
-static value_t o_getOwnPropertyDescriptor(interp_t* I, value_t self, int argc, value_t* argv) {
-    (void)self;
-    value_t o = ARG(0);
+value_t es_own_descriptor(interp_t* I, value_t o, const char* key) {
+    /* Object.keys/getOwnPropertyNames already enumerate a proxy's target.
+     * Descriptor lookup must forward too, or entries contain undefined. */
+    while (o.t == V_OBJ && es_proxy_target(o.o)) {
+        proxy_t* px = (proxy_t*)o.o->host;
+        value_t tr = proxy_trap(I, px, "getOwnPropertyDescriptor");
+        if (I->ctl) return v_undef();
+        if (tr.t == V_FUNC) {
+            value_t args[2] = { v_obj(px->target), v_str(I, key) };
+            value_t desc = call_value(I, tr, v_obj(px->handler), 2, args);
+            if (!I->ctl && desc.t != V_UNDEF && desc.t != V_OBJ)
+                script_throw(I, "TypeError: proxy descriptor must be an object or undefined");
+            return desc;
+        }
+        o = v_obj(px->target);
+    }
+    if (o.t == V_FUNC) {
+        if (!o.f->statics) return v_undef();
+        o = v_obj(o.f->statics);
+    }
     if (o.t != V_OBJ) return v_undef();
     int f = 0;
-    value_t v = prop_get_raw(o.o, v_cstr(I, ARG(1)), &f);
+    value_t v = prop_get_raw(o.o, key, &f);
     if (!f) return v_undef();
     obj_t* d = obj_new(I, OBJ_PLAIN);
     if (v.t == V_OBJ && v.o->kind == OBJ_ACCESSOR) {
@@ -1157,10 +1204,14 @@ static value_t o_getOwnPropertyDescriptor(interp_t* I, value_t self, int argc, v
     obj_t* hidden = prop_hidden_names(o.o);
     int en = 1;
     for (uint32_t i = 0; hidden && i < hidden->len; i++)
-        if (hidden->items[i].t == V_STR && strcmp(hidden->items[i].s->s, v_cstr(I, ARG(1))) == 0) en = 0;
+        if (hidden->items[i].t == V_STR && strcmp(hidden->items[i].s->s, key) == 0) en = 0;
     obj_set(I, d, "enumerable", v_bool(en));
     obj_set(I, d, "configurable", v_bool(1));
     return v_obj(d);
+}
+static value_t o_getOwnPropertyDescriptor(interp_t* I, value_t self, int argc, value_t* argv) {
+    (void)self;
+    return es_own_descriptor(I, ARG(0), v_cstr(I, ARG(1)));
 }
 static value_t o_identity(interp_t* I, value_t self, int argc, value_t* argv) { (void)I; (void)self; return ARG(0); }
 static value_t o_false(interp_t* I, value_t self, int argc, value_t* argv) { (void)I; (void)self; (void)argc; (void)argv; return v_bool(0); }
@@ -1431,11 +1482,10 @@ static value_t js_global_this(interp_t* I, value_t s, int argc, value_t* argv) {
     (void)s; (void)argc; (void)argv;
     return script_get_global(I, "globalThis");
 }
-static value_t js_Function(interp_t* I, value_t s, int argc, value_t* argv) {
-    (void)s;
+static value_t dynamic_function(interp_t* I, int argc, value_t* argv, int async) {
     /* Function("return this")(): the usual way to find the global object, which
      * plain calls here do not pass as `this` */
-    if (argc == 1 && argv[0].t == V_STR) {
+    if (!async && argc == 1 && argv[0].t == V_STR) {
         const char* b = argv[0].s->s;
         while (*b == ' ' || *b == '\n') b++;
         if (strncmp(b, "return this", 11) == 0) {
@@ -1445,7 +1495,9 @@ static value_t js_Function(interp_t* I, value_t s, int argc, value_t* argv) {
         }
     }
     sb_t b = { NULL, 0, 0, I->A };
-    sb_add(&b, "__banana_eval_result = (function anonymous(", 43);
+    const char* prefix = async ? "__banana_eval_result = (async function anonymous(" :
+                                 "__banana_eval_result = (function anonymous(";
+    sb_add(&b, prefix, (uint32_t)strlen(prefix));
     for (int i = 0; i + 1 < argc; i++) {
         str_t* a = v_tostr(I, argv[i]);
         if (i) sb_add(&b, ",", 1);
@@ -1454,7 +1506,15 @@ static value_t js_Function(interp_t* I, value_t s, int argc, value_t* argv) {
     sb_add(&b, "\n) {\n", 5);
     if (argc) { str_t* body = v_tostr(I, argv[argc - 1]); sb_add(&b, body->s, body->len); }
     sb_add(&b, "\n});", 4);
-    return run_for_value(I, b.s, b.n, "Function");
+    return run_for_value(I, b.s, b.n, async ? "AsyncFunction" : "Function");
+}
+static value_t js_Function(interp_t* I, value_t s, int argc, value_t* argv) {
+    (void)s;
+    return dynamic_function(I, argc, argv, 0);
+}
+static value_t js_AsyncFunction(interp_t* I, value_t s, int argc, value_t* argv) {
+    (void)s;
+    return dynamic_function(I, argc, argv, 1);
 }
 /* eval(code): run at global scope; the value is that of a lone expression, else undefined */
 static value_t js_eval(interp_t* I, value_t s, int argc, value_t* argv) {
@@ -1591,6 +1651,7 @@ void es_init(interp_t* I) {
     obj_set(I, ss, "hasInstance", v_str(I, "@@hasInstance"));
     obj_set(I, ss, "toStringTag", v_str(I, "@@toStringTag"));
     obj_set(I, ss, "toPrimitive", v_str(I, "@@toPrimitive"));
+    obj_set(I, ss, "unscopables", v_str(I, "@@unscopables"));
     method(I, ss, "for", sym_for);
     script_def_global(I, "Symbol", sym);
 
@@ -1716,6 +1777,12 @@ void es_init(interp_t* I) {
     value_t fnc = v_native(I, "Function", js_Function);
     if (I->proto_func) obj_set(I, statics_of(I, fnc), "prototype", v_obj(I->proto_func));
     script_def_global(I, "Function", fnc);
+    obj_set(I, I->proto_func, "constructor", fnc);
+    I->proto_async_func = obj_new(I, OBJ_PLAIN);
+    I->proto_async_func->proto = I->proto_func;
+    value_t afnc = v_native(I, "AsyncFunction", js_AsyncFunction);
+    obj_set(I, statics_of(I, afnc), "prototype", v_obj(I->proto_async_func));
+    obj_set(I, I->proto_async_func, "constructor", afnc);
     script_def_global(I, "eval", v_native(I, "eval", js_eval));
     /* Error subclasses that may be missing */
     value_t err = script_get_global(I, "Error");

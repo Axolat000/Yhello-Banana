@@ -14,7 +14,8 @@
 
 /* ══ URLs ═════════════════════════════════════════════════════════════ */
 
-static int has_scheme(const char* s) {
+int url_has_scheme(const char* s) {
+    if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z'))) return 0;
     for (const char* p = s; *p; p++) {
         if (*p == ':') return p > s;
         if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '+' || *p == '-' || *p == '.'))
@@ -70,7 +71,7 @@ static void normalize(char* url) {
 
 void url_resolve(const char* base, const char* rel, char* out, int cap) {
     while (*rel == ' ' || *rel == '\n' || *rel == '\t') rel++;
-    if (has_scheme(rel)) { kstrlcpy(out, rel, (size_t)cap); return; }
+    if (url_has_scheme(rel)) { kstrlcpy(out, rel, (size_t)cap); return; }
     static char b[PAGE_URL_MAX];         /* never yields: one buffer is enough, off the stack */
     kstrlcpy(b, base, sizeof(b));
     if (rel[0] == '#') {
@@ -248,48 +249,7 @@ static void init_forms_text(page_t* p, dom_node_t* n) {
     }
 }
 
-static uint32_t url_hash(const char* s) {
-    uint32_t h = 2166136261u;
-    while (*s) h = (h ^ (uint8_t)*s++) * 16777619u;
-    return h ? h : 1;
-}
-
-static void collect_sheets(page_t* p, dom_node_t* n) {
-    for (dom_node_t* c = n->first; c && p->nsheets < PAGE_MAX_SHEETS; c = c->next) {
-        if (c->type != DOM_ELEM) continue;
-        if (strcmp(c->tag, "style") == 0) {
-            if (c->first && c->first->type == DOM_TEXT) {
-                p->sheet_hash[p->nsheets] = 0;
-                p->sheets[p->nsheets++] = css_parse(&p->A, c->first->text, c->first->text_len, 1);
-            }
-            continue;
-        }
-        if (strcmp(c->tag, "link") == 0) {
-            const char* rel = dom_attr(c, "rel");
-            const char* href = dom_attr(c, "href");
-            if (rel && href && strcasecmp(rel, "stylesheet") == 0) {
-                char url[1024], ct[96];
-                url_resolve(p->base, href, url, sizeof(url));
-                const char* media = dom_attr(c, "media");
-                if (media && strstr(media, "print") && !strstr(media, "screen") && !strstr(media, "all")) continue;
-                uint32_t h = url_hash(url);
-                int seen = 0;
-                for (int i = 0; i < p->nsheets; i++) if (p->sheet_hash[i] == h) seen = 1;
-                if (seen) continue;                     /* the same sheet linked again (CSS-module bundles) */
-                char* data;
-                uint32_t len;
-                if (fetch(p, url, &data, &len, ct, sizeof(ct)) == 0) {
-                    char* copy = arena_strdup(&p->A, data, len);
-                    kfree(data);
-                    p->sheet_hash[p->nsheets] = h;
-                    p->sheets[p->nsheets++] = css_parse(&p->A, copy, len, 1);
-                }
-            }
-            continue;
-        }
-        collect_sheets(p, c);
-    }
-}
+#include "page_styles.h"
 
 static int collect_tags(dom_node_t* n, const char* tag, dom_node_t** out, int max, int k) {
     for (dom_node_t* c = n->first; c && k < max; c = c->next) {
@@ -336,11 +296,17 @@ static void flush_writes(page_t* p) {
     dom_node_t* after = p->cur_script;
     dom_node_t* parent = after->parent;
     dom_node_t* ref = after->next;
+    int count = 0;
+    for (dom_node_t* c = holder->first; c; c = c->next) count++;
+    dom_node_t** added = count ? arena_alloc(&p->A, count * sizeof(*added)) : NULL;
+    int i = 0;
     while (holder->first) {
         dom_node_t* c = holder->first;
+        if (added) added[i++] = c;
         dom_remove(c);
         if (parent) dom_insert_before(parent, c, ref);
     }
+    if (parent && i) jsdom_mutation_children(p, parent, added, i, NULL, 0, after, ref);
     p->write_len = 0;
     p->dirty = 1;
 }
@@ -391,16 +357,31 @@ static void run_script(page_t* p, dom_node_t* s) {
     }
     if (fetched) kfree(fetched);                    /* the syntax tree does not point into it */
     flush_writes(p);
+    script_checkpoint(p->js);                     /* document.write mutation records */
     p->cur_script = NULL;
 }
 
 static void run_scripts(page_t* p) {
     dom_node_t** list = (dom_node_t**)arena_alloc(&p->A, 128 * (uint32_t)sizeof(dom_node_t*));
     int n = collect_tags(p->doc, "script", list, 128, 0);
-    for (int i = 0; i < n; i++) run_script(p, list[i]);
+    for (int i = 0; i < n; i++) {
+        dom_node_t* s=list[i];const char* type=dom_attr(s,"type");
+        int deferred=(dom_attr(s,"src") && dom_attr(s,"defer") && !dom_attr(s,"async")) ||
+                     (type && !strcasecmp(type,"module"));
+        if(!deferred)run_script(p,s);
+    }
     /* document.write may have added more scripts */
     n = collect_tags(p->doc, "script", list, 128, 0);
-    for (int i = 0; i < n; i++) run_script(p, list[i]);
+    for (int i = 0; i < n; i++) {
+        dom_node_t* s=list[i];const char* type=dom_attr(s,"type");
+        int deferred=(dom_attr(s,"src") && dom_attr(s,"defer") && !dom_attr(s,"async")) ||
+                     (type && !strcasecmp(type,"module"));
+        if(!deferred)run_script(p,s);
+    }
+    /* External defer scripts and modules run in document order after the
+     * parser's ordinary scripts, before DOMContentLoaded. Inline defer
+     * has no effect. Resources are fetched synchronously by this engine. */
+    for (int i = 0; i < n; i++) run_script(p,list[i]);
 }
 
 /* ══ images ═══════════════════════════════════════════════════════════ */
@@ -585,6 +566,7 @@ page_t* page_new(page_env_t* env, uint32_t mem_limit) {
     if (!p) return NULL;
     arena_init(&p->A, mem_limit);
     arena_init(&p->LA, LAYOUT_MEM);
+    arena_init(&p->SA, LAYOUT_MEM);
     p->env = env;
     p->scroll_req = -1;
     p->next_timer = 1;
@@ -597,13 +579,15 @@ void page_free(page_t* p) {
     if (!p) return;
     for (int i = 0; i < p->nframes; i++) page_free(p->frames[i]);   /* <iframe> children */
     arena_free_all(&p->LA);
+    arena_free_all(&p->SA);
     arena_free_all(&p->A);
     kfree(p);
 }
 
 void page_update(page_t* p, int width) {
     if (!p->doc) return;
-    if (!p->dirty && p->layout && width == p->width) return;
+    int styles_changed = refresh_sheets(p);
+    if (!p->dirty && !styles_changed && p->layout && width == p->width) return;
     init_forms(p->doc);
     init_forms_text(p, p->doc);
     int count = 0;
@@ -613,6 +597,7 @@ void page_update(page_t* p, int width) {
     arena_free_all(&p->LA);
     arena_init(&p->LA, LAYOUT_MEM);
     css_viewport_w = width;                 /* @media (min-width / max-width) */
+    css_viewport_h = p->view_h > 0 ? p->view_h : 600;
     css_style_tree(&p->LA, p->doc, p->sheets, p->nsheets);
     if (p->env) load_bg_images(p, p->doc);
     int svgs = 0;
@@ -645,10 +630,8 @@ void page_load(page_t* p, const char* url, const char* html, uint32_t len, int w
         jsdom_install(p);
         run_scripts(p);
     }
-    p->sheets[0] = css_default_sheet(&p->A);
-    p->sheet_hash[0] = 0;
-    p->nsheets = 1;
-    collect_sheets(p, p->doc);
+    p->style_snapshot_valid = 0;
+    refresh_sheets(p);
     set_title(p);
     int count = 0;
     load_images(p, p->doc, &count);

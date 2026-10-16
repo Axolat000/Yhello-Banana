@@ -98,6 +98,9 @@ static void bd_detect(void) {
 
 #define VMM_CMD_ENABLE   0x45414552u    /* "READ_ID": also turns it on */
 #define VMM_CMD_DISABLE  0x000000F5u
+#define VMM_CMD_RELATIVE 0x4c455252u
+#define VMM_RELATIVE_PACKET 0x00010000u
+static int g_pointer_captured;
 #define VMM_CMD_ABSOLUTE 0x53424152u
 #define VMM_VERSION_ID   0x3442554Au
 #define VMM_ERROR        0xFFFF0000u
@@ -115,7 +118,7 @@ static int vmmouse_enable(void) {
     if ((r.ax & VMM_ERROR) == VMM_ERROR || (r.ax & 0xFFFFu) == 0) return -1;
     bd(BD_MOUSE_DATA, 1, &r);
     if (r.ax != VMM_VERSION_ID) return -1;
-    bd(BD_MOUSE_CMD, VMM_CMD_ABSOLUTE, &r);
+    bd(BD_MOUSE_CMD, g_pointer_captured?VMM_CMD_RELATIVE:VMM_CMD_ABSOLUTE, &r);
     return 0;
 }
 
@@ -132,7 +135,8 @@ static void vmmouse_poll(void) {
         uint32_t st = r.ax;
         int buttons = ((st & VMM_LEFT) ? 1 : 0) | ((st & VMM_RIGHT) ? 2 : 0) | ((st & VMM_MIDDLE) ? 4 : 0);
         int z = (int32_t)r.dx;
-        mouse_inject_abs((int)(r.bx & 0xFFFFu), (int)(r.cx & 0xFFFFu), buttons);
+        if(st & VMM_RELATIVE_PACKET)mouse_inject((int32_t)r.bx,(int32_t)r.cx,buttons);
+        else mouse_inject_abs((int)(r.bx & 0xFFFFu), (int)(r.cx & 0xFFFFu), buttons);
         if (z) mouse_inject_wheel(z);
         g_vmm_events++;
     }
@@ -365,10 +369,21 @@ static void vbox_poll(void) {
     m->x = m->y = 0;
     if (vbox_req(REQ_GET_MOUSE, sizeof(vmm_mouse_t)) != 0) return;
     g_vbox_abs = (m->features & MOUSE_HOST_ABS) ? 1 : 0;
-    if (g_vbox_abs) mouse_set_abs(m->x, m->y);
+    if (g_vbox_abs && !g_pointer_captured) mouse_set_abs(m->x, m->y);
 }
 
 /* ── everything together ────────────────────────────────────────────── */
+
+void vmtools_capture_pointer(int capture) {
+    capture=!!capture;if(capture==g_pointer_captured)return;
+    g_pointer_captured=capture;
+    if(g_vmmouse) { bd_t r;bd(BD_MOUSE_CMD,capture?VMM_CMD_RELATIVE:VMM_CMD_ABSOLUTE,&r); }
+    if(g_vbox) {
+        vmm_mouse_t* m=(vmm_mouse_t*)g_vreq;
+        m->features=MOUSE_NEW_PROTOCOL|(capture?0:MOUSE_GUEST_ABS);m->x=m->y=0;
+        vbox_req(REQ_SET_MOUSE,sizeof(*m));g_vbox_abs=0;
+    }
+}
 
 void vmtools_poll_pointer(void) {
     if (g_vmmouse) vmmouse_poll();

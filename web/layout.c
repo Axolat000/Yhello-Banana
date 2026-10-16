@@ -814,8 +814,7 @@ static void inline_node(inl_t* I, dom_node_t* n, uint32_t bg, int has_bg) {
     }
     if (out_of_sight(st)) return;
     if (st->position == POS_ABSOLUTE || st->position == POS_FIXED) { defer_abs(C, n, I->x0 + I->cx, I->y); return; }
-    n->box_x = I->x0 + I->cx;
-    n->box_y = I->y;
+    if (!C->dry) { n->box_x = I->x0 + I->cx; n->box_y = I->y; }
     int replaced = strcmp(tag, "img") == 0 || strcmp(tag, "svg") == 0 || strcmp(tag, "input") == 0 || strcmp(tag, "button") == 0 ||
                    strcmp(tag, "select") == 0 || strcmp(tag, "textarea") == 0 || strcmp(tag, "iframe") == 0;
     if (replaced) {
@@ -858,8 +857,7 @@ static void inline_node(inl_t* I, dom_node_t* n, uint32_t bg, int has_bg) {
     if (st->has_bg) { bg = st->bg; has_bg = 1; }
     (void)C;
     inline_children(I, n, bg, has_bg);
-    n->box_w = I->x0 + I->cx - n->box_x;
-    n->box_h = I->line_h;
+    if (!C->dry) { n->box_w = I->x0 + I->cx - n->box_x; n->box_h = I->line_h; }
 }
 
 /* ══ blocks ═══════════════════════════════════════════════════════════ */
@@ -1186,6 +1184,8 @@ static int layout_flex(ctx_t* C, dom_node_t* e, int x, int y, int w, int hgiven)
 
 /* ══ positioning ═══════════════════════════════════════════════════════ */
 
+#include "layout_grid.h"
+
 static void layout_abs(ctx_t* C, dom_node_t* e, int sx, int sy, int cbx, int cby, int cbw, int cbh) {
     const style_t* s = e->style;
     int ml = s->margin[3], mr = s->margin[1], mt = s->margin[0], mb = s->margin[2];
@@ -1295,7 +1295,7 @@ static int layout_box(ctx_t* C, dom_node_t* e, int x, int y, int avail) {
      * room it was given */
     int mw_saved = C->max_w;
     if (C->dry && !explicit_w) C->max_w = 0;
-    int ch = st->flex ? layout_flex(C, e, bx + bl + pl, content_y, cw, hgiven) : layout_children(C, e, bx + bl + pl, content_y, cw);
+    int ch = st->grid ? layout_grid(C, e, bx + bl + pl, content_y, cw) : st->flex ? layout_flex(C, e, bx + bl + pl, content_y, cw, hgiven) : layout_children(C, e, bx + bl + pl, content_y, cw);
     int mw_inner = C->max_w;
     if (C->dry && !explicit_w) C->max_w = mw_saved;
     if (st->height != LEN_AUTO && st->height > 0) ch = st->height;
@@ -1385,10 +1385,7 @@ static int layout_box(ctx_t* C, dom_node_t* e, int x, int y, int avail) {
         t->y = content_y + la - t->asc;                  /* on the first line's baseline */
         t->node = e;
     }
-    e->box_x = bx;
-    e->box_y = by;
-    e->box_w = bw;
-    e->box_h = bh;
+    if (!C->dry) { e->box_x = bx; e->box_y = by; e->box_w = bw; e->box_h = bh; }
     {
         int rw = bw;
         if (C->dry && !explicit_w && mw_inner + bl + br + pl + pr < bw) rw = mw_inner + bl + br + pl + pr;
@@ -1424,8 +1421,9 @@ static void measure_cell(ctx_t* C, dom_node_t* cell, int* maxw, int* minw) {
     memset(&M, 0, sizeof(M));               /* every field: forced sizes, clips, queues */
     M.L = C->L;
     M.dry = 1;
-    layout_children(&M, cell, 0, 0, 100000);
     const style_t* st = cell->style;
+    if (st->grid) layout_grid(&M,cell,0,0,100000);
+    else layout_children(&M, cell, 0, 0, 100000);
     int extra = st->padding[1] + st->padding[3] + st->border[1] + st->border[3];
     *maxw = M.max_w + extra;
     *minw = M.max_word + extra;
@@ -1546,10 +1544,7 @@ static int layout_table(ctx_t* C, dom_node_t* t, int x, int y, int avail) {
     int th = cy - ty + bb;
     if (st->has_bg && !C->dry) C->L->items[bg_index].h = th;
     borders(C, st, tx, ty, tw, th, t);
-    t->box_x = tx;
-    t->box_y = ty;
-    t->box_w = tw;
-    t->box_h = th;
+    if (!C->dry) { t->box_x = tx; t->box_y = ty; t->box_w = tw; t->box_h = th; }
     if (C->max_w < ml + tw) C->max_w = ml + tw;
     return mt + th + mb;
 }

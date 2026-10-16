@@ -1,4 +1,6 @@
+#include "../web/framework_fixtures.h"
 #include "browser.h"
+#include "../web/image_decode.h"
 #include "utf8.h"
 #include "gfx.h"
 #include "fs.h"
@@ -539,6 +541,8 @@ static const char HOME_HTML[] =
     " <li><a href=\"http://localhost/demo.php\">http://localhost/demo.php</a> - a PHP page run by httpd</li>\n"
     " <li><a href=\"http://example.com/\">http://example.com/</a> - a page on the Internet</li>\n"
     " <li><a href=\"file:///home/banana\">file:///home/banana</a> - your files</li>\n"
+    " <li><a href=\"about:frameworks\">Framework demos</a> - React, Vue, Alpine, Astro and Tailwind CSS (offline)</li>\n"
+    " <li><a href=\"https://swm.mxtpasontop.fr/\">SuperWebManager</a> - the real-site browser compatibility test target</li>\n"
     "</ul></div>\n"
     "<div class=\"card\"><h2>JavaScript</h2>\n"
     "<p>The time is <span id=\"clock\">...</span>. You clicked <b id=\"n\">0</b> times.\n"
@@ -688,13 +692,16 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     kstrlcpy(final_url, url, (size_t)fcap);
     if (strncasecmp(url, "about:", 6) == 0) {
         const char* src = strcasecmp(url, "about:home") == 0 ? HOME_HTML : "<html><body></body></html>";
-        uint32_t n = (uint32_t)strlen(src);
+        const char* type = "text/html";
+        uint32_t n;
+        if (!framework_fixture(url, &src, &n, &type)) n = (uint32_t)strlen(src);
         char* b = (char*)kmalloc(n + 1);
         if (!b) return -1;
-        memcpy(b, src, n + 1);
+        memcpy(b, src, n);
+        b[n] = 0;
         *data = b;
         *len = n;
-        kstrlcpy(ctype, "text/html", (size_t)ccap);
+        kstrlcpy(ctype, type, (size_t)ccap);
         return 0;
     }
     if (strncasecmp(url, "file://", 7) == 0) return fetch_file(url + 7, data, len, ctype, ccap, err, ecap);
@@ -760,24 +767,6 @@ static int env_request(void* ctx, const char* url, const char* method, const cha
     return rc;
 }
 
-static int env_decode_image(void* ctx, const uint8_t* data, uint32_t len, img_data_t* out, arena_t* A) {
-    (void)ctx;
-    image_t img;
-    char err[64];
-    if (!image_format(data, len)) return -1;
-    if (image_decode(data, len, &img, err, sizeof(err)) != 0) return -1;
-    if ((uint64_t)img.w * (uint64_t)img.h > 4000000u) { image_free(&img); return -1; }
-    uint32_t n = (uint32_t)(img.w * img.h);
-    uint32_t* px = (uint32_t*)arena_alloc(A, n * 4);
-    if (A->oom) { image_free(&img); return -1; }
-    for (uint32_t i = 0; i < n; i++)
-        px[i] = (uint32_t)img.rgb[i * 3] << 16 | (uint32_t)img.rgb[i * 3 + 1] << 8 | img.rgb[i * 3 + 2];
-    out->px = px;
-    out->w = img.w;
-    out->h = img.h;
-    image_free(&img);
-    return 0;
-}
 
 /* a file the user chose for an upload */
 static int env_read_file(void* ctx, const char* path, char** data, uint32_t* len) {
@@ -1571,7 +1560,7 @@ static void env_setup(void) {
     cookies_load();                 /* the cookies kept from earlier sessions */
     g_env.fetch = env_fetch;
     g_env.request = env_request;
-    g_env.decode_image = env_decode_image;
+    g_env.decode_image = web_decode_image;
     g_env.now_ms = timer_ms;
     g_env.yield = task_maybe_yield;     /* a long script must not freeze the desktop */
     web_yield_hook = task_maybe_yield;  /* nor parsing, styling and layout */

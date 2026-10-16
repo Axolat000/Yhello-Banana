@@ -55,6 +55,325 @@ static value_t list_of(page_t* p, dom_node_t** nodes, int n) {
     return v_obj(a);
 }
 
+/* MutationObserver state belongs to the page arena. The caps bound hostile
+ * registrations, pending records and feedback chains without inventing records. */
+#define MO_OBSERVERS 128
+#define MO_TARGETS 128
+#define MO_RECORDS 4096
+#define MO_TRANSIENTS 4096
+#define MO_ROUNDS 64
+#define MO_CHILD 1
+#define MO_ATTR 2
+#define MO_DATA 4
+#define MO_SUBTREE 8
+#define MO_ATTR_OLD 16
+#define MO_DATA_OLD 32
+#define MO_FILTER 64
+
+typedef struct mo_registration {
+    dom_node_t* target;
+    unsigned flags;
+    obj_t* filter;
+    struct mo_registration* next;
+} mo_registration_t;
+typedef struct mo_transient {
+    dom_node_t* root;
+    mo_registration_t* source;
+    struct mo_transient* next;
+} mo_transient_t;
+typedef struct mo_observer {
+    obj_t* object;
+    value_t callback;
+    mo_registration_t* registrations;
+    mo_transient_t* transients;
+    mo_transient_t* free_transients;
+    int nregistrations, ntransients;
+    value_t* records;
+    int length, capacity;
+    int pending;
+    struct mo_observer* next;
+} mo_observer_t;
+struct jsdom_mutations {
+    mo_observer_t *first, *last;
+    int count, scheduled, rounds;
+    uint32_t checkpoint;
+    value_t job;
+};
+static const host_class_t mo_class = { "MutationObserver", NULL, NULL };
+static value_t mo_notify(interp_t* I, value_t self, int argc, value_t* argv);
+
+static void mo_schedule(page_t* p, mo_observer_t* o) {
+    struct jsdom_mutations* m = p->mutations;
+    o->pending = 1;
+    if (!m->scheduled) {
+        m->scheduled = 1;
+        es_enqueue_job(p->js, m->job);
+    }
+}
+
+static int mo_descendant(dom_node_t* node, dom_node_t* root) {
+    for (; node; node = node->parent) if (node == root) return 1;
+    return 0;
+}
+
+static void mo_clear_transients(mo_observer_t* o, mo_registration_t* source) {
+    for (mo_transient_t** t = &o->transients; *t;) {
+        mo_transient_t* cur = *t;
+        if (!source || cur->source == source) {
+            *t = cur->next;
+            cur->root = NULL; cur->source = NULL;
+            cur->next = o->free_transients; o->free_transients = cur;
+            o->ntransients--;
+        } else t = &cur->next;
+    }
+}
+
+void jsdom_mutation_detach(page_t* p, dom_node_t* node) {
+    if (!p || !p->mutations || !node || !node->parent) return;
+    for (mo_observer_t* o = p->mutations->first; o; o = o->next) {
+        for (mo_registration_t* r = o->registrations; r; r = r->next) {
+            if (!r->target || !(r->flags & MO_SUBTREE)) continue;
+            int match = mo_descendant(node->parent, r->target);
+            for (mo_transient_t* t = o->transients; !match && t; t = t->next)
+                if (t->source == r && mo_descendant(node->parent, t->root)) match = 1;
+            if (!match) continue;
+            int exists = 0;
+            for (mo_transient_t* t = o->transients; t; t = t->next)
+                if (t->root == node && t->source == r) { exists = 1; break; }
+            if (exists) continue;
+            if (o->ntransients == MO_TRANSIENTS) {
+                script_throw(p->js, "RangeError: MutationObserver detached subtree limit"); return;
+            }
+            mo_transient_t* t = o->free_transients;
+            if (t) o->free_transients = t->next;
+            else t = arena_alloc(&p->A, sizeof(*t));
+            t->root = node; t->source = r; t->next = o->transients;
+            o->transients = t; o->ntransients++;
+            mo_schedule(p, o);  /* clear even an attributes-only observer's transient roots */
+        }
+    }
+}
+
+static int mo_match(mo_observer_t* o, dom_node_t* target, unsigned kind,
+                    const char* name, int* old_value) {
+    int match = 0;
+    *old_value = 0;
+    for (mo_registration_t* r = o->registrations; r; r = r->next) {
+        if (!r->target || !(r->flags & kind)) continue;
+        int in_scope = target == r->target || ((r->flags & MO_SUBTREE) && mo_descendant(target, r->target));
+        for (mo_transient_t* t = o->transients; !in_scope && t; t = t->next)
+            if (t->source == r && mo_descendant(target, t->root)) in_scope = 1;
+        if (!in_scope) continue;
+        if (kind == MO_ATTR && (r->flags & MO_FILTER)) {
+            int found = 0;
+            for (uint32_t i = 0; i < r->filter->len; i++) {
+                value_t v = arr_get(r->filter, i);
+                if (v.t == V_STR && strcmp(v.s->s, name) == 0) { found = 1; break; }
+            }
+            if (!found) continue;
+        }
+        match = 1;
+        if ((kind == MO_ATTR && (r->flags & MO_ATTR_OLD)) ||
+            (kind == MO_DATA && (r->flags & MO_DATA_OLD))) *old_value = 1;
+    }
+    return match;
+}
+
+static void mo_record(page_t* p, dom_node_t* target, unsigned kind, const char* name, const char* old,
+                       dom_node_t** added, int na, dom_node_t** removed, int nr,
+                       dom_node_t* previous, dom_node_t* next) {
+    if (!p || !p->mutations || !p->js || !target) return;
+    interp_t* I = p->js;
+    for (mo_observer_t* o = p->mutations->first; o; o = o->next) {
+        int want_old;
+        if (!mo_match(o, target, kind, name, &want_old)) continue;
+        if (o->length == MO_RECORDS) {
+            script_throw(I, "RangeError: MutationObserver record limit"); return;
+        }
+        if (o->length == o->capacity) {
+            int cap = o->capacity ? o->capacity * 2 : 8;
+            value_t* records = arena_alloc(&p->A, (uint32_t)(cap * sizeof(value_t)));
+            if (o->length) memcpy(records, o->records, (size_t)o->length * sizeof(value_t));
+            o->records = records; o->capacity = cap;
+        }
+        obj_t* record = obj_new(I, OBJ_PLAIN);
+        obj_set(I, record, "type", v_str(I, kind == MO_CHILD ? "childList" : kind == MO_ATTR ? "attributes" : "characterData"));
+        obj_set(I, record, "target", wrap(p, target));
+        obj_set(I, record, "addedNodes", list_of(p, added, na));
+        obj_set(I, record, "removedNodes", list_of(p, removed, nr));
+        obj_set(I, record, "previousSibling", wrap(p, previous));
+        obj_set(I, record, "nextSibling", wrap(p, next));
+        obj_set(I, record, "attributeName", name ? v_str(I, name) : v_null());
+        obj_set(I, record, "attributeNamespace", v_null());
+        obj_set(I, record, "oldValue", want_old && old ? v_str(I, old) : v_null());
+        o->records[o->length++] = v_obj(record);
+        mo_schedule(p, o);
+    }
+}
+
+void jsdom_mutation_children(page_t* p, dom_node_t* target,
+                             dom_node_t** added, int na, dom_node_t** removed, int nr,
+                             dom_node_t* previous, dom_node_t* next) {
+    if (na || nr) mo_record(p, target, MO_CHILD, NULL, NULL, added, na, removed, nr, previous, next);
+}
+void jsdom_mutation_attribute(page_t* p, dom_node_t* n, const char* name, const char* old) {
+    mo_record(p, n, MO_ATTR, name, old, NULL, 0, NULL, 0, NULL, NULL);
+}
+void jsdom_mutation_character_data(page_t* p, dom_node_t* n, const char* old) {
+    mo_record(p, n, MO_DATA, NULL, old, NULL, 0, NULL, 0, NULL, NULL);
+}
+
+static mo_observer_t* mo_self(interp_t* I, value_t self) {
+    if (self.t == V_OBJ && self.o->kind == OBJ_HOST && self.o->hc == &mo_class) return self.o->host;
+    script_throw(I, "TypeError: not a MutationObserver"); return NULL;
+}
+static value_t mo_take(interp_t* I, value_t self, int argc, value_t* argv) {
+    (void)argc; (void)argv;
+    mo_observer_t* o = mo_self(I, self);
+    if (!o) return v_undef();
+    obj_t* result = obj_new(I, OBJ_ARRAY);
+    for (int i = 0; i < o->length; i++) { arr_push(I, result, o->records[i]); o->records[i] = v_undef(); }
+    o->length = 0;
+    return v_obj(result);
+}
+static value_t mo_disconnect(interp_t* I, value_t self, int argc, value_t* argv) {
+    (void)argc; (void)argv;
+    mo_observer_t* o = mo_self(I, self);
+    if (!o) return v_undef();
+    for (mo_registration_t* r = o->registrations; r; r = r->next) { r->target = NULL; r->filter = NULL; }
+    mo_clear_transients(o, NULL);
+    for (int i = 0; i < o->length; i++) o->records[i] = v_undef();
+    o->length = 0;
+    return v_undef();
+}
+static value_t mo_observe(interp_t* I, value_t self, int argc, value_t* argv) {
+    mo_observer_t* o = mo_self(I, self);
+    if (!o) return v_undef();
+    dom_node_t* target = node_of(ARG(0));
+    if (!target || argc < 2 || ARG(1).t != V_OBJ) {
+        script_throw(I, "TypeError: observe requires a Node and options"); return v_undef();
+    }
+    obj_t* options = argv[1].o;
+    value_t child = obj_get(I, options, "childList"), attr = obj_get(I, options, "attributes");
+    value_t data = obj_get(I, options, "characterData"), subtree = obj_get(I, options, "subtree");
+    value_t ao = obj_get(I, options, "attributeOldValue"), co = obj_get(I, options, "characterDataOldValue");
+    value_t filter = obj_get(I, options, "attributeFilter");
+    int attrs = attr.t == V_UNDEF ? (ao.t != V_UNDEF || filter.t != V_UNDEF) : v_truthy(I, attr);
+    int chars = data.t == V_UNDEF ? co.t != V_UNDEF : v_truthy(I, data);
+    if ((!v_truthy(I, child) && !attrs && !chars) ||
+        (!attrs && (v_truthy(I, ao) || filter.t != V_UNDEF)) || (!chars && v_truthy(I, co))) {
+        script_throw(I, "TypeError: invalid MutationObserver options"); return v_undef();
+    }
+    obj_t* names = NULL;
+    if (filter.t != V_UNDEF) {
+        obj_t* source = filter.t == V_OBJ ? es_to_array(I, filter) : NULL;
+        if (!source || source->len > 256) { script_throw(I, "TypeError: invalid attributeFilter"); return v_undef(); }
+        names = obj_new(I, OBJ_ARRAY);
+        for (uint32_t i = 0; i < source->len; i++) arr_push(I, names, v_str(I, v_cstr(I, arr_get(source, i))));
+    }
+    if (I->ctl == CTL_THROW) return v_undef();
+    mo_registration_t *r = o->registrations, *spare = NULL;
+    for (; r; r = r->next) {
+        if (r->target == target) break;
+        if (!r->target) spare = r;
+    }
+    if (!r) {
+        r = spare;
+        if (!r) {
+            if (o->nregistrations == MO_TARGETS) { script_throw(I, "RangeError: MutationObserver target limit"); return v_undef(); }
+            r = arena_alloc(&P(I)->A, sizeof(*r));
+            r->next = o->registrations; o->registrations = r; o->nregistrations++;
+        }
+    }
+    mo_clear_transients(o, r);
+    r->target = target; r->filter = names;
+    r->flags = (v_truthy(I, child) ? MO_CHILD : 0) | (attrs ? MO_ATTR : 0) | (chars ? MO_DATA : 0) |
+               (v_truthy(I, subtree) ? MO_SUBTREE : 0) | (v_truthy(I, ao) ? MO_ATTR_OLD : 0) |
+               (v_truthy(I, co) ? MO_DATA_OLD : 0) | (names ? MO_FILTER : 0);
+    return v_undef();
+}
+static value_t js_MutationObserver(interp_t* I, value_t self, int argc, value_t* argv) {
+    if (self.t != V_NULL || self.b != 0x4E57) {
+        script_throw(I, "TypeError: MutationObserver requires new"); return v_undef();
+    }
+    if (!v_isfunc(ARG(0))) { script_throw(I, "TypeError: MutationObserver requires a callback"); return v_undef(); }
+    page_t* p = P(I);
+    struct jsdom_mutations* m = p->mutations;
+    if (!m) {
+        m = arena_alloc(&p->A, sizeof(*m)); p->mutations = m;
+        m->job = v_native(I, "notifyMutationObservers", mo_notify);
+    }
+    if (m->count == MO_OBSERVERS) { script_throw(I, "RangeError: MutationObserver limit"); return v_undef(); }
+    mo_observer_t* o = arena_alloc(&p->A, sizeof(*o));
+    o->callback = ARG(0); o->object = obj_new(I, OBJ_HOST);
+    o->object->hc = &mo_class; o->object->host = o;
+    value_t ctor = script_get_global(I, "MutationObserver");
+    value_t proto = obj_getv(I, ctor, "prototype");
+    if (proto.t == V_OBJ) o->object->proto = proto.o;
+    if (m->last) m->last->next = o; else m->first = o;
+    m->last = o; m->count++;
+    return v_obj(o->object);
+}
+static value_t mo_notify(interp_t* I, value_t self, int argc, value_t* argv) {
+    (void)self; (void)argc; (void)argv;
+    page_t* p = P(I);
+    struct jsdom_mutations* m = p->mutations;
+    m->scheduled = 0;
+    if (m->checkpoint != I->job_checkpoint) { m->checkpoint = I->job_checkpoint; m->rounds = 0; }
+    if (m->rounds++ >= MO_ROUNDS) {
+        /* Leave precise records available to takeRecords(); another task can
+         * resume delivery. A callback mutating its own target cannot hang UI. */
+        kstrlcpy(p->status, "MutationObserver callback limit at microtask checkpoint", sizeof(p->status));
+        return v_undef();
+    }
+    mo_observer_t* pending[MO_OBSERVERS];
+    int count = 0;
+    /* The page list is in observer creation order (DOM notify algorithm). */
+    for (mo_observer_t* o = m->first; o; o = o->next)
+        if (o->pending) pending[count++] = o;
+    for (int i = 0; i < count; i++) pending[i]->pending = 0;
+    for (int i = 0; i < count; i++) {
+        mo_observer_t* o = pending[i];
+        mo_clear_transients(o, NULL);
+        if (!o->length) continue;
+        value_t args[2] = { mo_take(I, v_obj(o->object), 0, NULL), v_obj(o->object) };
+        if (script_call(I, o->callback, v_obj(o->object), 2, args, NULL) != 0 && I->log)
+            I->log(I->log_ctx, script_error(I), (uint32_t)strlen(script_error(I)));
+    }
+    return v_undef();
+}
+
+/* Attribute writes are centralized so reflected properties, style and
+ * classList report the same mutations as setAttribute. */
+static void set_attr(page_t* p, dom_node_t* n, const char* name, const char* value) {
+    const char* old = dom_attr(n, name);
+    dom_set_attr(&p->A, n, name, value);
+    jsdom_mutation_attribute(p, n, name, old);
+}
+static void remove_attr(page_t* p, dom_node_t* n, const char* name) {
+    const char* old = dom_attr(n, name);
+    if (!old) return;
+    dom_remove_attr(n, name);
+    jsdom_mutation_attribute(p, n, name, old);
+}
+
+/* Snapshot child arrays before unlinking: dom_remove clears sibling links. */
+static dom_node_t** child_snapshot(page_t* p, dom_node_t* n, int* count) {
+    *count = 0;
+    for (dom_node_t* c = n->first; c; c = c->next) (*count)++;
+    dom_node_t** nodes = arena_alloc(&p->A, (uint32_t)(*count * sizeof(*nodes)));
+    int i = 0;
+    for (dom_node_t* c = n->first; c; c = c->next) nodes[i++] = c;
+    return nodes;
+}
+static void remove_node(page_t* p, dom_node_t* n) {
+    dom_node_t *parent = n->parent, *prev = n->prev, *next = n->next;
+    if (!parent) return;
+    jsdom_mutation_detach(p, n);
+    dom_remove(n);
+    jsdom_mutation_children(p, parent, NULL, 0, &n, 1, prev, next);
+}
+
 static int has_classes(dom_node_t* n, const char* classes) {
     char word[64];
     const char* s = classes;
@@ -113,6 +432,7 @@ static void select_sync(page_t* p, dom_node_t* sel, const char* value) {
     dom_node_t* opts[128];
     int cnt = collect(sel, 0, "option", opts, 0);
     for (int i = 0; i < cnt && i < 128; i++) {
+        /* This represents live selectedness, not script attribute writes. */
         if (strcmp(node_value(p, opts[i]), value) == 0) dom_set_attr(&p->A, opts[i], "selected", "");
         else dom_remove_attr(opts[i], "selected");
     }
@@ -125,7 +445,7 @@ static void set_value(page_t* p, dom_node_t* n, const char* v) {
         n->form_init = 1;
         if (strcmp(n->tag, "select") == 0) select_sync(p, n, v);
     } else {
-        dom_set_attr(&p->A, n, "value", v);
+        set_attr(p, n, "value", v);
     }
     changed(p);
 }
@@ -350,11 +670,13 @@ static void style_put(page_t* p, dom_node_t* n, const char* prop, const char* va
     int ds, de, vs, ve;
     uint32_t o = 0;
     if (style_find(st, prop, &ds, &de, &vs, &ve)) {
+        if ((uint32_t)(ve - vs) == vl && memcmp(st + vs, val, vl) == 0) return;
         memcpy(out, st, (size_t)ds);
         o = (uint32_t)ds;
         memcpy(out + o, st + de, sl - (uint32_t)de);
         o += sl - (uint32_t)de;
     } else {
+        if (!vl) return;
         memcpy(out, st, sl);
         o = sl;
     }
@@ -366,14 +688,14 @@ static void style_put(page_t* p, dom_node_t* n, const char* prop, const char* va
         memcpy(out + o, val, vl); o += vl;
     }
     out[o] = 0;
-    dom_set_attr(&p->A, n, "style", out);
+    set_attr(p, n, "style", out);
     changed(p);
 }
 
 static int style_set(interp_t* I, obj_t* self, const char* key, value_t v) {
     page_t* p = P(I);
     dom_node_t* n = (dom_node_t*)self->host;
-    if (K("cssText")) { dom_set_attr(&p->A, n, "style", v_cstr(I, v)); changed(p); return 1; }
+    if (K("cssText")) { set_attr(p, n, "style", v_cstr(I, v)); changed(p); return 1; }
     char prop[64];
     kebab(key, prop, sizeof(prop));
     const char* val = (v.t == V_NULL || v.t == V_UNDEF) ? "" : v_cstr(I, v);
@@ -428,7 +750,7 @@ static void class_edit(page_t* p, dom_node_t* n, const char* cls, int add) {
         o += nl;
     }
     out[o] = 0;
-    dom_set_attr(&p->A, n, "class", out);
+    set_attr(p, n, "class", out);
     changed(p);
 }
 
@@ -513,15 +835,24 @@ static value_t attr_or_empty(interp_t* I, dom_node_t* n, const char* name) {
 }
 
 static void set_text(page_t* p, dom_node_t* n, const char* s) {
-    dom_remove_children(n);
+    int nr = 0;
+    dom_node_t** removed = p->mutations ? child_snapshot(p, n, &nr) : NULL;
+    for (int i = 0; i < nr; i++) jsdom_mutation_detach(p, removed[i]);
+    while (n->first) dom_remove(n->first);
     if (*s) dom_append(n, dom_new_text(&p->A, s, (uint32_t)strlen(s)));
+    jsdom_mutation_children(p, n, &n->first, n->first ? 1 : 0, removed, nr, NULL, NULL);
     if (strcmp(n->tag ? n->tag : "", "textarea") == 0) { n->value = dupz(p, s); n->form_init = 1; }
     changed(p);
 }
 
 static void set_html(page_t* p, dom_node_t* n, const char* s) {
-    dom_remove_children(n);
+    int nr = 0, na = 0;
+    dom_node_t** removed = p->mutations ? child_snapshot(p, n, &nr) : NULL;
+    for (int i = 0; i < nr; i++) jsdom_mutation_detach(p, removed[i]);
+    while (n->first) dom_remove(n->first);
     html_parse_into(&p->A, n, s, (uint32_t)strlen(s));
+    dom_node_t** added = p->mutations ? child_snapshot(p, n, &na) : NULL;
+    jsdom_mutation_children(p, n, added, na, removed, nr, NULL, NULL);
     changed(p);
     if (p->ce_reg) ce_sweep(p, n);
 }
@@ -603,7 +934,7 @@ static value_t elem_get(interp_t* I, obj_t* self, const char* key, int* found) {
         return v_num(c);
     }
     if (K("ownerDocument")) return wrap(p, p->doc);
-    if (K("nodeType")) return v_num(n->type == DOM_ELEM ? 1 : n->type == DOM_TEXT ? 3 : n->type == DOM_COMMENT ? 8 : 9);
+    if (K("nodeType")) return v_num(n->type == DOM_ELEM ? (strcmp(n->tag, "#fragment") == 0 ? 11 : 1) : n->type == DOM_TEXT ? 3 : n->type == DOM_COMMENT ? 8 : 9);
     if (K("isConnected")) {
         dom_node_t* r = n;
         while (r->parent) r = r->parent;
@@ -619,6 +950,7 @@ static value_t elem_get(interp_t* I, obj_t* self, const char* key, int* found) {
     }
     char up[32];
     if (K("tagName") || K("nodeName") || K("localName")) {
+        if (strcmp(n->tag, "#fragment") == 0) return K("nodeName") ? v_str(I, "#document-fragment") : v_undef();
         if (K("localName")) return v_str(I, n->tag);
         upper_tag(n->tag, up, sizeof(up));
         return v_str(I, up);
@@ -743,9 +1075,11 @@ static int elem_set(interp_t* I, obj_t* self, const char* key, value_t v) {
     }
     if (n->type != DOM_ELEM) {
         if (K("textContent") || K("nodeValue") || K("data")) {
-            const char* s = v_cstr(I, v);
+            const char* s = v.t == V_NULL || (!K("data") && v.t == V_UNDEF) ? "" : v_cstr(I, v);
+            const char* old = n->text ? n->text : "";
             n->text_len = (uint32_t)strlen(s);
             n->text = arena_strdup(&p->A, s, n->text_len);
+            jsdom_mutation_character_data(p, n, old);
             changed(p);
             return 1;
         }
@@ -759,8 +1093,14 @@ static int elem_set(interp_t* I, obj_t* self, const char* key, value_t v) {
         html_parse_into(&p->A, holder, v_cstr(I, v), (uint32_t)strlen(v_cstr(I, v)));
         dom_node_t* parent = n->parent;
         if (parent) {
+            int na = 0;
+            dom_node_t** added = p->mutations ? child_snapshot(p, holder, &na) : NULL;
+            dom_node_t *prev = n->prev, *next = n->next;
+            jsdom_mutation_detach(p, n);
             while (holder->first) { dom_node_t* c = holder->first; dom_remove(c); dom_insert_before(parent, c, n); }
             dom_remove(n);
+            jsdom_mutation_children(p, parent, added, na, &n, 1, prev, next);
+            if (p->ce_reg) ce_sweep(p, parent);
         }
         changed(p);
         return 1;
@@ -789,22 +1129,22 @@ static int elem_set(interp_t* I, obj_t* self, const char* key, value_t v) {
     }
     if (K("disabled") || K("hidden") || K("selected") || K("readOnly") || K("required")) {
         const char* a = K("readOnly") ? "readonly" : key;
-        if (v_truthy(I, v)) dom_set_attr(&p->A, n, a, "");
-        else dom_remove_attr(n, a);
+        if (v_truthy(I, v)) set_attr(p, n, a, "");
+        else remove_attr(P(I), n, a);
         changed(p);
         return 1;
     }
-    if (K("id")) { dom_set_attr(&p->A, n, "id", v_cstr(I, v)); changed(p); return 1; }
-    if (K("className")) { dom_set_attr(&p->A, n, "class", v_cstr(I, v)); changed(p); return 1; }
-    if (K("htmlFor")) { dom_set_attr(&p->A, n, "for", v_cstr(I, v)); return 1; }
+    if (K("id")) { set_attr(p, n, "id", v_cstr(I, v)); changed(p); return 1; }
+    if (K("className")) { set_attr(p, n, "class", v_cstr(I, v)); changed(p); return 1; }
+    if (K("htmlFor")) { set_attr(p, n, "for", v_cstr(I, v)); return 1; }
     if (K("href") || K("src") || K("title") || K("alt") || K("name") || K("placeholder") || K("type") ||
         K("rel") || K("action") || K("method") || K("target") || K("lang")) {
-        dom_set_attr(&p->A, n, key, v_cstr(I, v));
+        set_attr(p, n, key, v_cstr(I, v));
         if (K("src") && n->img) n->img = NULL;          /* reload */
         changed(p);
         return 1;
     }
-    if (K("style")) { dom_set_attr(&p->A, n, "style", v_cstr(I, v)); changed(p); return 1; }
+    if (K("style")) { set_attr(p, n, "style", v_cstr(I, v)); changed(p); return 1; }
     if (K("selectedIndex") && strcmp(n->tag, "select") == 0) {
         dom_node_t* opts[128];
         int cnt = collect(n, 0, "option", opts, 0);
@@ -841,7 +1181,7 @@ static value_t m_setAttribute(interp_t* I, value_t self, int argc, value_t* argv
     for (char* c = name; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
     const char* val = arg_str(I, argc, argv, 1);
     const char* old = dom_attr(n, name);
-    dom_set_attr(&p->A, n, name, val);
+    set_attr(p, n, name, val);
     if (n->ce_state) ce_attr(p, n, name, old);
     if (name[0] == 'o' && name[1] == 'n') {                /* recompile on next event */
         char ev[40];
@@ -861,9 +1201,11 @@ static value_t m_setAttribute(interp_t* I, value_t self, int argc, value_t* argv
 static value_t m_removeAttribute(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
     if (!n || n->type != DOM_ELEM) return v_undef();
-    const char* name = arg_str(I, argc, argv, 0);
+    char name[64];
+    kstrlcpy(name, arg_str(I, argc, argv, 0), sizeof(name));
+    for (char* c = name; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
     const char* old = dom_attr(n, name);
-    dom_remove_attr(n, name);
+    remove_attr(P(I), n, name);
     if (strcmp(name, "checked") == 0) n->checked = 0;
     changed(P(I));
     if (old && n->ce_state) ce_attr(P(I), n, name, old);
@@ -1081,26 +1423,34 @@ static void throw_dom(interp_t* I, const char* name, const char* msg) {
     script_throw(I, buf);
 }
 
-static int insert(interp_t* I, dom_node_t* parent, dom_node_t* child, dom_node_t* ref) {
+/* Insertion and replacement share one record for the destination. Moving
+ * an existing node separately reports removal from its former parent. */
+static int insert_batch(interp_t* I, dom_node_t* parent, dom_node_t* child,
+                        dom_node_t* ref, dom_node_t* replacing) {
+    page_t* p = P(I);
     if (!parent || !child) { script_throw(I, "TypeError: parameter is not of type 'Node'"); return 0; }
     if (contains(child, parent)) { throw_dom(I, "HierarchyRequestError", "the new child contains the parent"); return 0; }
-    if (is_fragment(child)) {
-        while (child->first) {
-            dom_node_t* c = child->first;
-            dom_remove(c);
-            dom_insert_before(parent, c, ref);
-        }
-        changed(P(I));
-        if (P(I)->ce_reg) ce_sweep(P(I), parent);
-        return 1;
-    }
+    if (ref && ref->parent != parent) { throw_dom(I, "NotFoundError", "reference is not a child"); return 0; }
     if (child == ref) return 1;
-    if (child->parent) dom_remove(child);
-    if (ref && ref->parent == parent) dom_insert_before(parent, child, ref);
-    else dom_append(parent, child);
-    changed(P(I));
-    if (P(I)->ce_reg) ce_sweep(P(I), child);
+    int na = 1;
+    dom_node_t** added = &child;
+    if (is_fragment(child)) {
+        added = child_snapshot(p, child, &na);
+        for (int i = 0; i < na; i++) jsdom_mutation_detach(p, added[i]);
+        for (int i = 0; i < na; i++) dom_remove(added[i]);
+        jsdom_mutation_children(p, child, NULL, 0, added, na, NULL, NULL);
+    } else if (child->parent) remove_node(p, child);
+    dom_node_t *prev = replacing ? replacing->prev : ref ? ref->prev : parent->last;
+    dom_node_t* next = replacing ? replacing->next : ref;
+    if (replacing) { jsdom_mutation_detach(p, replacing); dom_remove(replacing); }
+    for (int i = 0; i < na; i++) dom_insert_before(parent, added[i], next);
+    jsdom_mutation_children(p, parent, added, na, &replacing, replacing ? 1 : 0, prev, next);
+    changed(p);
+    if (p->ce_reg) ce_sweep(p, parent);
     return 1;
+}
+static int insert(interp_t* I, dom_node_t* parent, dom_node_t* child, dom_node_t* ref) {
+    return insert_batch(I, parent, child, ref, NULL);
 }
 
 /* a string argument (append("text")) becomes a text node */
@@ -1117,16 +1467,34 @@ static value_t m_appendChild(interp_t* I, value_t self, int argc, value_t* argv)
     return ARG(0);
 }
 
+/* Variadic ParentNode methods convert their arguments into one fragment,
+ * so destination observers receive one record containing all added nodes. */
+static dom_node_t* convert_nodes(interp_t* I, dom_node_t* parent, int argc, value_t* argv) {
+    if (argc == 1) return node_or_text(I, argv[0]);
+    dom_node_t* fragment = dom_new_element(&P(I)->A, "#fragment");
+    for (int i = 0; i < argc; i++) {
+        dom_node_t* child = node_or_text(I, argv[i]);
+        if (contains(child, parent)) { throw_dom(I, "HierarchyRequestError", "the new child contains the parent"); return NULL; }
+        if (!insert(I, fragment, child, NULL)) return NULL;
+    }
+    return fragment;
+}
+static int node_in_args(dom_node_t* node, int argc, value_t* argv) {
+    for (int i = 0; i < argc; i++) if (node_of(argv[i]) == node) return 1;
+    return 0;
+}
 static value_t m_append(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
-    for (int i = 0; i < argc && n; i++) insert(I, n, node_or_text(I, argv[i]), NULL);
+    if (n) { dom_node_t* child = convert_nodes(I, n, argc, argv); if (child) insert(I, n, child, NULL); }
     return v_undef();
 }
-
 static value_t m_prepend(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
-    dom_node_t* first = n ? n->first : NULL;
-    for (int i = 0; i < argc && n; i++) insert(I, n, node_or_text(I, argv[i]), first);
+    if (!n) return v_undef();
+    dom_node_t* ref = n->first;
+    while (ref && node_in_args(ref, argc, argv)) ref = ref->next;
+    dom_node_t* child = convert_nodes(I, n, argc, argv);
+    if (child) insert(I, n, child, ref);
     return v_undef();
 }
 
@@ -1141,7 +1509,7 @@ static value_t m_removeChild(interp_t* I, value_t self, int argc, value_t* argv)
     dom_node_t* c = node_of(ARG(0));
     if (!n || !c || c->parent != n) { throw_dom(I, "NotFoundError", "the node is not a child of this node"); return v_undef(); }
     if (P(I)->focus && contains(c, P(I)->focus)) P(I)->focus = NULL;
-    dom_remove(c);
+    remove_node(P(I), c);
     changed(P(I));
     return ARG(0);
 }
@@ -1151,7 +1519,7 @@ static value_t m_replaceChild(interp_t* I, value_t self, int argc, value_t* argv
     dom_node_t* nw = node_of(ARG(0));
     dom_node_t* old = node_of(ARG(1));
     if (!n || !nw || !old || old->parent != n) { throw_dom(I, "NotFoundError", "the node is not a child of this node"); return v_undef(); }
-    if (insert(I, n, nw, old)) dom_remove(old);
+    insert_batch(I, n, nw, old, old);
     return ARG(1);
 }
 
@@ -1160,7 +1528,7 @@ static value_t m_remove(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
     if (n && n->parent) {
         if (P(I)->focus && contains(n, P(I)->focus)) P(I)->focus = NULL;
-        dom_remove(n);
+        remove_node(P(I), n);
         changed(P(I));
     }
     return v_undef();
@@ -1170,9 +1538,12 @@ static value_t m_replaceWith(interp_t* I, value_t self, int argc, value_t* argv)
     dom_node_t* n = self_node(I, self);
     if (!n || !n->parent) return v_undef();
     dom_node_t* parent = n->parent;
-    for (int i = 0; i < argc; i++) insert(I, parent, node_or_text(I, argv[i]), n);
-    dom_remove(n);
-    changed(P(I));
+    dom_node_t* ref = n->next;
+    while (ref && node_in_args(ref, argc, argv)) ref = ref->next;
+    dom_node_t* child = convert_nodes(I, parent, argc, argv);
+    if (!child) return v_undef();
+    if (n->parent == parent) insert_batch(I, parent, child, n, n);
+    else insert(I, parent, child, ref);
     return v_undef();
 }
 
@@ -1186,6 +1557,22 @@ static value_t m_contains(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
     dom_node_t* o = node_of(ARG(0));
     return v_bool(n && o && contains(n, o));
+}
+
+static value_t m_isSameNode(interp_t* I, value_t self, int argc, value_t* argv) {
+    dom_node_t* n = self_node(I, self);
+    if (!n) return v_undef();
+    if (!argc) {
+        script_throw(I, "TypeError: isSameNode requires an argument");
+        return v_undef();
+    }
+    value_t other = ARG(0);
+    dom_node_t* o = node_of(other);
+    if (!o && other.t != V_NULL && other.t != V_UNDEF) {
+        script_throw(I, "TypeError: isSameNode argument is not a Node");
+        return v_undef();
+    }
+    return v_bool(n == o);
 }
 
 static dom_node_t* clone(page_t* p, dom_node_t* n, int deep) {
@@ -1325,13 +1712,8 @@ static value_t m_insertAdjacentHTML(interp_t* I, value_t self, int argc, value_t
     else if (strcasecmp(where, "afterbegin") == 0) { parent = n; ref = n->first; }
     else { parent = n; ref = NULL; }
     if (!parent) return v_undef();
-    while (holder->first) {
-        dom_node_t* c = holder->first;
-        dom_remove(c);
-        if (ref) dom_insert_before(parent, c, ref);
-        else dom_append(parent, c);
-    }
-    changed(p);
+    holder->tag = "#fragment";
+    insert(I, parent, holder, ref);
     return v_undef();
 }
 
@@ -1437,6 +1819,14 @@ static value_t d_createTextNode(interp_t* I, value_t self, int argc, value_t* ar
     return wrap(P(I), dom_new_text(&P(I)->A, s, (uint32_t)strlen(s)));
 }
 
+static value_t d_createComment(interp_t* I, value_t self, int argc, value_t* argv) {
+    (void)self;
+    const char* s = arg_str(I, argc, argv, 0);
+    dom_node_t* n = dom_new_text(&P(I)->A, s, (uint32_t)strlen(s));
+    n->type = DOM_COMMENT;
+    return wrap(P(I), n);
+}
+
 static value_t d_createDocumentFragment(interp_t* I, value_t self, int argc, value_t* argv) {
     (void)self; (void)argc; (void)argv;
     return wrap(P(I), dom_new_element(&P(I)->A, "#fragment"));
@@ -1445,7 +1835,12 @@ static value_t d_createDocumentFragment(interp_t* I, value_t self, int argc, val
 static void write_text(page_t* p, const char* s, uint32_t n) {
     if (!p->cur_script) {                 /* after loading: append to the body */
         dom_node_t* body = dom_body(p->doc);
-        if (body) html_parse_into(&p->A, body, s, n);
+        if (body) {
+            dom_node_t* holder = dom_new_element(&p->A, "div");
+            html_parse_into(&p->A, holder, s, n);
+            holder->tag = "#fragment";
+            insert(p->js, body, holder, NULL);
+        }
         changed(p);
         return;
     }
@@ -1800,11 +2195,13 @@ static value_t m_dispatchEvent(interp_t* I, value_t self, int argc, value_t* arg
 static value_t m_toggleAttribute(interp_t* I, value_t self, int argc, value_t* argv) {
     dom_node_t* n = self_node(I, self);
     if (!n || n->type != DOM_ELEM) return v_bool(0);
-    const char* name = arg_str(I, argc, argv, 0);
-    int on = argc > 1 ? v_truthy(I, argv[1]) : !dom_attr(n, name);
+    char name[64];
+    kstrlcpy(name, arg_str(I, argc, argv, 0), sizeof(name));
+    for (char* c = name; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
     const char* old = dom_attr(n, name);
-    if (on) dom_set_attr(&P(I)->A, n, name, "");
-    else dom_remove_attr(n, name);
+    int on = argc > 1 ? v_truthy(I, argv[1]) : !old;
+    if (on && !old) set_attr(P(I), n, name, "");
+    else if (!on && old) remove_attr(P(I), n, name);
     changed(P(I));
     if (n->ce_state && (on ? !old : old != NULL)) ce_attr(P(I), n, name, old);
     return v_bool(on);
@@ -1885,8 +2282,8 @@ static value_t js_matchMedia(interp_t* I, value_t self, int argc, value_t* argv)
 }
 
 /* IntersectionObserver: every observed element counts as visible at once
- * (lazy-loaded images and "on scroll" content then simply show up);
- * MutationObserver / ResizeObserver: accepted, never fire */
+ * (lazy-loaded images and "on scroll" content then simply show up).
+ * ResizeObserver and PerformanceObserver are accepted without notifications. */
 static value_t io_observe(interp_t* I, value_t self, int argc, value_t* argv) {
     if (self.t != V_OBJ) return v_undef();
     value_t cb = obj_get(I, self.o, "__cb");
@@ -2234,6 +2631,7 @@ static const method_t ELEM_METHODS[] = {
     { "appendChild", m_appendChild }, { "append", m_append }, { "prepend", m_prepend },
     { "insertBefore", m_insertBefore }, { "removeChild", m_removeChild }, { "replaceChild", m_replaceChild },
     { "remove", m_remove }, { "replaceWith", m_replaceWith }, { "hasChildNodes", m_hasChildNodes }, { "contains", m_contains },
+    { "isSameNode", m_isSameNode },
     { "cloneNode", m_cloneNode }, { "querySelector", m_querySelector }, { "querySelectorAll", m_querySelectorAll },
     { "getElementsByTagName", m_getElementsByTagName }, { "getElementsByClassName", m_getElementsByClassName },
     { "closest", m_closest }, { "matches", m_matches },
@@ -2247,7 +2645,8 @@ static const method_t ELEM_METHODS[] = {
 
 static const method_t DOC_METHODS[] = {
     { "getElementById", d_getElementById }, { "createElement", d_createElement },
-    { "createTextNode", d_createTextNode }, { "createDocumentFragment", d_createDocumentFragment },
+    { "createTextNode", d_createTextNode }, { "createComment", d_createComment },
+    { "createDocumentFragment", d_createDocumentFragment },
     { "write", d_write }, { "writeln", d_writeln }, { "createElementNS", d_createElementNS },
     { "getSelection", w_getSelection }, { "hasFocus", m_nothing },
 };
@@ -2306,7 +2705,7 @@ static void mod_log(page_t* p, const char* a, const char* b) {
 /* a module name to an address: relative to the importing module, or through the import map */
 static int module_resolve(page_t* p, const char* spec, const char* base, char* out, int cap) {
     if (!base) base = p->url;
-    if (spec[0] == '.' || spec[0] == '/' || strstr(spec, "://")) {
+    if (spec[0] == '.' || spec[0] == '/' || url_has_scheme(spec)) {
         url_resolve(base, spec, out, cap);
         return 0;
     }
@@ -2524,6 +2923,7 @@ void jsdom_loaded(page_t* p, int phase) {
 
 void jsdom_install(page_t* p) {
     interp_t* I = p->js;
+    p->mutations = NULL;
     script_set_host(I, p);
     script_set_log(I, js_log, p);
     script_set_output(I, js_out, p);
@@ -2545,6 +2945,9 @@ void jsdom_install(page_t* p) {
     obj_t* win = obj_new(I, OBJ_HOST);
     win->hc = &win_class;
     p->win_obj = win;
+    /* Window properties participate in the global object environment too:
+     * bare innerHeight/innerWidth must use the same live getters as window.*. */
+    I->global->with_obj = v_obj(win);
     for (uint32_t i = 0; i < sizeof(WIN_FUNCS) / sizeof(WIN_FUNCS[0]); i++)
         script_def_global(I, WIN_FUNCS[i].name, v_native(I, WIN_FUNCS[i].name, WIN_FUNCS[i].f));
 
@@ -2605,7 +3008,17 @@ void jsdom_install(page_t* p) {
     script_def_global(I, "matchMedia", v_native(I, "matchMedia", js_matchMedia));
     script_def_global(I, "getSelection", v_native(I, "getSelection", w_getSelection));
     script_def_global(I, "IntersectionObserver", v_native(I, "IntersectionObserver", js_IntersectionObserver));
-    script_def_global(I, "MutationObserver", v_native(I, "MutationObserver", js_OtherObserver));
+    {
+        value_t ctor = v_native(I, "MutationObserver", js_MutationObserver);
+        obj_t* proto = obj_new(I, OBJ_PLAIN);
+        ctor.f->statics = obj_new(I, OBJ_PLAIN);
+        obj_set(I, ctor.f->statics, "prototype", v_obj(proto));
+        obj_set(I, proto, "constructor", ctor);
+        obj_set(I, proto, "observe", v_native(I, "observe", mo_observe));
+        obj_set(I, proto, "disconnect", v_native(I, "disconnect", mo_disconnect));
+        obj_set(I, proto, "takeRecords", v_native(I, "takeRecords", mo_take));
+        script_def_global(I, "MutationObserver", ctor);
+    }
     script_def_global(I, "ResizeObserver", v_native(I, "ResizeObserver", js_OtherObserver));
     script_def_global(I, "PerformanceObserver", v_native(I, "PerformanceObserver", js_OtherObserver));
     script_def_global(I, "requestIdleCallback", v_native(I, "requestIdleCallback", w_requestIdleCallback));

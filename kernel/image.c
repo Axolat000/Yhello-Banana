@@ -1,6 +1,7 @@
 #include "image.h"
 #include "kheap.h"
 #include "kstring.h"
+#include "../third_party/libwebp/src/webp/decode.h"
 
 /* third_party/stb/stb_image_impl.c */
 extern unsigned char* stbi_load_from_memory(const unsigned char* buf, int len, int* x, int* y,
@@ -27,24 +28,37 @@ const char* image_format(const uint8_t* d, uint32_t len) {
     if (len >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) return "JPEG";
     if (len >= 2 && d[0] == 'B' && d[1] == 'M') return "BMP";
     if (len >= 4 && d[0] == 'G' && d[1] == 'I' && d[2] == 'F' && d[3] == '8') return "GIF";
+    if (len >= 12 && !memcmp(d,"RIFF",4) && !memcmp(d+8,"WEBP",4)) return "WebP";
     return NULL;
 }
 
 int image_decode(const uint8_t* data, uint32_t len, image_t* out, char* err, uint32_t errlen) {
     memset(out, 0, sizeof(*out));
+    if (len > 2147483647u) { ksnprintf(err,errlen,"image input is too large"); return -1; }
     const char* fmt = image_format(data, len);
     if (!fmt) {
         /* the classic mistake: saving an HTML error/redirect page */
         if (len > 0 && (data[0] == '<' || (len > 15 && strncasecmp((const char*)data, "<!doctype", 9) == 0)))
             ksnprintf(err, errlen, "not an image - looks like an HTML page (check the URL)");
         else
-            ksnprintf(err, errlen, "unsupported file type (need PNG, JPEG, BMP or GIF)");
+            ksnprintf(err, errlen, "unsupported file type (need PNG, JPEG, BMP, GIF or WebP)");
         return -1;
     }
     int w = 0, h = 0, comp = 0;
-    if (!stbi_info_from_memory(data, (int)len, &w, &h, &comp)) {
+    int webp = !strcmp(fmt,"WebP");
+    if (webp) {
+        WebPBitstreamFeatures features;
+        if (WebPGetFeatures(data,len,&features) != VP8_STATUS_OK) {
+            ksnprintf(err,errlen,"corrupt or truncated WebP header"); return -1;
+        }
+        if (features.has_animation) { ksnprintf(err,errlen,"animated WebP is not supported"); return -1; }
+        w=features.width; h=features.height;
+    } else if (!stbi_info_from_memory(data, (int)len, &w, &h, &comp)) {
         ksnprintf(err, errlen, "corrupt or unsupported %s (%s)", fmt, stbi_failure_reason());
         return -1;
+    }
+    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) {
+        ksnprintf(err,errlen,"image dimensions exceed the 8192-pixel limit"); return -1;
     }
     /* decoding needs w*h*3 bytes at once: say so up front instead of
      * failing half way */
@@ -54,9 +68,13 @@ int image_decode(const uint8_t* data, uint32_t len, image_t* out, char* err, uin
                   w, h, (uint32_t)(need >> 20), kheap_largest_free() >> 20);
         return -1;
     }
-    unsigned char* px = stbi_load_from_memory(data, (int)len, &w, &h, &comp, 3);
+    unsigned char* px;
+    if (webp) {
+        px=kmalloc((uint32_t)need);
+        if (px && !WebPDecodeRGBInto(data,len,px,(size_t)need,w*3)) { kfree(px); px=NULL; }
+    } else px = stbi_load_from_memory(data, (int)len, &w, &h, &comp, 3);
     if (!px) {
-        ksnprintf(err, errlen, "could not decode %s: %s", fmt, stbi_failure_reason());
+        ksnprintf(err, errlen, "could not decode %s: %s", fmt, webp ? "corrupt data or insufficient memory" : stbi_failure_reason());
         return -1;
     }
     out->rgb = px;
@@ -66,7 +84,8 @@ int image_decode(const uint8_t* data, uint32_t len, image_t* out, char* err, uin
 }
 
 void image_free(image_t* img) {
-    if (img->rgb) stbi_image_free(img->rgb);
+    /* Both decoders return storage owned by the kernel heap. */
+    if (img->rgb) kfree(img->rgb);
     img->rgb = NULL;
 }
 

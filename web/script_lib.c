@@ -1196,6 +1196,9 @@ static value_t o_hasOwnProperty(interp_t* I, value_t self, int argc, value_t* ar
     }
     if (self.t != V_OBJ) return v_bool(0);
     obj_t* o = self.o;
+    /* A proxy's get trap handles even absent properties. Ownership is a
+     * descriptor query, not a test of whether its host getter handled Get. */
+    if (es_proxy_target(o)) return v_bool(es_own_descriptor(I, self, k).t != V_UNDEF);
     if (o->kind == OBJ_ARRAY) {                       /* its elements and length */
         if (strcmp(k, "length") == 0) return v_bool(1);
         uint32_t idx = 0;

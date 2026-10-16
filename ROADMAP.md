@@ -10,6 +10,10 @@ passed all nine checks with RAM above 4 GiB and four CPU cores. Run
 `fstest <mount point>` for FAT32/exFAT; `-k` keeps the test files afterwards.
 New features should include a test command that runs inside Banana OS.
 
+RAM reporting (build 169): Settings and neofetch prefer the complete firmware
+memory map over the legacy count below the PCI hole. `selftest ram` checks
+above-4-GiB totals, reserved regions, tag ordering and live accounting.
+
 ## 1. Foundations
 
 | Feature | Status | Notes |
@@ -51,6 +55,8 @@ New features should include a test command that runs inside Banana OS.
 | OpenCL: `barrier()` and vector types (`float4`) | **done** (build 149) | CPU work-group barriers, shared local arrays/arguments, float/int/uint vectors with 2/3/4/8/16 lanes. User's four-core VM passed every check in `selftest opencl`, including reductions, private state across barriers, vector operations and error handling (0 failed; 894 ms). Host kernel tests also pass on x86_64 and i686 with one and four workers. See SDK notes for subset and limits. |
 | Verbose kernel crash screen | **done** (build 150) | Windows-style blue header with Linux-style diagnostics: stop code, CPU/task, registers, fault decoding and raw stack words; full serial report. `crashtest` previews safely; `crashtest report` prints a sample. Explicit panic/ud2/pagefault modes halt the OS. User approved the screen; host formatting/rendering checks and both kernel builds/links pass. Individual fatal-test modes have not been separately confirmed. |
 | Browser: recover from a crashed page | **testing** | Merged upstream commit `793a736` locally in `558da3e`, retaining ring-3 apps and dynamic task stacks. Open `about:crash` to check that the page closes without stopping the OS. Both architectures compile; VM verification pending. |
+| Graphical firmware boot menu | **done** (build 168) | Shared BIOS/UEFI renderer, compact antialiased DejaVu atlas, Banana yellow focus, countdown progress and readable keyboard/display hints. All existing kernel and firmware actions remain. Text fallback for unsupported framebuffers. `selftest boot` checks clipping, stride, color layouts, small screens and highlights. Host sanitizer/i686 tests and BIOS/UEFI64 QEMU menu/navigation/handoff tests pass; both UEFI builds pass relocation/PE checks. No UEFI32 runtime test performed. |
+| Mouse capture for native games | **done** (build 167) | SDK API 20: foreground window ownership, raw relative input, coalesced deltas, three buttons and wheel; Escape/focus/minimize/desktop/exit release. VMMouse requests relative reports while captured; VirtualBox absolute integration pauses. Absolute-only tablets fall back to position differences and remain limited by host coordinates. `selftest mouse`; `selftest mouse demo` opens an interactive look-around window. Host ownership, lifecycle, event-queue and old-SDK compatibility checks pass; user confirmed in-OS tests and the interactive demo in a VM. Physical hardware remains untested. |
 | Desktop notifications | planned | |
 | Several user accounts on the lock screen | planned | |
 | Screenshots | planned | A key and a `screenshot` command. |
@@ -59,10 +65,14 @@ New features should include a test command that runs inside Banana OS.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Tailwind CSS v3 | planned | CSS variables with `var()` fallbacks, `calc()`, `:is()`/`:where()`, escaped class names (`.md\:flex`). |
+| Compiled Tailwind CSS v3 | **testing** (build 166) | Offline Tailwind 3.4.17 fixtures: escaped arbitrary/fraction/responsive utilities, `rem` spacing, flex layout and resize. Improved computed custom properties with cycle/fallback handling, dimensional `calc()`/`min()`/`max()`/`clamp()`, escaped selectors and `:is()`/`:where()` specificity. Host checks pass; VM confirmation pending. This is a tested subset, not full Tailwind compatibility. |
 | Tailwind CSS v4 | planned | Also `@layer`, `@property`, `oklch()`, `color-mix()`. |
-| Tailwind's script build (`cdn.tailwindcss.com`) | planned | Needs `MutationObserver` and generated `<style>` tags. |
-| React, Vue, Alpine | planned | Mostly modern JavaScript: classes, async/await, Promises, Proxy, modules. Each one gets tested against real pages. |
+| Runtime stylesheet and DOM observer foundations | **testing** (build 166) | Inserted, replaced and removed `<style>` tags; linked-source cache; actual asynchronous MutationObserver records, filters and old values, with bounded feedback/overflow. `selftest browser` checks these offline. The Tailwind CDN compiler itself remains unverified. |
+| React, Vue, Alpine | **testing** (build 166) | Real pinned React 18.3.1, Vue 3.5.13 and Alpine 3.14.9 mount counters and update on clicks in host tests. Fixed template/regex parsing, AsyncFunction construction, Proxy ownership, `with` scope and external `defer` ordering. `selftest browser`; visual demos at `about:frameworks`, `/vue`, `/alpine`. VM verification and broader applications remain pending. |
+| Astro | **testing** (build 166) | Real Astro 5.13.2 production output: static HTML without JavaScript, scoped CSS, a module script, and independent Preact `client:load`, `client:idle` and `client:only` islands. Fixed absolute module specifiers with URL schemes and added `Node.isSameNode()` for slots/templates. `selftest browser`; demo at `about:frameworks/astro`. VM confirmation, other renderers/directives, view transitions and server islands remain pending. |
+| Real-site browser target: SuperWebManager | **testing** (build 166) | https://swm.mxtpasontop.fr/ serves Astro 7.3.5 and Tailwind 4.3.3. Host: all 16 checks pass, including desktop grid, readable heading, hydration/interactions and four decoded images. Fixed Window globals, explicit grid columns, final font-relative lengths and WebP decoding (libwebp 1.6.0, scalar decoder). Retina screenshots fit the bounded eight-million-pixel browser limit; document arena uses about 109 MiB. `selftest browser swm` uses the real browser transport/decoder; host `tools/test_browser.py --swm` exports a preview. User confirmed VM networking/scripts; latest layout/image fixes await VM confirmation. Full Tailwind v4 and visual parity remain incomplete. |
+
+Grid regression coverage includes fixed/percentage/fractional columns, `minmax`, numeric `repeat`, gaps, automatic rows and resize (up to 16 columns). Spans, named lines, auto-fit/auto-fill and explicit row tracks are not implemented. Static lossy/lossless WebP and alpha streams decode; animated WebP is unsupported.
 
 ## Not planned
 

@@ -5,6 +5,7 @@
 #include "types.h"
 #include "fb.h"
 #include "winframe.h"
+#include "usb.h"
 #include "../sdk/include/banana_api.h"
 
 /*
@@ -30,6 +31,12 @@ void      appwin_set_title(int id, int owner, const char* title);
 void      appwin_size(int id, int owner, int* w, int* h);
 /* the user may resize / maximize it (the app gets BANANA_EV_RESIZE) */
 void      appwin_set_resizable(int id, int owner, int min_w, int min_h);
+int       appwin_capture_mouse(int id,int owner,int capture);
+int       appwin_mouse_captured(int id,int owner);
+int       appwin_capture_active(void); /* check focus/Escape, release if needed */
+int       appwin_capture_pending(void); /* read-only; cursor timer may use it */
+void      appwin_release_mouse(void);
+int       appwin_capture_input(const mouse_state_t* m,int screen_w,int screen_h);
 /* 1 once the user clicked an app window's close button twice (the app
  * did not quit on the first BANANA_EV_CLOSE): the app is stopped */
 int       appwin_kill_requested(int owner);

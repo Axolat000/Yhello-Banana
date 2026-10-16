@@ -1,0 +1,6 @@
+FIXTURE astro_0, "web/fixtures/astro/_astro/Counter.B955c7t-.js"
+FIXTURE astro_1, "web/fixtures/astro/_astro/client.CCCce9oZ.js"
+FIXTURE astro_2, "web/fixtures/astro/_astro/hooks.module.CE5GZLJD.js"
+FIXTURE astro_3, "web/fixtures/astro/_astro/preact.module.BYSHj7yn.js"
+FIXTURE astro_4, "web/fixtures/astro/_astro/signals.module.BUJf7v_P.js"
+FIXTURE astro_5, "web/fixtures/astro/index.html"

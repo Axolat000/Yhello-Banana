@@ -46,6 +46,9 @@ int  keyboard_held_char(int c);
 /* 1 if set-1 `code` went down since the last call (a tap too short for
  * keyboard_held to be seen), and forgets it */
 int  keyboard_take_pressed(int code);
+/* Physical Escape presses, independent of consumable app key state.
+ * Arrow-key ESC sequences do not increment this counter. */
+uint32_t keyboard_escape_sequence(void);
 /* what the key at set-1 `code` types on a US keyboard, 0 if nothing */
 char keyboard_us_char(int code, int shift);
 /* queues text as typed input for whoever reads the keyboard next */
