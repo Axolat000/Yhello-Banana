@@ -1,5 +1,8 @@
 #ifndef _MATH_H
 #define _MATH_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Banana OS SDK math library (double precision; the f variants take and
  * return float). Accurate to about 1e-15 relative for the usual ranges. */
@@ -133,4 +136,7 @@ float ldexpf(float x, int e);
 long double ldexpl(long double x, int e);   /* (computed in double precision) */
 float frexpf(float x, int* e);
 
+#ifdef __cplusplus
+}
+#endif
 #endif

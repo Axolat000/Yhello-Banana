@@ -1,5 +1,8 @@
 #ifndef _SIGNAL_H
 #define _SIGNAL_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * Signals (Banana OS API version 19), with Linux's numbers.
  *
@@ -79,6 +82,10 @@ typedef struct {
 } siginfo_t;
 
 /* si_code */
+/* (fields some signals carry, in the spare words) */
+#define si_status __pad0
+#define si_band   __pad1[0]
+#define si_fd     __pad1[1]
 #define SI_USER     0
 #define SI_KERNEL   0x80
 #define SI_TKILL    (-6)
@@ -86,13 +93,44 @@ typedef struct {
 #define SEGV_ACCERR 2
 #define BUS_ADRALN  1
 #define BUS_ADRERR  2
+#define BUS_OBJERR  3
+#define SEGV_BNDERR 3
+#define SEGV_PKUERR 4
 #define FPE_INTDIV  1
 #define FPE_INTOVF  2
 #define FPE_FLTDIV  3
+#define FPE_FLTOVF  4
+#define FPE_FLTUND  5
+#define FPE_FLTRES  6
+#define FPE_FLTINV  7
+#define FPE_FLTSUB  8
 #define ILL_ILLOPC  1
 #define ILL_ILLOPN  2
+#define ILL_ILLADR  3
+#define ILL_ILLTRP  4
+#define ILL_PRVOPC  5
+#define ILL_PRVREG  6
+#define ILL_COPROC  7
+#define ILL_BADSTK  8
 #define TRAP_BRKPT  1
 #define TRAP_TRACE  2
+#define CLD_EXITED    1
+#define CLD_KILLED    2
+#define CLD_DUMPED    3
+#define CLD_TRAPPED   4
+#define CLD_STOPPED   5
+#define CLD_CONTINUED 6
+#define POLL_IN  1
+#define POLL_OUT 2
+#define POLL_MSG 3
+#define POLL_ERR 4
+#define POLL_PRI 5
+#define POLL_HUP 6
+#define SI_QUEUE   (-1)
+#define SI_TIMER   (-2)
+#define SI_MESGQ   (-3)
+#define SI_ASYNCIO (-4)
+#define SI_SIGIO   (-5)
 
 struct sigaction {
     union {
@@ -147,4 +185,7 @@ int  siginterrupt(int sig, int flag);
 #include <pthread.h>
 int  pthread_sigmask(int how, const sigset_t* set, sigset_t* old);
 int  pthread_kill(pthread_t t, int sig);
+#ifdef __cplusplus
+}
+#endif
 #endif

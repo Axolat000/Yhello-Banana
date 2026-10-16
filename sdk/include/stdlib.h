@@ -1,5 +1,8 @@
 #ifndef _STDLIB_H
 #define _STDLIB_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
@@ -14,6 +17,8 @@ void*  aligned_alloc(size_t align, size_t size);
 void*  memalign(size_t align, size_t size);
 void   exit(int code) __attribute__((noreturn));
 void   abort(void) __attribute__((noreturn));
+#include <alloca.h>
+int    getloadavg(double loads[], int n);
 void   _Exit(int code) __attribute__((noreturn));
 int    atexit(void (*fn)(void));
 int    atoi(const char* s);
@@ -33,10 +38,19 @@ void   srand(unsigned int seed);
 void   qsort(void* base, size_t n, size_t size, int (*cmp)(const void*, const void*));
 void*  bsearch(const void* key, const void* base, size_t n, size_t size, int (*cmp)(const void*, const void*));
 char*  (getenv)(const char* name);    /* (in parentheses: a program may define getenv as a macro) */
+int    setenv(const char* name, const char* value, int overwrite);
+int    unsetenv(const char* name);
+int    putenv(char* s);
+int    clearenv(void);
+int    mkstemp(char* tmpl);
+extern char** environ;
 double strtod(const char* s, char** end);
 float  strtof(const char* s, char** end);
 long double strtold(const char* s, char** end);   /* (double precision) */
 /* the absolute path, without . and .. (resolved may be NULL: malloc'd) */
 char*  realpath(const char* path, char* resolved);
 double atof(const char* s);
+#ifdef __cplusplus
+}
+#endif
 #endif

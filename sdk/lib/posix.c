@@ -64,6 +64,10 @@ int fstat(int fd, struct stat* st) {
     __banana->seek(fd, cur, SEEK_SET);
     st->st_mode = S_IFREG | 0644;
     st->st_size = end;
+    st->st_nlink = 1;
+    st->st_uid = st->st_gid = 1000;
+    st->st_ino = (ino_t)fd;
+    st->st_blocks = (end + 511) / 512;
     return 0;
 }
 
@@ -73,6 +77,11 @@ int stat(const char* path, struct stat* st) {
     memset(st, 0, sizeof(*st));
     st->st_mode = b.is_dir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
     st->st_size = b.size;
+    st->st_nlink = 1;
+    st->st_uid = st->st_gid = 1000;
+    st->st_dev = 1;
+    for (const char* c = path; *c; c++) st->st_ino = st->st_ino * 31 + (unsigned char)*c;   /* (a stable number per path) */
+    st->st_blocks = (b.size + 511) / 512;
     st->st_blksize = 4096;
     return 0;
 }

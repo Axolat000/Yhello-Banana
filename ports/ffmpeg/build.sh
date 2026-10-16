@@ -88,7 +88,7 @@ ar rcs sdklibc/libc.a sdklibc/*.o
 # configured again only when what goes into configure changes (a checksum
 # of it, not dates: a fresh checkout or a restored CI cache keeps the
 # build). CONFV: bump it when changing the fixed configure options below.
-CONFV=2
+CONFV=4
 SUM=$(printf '%s|' "$CONFV" "$FARCH" "$ASM" "$VDEC" "$ADEC" "$DEMUX" "$PARSE" "$CFLAGS" "$AFLAGS" | sha256sum | cut -d" " -f1)
 [ -n "$PRINT_SUM" ] && { echo "$SUM"; exit 0; }
 if [ ! -f config.h ] || [ "$(cat .configured 2>/dev/null)" != "$SUM" ]; then

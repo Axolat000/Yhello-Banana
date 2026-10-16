@@ -1,5 +1,8 @@
 #ifndef _SYS_SELECT_H
 #define _SYS_SELECT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <sys/time.h>
 #include <time.h>
 
@@ -13,4 +16,7 @@ typedef struct { unsigned long fds_bits[FD_SETSIZE / (8 * sizeof(unsigned long))
 #define FD_ISSET(d, s) (((s)->fds_bits[__FD_W(d)] & __FD_B(d)) != 0)
 
 int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* timeout);
+#ifdef __cplusplus
+}
+#endif
 #endif

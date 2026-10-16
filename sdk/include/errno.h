@@ -1,5 +1,8 @@
 #ifndef _ERRNO_H
 #define _ERRNO_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* each thread has its own */
 int* __errno_location(void);
 #define errno (*__errno_location())
@@ -44,6 +47,19 @@ int* __errno_location(void);
 #define ELOOP   40
 #define ENODATA 61
 #define ETIME   62
+#define ETXTBSY 26
+#define ENOMSG  42
+#define EIDRM   43
+#define ENOSTR  60
+#define ENOSR   63
+#define ENOLINK 67
+#define EPROTO  71
+#define EMULTIHOP 72
+#define EBADMSG 74
+#define ENOTUNIQ 76
+#define EBADFD  77
+#define ESTRPIPE 86
+#define EUSERS  87
 #define EOVERFLOW 75
 #define EILSEQ  84
 #define ENOTSUP 95
@@ -79,4 +95,7 @@ int* __errno_location(void);
 #define EDQUOT 122
 #define EOWNERDEAD 130
 #define ENOTRECOVERABLE 131
+#ifdef __cplusplus
+}
+#endif
 #endif

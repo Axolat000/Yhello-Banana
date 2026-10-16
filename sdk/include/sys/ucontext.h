@@ -1,5 +1,8 @@
 #ifndef _SYS_UCONTEXT_H
 #define _SYS_UCONTEXT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* A signal handler's third argument: the registers the thread was stopped
  * with (x86_64, Linux's order) - change them and return to resume there.
  * (The system's banana_ucontext_t; getcontext / makecontext are not there.) */
@@ -18,4 +21,7 @@ enum {
     REG_RBP, REG_RBX, REG_RDX, REG_RAX, REG_RCX, REG_RSP, REG_RIP, REG_EFL, REG_CSGSFS, REG_ERR,
     REG_TRAPNO, REG_OLDMASK, REG_CR2
 };
+#ifdef __cplusplus
+}
+#endif
 #endif

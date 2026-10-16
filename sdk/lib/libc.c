@@ -329,11 +329,6 @@ void* bsearch(const void* key, const void* base, size_t n, size_t size, int (*cm
     return NULL;
 }
 
-char* getenv(const char* name) {
-    if (strcmp(name, "HOME") == 0) return "/home/banana";
-    if (strcmp(name, "USER") == 0) return "banana";
-    return NULL;
-}
 
 /* ── time ─────────────────────────────────────────────────────────── */
 
@@ -356,7 +351,7 @@ time_t mktime(struct tm* tm) {
 time_t time(time_t* t) {
     banana_time_t bt;
     __banana->localtime(&bt);
-    struct tm tm = { bt.second, bt.minute, bt.hour, bt.day, bt.month - 1, bt.year - 1900, bt.weekday, 0, 0 };
+    struct tm tm = { bt.second, bt.minute, bt.hour, bt.day, bt.month - 1, bt.year - 1900, bt.weekday, 0, 0, 0, "UTC" };
     time_t v = mktime(&tm);
     if (t) *t = v;
     return v;
@@ -381,6 +376,8 @@ struct tm* gmtime_r(const time_t* t, struct tm* out) {
     tm.tm_mon = m;
     tm.tm_mday = (int)days + 1;
     tm.tm_isdst = 0;
+    tm.tm_gmtoff = 0;
+    tm.tm_zone = "UTC";
     *out = tm;
     return out;
 }

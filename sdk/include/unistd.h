@@ -1,5 +1,8 @@
 #ifndef _UNISTD_H
 #define _UNISTD_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 #include <sys/types.h>
 off_t   lseek(int fd, off_t off, int whence);
@@ -16,6 +19,11 @@ ssize_t read(int fd, void* buf, size_t n);
 int     close(int fd);
 char*   getcwd(char* buf, size_t size);
 int     chdir(const char* path);
+int     fchdir(int fd);
+size_t  confstr(int name, char* buf, size_t len);
+#define _CS_PATH 0
+#define _CS_GNU_LIBC_VERSION 2
+#define _CS_GNU_LIBPTHREAD_VERSION 3
 int     unlink(const char* path);
 int     rmdir(const char* path);
 #define STDIN_FILENO  0
@@ -32,6 +40,48 @@ gid_t   getgid(void);
 gid_t   getegid(void);
 int     getpagesize(void);
 int     gethostname(char* name, size_t len);
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+extern char** environ;
+int     access(const char* path, int mode);
+ssize_t readlink(const char* path, char* buf, size_t len);
+int     symlink(const char* target, const char* path);
+int     link(const char* from, const char* to);
+int     chown(const char* path, uid_t u, gid_t g);
+int     fchown(int fd, uid_t u, gid_t g);
+int     lchown(const char* path, uid_t u, gid_t g);
+int     fsync(int fd);
+int     fdatasync(int fd);
+void    sync(void);
+int     ftruncate(int fd, off_t len);
+ssize_t pread(int fd, void* buf, size_t n, off_t off);
+ssize_t pwrite(int fd, const void* buf, size_t n, off_t off);
+/* (off_t is 64-bit already: the *64 names are the same calls) */
+#define lseek64 lseek
+#define pread64 pread
+#define pwrite64 pwrite
+#define ftruncate64 ftruncate
+int     dup(int fd);
+int     dup2(int fd, int to);
+int     pipe(int fds[2]);
+pid_t   fork(void);
+pid_t   vfork(void);
+int     execve(const char* path, char* const argv[], char* const envp[]);
+int     execv(const char* path, char* const argv[]);
+int     execvp(const char* file, char* const argv[]);
+pid_t   setsid(void);
+pid_t   getpgrp(void);
+int     setpgid(pid_t pid, pid_t pgid);
+unsigned alarm(unsigned seconds);
+char*   getlogin(void);
+char*   ttyname(int fd);
+long    pathconf(const char* path, int name);
+long    fpathconf(int fd, int name);
+int     getdtablesize(void);
+#define _PC_NAME_MAX 3
+#define _PC_PATH_MAX 4
 void    _exit(int code) __attribute__((noreturn));      /* at once: no stdio flush */
 
 /* sysconf() names (Linux's values) */
@@ -52,4 +102,7 @@ void    _exit(int code) __attribute__((noreturn));      /* at once: no stdio flu
 #define _SC_LINE_MAX           43
 #define _SC_HOST_NAME_MAX      180
 long    sysconf(int name);
+#ifdef __cplusplus
+}
+#endif
 #endif

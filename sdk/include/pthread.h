@@ -1,5 +1,8 @@
 #ifndef _PTHREAD_H
 #define _PTHREAD_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * POSIX threads for Banana OS apps (API version 17): threads with a stack
  * of the size asked for (mapped, a guard page under it: on the 64-bit
@@ -197,4 +200,7 @@ void __pthread_cleanup_pop(struct __pthread_cleanup* c, int run);
 #define pthread_cleanup_push(fn, arg) { struct __pthread_cleanup __cu; __pthread_cleanup_push(&__cu, (fn), (arg));
 #define pthread_cleanup_pop(run) __pthread_cleanup_pop(&__cu, (run)); }
 
+#ifdef __cplusplus
+}
+#endif
 #endif

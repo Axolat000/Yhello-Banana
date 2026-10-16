@@ -1,12 +1,27 @@
 #ifndef _TIME_H
 #define _TIME_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 typedef long time_t;
 typedef long clock_t;
 #define CLOCKS_PER_SEC 1000
 struct tm {
     int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst;
+    long        tm_gmtoff;                  /* seconds east of UTC (0: the clock chip keeps local time) */
+    const char* tm_zone;
 };
+char*      ctime(const time_t* t);
+char*      ctime_r(const time_t* t, char* buf);
+char*      asctime(const struct tm* tm);
+char*      asctime_r(const struct tm* tm, char* buf);
+double     difftime(time_t a, time_t b);
+time_t     timegm(struct tm* tm);
+void       tzset(void);
+extern long  timezone;
+extern int   daylight;
+extern char* tzname[2];
 time_t     time(time_t* t);                 /* seconds since 1970, from the clock chip */
 clock_t    clock(void);                     /* milliseconds since the app started */
 struct tm* localtime(const time_t* t);
@@ -35,4 +50,7 @@ int clock_gettime(clockid_t clk, struct timespec* ts);
 int clock_getres(clockid_t clk, struct timespec* ts);
 int clock_nanosleep(clockid_t clk, int flags, const struct timespec* req, struct timespec* rem);
 int nanosleep(const struct timespec* req, struct timespec* rem);
+#ifdef __cplusplus
+}
+#endif
 #endif

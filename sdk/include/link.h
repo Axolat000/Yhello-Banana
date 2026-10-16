@@ -1,5 +1,8 @@
 #ifndef _LINK_H
 #define _LINK_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* the loaded libraries, one by one (dl_iterate_phdr), as on Linux */
 #include <stddef.h>
 #include <stdint.h>
@@ -21,4 +24,10 @@ struct dl_phdr_info {
 };
 
 int dl_iterate_phdr(int (*cb)(struct dl_phdr_info* info, size_t size, void* data), void* data);
+
+/* a loaded object (dlinfo RTLD_DI_LINKMAP): where it is and its file */
+struct link_map { ElfW_Addr l_addr; char* l_name; void* l_ld; struct link_map* l_next; struct link_map* l_prev; };
+#ifdef __cplusplus
+}
+#endif
 #endif

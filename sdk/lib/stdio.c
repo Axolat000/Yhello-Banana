@@ -410,19 +410,51 @@ void perror(const char* s) {
     else fprintf(stderr, "%s\n", strerror(errno));
 }
 
-/* ── scanf (integers, strings, characters, %[...] not included) ───── */
+/* ── scanf (integers, floats, strings, characters, %[...], %n, %p) ─── */
 
-typedef struct { const char* s; FILE* f; int peek; } in_t;
+typedef struct { const char* s; FILE* f; int peek; long pos; } in_t;
 
 static int in_get(in_t* in) {
-    if (in->peek != -2) { int c = in->peek; in->peek = -2; return c; }
-    if (in->s) return *in->s ? (unsigned char)*in->s++ : EOF;
-    return fgetc(in->f);
+    int c;
+    if (in->peek != -2) { c = in->peek; in->peek = -2; }
+    else if (in->s) c = *in->s ? (unsigned char)*in->s++ : EOF;
+    else c = fgetc(in->f);
+    if (c != EOF) in->pos++;
+    return c;
 }
-static void in_unget(in_t* in, int c) { in->peek = c; }
+static void in_unget(in_t* in, int c) { in->peek = c; if (c != EOF) in->pos--; }
 
-static int vscan(in_t* in, const char* fmt, va_list ap) {
-    int count = 0;
+/* an integer to its argument, by the size letters (hh h l ll j z t) */
+static void scan_store(va_list* ap, int size, unsigned long long v) {
+    switch (size) {
+    case -2: *va_arg(*ap, signed char*) = (signed char)v; break;
+    case -1: *va_arg(*ap, short*) = (short)v; break;
+    case 1:  *va_arg(*ap, long*) = (long)v; break;
+    case 2:  *va_arg(*ap, long long*) = (long long)v; break;
+    default: *va_arg(*ap, int*) = (int)v; break;
+    }
+}
+
+/* %[...]: is c in the set (fmt points after '['; *end gets the closing ']') */
+static int in_set(const char* set, int c, const char** end) {
+    int neg = 0, hit = 0;
+    const char* p = set;
+    if (*p == '^') { neg = 1; p++; }
+    if (*p == ']') { hit |= c == ']'; p++; }
+    for (; *p && *p != ']'; p++) {
+        if (p[1] == '-' && p[2] && p[2] != ']') {
+            hit |= c >= (unsigned char)p[0] && c <= (unsigned char)p[2];
+            p += 2;
+        } else hit |= c == (unsigned char)*p;
+    }
+    if (end) *end = p;
+    return neg ? !hit : hit;
+}
+
+static int vscan(in_t* in, const char* fmt, va_list ap0) {
+    va_list ap;
+    va_copy(ap, ap0);
+    int count = 0, any = 0;              /* any: a conversion was tried on input */
     for (; *fmt; fmt++) {
         if (isspace((unsigned char)*fmt)) {
             int c;
@@ -432,72 +464,102 @@ static int vscan(in_t* in, const char* fmt, va_list ap) {
         }
         if (*fmt != '%') {
             int c = in_get(in);
-            if (c != (unsigned char)*fmt) { in_unget(in, c); break; }
+            if (c != (unsigned char)*fmt) { in_unget(in, c); if (c == EOF && !any) count = EOF; break; }
             continue;
         }
         fmt++;
-        int skip = 0, width = 0, lng = 0;
+        int skip = 0, width = 0, size = 0;
         if (*fmt == '*') { skip = 1; fmt++; }
         while (isdigit((unsigned char)*fmt)) width = width * 10 + (*fmt++ - '0');
-        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z') { if (*fmt == 'l') lng++; fmt++; }
+        for (;; fmt++) {
+            if (*fmt == 'h') size--;
+            else if (*fmt == 'l') size++;
+            else if (*fmt == 'L' || *fmt == 'q') size = 2;
+            else if (*fmt == 'j' || *fmt == 'z' || *fmt == 't') size = sizeof(long) == 8 ? 1 : 0;
+            else break;
+        }
         char conv = *fmt;
-        if (conv == '%') { int c = in_get(in); if (c != '%') break; continue; }
         int c;
-        if (conv != 'c') { while ((c = in_get(in)) != EOF && isspace(c)) ; in_unget(in, c); }
+        if (conv == '%') {
+            while ((c = in_get(in)) != EOF && isspace(c)) ;
+            if (c != '%') { in_unget(in, c); break; }
+            continue;
+        }
+        if (conv == 'n') { if (!skip) scan_store(&ap, size, (unsigned long long)in->pos); continue; }
+        if (conv != 'c' && conv != '[') { while ((c = in_get(in)) != EOF && isspace(c)) ; in_unget(in, c); }
+        any = 1;
         if (conv == 'c') {
             int n = width ? width : 1;
             char* out = skip ? NULL : va_arg(ap, char*);
             for (int i = 0; i < n; i++) {
                 c = in_get(in);
-                if (c == EOF) return count ? count : EOF;
+                if (c == EOF) { if (!i) { va_end(ap); return count ? count : EOF; } break; }
                 if (out) out[i] = (char)c;
             }
             if (!skip) count++;
-        } else if (conv == 's') {
+        } else if (conv == 's' || conv == '[') {
+            const char* set = fmt + 1;
+            const char* end = NULL;
+            if (conv == '[') in_set(set, 0, &end);
             char* out = skip ? NULL : va_arg(ap, char*);
             int n = 0;
-            while ((c = in_get(in)) != EOF && !isspace(c) && (!width || n < width)) { if (out) out[n] = (char)c; n++; }
+            while ((c = in_get(in)) != EOF && (!width || n < width) &&
+                   (conv == 's' ? !isspace(c) : in_set(set, c, NULL))) {
+                if (out) out[n] = (char)c;
+                n++;
+            }
             in_unget(in, c);
-            if (!n) return count ? count : EOF;
+            if (conv == '[') fmt = *end ? end : end - 1;
+            if (!n) { va_end(ap); return count ? count : (c == EOF ? EOF : 0); }
             if (out) { out[n] = 0; count++; }
-        } else if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'x' || conv == 'X' || conv == 'o') {
-            char num[40];
+        } else if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'x' || conv == 'X' || conv == 'o' || conv == 'p') {
+            char num[72];
             int n = 0;
-            int base = conv == 'x' || conv == 'X' ? 16 : conv == 'o' ? 8 : conv == 'i' ? 0 : 10;
+            int base = conv == 'x' || conv == 'X' || conv == 'p' ? 16 : conv == 'o' ? 8 : conv == 'i' ? 0 : 10;
+            int lim = width && width < 70 ? width : 70;
             c = in_get(in);
             if (c == '-' || c == '+') { num[n++] = (char)c; c = in_get(in); }
-            while (c != EOF && n < 38 && (!width || n < width) &&
-                   (isdigit(c) || (base != 10 && isxdigit(c)) || ((c == 'x' || c == 'X') && n <= 2))) {
+            if (c == '0' && n < lim && (base == 16 || base == 0)) {         /* a 0x prefix (or octal) */
+                num[n++] = (char)c;
+                c = in_get(in);
+                if ((c == 'x' || c == 'X') && n < lim) { num[n++] = (char)c; c = in_get(in); if (!base) base = 16; }
+                else if (!base) base = 8;
+            }
+            if (!base) base = 10;
+            while (c != EOF && n < lim &&
+                   (base == 16 ? isxdigit(c) : base == 8 ? (c >= '0' && c <= '7') : isdigit(c))) {
                 num[n++] = (char)c;
                 c = in_get(in);
             }
             in_unget(in, c);
             num[n] = 0;
-            char* end;
-            long long v = strtoll(num, &end, base);
-            if (end == num) return count ? count : (c == EOF ? EOF : 0);
+            char* e;
+            unsigned long long v = conv == 'd' || conv == 'i' ? (unsigned long long)strtoll(num, &e, base) : strtoull(num, &e, base);
+            if (e == num) { va_end(ap); return count ? count : (c == EOF ? EOF : 0); }
             if (!skip) {
-                if (lng >= 2) *va_arg(ap, long long*) = v;
-                else if (lng == 1) *va_arg(ap, long*) = (long)v;
-                else *va_arg(ap, int*) = (int)v;
+                if (conv == 'p') *va_arg(ap, void**) = (void*)(uintptr_t)v;
+                else scan_store(&ap, size, v);
                 count++;
             }
-        } else if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'E' || conv == 'G') {
-            char num[64];
+        } else if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'E' || conv == 'G' || conv == 'a' || conv == 'F') {
+            char num[72];
             int n = 0;
+            int lim = width && width < 70 ? width : 70;
             c = in_get(in);
-            while (c != EOF && n < 62 && (!width || n < width) &&
-                   (isdigit(c) || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')) {
+            while (c != EOF && n < lim &&
+                   (isdigit(c) || c == '.' || ((c == '-' || c == '+') && (!n || num[n - 1] == 'e' || num[n - 1] == 'E')) ||
+                    ((c == 'e' || c == 'E') && n))) {
                 num[n++] = (char)c;
                 c = in_get(in);
             }
             in_unget(in, c);
             num[n] = 0;
-            char* end;
-            double v = strtod(num, &end);
-            if (end == num) return count ? count : (c == EOF ? EOF : 0);
+            char* e;
+            double v = strtod(num, &e);
+            if (e == num) { va_end(ap); return count ? count : (c == EOF ? EOF : 0); }
             if (!skip) {
-                if (lng) *va_arg(ap, double*) = v;
+                if (size >= 2) *va_arg(ap, long double*) = v;
+                else if (size == 1) *va_arg(ap, double*) = v;
                 else *va_arg(ap, float*) = (float)v;
                 count++;
             }
@@ -505,11 +567,12 @@ static int vscan(in_t* in, const char* fmt, va_list ap) {
             break;
         }
     }
+    va_end(ap);
     return count;
 }
 
 int sscanf(const char* s, const char* fmt, ...) {
-    in_t in = { s, NULL, -2 };
+    in_t in = { s, NULL, -2, 0 };
     va_list ap;
     va_start(ap, fmt);
     int r = vscan(&in, fmt, ap);
@@ -517,8 +580,28 @@ int sscanf(const char* s, const char* fmt, ...) {
     return r;
 }
 
+int vsscanf(const char* s, const char* fmt, va_list ap) {
+    in_t in = { s, NULL, -2, 0 };
+    return vscan(&in, fmt, ap);
+}
+
+int vfscanf(FILE* f, const char* fmt, va_list ap) {
+    in_t in = { NULL, f, -2, 0 };
+    int r = vscan(&in, fmt, ap);
+    if (in.peek >= 0) ungetc(in.peek, f);
+    return r;
+}
+
+int fscanf(FILE* f, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vfscanf(f, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
 int scanf(const char* fmt, ...) {
-    in_t in = { NULL, stdin, -2 };
+    in_t in = { NULL, stdin, -2, 0 };
     va_list ap;
     va_start(ap, fmt);
     int r = vscan(&in, fmt, ap);

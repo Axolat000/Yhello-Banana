@@ -1,5 +1,8 @@
 #ifndef _DLFCN_H
 #define _DLFCN_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * Shared libraries (Banana OS SDK): dlopen loads an ELF shared object
  * built for the app's CPU (gcc -shared -fPIC, as on Linux), with the
@@ -31,4 +34,11 @@ void* dlsym(void* handle, const char* name);
 int   dlclose(void* handle);
 char* dlerror(void);
 int   dladdr(const void* addr, Dl_info* info);
+/* dlinfo(RTLD_DI_LINKMAP): the struct link_map of <link.h>; dlvsym: no versions here (dlsym) */
+#define RTLD_DI_LINKMAP 2
+int   dlinfo(void* handle, int request, void* out);
+void* dlvsym(void* handle, const char* name, const char* version);
+#ifdef __cplusplus
+}
+#endif
 #endif

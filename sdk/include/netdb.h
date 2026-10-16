@@ -1,5 +1,8 @@
 #ifndef _NETDB_H
 #define _NETDB_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* names to addresses: DNS through the system (IPv4 addresses) */
 #include <netinet/in.h>
 
@@ -66,4 +69,7 @@ int             getnameinfo(const struct sockaddr* sa, socklen_t salen, char* ho
 struct hostent* gethostbyname(const char* name);
 struct hostent* gethostbyaddr(const void* addr, socklen_t len, int type);
 struct servent* getservbyname(const char* name, const char* proto);
+#ifdef __cplusplus
+}
+#endif
 #endif

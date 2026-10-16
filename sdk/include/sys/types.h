@@ -1,5 +1,8 @@
 #ifndef _SYS_TYPES_H
 #define _SYS_TYPES_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 #include <stdint.h>
 typedef long ssize_t;
@@ -16,5 +19,19 @@ typedef unsigned long nlink_t;
 typedef long blksize_t;
 typedef long blkcnt_t;
 typedef int id_t;
+#ifdef __x86_64__
+typedef long off64_t;
+#else
 typedef long long off64_t;
+#endif
+typedef unsigned char  u_char;
+typedef unsigned short u_short;
+typedef unsigned int   u_int;
+typedef unsigned long  u_long;
+typedef char*          caddr_t;
+typedef unsigned long  fsblkcnt_t;
+typedef unsigned long  fsfilcnt_t;
+#ifdef __cplusplus
+}
+#endif
 #endif

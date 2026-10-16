@@ -1,5 +1,8 @@
 #ifndef _STDIO_H
 #define _STDIO_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 #include <stdarg.h>
 
@@ -9,6 +12,8 @@
 
 #define EOF      (-1)
 #define BUFSIZ   512
+#define FILENAME_MAX 128
+#define FOPEN_MAX    64
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
@@ -28,6 +33,9 @@ int    vsprintf(char* buf, const char* fmt, va_list ap);
 int    vsnprintf(char* buf, size_t n, const char* fmt, va_list ap);
 int    scanf(const char* fmt, ...);
 int    sscanf(const char* s, const char* fmt, ...);
+int    fscanf(FILE* f, const char* fmt, ...);
+int    vsscanf(const char* s, const char* fmt, va_list ap);
+int    vfscanf(FILE* f, const char* fmt, va_list ap);
 int    putchar(int c);
 int    puts(const char* s);
 int    getchar(void);
@@ -53,9 +61,17 @@ int    remove(const char* path);
 int    rename(const char* from, const char* to);
 void   perror(const char* s);
 FILE*  fdopen(int fd, const char* mode);
+long   getdelim(char** line, size_t* cap, int delim, FILE* f);    /* (ssize_t) */
+long   getline(char** line, size_t* cap, FILE* f);
+void   flockfile(FILE* f);
+void   funlockfile(FILE* f);
+int    ftrylockfile(FILE* f);
 int    fileno(FILE* f);
 #define _IOFBF 0
 #define _IOLBF 1
 #define _IONBF 2
 int    setvbuf(FILE* f, char* buf, int mode, size_t size);
+#ifdef __cplusplus
+}
+#endif
 #endif

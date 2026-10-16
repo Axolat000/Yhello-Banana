@@ -1,5 +1,8 @@
 #ifndef _SETJMP_H
 #define _SETJMP_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* Banana OS SDK: non-local jumps (lib/setjmp.c) */
 #ifdef __x86_64__
 typedef long jmp_buf[8];
@@ -18,4 +21,7 @@ unsigned long long __sigmask_save(void);
 void siglongjmp(sigjmp_buf env, int val) __attribute__((noreturn));
 #define sigsetjmp(env, save) \
     ((env)->__saved = (save), (env)->__mask = (save) ? __sigmask_save() : 0, setjmp((env)->__jb))
+#ifdef __cplusplus
+}
+#endif
 #endif

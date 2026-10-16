@@ -1,5 +1,8 @@
 #ifndef _INTTYPES_H
 #define _INTTYPES_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* Banana OS SDK: printf / scanf formats of the fixed-width types */
 #include <stdint.h>
 #if __SIZEOF_LONG__ == 8
@@ -43,4 +46,7 @@
 #define PRIuMAX __PRI64 "u"
 intmax_t strtoimax(const char* s, char** end, int base);
 uintmax_t strtoumax(const char* s, char** end, int base);
+#ifdef __cplusplus
+}
+#endif
 #endif

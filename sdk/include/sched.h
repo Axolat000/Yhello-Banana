@@ -1,5 +1,8 @@
 #ifndef _SCHED_H
 #define _SCHED_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 #include <sys/types.h>
 
@@ -36,4 +39,7 @@ typedef struct { unsigned long bits[CPU_SETSIZE / (8 * sizeof(unsigned long))]; 
 int __sched_cpucount(size_t size, const cpu_set_t* s);
 int sched_getaffinity(pid_t pid, size_t size, cpu_set_t* s);
 int sched_setaffinity(pid_t pid, size_t size, const cpu_set_t* s);
+#ifdef __cplusplus
+}
+#endif
 #endif

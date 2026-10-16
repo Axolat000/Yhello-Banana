@@ -1,5 +1,8 @@
 #ifndef _POLL_H
 #define _POLL_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 struct pollfd { int fd; short events; short revents; };
 typedef unsigned long nfds_t;
 #define POLLIN     0x001
@@ -15,4 +18,7 @@ typedef unsigned long nfds_t;
 #define POLLRDHUP  0x2000
 /* sockets, files (always ready) and the terminal; timeout -1: none */
 int poll(struct pollfd* fds, nfds_t n, int timeout_ms);
+#ifdef __cplusplus
+}
+#endif
 #endif

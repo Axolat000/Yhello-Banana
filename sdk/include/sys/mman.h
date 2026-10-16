@@ -1,5 +1,8 @@
 #ifndef _SYS_MMAN_H
 #define _SYS_MMAN_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * mmap and friends (Banana OS 0.6, API version 16). On the 64-bit system a
  * mapping reserves addresses and its pages get memory - zeroed - when
@@ -47,5 +50,10 @@ int   posix_madvise(void* addr, size_t len, int advice);
 int   msync(void* addr, size_t len, int flags);
 int   mlock(const void* addr, size_t len);
 int   munlock(const void* addr, size_t len);
+int   mincore(void* addr, size_t len, unsigned char* vec);   /* (every page counts as there) */
+#define mmap64 mmap
 
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -55,6 +55,7 @@ enum {
 #define DT_GNU_HASH 0x6ffffef5
 #define PT_LOAD    1
 #define PT_DYNAMIC 2
+#define PT_TLS     7
 
 typedef struct lib {
     struct lib*  next;
@@ -76,6 +77,7 @@ typedef struct lib {
     void       (**fini_array)(void);
     size_t       nfini;
     void       (*fini)(void);
+    size_t       tls_mod;              /* its thread-local block's module number (0: none) */
 } lib_t;
 
 static lib_t g_self = { .name = "app", .refs = 1, .global = 1, .nodelete = 1 };
@@ -239,6 +241,45 @@ static void run_init(lib_t* l, const Dyn* dyn) {
     for (size_t i = 0; i < n; i++) if (arr[i] && arr[i] != (void (*)(void))-1) arr[i]();
 }
 
+/* ── thread-local variables (PT_TLS: the general and local dynamic models)
+ * Each library with a PT_TLS segment is a module; a thread gets its copy
+ * of the module's block at its first access (__tls_get_addr), kept with a
+ * pthread key and freed when the thread ends. */
+
+typedef struct {
+    const void*   image;               /* the initial values (filesz bytes, then zeros) */
+    size_t        filesz, memsz, align;
+    pthread_key_t key;
+} tls_mod_t;
+static tls_mod_t g_tls[32];
+static size_t g_ntls;
+
+static size_t tls_add(const void* image, size_t filesz, size_t memsz, size_t align) {
+    if (g_ntls >= 32) return 0;
+    tls_mod_t* m = &g_tls[g_ntls];
+    if (pthread_key_create(&m->key, free) != 0) return 0;
+    m->image = image;
+    m->filesz = filesz;
+    m->memsz = memsz;
+    m->align = align < sizeof(void*) ? sizeof(void*) : align;
+    return ++g_ntls;
+}
+
+typedef struct { size_t mod, off; } tls_index;
+
+void* __tls_get_addr(tls_index* ti) {
+    if (!ti->mod || ti->mod > g_ntls) abort();
+    tls_mod_t* m = &g_tls[ti->mod - 1];
+    char* b = pthread_getspecific(m->key);
+    if (!b) {
+        if (posix_memalign((void**)&b, m->align, m->memsz) != 0) abort();
+        memcpy(b, m->image, m->filesz);
+        memset(b + m->filesz, 0, m->memsz - m->filesz);
+        pthread_setspecific(m->key, b);
+    }
+    return b + ti->off;
+}
+
 /* one table of relocations (rela: with addends) */
 static int relocate(lib_t* l, uintptr_t at, size_t size, int rela) {
     size_t ent = rela ? 3 * sizeof(uintptr_t) : 2 * sizeof(uintptr_t);
@@ -258,6 +299,9 @@ static int relocate(lib_t* l, uintptr_t at, size_t size, int rela) {
 #else
         if (type == 42) { *P = ((uintptr_t (*)(void))(l->base + (uintptr_t)A))(); continue; }
 #endif
+#ifdef __x86_64__
+        if (type == 16 && !si) { *P = l->tls_mod; continue; }                  /* DTPMOD64 (local dynamic) */
+#endif
         uintptr_t S = 0;
         if (si) {
             const Sym* s = &l->symtab[si];
@@ -267,6 +311,10 @@ static int relocate(lib_t* l, uintptr_t at, size_t size, int rela) {
             else if (!(a = global_sym(name)) && !(a = tree_sym(l, name)) && s->shndx) a = (void*)(l->base + s->value);
             if (!a && (s->info >> 4) != 2) { set_err("%s: undefined symbol: %s", l->path, name); return -1; }
             S = (uintptr_t)a;
+            if ((s->info & 15) == 6) {                                         /* STT_TLS: an offset in its block */
+                if (!s->shndx) { set_err("%s: thread-local %s from another library", l->path, name); return -1; }
+                S = (uintptr_t)s->value;
+            }
         }
         switch (type) {
 #ifdef __x86_64__
@@ -274,6 +322,8 @@ static int relocate(lib_t* l, uintptr_t at, size_t size, int rela) {
         case 2:  *(uint32_t*)P = (uint32_t)(S + (uintptr_t)A - (uintptr_t)P); break; /* PC32 */
         case 6: case 7: *P = S + (uintptr_t)A; break;                              /* GLOB_DAT, JUMP_SLOT */
         case 10: case 11: *(uint32_t*)P = (uint32_t)(S + (uintptr_t)A); break;     /* 32, 32S */
+        case 16: *P = l->tls_mod; break;                                           /* DTPMOD64 */
+        case 17: *P = S + (uintptr_t)A; break;                                     /* DTPOFF64 */
 #else
         case 1:  *P = S + (uintptr_t)A; break;                                     /* 32 */
         case 2:  *P = S + (uintptr_t)A - (uintptr_t)P; break;                      /* PC32 */
@@ -328,6 +378,8 @@ static lib_t* load_file(const char* path, int flags) {
     for (int i = 0; i < eh->phnum; i++) {
         if (ph[i].p_type == PT_LOAD) memcpy((void*)(l->base + ph[i].p_vaddr), f + ph[i].p_offset, (size_t)ph[i].p_filesz);
         if (ph[i].p_type == PT_DYNAMIC) dyn = (const Dyn*)(l->base + ph[i].p_vaddr);
+        if (ph[i].p_type == PT_TLS && ph[i].p_memsz)
+            l->tls_mod = tls_add((const void*)(l->base + ph[i].p_vaddr), (size_t)ph[i].p_filesz, (size_t)ph[i].p_memsz, (size_t)ph[i].p_align);
     }
     free(f);
     l->refs = 1;
@@ -497,3 +549,20 @@ int dl_iterate_phdr(int (*cb)(struct dl_phdr_info*, size_t, void*), void* data) 
     pthread_mutex_unlock(&g_lock);
     return 0;
 }
+
+/* dlinfo(RTLD_DI_LINKMAP): where the library is, its file */
+int dlinfo(void* handle, int request, void* out) {
+    static struct link_map maps[64];
+    static int next;
+    if (request != RTLD_DI_LINKMAP || !out) { set_err("dlinfo: request not supported%s%s", "", ""); return -1; }
+    pthread_mutex_lock(&g_lock);
+    struct link_map* m = &maps[next++ % 64];
+    memset(m, 0, sizeof(*m));
+    if (!handle || handle == &g_self) { m->l_addr = (ElfW_Addr)(uintptr_t)__ehdr_start; m->l_name = (char*)""; }
+    else { lib_t* l = handle; m->l_addr = (ElfW_Addr)l->base; m->l_name = l->path; }
+    pthread_mutex_unlock(&g_lock);
+    *(struct link_map**)out = m;
+    return 0;
+}
+
+void* dlvsym(void* handle, const char* name, const char* version) { (void)version; return dlsym(handle, name); }

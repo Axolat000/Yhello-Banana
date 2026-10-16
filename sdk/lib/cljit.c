@@ -10,9 +10,6 @@
 
 /* compiled code goes in malloc'd memory, which apps can run as it is (sys/mman.h: mkcljit.sh) */
 #define PAGESIZE 4096
-/* tcc_run() (a whole program's main) is never used: what it would need */
-static char* bcl_no_environ[1];
-#define environ bcl_no_environ
 #define freopen(path, mode, f) ((void)(path), (void)(mode), (f))
 
 /* (TinyCC's own style; its warnings are not ours to fix) */

@@ -1,5 +1,8 @@
 #ifndef _SYS_SOCKET_H
 #define _SYS_SOCKET_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
  * BSD sockets (Banana OS API version 18): TCP and UDP over IPv4, the
  * loopback (127.0.0.1) included. A socket is a file descriptor: read,
@@ -32,6 +35,8 @@ struct linger { int l_onoff; int l_linger; };
 #define AF_LOCAL  AF_UNIX
 #define AF_INET   2
 #define AF_INET6  10
+#define AF_NETLINK 16
+#define AF_PACKET  17
 #define PF_UNSPEC AF_UNSPEC
 #define PF_UNIX   AF_UNIX
 #define PF_INET   AF_INET
@@ -44,6 +49,7 @@ struct linger { int l_onoff; int l_linger; };
 #define SOCK_CLOEXEC   02000000
 
 #define SOL_SOCKET    1
+#define SOL_RAW       255
 #define SO_DEBUG      1
 #define SO_REUSEADDR  2
 #define SO_TYPE       3
@@ -61,6 +67,8 @@ struct linger { int l_onoff; int l_linger; };
 #define SO_RCVTIMEO   20
 #define SO_SNDTIMEO   21
 #define SO_ACCEPTCONN 30
+#define SO_PEERCRED   17
+struct ucred { pid_t pid; uid_t uid; gid_t gid; };
 
 #define MSG_OOB       0x1
 #define MSG_PEEK      0x2
@@ -93,4 +101,7 @@ int     getsockopt(int fd, int level, int name, void* val, socklen_t* len);
 int     setsockopt(int fd, int level, int name, const void* val, socklen_t len);
 int     getsockname(int fd, struct sockaddr* sa, socklen_t* len);
 int     getpeername(int fd, struct sockaddr* sa, socklen_t* len);
+#ifdef __cplusplus
+}
+#endif
 #endif

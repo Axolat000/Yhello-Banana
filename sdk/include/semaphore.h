@@ -1,5 +1,8 @@
 #ifndef _SEMAPHORE_H
 #define _SEMAPHORE_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <time.h>
 
 /* unnamed semaphores (sem_init); named ones (sem_open) are not there */
@@ -13,4 +16,7 @@ int sem_trywait(sem_t* s);
 int sem_timedwait(sem_t* s, const struct timespec* abstime);
 int sem_post(sem_t* s);
 int sem_getvalue(sem_t* s, int* value);
+#ifdef __cplusplus
+}
+#endif
 #endif

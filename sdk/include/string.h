@@ -1,5 +1,8 @@
 #ifndef _STRING_H
 #define _STRING_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stddef.h>
 void*  memcpy(void* dst, const void* src, size_t n);
 void*  memmove(void* dst, const void* src, size_t n);
@@ -23,10 +26,16 @@ char*  strdup(const char* s);
 char*  strndup(const char* s, size_t n);
 char*  strtok(char* s, const char* delim);
 char*  strtok_r(char* s, const char* delim, char** save);
+char*  strsep(char** s, const char* delim);
 size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char* s, const char* reject);
 char*  strpbrk(const char* s, const char* accept);
 size_t strlcpy(char* dst, const char* src, size_t n);
 size_t strlcat(char* dst, const char* src, size_t n);
 char*  strerror(int err);
+int    strerror_r(int err, char* buf, size_t len);
+char*  strsignal(int sig);
+#ifdef __cplusplus
+}
+#endif
 #endif

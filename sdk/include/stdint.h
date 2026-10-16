@@ -1,5 +1,8 @@
 #ifndef _STDINT_H
 #define _STDINT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #if defined(__TINYC__) && !defined(__INT8_TYPE__)   /* TinyCC: what gcc predefines */
 #define __INT8_TYPE__    signed char
 #define __INT16_TYPE__   short
@@ -59,6 +62,9 @@ typedef __UINTMAX_TYPE__ uintmax_t;
 #define INT64_MAX  9223372036854775807LL
 #define UINT64_MAX 18446744073709551615ULL
 #define SIZE_MAX   __SIZE_MAX__
+#ifndef SSIZE_MAX
+#define SSIZE_MAX  __INTPTR_MAX__
+#endif
 typedef __INT_LEAST8_TYPE__   int_least8_t;
 typedef __INT_LEAST16_TYPE__  int_least16_t;
 typedef __INT_LEAST32_TYPE__  int_least32_t;
@@ -102,4 +108,7 @@ typedef __UINT_FAST64_TYPE__  uint_fast64_t;
 #define SIG_ATOMIC_MAX __SIG_ATOMIC_MAX__
 #define WCHAR_MAX    __WCHAR_MAX__
 #define WCHAR_MIN    __WCHAR_MIN__
+#ifdef __cplusplus
+}
+#endif
 #endif
