@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 18.
+ * The Banana OS application interface (ABI), version 19.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 18u
+#define BANANA_API_VERSION 19u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -450,7 +450,64 @@ typedef struct banana_api {
     /* a host name's IPv4 address (DNS; dotted ones and localhost too) into
      * ip[4], network order: 0, or -1 */
     int   (*resolve)(const char* name, unsigned char* ip);
+
+    /* ── version 19: signals (<signal.h>) ──────────────────────────── */
+    /* Linux's numbers. The SDK gives the system one entry point, entry(sig,
+     * info, uc), run on the thread's stack (or its sigaltstack) with a
+     * banana_siginfo_t and a banana_ucontext_t: the registers it was
+     * stopped with, which the handler may change - returning resumes from
+     * them (sigreturn). 64-bit: a CPU fault in app code (bad access,
+     * division by zero, invalid instruction...) becomes SIGSEGV / SIGFPE /
+     * SIGILL / SIGBUS / SIGTRAP for a handler; other signals come when the
+     * thread next leaves a system call or is interrupted. 32-bit: only
+     * raise() reaches a handler (the SDK calls it itself). */
+    int   (*sig_entry)(void (*entry)(int sig, void* info, void* uc));
+    /* what sig does: BANANA_SIG_DEFAULT / IGNORE / CATCH; onstack: on the
+     * alternate stack (SA_ONSTACK) */
+    int   (*sig_action)(int sig, int disposition, int onstack);
+    /* the calling thread's blocked signals (bit sig - 1): how 0 block, 1
+     * unblock, 2 set; old gets the previous mask (either may be NULL) */
+    int   (*sig_mask)(int how, const unsigned long long* set, unsigned long long* old);
+    /* sends sig to one of the app's threads (thread id, as thread_id()), or
+     * to the app (-1: whichever thread does not block it): 0, -1 */
+    int   (*sig_send)(int thread, int sig);
+    /* the calling thread's alternate signal stack: ss {sp, flags, size},
+     * old the previous one (either may be NULL); 0, -1 */
+    int   (*sig_altstack)(const void* ss, void* old);
+    /* the signals pending for the calling thread (or the app), bit sig - 1 */
+    unsigned long long (*sig_pending)(void);
 } banana_api_t;
+
+#define BANANA_SIG_DEFAULT 0
+#define BANANA_SIG_IGNORE  1
+#define BANANA_SIG_CATCH   2
+
+/* what a signal handler gets (the SDK's siginfo_t and ucontext_t are these) */
+typedef struct {
+    int   si_signo, si_errno, si_code, __pad0;
+    void* si_addr;                     /* the address a bad access touched */
+    int   si_pid, si_uid;
+    long  si_value;
+    long  __pad1[11];
+} banana_siginfo_t;
+
+typedef struct { void* ss_sp; int ss_flags; unsigned long ss_size; } banana_stack_t;
+
+/* the registers, Linux's order for x86_64 (REG_R8 = 0 ... REG_RIP = 16) */
+typedef struct {
+    long long gregs[23];
+    void*     fpregs;                  /* -> fpregs_mem (FXSAVE format) */
+    unsigned long long __reserved[8];
+} banana_mcontext_t;
+
+typedef struct banana_ucontext {
+    unsigned long           uc_flags;
+    struct banana_ucontext* uc_link;
+    banana_stack_t          uc_stack;
+    banana_mcontext_t       uc_mcontext;
+    unsigned long long      uc_sigmask[16];    /* (the first word: signals 1-64) */
+    unsigned char           fpregs_mem[512] __attribute__((aligned(16)));
+} banana_ucontext_t;
 
 /* 1 if the running system's table has the call `field` (newer than the app?) */
 #define BANANA_HAS(api, field) \

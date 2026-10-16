@@ -49,7 +49,10 @@ int  app_vm_fault(uintptr_t addr, uint32_t err);
 
 /* kernel/idt.c: a hardware interrupt came at ip, from ring 3 or not
  * (time-slices app code) */
-void app_preempt(uintptr_t ip, int from_user);
+void app_preempt(uintptr_t ip, int from_user, void* regs);
+/* kernel/idt.c, a CPU exception in app code (ring 3): 1 if it went to the
+ * app's signal handler (the CPU resumes there), 0 if the app must stop */
+int  app_signal_fault(void* regs);
 
 /* memory of app `owner` - what it may write to (its windows' pictures,
  * kernel/appwin.c); kernel memory on neither */

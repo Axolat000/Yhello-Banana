@@ -489,6 +489,32 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) {
 
 uint64_t uvm_resident(uspace_t* us) { return us ? us->vm_pages * 4096 : 0; }
 
+/* the page table entry for va in us's own tables (any part of it), or 0 */
+static uint64_t walk(uspace_t* us, uint64_t va) {
+    const uint64_t* t = us->pml4;
+    for (int shift = 39; shift >= 12; shift -= 9) {
+        uint64_t e = t[(va >> shift) & 511];
+        if (!(e & P_PRESENT)) return 0;
+        if (shift == 12 || (shift < 39 && (e & P_LARGE))) return e;
+        t = (const uint64_t*)(uintptr_t)(e & ADDR_MASK);
+    }
+    return 0;
+}
+
+int uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) {
+    if (!us || !n) return 0;
+    const uint64_t need = P_PRESENT | P_USER | P_WRITE;
+    for (uint64_t pg = a & ~4095ull; pg < (uint64_t)a + n; pg += 4096) {
+        uint64_t e = walk(us, pg);
+        if ((e & need) != need && in_region(pg, 1)) {
+            uvm_fault(us, m, (uintptr_t)pg, 2);         /* (a mapped page not touched yet) */
+            e = walk(us, pg);
+        }
+        if ((e & need) != need) return 0;
+    }
+    return 1;
+}
+
 #else
 
 uspace_t* uspace_create(void) { return NULL; }
@@ -503,5 +529,6 @@ int       uvm_owns(uspace_t* us, const void* p, uint64_t n) { (void)us; (void)p;
 int       uvm_owns_str(uspace_t* us, const char* s) { (void)us; (void)s; return 0; }
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) { (void)us; (void)m; (void)addr; (void)err; return 0; }
 uint64_t  uvm_resident(uspace_t* us) { (void)us; return 0; }
+int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) { (void)us; (void)m; (void)a; (void)n; return 1; }
 
 #endif

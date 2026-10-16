@@ -14,6 +14,7 @@ void*  aligned_alloc(size_t align, size_t size);
 void*  memalign(size_t align, size_t size);
 void   exit(int code) __attribute__((noreturn));
 void   abort(void) __attribute__((noreturn));
+void   _Exit(int code) __attribute__((noreturn));
 int    atexit(void (*fn)(void));
 int    atoi(const char* s);
 long   atol(const char* s);

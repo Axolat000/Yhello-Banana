@@ -443,6 +443,23 @@ half-closing (`shutdown(SHUT_WR)` sends no FIN until `close`). The system
 handles 64 TCP connections and 16 listening ports at once.
 `selftest posix sockets` checks them.
 
+### Signals: <signal.h> (API version 19)
+
+`sigaction` / `signal`, `sigprocmask` / `pthread_sigmask`, `sigpending`,
+`sigsuspend`, `kill` / `raise` / `pthread_kill`, `sigaltstack`, `sigsetjmp` /
+`siglongjmp`, with Linux's numbers and flags (`SA_SIGINFO`, `SA_ONSTACK`,
+`SA_NODEFER`, `SA_RESETHAND`). On the 64-bit system a CPU fault in an app's
+code becomes a signal for its handler: a bad access `SIGSEGV` (`si_addr`,
+`SEGV_MAPERR` / `SEGV_ACCERR`), a division by zero `SIGFPE`, an invalid
+instruction `SIGILL`, also `SIGBUS` and `SIGTRAP`. The handler gets a
+`ucontext_t` (`<ucontext.h>`, Linux's `REG_RIP`... order) whose registers it
+may change: returning resumes from them. Signals sent to a thread arrive when
+it next leaves a system call or the timer interrupts it, and they wake it from
+a wait or a sleep. Ctrl+C is `SIGINT` once the app handles (or ignores) it.
+The 32-bit system runs handlers for `raise` only. Not there: `sigwait`,
+`SIGPIPE` (a send to a closed socket fails with `EPIPE`), `alarm`.
+`selftest posix signals` checks it.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and

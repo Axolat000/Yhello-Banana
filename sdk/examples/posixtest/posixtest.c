@@ -6,6 +6,7 @@
  *   posixtest mmap     mmap / munmap / mprotect
  *   posixtest threads  pthreads, __thread, semaphores, clocks
  *   posixtest sockets  TCP and UDP on the loopback, poll / select, names
+ *   posixtest signals  handlers, faults as signals, masks, pthread_kill
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,9 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
+#include <setjmp.h>
+#include <ucontext.h>
 #include <banana.h>
 
 static int g_ok, g_fail;
@@ -576,11 +580,196 @@ static void t_sockets(void) {
     free(in);
 }
 
+/* ── signals ──────────────────────────────────────────────────────── */
+
+static volatile int g_sig_seen, g_sig_code;
+static void* volatile g_sig_addr;
+static sigjmp_buf g_jb;
+
+static void on_usr1(int sig, siginfo_t* si, void* uc) { (void)uc; g_sig_seen = sig; g_sig_code = si->si_code; }
+static void on_fault_jump(int sig, siginfo_t* si, void* uc) {
+    (void)uc;
+    g_sig_seen = sig;
+    g_sig_code = si->si_code;
+    g_sig_addr = si->si_addr;
+    siglongjmp(g_jb, 1);
+}
+
+#ifdef __x86_64__
+/* a load the handler can skip: "mov (%rax), %eax" is 2 bytes (8b 00) */
+static int load_via_rax(volatile int* p) {
+    int v;
+    __asm__ volatile("movl (%1), %0" : "=a"(v) : "a"(p) : "memory");
+    return v;
+}
+static void on_fault_resume(int sig, siginfo_t* si, void* ucv) {
+    ucontext_t* uc = ucv;
+    g_sig_seen = sig;
+    g_sig_addr = si->si_addr;
+    uc->uc_mcontext.gregs[REG_RIP] += 2;            /* past the load */
+    uc->uc_mcontext.gregs[REG_RAX] = 42;            /* what it "read" */
+}
+
+static volatile int g_kicked;
+static void on_kick(int sig) { (void)sig; g_kicked++; }
+static void* kick_target(void* a) {
+    (void)a;
+    long until = ms_now() + 5000;
+    while (!g_kicked && ms_now() < until) sched_yield();      /* busy: the signal comes on the timer */
+    int busy = g_kicked;
+    struct timespec nap = { 5, 0 };
+    long t0 = ms_now();
+    nanosleep(&nap, NULL);                                    /* asleep: a signal wakes it */
+    return (void*)(long)(busy ? (ms_now() - t0 < 3000 ? 0 : 2) : 1);
+}
+
+static char* g_alt;
+static volatile int g_on_alt;
+static void on_alt(int sig) {
+    (void)sig;
+    char here;
+    g_on_alt = &here >= g_alt && &here < g_alt + 65536;
+}
+
+static int deep(int n) { volatile char pad[512]; pad[0] = (char)n; return n ? deep(n - 1) + pad[0] : 0; }
+static void* overflow_thread(void* a) {
+    (void)a;
+    stack_t ss = { malloc(65536), 0, 65536 };
+    sigaltstack(&ss, NULL);
+    if (sigsetjmp(g_jb, 1)) return (void*)(long)(g_sig_seen == SIGSEGV ? 0 : 1);
+    deep(1000000);                                            /* far past its 256 KiB stack */
+    return (void*)2;
+}
+#endif
+
+static void t_signals(void) {
+    printf("signals: handlers, faults as signals, masks, pthread_kill\n");
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_usr1;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    g_sig_seen = 0;
+    int ok = sigaction(SIGUSR1, &sa, NULL) == 0 && raise(SIGUSR1) == 0 && g_sig_seen == SIGUSR1 && g_sig_code == SI_TKILL;
+    check("sigaction + raise: the handler ran, with its siginfo", ok, "");
+
+    signal(SIGUSR1, SIG_IGN);
+    g_sig_seen = 0;
+    check("SIG_IGN: raise does nothing", raise(SIGUSR1) == 0 && !g_sig_seen, "");
+
+#ifdef __x86_64__
+    sa.sa_sigaction = on_fault_jump;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    g_sig_seen = 0;
+    volatile int* volatile bad = (volatile int*)16;     /* (a variable: the compiler must not see it is bad) */
+    if (!sigsetjmp(g_jb, 1)) { *bad = 1; g_sig_seen = -1; }
+    char note[96];
+    snprintf(note, sizeof(note), "at %p", g_sig_addr);
+    check("a bad write: SIGSEGV with si_addr, out with siglongjmp", g_sig_seen == SIGSEGV && g_sig_addr == (void*)16 && (g_sig_code == SEGV_ACCERR ||
+          g_sig_code == SEGV_MAPERR), note);
+    sigset_t cur;
+    sigprocmask(SIG_SETMASK, NULL, &cur);
+    check("siglongjmp put the signal mask back", !sigismember(&cur, SIGSEGV), "");
+
+    sa.sa_sigaction = on_fault_resume;
+    sigaction(SIGSEGV, &sa, NULL);
+    g_sig_seen = 0;
+    int v = load_via_rax((volatile int*)24);
+    check("a handler changes RIP and RAX: the code goes on", v == 42 && g_sig_seen == SIGSEGV && g_sig_addr == (void*)24, "");
+
+    sa.sa_sigaction = on_fault_jump;
+    sigaction(SIGSEGV, &sa, NULL);
+    char* ro = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    g_sig_seen = 0;
+    volatile char rd = ro[0];
+    (void)rd;
+    if (!sigsetjmp(g_jb, 1)) { ro[10] = 1; g_sig_seen = -1; }
+    check("writing a PROT_READ page: SIGSEGV (SEGV_ACCERR)", g_sig_seen == SIGSEGV && g_sig_code == SEGV_ACCERR &&
+          g_sig_addr == ro + 10, "");
+    munmap(ro, 4096);
+
+    sigaction(SIGFPE, &sa, NULL);
+    g_sig_seen = 0;
+    volatile int zero = 0, num = 7;
+    if (!sigsetjmp(g_jb, 1)) { num = num / zero; g_sig_seen = -1; }
+    check("a division by zero: SIGFPE (FPE_INTDIV)", g_sig_seen == SIGFPE && g_sig_code == FPE_INTDIV, "");
+
+    sigaction(SIGILL, &sa, NULL);
+    g_sig_seen = 0;
+    if (!sigsetjmp(g_jb, 1)) { __asm__ volatile("ud2"); g_sig_seen = -1; }
+    check("an invalid instruction: SIGILL", g_sig_seen == SIGILL, "");
+
+    /* blocked: it waits; unblocked: it comes */
+    sa.sa_sigaction = on_usr1;
+    sigaction(SIGUSR2, &sa, NULL);
+    sigset_t s, pend;
+    sigemptyset(&s);
+    sigaddset(&s, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &s, NULL);
+    g_sig_seen = 0;
+    raise(SIGUSR2);
+    sigpending(&pend);
+    int waited = !g_sig_seen && sigismember(&pend, SIGUSR2);
+    sigprocmask(SIG_UNBLOCK, &s, NULL);
+    banana_sleep(1);
+    check("a blocked signal waits (sigpending), unblocked it comes", waited && g_sig_seen == SIGUSR2, "");
+
+    /* to another thread: busy (the timer delivers it), then asleep (woken) */
+    signal(SIGUSR1, on_kick);
+    g_kicked = 0;
+    pthread_t th;
+    void* r = (void*)9;
+    pthread_create(&th, NULL, kick_target, NULL);
+    banana_sleep(100);
+    pthread_kill(th, SIGUSR1);
+    banana_sleep(300);
+    pthread_kill(th, SIGUSR1);
+    pthread_join(th, &r);
+    snprintf(note, sizeof(note), "%d delivered", g_kicked);
+    check("pthread_kill: a busy thread, then a sleeping one", r == NULL && g_kicked == 2, note);
+
+    /* a handler on its own stack */
+    g_alt = malloc(65536);
+    stack_t ss = { g_alt, 0, 65536 };
+    sigaltstack(&ss, NULL);
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_alt;
+    sa.sa_flags = SA_ONSTACK;
+    sigaction(SIGUSR2, &sa, NULL);
+    g_on_alt = 0;
+    raise(SIGUSR2);
+    check("sigaltstack: the handler runs on the alternate stack", g_on_alt == 1, "");
+    ss.ss_flags = SS_DISABLE;
+    sigaltstack(&ss, NULL);
+
+    /* a stack overflow (the guard page under a thread's stack) caught */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_fault_jump;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigaction(SIGSEGV, &sa, NULL);
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 256 << 10);
+    g_sig_seen = 0;
+    r = (void*)9;
+    pthread_create(&th, &at, overflow_thread, NULL);
+    pthread_join(th, &r);
+    check("a stack overflow: SIGSEGV on the alternate stack, recovered", r == NULL, "");
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGFPE, SIG_DFL);
+    signal(SIGILL, SIG_DFL);
+#else
+    printf("  skip  faults as signals, masks, pthread_kill - 64-bit only\n");
+#endif
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (!only || !strcmp(only, "mmap")) t_mmap();
     if (!only || !strcmp(only, "threads")) t_threads();
     if (!only || !strcmp(only, "sockets")) t_sockets();
+    if (!only || !strcmp(only, "signals")) t_signals();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

@@ -756,3 +756,16 @@ int sched_getaffinity(pid_t pid, size_t size, cpu_set_t* s) {
 }
 
 int sched_setaffinity(pid_t pid, size_t size, const cpu_set_t* s) { (void)pid; (void)size; (void)s; return 0; }
+
+/* ── signals to a thread (signal.c has the rest) ──────────────────── */
+
+int raise(int sig);
+
+int pthread_kill(pthread_t t, int sig) {
+    if (!t) return ESRCH;
+    if (sig < 0 || sig > 64) return EINVAL;
+    if (t == pthread_self()) return raise(sig) == 0 ? 0 : errno;
+    if (__banana->version < 19 || !BANANA_HAS(__banana, sig_pending)) return ENOSYS;
+    if (t->done) return ESRCH;
+    return __banana->sig_send(t->id, sig) == 0 ? 0 : ENOTSUP;
+}

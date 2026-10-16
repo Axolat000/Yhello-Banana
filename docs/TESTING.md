@@ -42,6 +42,10 @@ selftest posix [part]    installs and runs the posixtest example: the POSIX laye
                          select, FIONREAD, SO_RCVTIMEO, ECONNREFUSED, getaddrinfo,
                          inet_pton/ntop, and an HTTP request to example.com if the
                          network reaches it (posix sockets)
+                         signals (64-bit): SIGSEGV / SIGFPE / SIGILL from faults with
+                         siginfo, a handler changing RIP/RAX, PROT_READ enforced, masks,
+                         pthread_kill to a busy and a sleeping thread, sigaltstack, a
+                         stack overflow caught (posix signals)
 selftest ipv6 [host [port]]
                          IPv6 off blocks TCP, UDP and resolution; address parsing and
                          formatting; localhost; bracketed HTTP URLs; UDP loopback

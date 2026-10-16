@@ -44,5 +44,10 @@ int       uvm_owns_str(uspace_t* us, const char* s);
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err);
 /* bytes of memory its mapped pages use now */
 uint64_t  uvm_resident(uspace_t* us);
+/* 1 if the app may write every byte of [a, a + n) right now - its pages
+ * present and writable in its tables (mapped ones are faulted in first):
+ * what the kernel checks before it writes there from a fault handler,
+ * where a fault of its own must not happen (a signal frame) */
+int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n);
 
 #endif

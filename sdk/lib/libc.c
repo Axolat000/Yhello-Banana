@@ -226,12 +226,19 @@ void exit(int code) {
     for (;;) ;
 }
 
+int raise(int sig);
+
 void abort(void) {
     __stdio_flush_all();
     __banana->write(2, "abort()\n", 8);
+    raise(6);                               /* SIGABRT: its handler first, if there is one */
     __banana->exit(134);
     for (;;) ;
 }
+
+/* ends the app at once (no stdio flush, no atexit) */
+void _exit(int code) { __banana->exit(code); for (;;) ; }
+void _Exit(int code) { __banana->exit(code); for (;;) ; }
 
 void __assert_fail(const char* expr, const char* file, int line) {
     char buf[200];

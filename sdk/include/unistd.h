@@ -32,6 +32,7 @@ gid_t   getgid(void);
 gid_t   getegid(void);
 int     getpagesize(void);
 int     gethostname(char* name, size_t len);
+void    _exit(int code) __attribute__((noreturn));      /* at once: no stdio flush */
 
 /* sysconf() names (Linux's values) */
 #define _SC_CLK_TCK            2

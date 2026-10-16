@@ -83,7 +83,8 @@ endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c \
-            $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c
+            $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c \
+            $(BANANA_SDK)/lib/signal.c
 LIBC_i686   = $(LIBC_SRCS) $(BANANA_SDK)/lib/divdi3.c
 LIBC_x86_64 = $(LIBC_SRCS)
 

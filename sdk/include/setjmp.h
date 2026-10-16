@@ -10,4 +10,12 @@ int  setjmp(jmp_buf env) __attribute__((returns_twice));
 void longjmp(jmp_buf env, int val) __attribute__((noreturn));
 #define _setjmp setjmp
 #define _longjmp longjmp
+
+/* sigsetjmp(env, 1) also keeps the thread's signal mask, which siglongjmp
+ * puts back - the way out of a signal handler (lib/signal.c) */
+typedef struct { jmp_buf __jb; int __saved; unsigned long long __mask; } sigjmp_buf[1];
+unsigned long long __sigmask_save(void);
+void siglongjmp(sigjmp_buf env, int val) __attribute__((noreturn));
+#define sigsetjmp(env, save) \
+    ((env)->__saved = (save), (env)->__mask = (save) ? __sigmask_save() : 0, setjmp((env)->__jb))
 #endif
