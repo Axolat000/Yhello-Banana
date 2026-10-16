@@ -14,7 +14,16 @@ typedef uint64_t ElfW_Addr;
 typedef struct { uint32_t p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align; } ElfW_Phdr;
 typedef uint32_t ElfW_Addr;
 #endif
+typedef struct { uint32_t n_namesz, n_descsz, n_type; } ElfW_Nhdr;
 #define ElfW(t) ElfW_##t
+#ifndef PT_LOAD
+#define PT_NULL    0
+#define PT_LOAD    1
+#define PT_DYNAMIC 2
+#define PT_NOTE    4
+#define PT_TLS     7
+#define NT_GNU_BUILD_ID 3
+#endif
 
 struct dl_phdr_info {
     ElfW_Addr        dlpi_addr;    /* the load base */

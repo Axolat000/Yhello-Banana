@@ -6,6 +6,8 @@ extern "C" {
 /* each thread has its own */
 int* __errno_location(void);
 #define errno (*__errno_location())
+extern char* program_invocation_name;          /* the app's name (GNU) */
+extern char* program_invocation_short_name;
 #define EPERM   1
 #define ENOENT  2
 #define ESRCH   3

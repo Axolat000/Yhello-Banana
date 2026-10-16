@@ -13,7 +13,8 @@
 #     CATEGORY    = Games                 # optional: the App Store's shelf
 #     DEPENDS     = libfoo (>= 1.0)       # optional: packages apt installs first
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
-#     USE_GL      = 1                     # optional: OpenGL (#include <GL/bgl.h>)
+#     USE_GL      = 1                     # optional: OpenGL 1.x (#include <GL/bgl.h>)
+#     USE_GL3     = 1                     # optional: OpenGL 3.3 core (#include <GL/gl3.h>, 64-bit)
 #     USE_CL      = 1                     # optional: OpenCL (#include <CL/cl.h>)
 #     include /path/to/banana-sdk/banana.mk
 #
@@ -38,6 +39,7 @@ CATEGORY    ?=
 DEPENDS     ?=
 ICON        ?=
 USE_GL      ?= 0
+USE_GL3     ?= 0
 USE_CL      ?= 0
 BUILD       ?= build
 # extra libraries (.a) linked after the objects, per CPU
@@ -67,6 +69,11 @@ ifeq ($(USE_GL),1)
 SRCS += $(BANANA_SDK)/lib/gl.c
 endif
 
+# USE_GL3 = 1: OpenGL 3.3 (<GL/gl3.h>): Mesa, loaded from libOSMesa.so (ports/mesa)
+ifeq ($(USE_GL3),1)
+SRCS += $(BANANA_SDK)/lib/gl3.c
+endif
+
 # USE_CL = 1: OpenCL (<CL/cl.h>) - the runtime and TinyCC, which compiles the
 # kernels; TinyCC's source comes from the Banana OS tree (ports/tcc)
 ifeq ($(USE_CL),1)
@@ -85,7 +92,7 @@ LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c \
             $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c \
             $(BANANA_SDK)/lib/signal.c $(BANANA_SDK)/lib/dl.c $(BANANA_SDK)/lib/cxxrt.c \
-            $(BANANA_SDK)/lib/unix.c $(BANANA_SDK)/lib/ufd.c
+            $(BANANA_SDK)/lib/unix.c $(BANANA_SDK)/lib/ufd.c $(BANANA_SDK)/lib/math99.c
 LIBC_i686   = $(LIBC_SRCS) $(BANANA_SDK)/lib/divdi3.c
 LIBC_x86_64 = $(LIBC_SRCS)
 

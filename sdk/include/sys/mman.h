@@ -46,6 +46,9 @@ void* mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off);
 int   munmap(void* addr, size_t len);
 int   mprotect(void* addr, size_t len, int prot);
 int   madvise(void* addr, size_t len, int advice);
+#define MFD_CLOEXEC       1
+#define MFD_ALLOW_SEALING 2
+int   memfd_create(const char* name, unsigned int flags);   /* (none here: ENOSYS) */
 int   posix_madvise(void* addr, size_t len, int advice);
 int   msync(void* addr, size_t len, int flags);
 int   mlock(const void* addr, size_t len);

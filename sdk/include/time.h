@@ -50,6 +50,8 @@ int clock_gettime(clockid_t clk, struct timespec* ts);
 int clock_getres(clockid_t clk, struct timespec* ts);
 int clock_nanosleep(clockid_t clk, int flags, const struct timespec* req, struct timespec* rem);
 int nanosleep(const struct timespec* req, struct timespec* rem);
+#define TIME_UTC 1
+int timespec_get(struct timespec* ts, int base);
 #ifdef __cplusplus
 }
 #endif

@@ -21,6 +21,13 @@ struct _bfile {
     int  is_term;
     char buf[BUFSIZ];         /* terminal output: line buffered */
     int  n;
+    /* a stream in memory: 1 open_memstream (grows, *mout / *msize kept
+     * up to date), 2 fmemopen (a fixed buffer) */
+    int  mem;
+    char* mbuf;
+    size_t mcap, mlen, mpos;
+    char** mout;
+    size_t* msize;
 };
 
 static struct _bfile g_std[3];
@@ -65,8 +72,33 @@ ssize_t write(int fd, const void* buf, size_t n) {
     return r;
 }
 
+static void mem_publish(FILE* f) {
+    if (f->mem != 1) return;
+    *f->mout = f->mbuf;
+    *f->msize = f->mlen;
+}
+
+static int mem_write(FILE* f, const char* s, size_t n) {
+    size_t end = f->mpos + n;
+    if (f->mem == 1 && end + 1 > f->mcap) {             /* (+1: a 0 after the data) */
+        size_t cap = f->mcap * 2 > end + 1 ? f->mcap * 2 : end + 1;
+        char* b = realloc(f->mbuf, cap);
+        if (!b) { f->err = 1; return -1; }
+        f->mbuf = b;
+        f->mcap = cap;
+    }
+    if (f->mem == 2 && end > f->mcap) n = f->mcap > f->mpos ? f->mcap - f->mpos : 0;
+    memcpy(f->mbuf + f->mpos, s, n);
+    f->mpos += n;
+    if (f->mpos > f->mlen) f->mlen = f->mpos;
+    if (f->mem == 1 || f->mlen < f->mcap) f->mbuf[f->mlen] = 0;
+    mem_publish(f);
+    return (int)n;
+}
+
 static int put_bytes(FILE* f, const char* s, size_t n) {
     if (!f) return -1;
+    if (f->mem) return mem_write(f, s, n);
     if (!f->is_term) {
         long w = __banana->write(f->fd, s, n);
         if (w != (long)n) { f->err = 1; return -1; }
@@ -325,6 +357,7 @@ int fgetc(FILE* f) {
     if (!f) return EOF;
     if (f->ungot >= 0) { int c = f->ungot; f->ungot = -1; return c; }
     if (f == stdin) return stdin_getc();
+    if (f->mem) { if (f->mpos >= f->mlen) { f->eof = 1; return EOF; } return (unsigned char)f->mbuf[f->mpos++]; }
     if (f->is_term) return EOF;
     unsigned char c;
     long n = __banana->read(f->fd, &c, 1);
@@ -366,8 +399,52 @@ FILE* fopen(const char* path, const char* mode) {
     return f;
 }
 
+/* streams in memory */
+FILE* open_memstream(char** buf, size_t* size) {
+    if (!buf || !size) { errno = EINVAL; return NULL; }
+    FILE* f = calloc(1, sizeof(FILE));
+    char* b = malloc(64);
+    if (!f || !b) { free(f); free(b); errno = ENOMEM; return NULL; }
+    f->fd = -1;
+    f->ungot = -1;
+    f->mem = 1;
+    f->mbuf = b;
+    f->mcap = 64;
+    b[0] = 0;
+    f->mout = buf;
+    f->msize = size;
+    mem_publish(f);
+    return f;
+}
+
+FILE* fmemopen(void* buf, size_t size, const char* mode) {
+    if (!size || !mode) { errno = EINVAL; return NULL; }
+    FILE* f = calloc(1, sizeof(FILE));
+    if (!f) { errno = ENOMEM; return NULL; }
+    if (!buf) {
+        buf = calloc(1, size);
+        if (!buf) { free(f); errno = ENOMEM; return NULL; }
+        f->mout = (char**)buf;                          /* (ours: freed at fclose) */
+    }
+    f->fd = -1;
+    f->ungot = -1;
+    f->mem = 2;
+    f->mbuf = buf;
+    f->mcap = size;
+    if (mode[0] == 'r') f->mlen = size;
+    else if (mode[0] == 'a') f->mlen = f->mpos = strnlen(buf, size);
+    else { f->mlen = 0; ((char*)buf)[0] = 0; }
+    return f;
+}
+
 int fclose(FILE* f) {
     if (!f) return EOF;
+    if (f->mem) {
+        if (f->mem == 1) mem_publish(f);
+        else if (f->mout) free(f->mbuf);
+        free(f);
+        return 0;
+    }
     if (f->is_term) { fflush(f); return 0; }
     __banana->close(f->fd);
     free(f);
@@ -381,6 +458,13 @@ size_t fread(void* buf, size_t size, size_t n, FILE* f) {
     if (f->ungot >= 0 && want) { b[got++] = (unsigned char)f->ungot; f->ungot = -1; }
     if (f == stdin) {
         while (got < want) { int c = stdin_getc(); if (c == EOF) break; b[got++] = (unsigned char)c; }
+    } else if (f->mem) {
+        size_t k = f->mlen > f->mpos ? f->mlen - f->mpos : 0;
+        if (k > want - got) k = want - got;
+        memcpy(b + got, f->mbuf + f->mpos, k);
+        f->mpos += k;
+        got += k;
+        if (got < want) f->eof = 1;
     } else if (!f->is_term) {
         while (got < want) {
             long r = __banana->read(f->fd, b + got, want - got);
@@ -400,9 +484,18 @@ int fseek(FILE* f, long off, int whence) {
     if (!f || f->is_term) return -1;
     f->ungot = -1;
     f->eof = 0;
+    if (f->mem) {
+        long base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (long)f->mpos : (long)f->mlen;
+        if (base + off < 0 || (f->mem == 2 && (size_t)(base + off) > f->mcap)) { errno = EINVAL; return -1; }
+        f->mpos = (size_t)(base + off);
+        return 0;
+    }
     return __banana->seek(f->fd, off, whence) < 0 ? -1 : 0;
 }
-long ftell(FILE* f) { return (!f || f->is_term) ? -1 : __banana->seek(f->fd, 0, SEEK_CUR); }
+long ftell(FILE* f) {
+    if (f && f->mem) return (long)f->mpos;
+    return (!f || f->is_term) ? -1 : __banana->seek(f->fd, 0, SEEK_CUR);
+}
 void rewind(FILE* f) { fseek(f, 0, SEEK_SET); if (f) f->err = 0; }
 int feof(FILE* f) { return f ? f->eof : 1; }
 int ferror(FILE* f) { return f ? f->err : 1; }

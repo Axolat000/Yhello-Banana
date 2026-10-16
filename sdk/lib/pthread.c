@@ -756,6 +756,30 @@ int sched_getaffinity(pid_t pid, size_t size, cpu_set_t* s) {
 }
 
 int sched_setaffinity(pid_t pid, size_t size, const cpu_set_t* s) { (void)pid; (void)size; (void)s; return 0; }
+int pthread_getaffinity_np(pthread_t t, size_t size, cpu_set_t* s) { (void)t; return sched_getaffinity(0, size, s); }
+int pthread_setaffinity_np(pthread_t t, size_t size, const cpu_set_t* s) { (void)t; (void)size; (void)s; return 0; }
+
+/* a deadline on clock `from` as one on clock `to` */
+static struct timespec clock_convert(clockid_t from, clockid_t to, const struct timespec* t) {
+    struct timespec a, b, r;
+    clock_gettime(from, &a);
+    clock_gettime(to, &b);
+    long long ns = ((long long)t->tv_sec - a.tv_sec) * 1000000000LL + (t->tv_nsec - a.tv_nsec)
+                 + (long long)b.tv_sec * 1000000000LL + b.tv_nsec;
+    r.tv_sec = (time_t)(ns / 1000000000LL);
+    r.tv_nsec = (long)(ns % 1000000000LL);
+    return r;
+}
+
+int pthread_cond_clockwait(pthread_cond_t* c, pthread_mutex_t* m, clockid_t clk, const struct timespec* t) {
+    struct timespec d = clk == c->clock ? *t : clock_convert(clk, c->clock, t);
+    return pthread_cond_timedwait(c, m, &d);
+}
+
+int pthread_mutex_clocklock(pthread_mutex_t* m, clockid_t clk, const struct timespec* t) {
+    struct timespec d = clk == CLOCK_REALTIME ? *t : clock_convert(clk, CLOCK_REALTIME, t);
+    return pthread_mutex_timedlock(m, &d);
+}
 
 /* ── signals to a thread (signal.c has the rest) ──────────────────── */
 

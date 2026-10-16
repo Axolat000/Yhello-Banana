@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""rebuild.py REFBUILD OUT - compile Mesa's libOSMesa again for Banana OS.
+
+REFBUILD: the reference Linux build (meson + ninja) of the same source and
+options. Every object that libOSMesa.so is linked from is compiled again
+from REFBUILD/compile_commands.json with the Banana OS SDK's headers in
+place of the system's; the static archives are made again from those
+objects and libOSMesa.so is linked the way ninja links it, without the
+system's C library (its functions come from the app: the SDK's dlopen).
+Objects go to OUT/objs, errors to OUT/logs/<object>.log; a summary is
+printed. EXTRA (environment): more compiler flags; JOBS: parallel jobs;
+KEEP=1: objects already compiled are kept."""
+import collections, json, os, re, shlex, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REF, OUT = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+ONLY = sys.argv[3:]
+SDK = os.path.normpath(HERE + "/../../sdk")
+GCC = subprocess.run(["gcc", "-dumpversion"], capture_output=True, text=True).stdout.strip().split(".")[0]
+GCCINC = subprocess.run(["gcc", "-print-file-name=include"], capture_output=True, text=True).stdout.strip()
+PRE = ["-nostdinc", "-isystem", SDK + "/include", "-isystem", HERE + "/include", "-fdiagnostics-color=never",
+       "-isystem", GCCINC, "-D__BANANA_OS__", "-mno-red-zone", "-fno-stack-protector"]
+PRE_CXX = ["-nostdinc++", "-isystem", "/usr/include/c++/" + GCC, "-isystem", "/usr/include/x86_64-linux-gnu/c++/" + GCC]
+# what the build machine had and Banana OS has not: zlib (Mesa then uses its
+# own CRC-32), SPIRV-Tools (only for printing SPIR-V); plain diagnostics
+POST = ["-UHAVE_ZLIB", "-UHAVE_COMPRESSION", "-UHAVE_SPIRV_TOOLS", "-fdiagnostics-color=never",
+        "-mtls-dialect=gnu"]                 # (the SDK loader has no TLS descriptors)
+POST_CXX = ["-fno-exceptions"]               # (nor a C++ unwinder)
+EXTRA = os.environ.get("EXTRA", "").split()
+JOBS = int(os.environ.get("JOBS", os.cpu_count() or 2))
+KEEP = os.environ.get("KEEP") == "1"         # objects already there are kept
+os.makedirs(OUT + "/objs", exist_ok=True)
+os.makedirs(OUT + "/logs", exist_ok=True)
+
+
+def ninja(*args):
+    return subprocess.run(["ninja", "-C", REF] + list(args), capture_output=True, text=True, check=True).stdout
+
+
+def objname(o):
+    return o.replace("/", "_")
+
+
+# the link of libOSMesa.so and the archives (with their objects) it takes
+link = None
+for line in ninja("-t", "commands", "src/gallium/targets/osmesa/libOSMesa.so.8.0.0").splitlines():
+    if "-o src/gallium/targets/osmesa/libOSMesa.so.8.0.0" in line:
+        link = line
+if not link:
+    sys.exit("rebuild.py: the link of libOSMesa.so was not found in " + REF)
+largs = shlex.split(link)
+
+
+def inputs(target):                          # what ninja builds target from
+    q = ninja("-t", "query", target)
+    ins = re.search(r"input: \S+\n((?:    .*\n)*)", q)
+    return [x.strip() for x in ins.group(1).splitlines() if not x.strip().startswith("|")] if ins else []
+
+
+archives = [a for a in largs if a.endswith(".a") and not a.startswith("/")]
+members = {a: [x for x in inputs(a) if x.endswith(".o")] for a in archives}   # archive -> its objects
+direct = [a for a in largs if a.endswith(".o") and not a.startswith("/")]
+# Mesa's own shared libraries (libglapi.so): their objects go into libOSMesa.so
+# itself (Banana OS loads one library)
+shared = [a for a in largs[1:] if re.search(r"\.so(\.[0-9.]+)?$", a) and not a.startswith(("/", "-"))
+          and a != "src/gallium/targets/osmesa/libOSMesa.so.8.0.0"]
+for s in shared:
+    for x in inputs(s):
+        if x.endswith(".o"):
+            direct.append(x)
+        elif x.endswith(".a") and not x.startswith("/") and x not in archives:
+            archives.append(x)
+            members[x] = [y for y in inputs(x) if y.endswith(".o")]
+
+cmds = {}
+for e in json.load(open(REF + "/compile_commands.json")):
+    out = e.get("output") or re.search(r"-o (\S+)", e["command"]).group(1)
+    cmds[out] = e
+wanted = [o for a in archives for o in members[a]] + direct
+if ONLY:
+    wanted = [o for o in wanted if any(s in o for s in ONLY)]
+
+
+def rewrite(cmd, out):
+    a = shlex.split(cmd)
+    cxx = a[0].endswith("++")
+    pre = PRE[:1] + (PRE_CXX if cxx else []) + PRE[1:]
+    res, i = [a[0]] + pre, 1
+    while i < len(a):
+        x = a[i]
+        if x in ("-MD", "-pipe", "-pthread") or x.startswith("-fstack-protector") or x.startswith("-fstack-clash"):
+            i += 1
+            continue
+        if x in ("-MQ", "-MF"):
+            i += 2
+            continue
+        if x == "-o":
+            res += ["-o", OUT + "/objs/" + objname(out)]
+            i += 2
+            continue
+        res.append(x)
+        i += 1
+    return res + POST + (POST_CXX if cxx else []) + EXTRA
+
+
+def build(o):
+    e = cmds.get(o)
+    if not e:
+        return o, False, "no compile command"
+    if KEEP and os.path.exists(OUT + "/objs/" + objname(o)):
+        return o, True, ""
+    r = subprocess.run(rewrite(e["command"], o), cwd=e["directory"], capture_output=True, text=True)
+    log = OUT + "/logs/" + objname(o) + ".log"
+    if r.returncode == 0:
+        if os.path.exists(log):
+            os.remove(log)
+        return o, True, ""
+    open(log, "w").write(r.stderr)
+    return o, False, r.stderr
+
+
+with ThreadPoolExecutor(JOBS) as ex:
+    res = list(ex.map(build, wanted))
+bad = [r for r in res if not r[1]]
+print("ok %d, failed %d" % (len(res) - len(bad), len(bad)))
+if bad:
+    missing, errs = collections.Counter(), collections.Counter()
+    for _, _, e in bad:
+        for m in re.findall(r"fatal error: ([^:]+): No such file", e):
+            missing[m] += 1
+        for m in re.findall(r"error: (.*)", e):
+            errs[re.sub(r"[‘’'\"][^‘’'\"]*[‘’'\"]", "X", m)[:90]] += 1
+    print("missing headers: " + ", ".join("%s(%d)" % kv for kv in missing.most_common(60)))
+    print("errors:")
+    for m, n in errs.most_common(40):
+        print("  %4d %s" % (n, m))
+    print("failed: " + " ".join(os.path.basename(r[0]) for r in bad[:80]))
+    sys.exit(1)
+if ONLY:
+    sys.exit(0)
+
+# the archives again, then the library
+os.makedirs(OUT + "/lib", exist_ok=True)
+for x in archives:
+    a = OUT + "/lib/" + objname(x)
+    if os.path.exists(a):
+        os.remove(a)
+    subprocess.run(["ar", "rcs", a] + [OUT + "/objs/" + objname(o) for o in members[x]], check=True)
+newargs, skip = [], False
+for x in largs:
+    if skip:
+        skip = False
+        continue
+    if x in archives:
+        newargs.append(OUT + "/lib/" + objname(x))
+    elif x in direct:
+        newargs.append(OUT + "/objs/" + objname(x))
+    elif x in shared:
+        newargs += [OUT + "/objs/" + objname(o) for o in inputs(x) if o.endswith(".o")]
+        newargs += [OUT + "/lib/" + objname(o) for o in inputs(x) if o in archives and o not in largs]
+    elif x == "-o":
+        newargs += ["-o", OUT + "/libOSMesa.so"]
+        skip = True
+    elif (x.startswith("-l") or x in ("-pthread", "-Wl,--no-undefined") or x.startswith("-Wl,--as-needed")
+          or x.startswith("-Wl,-rpath") or (x.startswith("/") and ".so" in x)):
+        continue                             # (the C library and the others: the app's, at dlopen)
+    elif x.startswith("-Wl,-soname"):
+        newargs.append("-Wl,-soname,libOSMesa.so")
+    else:
+        newargs.append(x)
+cc = newargs[0]
+crt = [subprocess.run([cc, "-print-file-name=" + f], capture_output=True, text=True).stdout.strip() for f in ("crtbeginS.o", "crtendS.o")]
+libgcc = subprocess.run([cc, "-print-libgcc-file-name"], capture_output=True, text=True).stdout.strip()
+# std::unordered_map's growth policy: libstdc++'s own object (it needs nothing
+# else; the GCC Runtime Library Exception allows linking it in)
+libstdcxx = subprocess.run([cc, "-print-file-name=libstdc++.a"], capture_output=True, text=True).stdout.strip()
+subprocess.run(["ar", "x", "--output=" + OUT + "/lib", libstdcxx, "hashtable_c++0x.o"], check=True)
+final = [newargs[0], "-nostdlib", crt[0]] + newargs[1:] + [OUT + "/lib/hashtable_c++0x.o", libgcc, crt[1]]
+r = subprocess.run(final, cwd=REF, capture_output=True, text=True)
+if r.returncode:
+    print(r.stderr[-4000:])
+    sys.exit(1)
+print("linked " + OUT + "/libOSMesa.so")

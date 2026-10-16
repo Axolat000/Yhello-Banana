@@ -153,7 +153,24 @@ void __stack_chk_fail(void) {
     abort();
 }
 
+/* the virtual tables of std::type_info's subclasses, which every class
+ * with virtual functions points at (RTTI): typeid and dynamic_cast are
+ * not supported, so they only need to exist */
+const void* const cxx_class_ti_vt[8]     __asm__("_ZTVN10__cxxabiv117__class_type_infoE") = { 0 };
+const void* const cxx_si_class_ti_vt[8]  __asm__("_ZTVN10__cxxabiv120__si_class_type_infoE") = { 0 };
+const void* const cxx_vmi_class_ti_vt[8] __asm__("_ZTVN10__cxxabiv121__vmi_class_type_infoE") = { 0 };
+const void* const cxx_fund_ti_vt[8]      __asm__("_ZTVN10__cxxabiv123__fundamental_type_infoE") = { 0 };
+const void* const cxx_pointer_ti_vt[8]   __asm__("_ZTVN10__cxxabiv119__pointer_type_infoE") = { 0 };
+
 /* (libstdc++'s headers call these where they would throw) */
+void cxx_throw_system_error(int e)       __asm__("_ZSt20__throw_system_errori");
+void cxx_throw_bad_array_new(void)       __asm__("_ZSt28__throw_bad_array_new_lengthv");
+void cxx_throw_bad_function_call(void)   __asm__("_ZSt25__throw_bad_function_callv");
+void cxx_throw_invalid_argument(const char*) __asm__("_ZSt24__throw_invalid_argumentPKc");
+void cxx_throw_system_error(int e) { fprintf(stderr, "system_error: %d\n", e); abort(); }
+void cxx_throw_bad_array_new(void) { fprintf(stderr, "bad_array_new_length\n"); abort(); }
+void cxx_throw_bad_function_call(void) { fprintf(stderr, "bad_function_call\n"); abort(); }
+void cxx_throw_invalid_argument(const char* s) { fprintf(stderr, "invalid_argument: %s\n", s); abort(); }
 void cxx_throw_bad_alloc(void)          __asm__("_ZSt17__throw_bad_allocv");
 void cxx_throw_length_error(const char*) __asm__("_ZSt20__throw_length_errorPKc");
 void cxx_throw_out_of_range(const char*) __asm__("_ZSt20__throw_out_of_rangePKc");

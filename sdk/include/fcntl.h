@@ -27,6 +27,12 @@ extern "C" {
 #define F_GETLK  5
 #define F_SETLK  6
 #define F_SETLKW 7
+#define F_ADD_SEALS 1033
+#define F_GET_SEALS 1034
+#define F_SEAL_SEAL   1
+#define F_SEAL_SHRINK 2
+#define F_SEAL_GROW   4
+#define F_SEAL_WRITE  8
 #define F_RDLCK  0
 #define F_WRLCK  1
 #define F_UNLCK  2

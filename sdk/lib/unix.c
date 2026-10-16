@@ -36,6 +36,8 @@
 #include <sys/sendfile.h>
 #include <sys/statvfs.h>
 #include <sys/xattr.h>
+#include <sys/random.h>
+#include <syslog.h>
 #include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -408,22 +410,35 @@ int prctl(int option, ...) { (void)option; return 0; }
 long syscall(long nr, ...) {
     va_list ap;
     va_start(ap, nr);
-    long a1 = va_arg(ap, long), a2 = va_arg(ap, long), a3 = va_arg(ap, long);
+    long a1 = va_arg(ap, long), a2 = va_arg(ap, long), a3 = va_arg(ap, long), a4 = va_arg(ap, long);
     va_end(ap);
     switch (nr) {
     case SYS_gettid: return gettid();
     case SYS_getpid: return getpid();
     case SYS_futex: {
         volatile int* addr = (volatile int*)a1;
-        int op = (int)a2 & ~FUTEX_PRIVATE_FLAG;
-        if (op == FUTEX_WAIT) {
+        int op = (int)a2 & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        const struct timespec* ts = (const struct timespec*)a4;
+        if (op == FUTEX_WAIT || op == FUTEX_WAIT_BITSET) {
             if (*addr != (int)a3) { errno = EAGAIN; return -1; }
-            __banana->wait(addr, (int)a3, -1);
+            int ms = -1;
+            if (ts) {                                   /* WAIT: a time span; WAIT_BITSET: a deadline */
+                long long ns = (long long)ts->tv_sec * 1000000000LL + ts->tv_nsec;
+                if (op == FUTEX_WAIT_BITSET) {
+                    struct timespec now;
+                    clock_gettime((int)a2 & FUTEX_CLOCK_REALTIME ? CLOCK_REALTIME : CLOCK_MONOTONIC, &now);
+                    ns -= (long long)now.tv_sec * 1000000000LL + now.tv_nsec;
+                }
+                if (ns <= 0) { errno = ETIMEDOUT; return -1; }
+                ms = ns / 1000000 > 0x7fffffff ? 0x7fffffff : (int)((ns + 999999) / 1000000);
+            }
+            if (__banana->wait(addr, (int)a3, ms) == 1) { errno = ETIMEDOUT; return -1; }
             return 0;
         }
-        if (op == FUTEX_WAKE) return __banana->wake(addr, (int)a3);
+        if (op == FUTEX_WAKE || op == FUTEX_WAKE_BITSET) return __banana->wake(addr, (int)a3);
         break;
     }
+    case SYS_getrandom: return getrandom((void*)a1, (size_t)a2, (unsigned)a3);
     case SYS_membarrier: return 0;
     }
     errno = ENOSYS;
@@ -862,3 +877,264 @@ struct if_nameindex* if_nameindex(void) {
     return p;
 }
 void if_freenameindex(struct if_nameindex* p) { free(p); }
+
+/* ── for C++'s standard library and Mesa ──────────────────────────── */
+
+char* program_invocation_name = "app";
+char* program_invocation_short_name = "app";
+
+/* locale_t: the one "C" locale */
+static struct { int dummy; } g_c_locale;
+locale_t newlocale(int mask, const char* name, locale_t base) {
+    (void)mask; (void)base;
+    if (name && *name && strcmp(name, "C") && strcmp(name, "POSIX") && !strstr(name, "UTF-8") && !strstr(name, "utf8")) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return (locale_t)&g_c_locale;
+}
+locale_t duplocale(locale_t l) { (void)l; return (locale_t)&g_c_locale; }
+void freelocale(locale_t l) { (void)l; }
+locale_t uselocale(locale_t l) { (void)l; return (locale_t)&g_c_locale; }
+double strtod_l(const char* s, char** end, locale_t l) { (void)l; return strtod(s, end); }
+float strtof_l(const char* s, char** end, locale_t l) { (void)l; return strtof(s, end); }
+int strcoll(const char* a, const char* b) { return strcmp(a, b); }
+size_t strxfrm(char* d, const char* s, size_t n) { size_t k = strlen(s); if (k < n) memcpy(d, s, k + 1); return k; }
+int mblen(const char* s, size_t n) { return s ? mbtowc(NULL, s, n) : 0; }
+
+static void (*g_quick[16])(void);
+static int g_nquick;
+int at_quick_exit(void (*fn)(void)) { if (g_nquick == 16) return -1; g_quick[g_nquick++] = fn; return 0; }
+void quick_exit(int code) { while (g_nquick) g_quick[--g_nquick](); _Exit(code); }
+
+int timespec_get(struct timespec* ts, int base) { return base == TIME_UTC && clock_gettime(CLOCK_REALTIME, ts) == 0 ? base : 0; }
+
+int memfd_create(const char* name, unsigned int flags) { (void)name; (void)flags; errno = ENOSYS; return -1; }
+
+/* random bytes: the kernel's generator */
+ssize_t getrandom(void* buf, size_t len, unsigned int flags) {
+    (void)flags;
+    unsigned char* b = buf;
+    for (size_t i = 0; i < len; i += 4) {
+        unsigned int r = __banana->random();
+        size_t k = len - i < 4 ? len - i : 4;
+        memcpy(b + i, &r, k);
+    }
+    return (ssize_t)len;
+}
+int getentropy(void* buf, size_t len) { if (len > 256) { errno = EIO; return -1; } getrandom(buf, len, 0); return 0; }
+
+/* the system log: standard error */
+static const char* g_log_ident;
+void openlog(const char* ident, int option, int facility) { (void)option; (void)facility; g_log_ident = ident; }
+void closelog(void) { g_log_ident = NULL; }
+int setlogmask(int mask) { (void)mask; return 0xff; }
+void vsyslog(int priority, const char* fmt, va_list ap) {
+    (void)priority;
+    if (g_log_ident) fprintf(stderr, "%s: ", g_log_ident);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+}
+void syslog(int priority, const char* fmt, ...) { va_list ap; va_start(ap, fmt); vsyslog(priority, fmt, ap); va_end(ap); }
+
+/* ── more wide characters ─────────────────────────────────────────── */
+
+int wcscoll(const wchar_t* a, const wchar_t* b) { return wcscmp(a, b); }
+size_t wcsxfrm(wchar_t* d, const wchar_t* s, size_t n) { size_t k = wcslen(s); if (k < n) wmemcpy(d, s, k + 1); return k; }
+wchar_t* wcsncat(wchar_t* d, const wchar_t* s, size_t n) {
+    wchar_t* e = d + wcslen(d);
+    while (n-- && *s) *e++ = *s++;
+    *e = 0;
+    return d;
+}
+size_t wcsspn(const wchar_t* s, const wchar_t* a) { size_t n = 0; while (s[n] && wcschr(a, s[n])) n++; return n; }
+size_t wcscspn(const wchar_t* s, const wchar_t* r) { size_t n = 0; while (s[n] && !wcschr(r, s[n])) n++; return n; }
+wchar_t* wcspbrk(const wchar_t* s, const wchar_t* a) { s += wcscspn(s, a); return *s ? (wchar_t*)s : NULL; }
+wchar_t* wcsstr(const wchar_t* h, const wchar_t* n) {
+    size_t k = wcslen(n);
+    for (; *h; h++) if (!wcsncmp(h, n, k)) return (wchar_t*)h;
+    return k ? NULL : (wchar_t*)h;
+}
+wchar_t* wcstok(wchar_t* s, const wchar_t* delim, wchar_t** save) {
+    if (!s) s = *save;
+    s += wcsspn(s, delim);
+    if (!*s) { *save = s; return NULL; }
+    wchar_t* e = s + wcscspn(s, delim);
+    if (*e) *e++ = 0;
+    *save = e;
+    return s;
+}
+wchar_t* wmemmove(wchar_t* d, const wchar_t* s, size_t n) { memmove(d, s, n * sizeof(wchar_t)); return d; }
+int wmemcmp(const wchar_t* a, const wchar_t* b, size_t n) {
+    for (size_t i = 0; i < n; i++) if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+wchar_t* wmemchr(const wchar_t* s, wchar_t c, size_t n) { for (size_t i = 0; i < n; i++) if (s[i] == c) return (wchar_t*)s + i; return NULL; }
+
+/* numbers: through an ASCII copy */
+static const wchar_t* wnum(const wchar_t* s, char* buf, size_t cap) {
+    size_t i = 0;
+    while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+    for (const wchar_t* p = s; *p && *p < 0x80 && i < cap - 1; p++) buf[i++] = (char)*p;
+    buf[i] = 0;
+    return s;
+}
+#define WNUM(name, type, call)                                               \
+    type name {                                                              \
+        char b[128], *e;                                                     \
+        const wchar_t* st = wnum(s, b, sizeof(b));                           \
+        type v = call;                                                       \
+        if (end) *end = (wchar_t*)(e == b ? s : st + (e - b));               \
+        return v;                                                            \
+    }
+WNUM(wcstol(const wchar_t* s, wchar_t** end, int base), long, strtol(b, &e, base))
+WNUM(wcstoul(const wchar_t* s, wchar_t** end, int base), unsigned long, strtoul(b, &e, base))
+WNUM(wcstoll(const wchar_t* s, wchar_t** end, int base), long long, strtoll(b, &e, base))
+WNUM(wcstoull(const wchar_t* s, wchar_t** end, int base), unsigned long long, strtoull(b, &e, base))
+WNUM(wcstod(const wchar_t* s, wchar_t** end), double, strtod(b, &e))
+WNUM(wcstof(const wchar_t* s, wchar_t** end), float, strtof(b, &e))
+WNUM(wcstold(const wchar_t* s, wchar_t** end), long double, strtold(b, &e))
+
+size_t mbrlen(const char* s, size_t n, mbstate_t* ps) { return mbrtowc(NULL, s, n, ps); }
+size_t mbsrtowcs(wchar_t* d, const char** s, size_t n, mbstate_t* ps) {
+    (void)ps;
+    size_t k = 0;
+    const char* p = *s;
+    while (!d || k < n) {
+        wchar_t c;
+        size_t r = mbrtowc(&c, p, 4, NULL);
+        if (r == (size_t)-1 || r == (size_t)-2) { errno = EILSEQ; return (size_t)-1; }
+        if (!c) { if (d) { d[k] = 0; *s = NULL; } return k; }
+        if (d) d[k] = c;
+        k++;
+        p += r;
+    }
+    *s = p;
+    return k;
+}
+size_t wcsrtombs(char* d, const wchar_t** s, size_t n, mbstate_t* ps) {
+    (void)ps;
+    size_t k = 0;
+    const wchar_t* p = *s;
+    for (;; p++) {
+        char b[4] = { 0 };
+        size_t r = *p ? wcrtomb(b, *p, NULL) : 1;
+        if (r == (size_t)-1) { errno = EILSEQ; return (size_t)-1; }
+        if (d && k + r > n) break;
+        if (d) memcpy(d + k, b, r);
+        if (!*p) { if (d) *s = NULL; return k; }
+        k += r;
+    }
+    *s = p;
+    return k;
+}
+
+/* wide stdio: UTF-8 on the byte stream */
+wint_t fgetwc(FILE* f) {
+    int c = fgetc(f);
+    if (c == EOF) return WEOF;
+    if (c < 0x80) return (wint_t)c;
+    char b[4] = { (char)c };
+    int n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2;
+    for (int i = 1; i < n; i++) { int d = fgetc(f); if (d == EOF) return WEOF; b[i] = (char)d; }
+    wchar_t w;
+    return mbrtowc(&w, b, (size_t)n, NULL) > 4 ? WEOF : (wint_t)w;
+}
+wint_t getwc(FILE* f) { return fgetwc(f); }
+wint_t getwchar(void) { return fgetwc(stdin); }
+wchar_t* fgetws(wchar_t* s, int n, FILE* f) {
+    int i = 0;
+    while (i < n - 1) {
+        wint_t c = fgetwc(f);
+        if (c == WEOF) break;
+        s[i++] = (wchar_t)c;
+        if (c == L'\n') break;
+    }
+    if (!i) return NULL;
+    s[i] = 0;
+    return s;
+}
+wint_t fputwc(wchar_t c, FILE* f) {
+    char b[4];
+    size_t n = wcrtomb(b, c, NULL);
+    if (n == (size_t)-1 || fwrite(b, 1, n, f) != n) return WEOF;
+    return (wint_t)c;
+}
+wint_t putwc(wchar_t c, FILE* f) { return fputwc(c, f); }
+wint_t putwchar(wchar_t c) { return fputwc(c, stdout); }
+int fputws(const wchar_t* s, FILE* f) { for (; *s; s++) if (fputwc(*s, f) == WEOF) return -1; return 0; }
+wint_t ungetwc(wint_t c, FILE* f) { return c < 0x80 && ungetc((int)c, f) != EOF ? c : WEOF; }
+int fwide(FILE* f, int mode) { (void)f; return mode; }
+
+/* wide formatting: the format and the result through UTF-8 */
+static char* w2u(const wchar_t* w) {
+    size_t n = wcslen(w) * 4;
+    char* s = malloc(n + 1);
+    if (!s) return NULL;
+    const wchar_t* q = w;
+    if (wcsrtombs(s, &q, n + 1, NULL) == (size_t)-1) { free(s); return NULL; }
+    return s;
+}
+int vswprintf(wchar_t* s, size_t n, const wchar_t* fmt, va_list ap) {
+    char* f = w2u(fmt);
+    if (!f) return -1;
+    char out[1024];
+    int r = vsnprintf(out, sizeof(out), f, ap);
+    free(f);
+    if (r < 0) return -1;
+    size_t k = mbstowcs(s, out, n);
+    if (k == (size_t)-1 || k >= n) { if (n) s[n - 1] = 0; return -1; }
+    return (int)k;
+}
+int swprintf(wchar_t* s, size_t n, const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vswprintf(s, n, fmt, ap); va_end(ap); return r; }
+int vfwprintf(FILE* f, const wchar_t* fmt, va_list ap) {
+    char* u = w2u(fmt);
+    if (!u) return -1;
+    int r = vfprintf(f, u, ap);
+    free(u);
+    return r;
+}
+int fwprintf(FILE* f, const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfwprintf(f, fmt, ap); va_end(ap); return r; }
+int vwprintf(const wchar_t* fmt, va_list ap) { return vfwprintf(stdout, fmt, ap); }
+int wprintf(const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfwprintf(stdout, fmt, ap); va_end(ap); return r; }
+int vswscanf(const wchar_t* s, const wchar_t* fmt, va_list ap) {
+    char* u = w2u(s);
+    char* f = w2u(fmt);
+    int r = u && f ? vsscanf(u, f, ap) : -1;
+    free(u);
+    free(f);
+    return r;
+}
+int swscanf(const wchar_t* s, const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vswscanf(s, fmt, ap); va_end(ap); return r; }
+int vfwscanf(FILE* f, const wchar_t* fmt, va_list ap) {
+    char* u = w2u(fmt);
+    int r = u ? vfscanf(f, u, ap) : -1;
+    free(u);
+    return r;
+}
+int fwscanf(FILE* f, const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfwscanf(f, fmt, ap); va_end(ap); return r; }
+int vwscanf(const wchar_t* fmt, va_list ap) { return vfwscanf(stdin, fmt, ap); }
+int wscanf(const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfwscanf(stdin, fmt, ap); va_end(ap); return r; }
+
+ldiv_t ldiv(long a, long b) { ldiv_t d = { a / b, a % b }; return d; }
+lldiv_t lldiv(long long a, long long b) { lldiv_t d = { a / b, a % b }; return d; }
+int system(const char* cmd) { return cmd ? -1 : 0; }               /* (no shell to run it) */
+char* secure_getenv(const char* name) { return getenv(name); }
+
+int vasprintf(char** out, const char* fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
+    *out = NULL;
+    if (n < 0) return -1;
+    char* s = malloc((size_t)n + 1);
+    if (!s) return -1;
+    vsnprintf(s, (size_t)n + 1, fmt, ap);
+    *out = s;
+    return n;
+}
+int asprintf(char** out, const char* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vasprintf(out, fmt, ap); va_end(ap); return r; }
+
+FILE* popen(const char* cmd, const char* mode) { (void)cmd; (void)mode; errno = ENOSYS; return NULL; }
+int pclose(FILE* f) { (void)f; errno = ECHILD; return -1; }

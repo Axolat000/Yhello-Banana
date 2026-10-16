@@ -33,9 +33,21 @@ long   labs(long x);
 long long llabs(long long x);
 typedef struct { int quot, rem; } div_t;
 div_t  div(int a, int b);
+typedef struct { long quot, rem; } ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
+ldiv_t  ldiv(long a, long b);
+lldiv_t lldiv(long long a, long long b);
+int    system(const char* cmd);              /* (no shell for apps: -1) */
+char*  secure_getenv(const char* name);
+size_t mbstowcs(wchar_t* d, const char* s, size_t n);
+size_t wcstombs(char* d, const wchar_t* s, size_t n);
+int    mbtowc(wchar_t* pwc, const char* s, size_t n);
+int    wctomb(char* s, wchar_t wc);
+#define MB_CUR_MAX 4
 int    rand(void);
 void   srand(unsigned int seed);
 void   qsort(void* base, size_t n, size_t size, int (*cmp)(const void*, const void*));
+void   qsort_r(void* base, size_t n, size_t size, int (*cmp)(const void*, const void*, void*), void* arg);
 void*  bsearch(const void* key, const void* base, size_t n, size_t size, int (*cmp)(const void*, const void*));
 char*  (getenv)(const char* name);    /* (in parentheses: a program may define getenv as a macro) */
 int    setenv(const char* name, const char* value, int overwrite);
@@ -46,6 +58,12 @@ int    mkstemp(char* tmpl);
 extern char** environ;
 double strtod(const char* s, char** end);
 float  strtof(const char* s, char** end);
+struct __locale_struct;
+double strtod_l(const char* s, char** end, struct __locale_struct* l);
+float  strtof_l(const char* s, char** end, struct __locale_struct* l);
+int    mblen(const char* s, size_t n);
+void   quick_exit(int code) __attribute__((noreturn));
+int    at_quick_exit(void (*fn)(void));
 long double strtold(const char* s, char** end);   /* (double precision) */
 /* the absolute path, without . and .. (resolved may be NULL: malloc'd) */
 char*  realpath(const char* path, char* resolved);

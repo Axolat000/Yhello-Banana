@@ -31,6 +31,10 @@ int    vprintf(const char* fmt, va_list ap);
 int    vfprintf(FILE* f, const char* fmt, va_list ap);
 int    vsprintf(char* buf, const char* fmt, va_list ap);
 int    vsnprintf(char* buf, size_t n, const char* fmt, va_list ap);
+int    asprintf(char** out, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+int    vasprintf(char** out, const char* fmt, va_list ap);
+FILE*  popen(const char* cmd, const char* mode);     /* (no shell for apps: NULL) */
+int    pclose(FILE* f);
 int    scanf(const char* fmt, ...);
 int    sscanf(const char* s, const char* fmt, ...);
 int    fscanf(FILE* f, const char* fmt, ...);
@@ -47,6 +51,8 @@ int    fgetc(FILE* f);
 int    getc(FILE* f);
 int    ungetc(int c, FILE* f);
 FILE*  fopen(const char* path, const char* mode);
+FILE*  open_memstream(char** buf, size_t* size);              /* writing into memory (malloc'd) */
+FILE*  fmemopen(void* buf, size_t size, const char* mode);   /* reading or writing a buffer */
 int    fclose(FILE* f);
 size_t fread(void* buf, size_t size, size_t n, FILE* f);
 size_t fwrite(const void* buf, size_t size, size_t n, FILE* f);

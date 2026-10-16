@@ -319,6 +319,14 @@ void qsort(void* base, size_t n, size_t size, int (*cmp)(const void*, const void
                 swap_bytes(b + (j - gap) * size, b + j * size, size);
 }
 
+void qsort_r(void* base, size_t n, size_t size, int (*cmp)(const void*, const void*, void*), void* arg) {
+    char* b = base;
+    for (size_t gap = n / 2; gap > 0; gap /= 2)
+        for (size_t i = gap; i < n; i++)
+            for (size_t j = i; j >= gap && cmp(b + (j - gap) * size, b + j * size, arg) > 0; j -= gap)
+                swap_bytes(b + (j - gap) * size, b + j * size, size);
+}
+
 void* bsearch(const void* key, const void* base, size_t n, size_t size, int (*cmp)(const void*, const void*)) {
     const char* b = base;
     size_t lo = 0, hi = n;

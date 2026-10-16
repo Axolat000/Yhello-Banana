@@ -29,6 +29,14 @@ s64 __moddi3(s64 a, s64 b) {
     return a < 0 ? -(s64)r : (s64)r;
 }
 
+/* both at once (a / b and a % b in one expression) */
+s64 __divmoddi4(s64 a, s64 b, s64* rem) {
+    u64 r;
+    u64 q = __udivmoddi4(a < 0 ? -(u64)a : (u64)a, b < 0 ? -(u64)b : (u64)b, &r);
+    if (rem) *rem = a < 0 ? -(s64)r : (s64)r;
+    return (a < 0) ^ (b < 0) ? -(s64)q : (s64)q;
+}
+
 /* double / float <-> 64-bit integer conversions (also libgcc's on i686),
  * through 32-bit halves the compiler converts inline */
 double __floatundidf(u64 v) { return (double)(unsigned int)(v >> 32) * 4294967296.0 + (double)(unsigned int)v; }

@@ -44,6 +44,35 @@ extern "C" {
 #endif
 #define PRIdMAX __PRI64 "d"
 #define PRIuMAX __PRI64 "u"
+#define PRIiMAX __PRI64 "i"
+#define PRIxMAX __PRI64 "x"
+#define PRIXMAX __PRI64 "X"
+#define PRIoMAX __PRI64 "o"
+#define PRIi8  "i"
+#define PRIi16 "i"
+#define PRIo8  "o"
+#define PRIo16 "o"
+#define PRIo32 "o"
+#define PRIX8  "X"
+#define PRIX16 "X"
+#define PRIiPTR PRIdPTR
+#define PRIXPTR PRIxPTR
+#define SCNi32 "i"
+#define SCNi64 __PRI64 "i"
+#define SCNo32 "o"
+#define SCNo64 __PRI64 "o"
+#define SCNd8  "hhd"
+#define SCNu8  "hhu"
+#define SCNx8  "hhx"
+#define SCNd16 "hd"
+#define SCNu16 "hu"
+#define SCNx16 "hx"
+#define SCNdMAX __PRI64 "d"
+#define SCNuMAX __PRI64 "u"
+#define SCNxMAX __PRI64 "x"
+typedef struct { intmax_t quot, rem; } imaxdiv_t;
+intmax_t imaxabs(intmax_t x);
+imaxdiv_t imaxdiv(intmax_t a, intmax_t b);
 intmax_t strtoimax(const char* s, char** end, int base);
 uintmax_t strtoumax(const char* s, char** end, int base);
 #ifdef __cplusplus
