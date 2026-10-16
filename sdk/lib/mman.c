@@ -11,7 +11,7 @@
 extern const banana_api_t* __banana;
 
 static int has_vm(void) {
-    return __banana->version >= 16 && __banana->size >= __builtin_offsetof(banana_api_t, vm_protect) + sizeof(void*);
+    return __banana->version >= 16 && BANANA_HAS(__banana, vm_protect);
 }
 
 #define PAGE 4096ul

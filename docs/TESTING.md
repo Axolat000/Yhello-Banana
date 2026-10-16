@@ -34,7 +34,10 @@ selftest opencl          installs and runs the cltest example: build errors in t
 selftest posix [part]    installs and runs the posixtest example: the POSIX layer for
                          ported programs - mmap: a 1 GiB reservation, mprotect, holes
                          mapped again, file mappings, system calls on mapped buffers,
-                         threads faulting pages in on every core
+                         threads faulting pages in on every core (posix mmap); pthreads:
+                         mutexes, condition variables, __thread (64-bit), keys, once,
+                         150 detached threads, a 4 MiB stack, semaphores, barriers,
+                         read-write locks, errno per thread, clocks (posix threads)
 selftest ipv6 [host [port]]
                          IPv6 off blocks TCP, UDP and resolution; address parsing and
                          formatting; localhost; bracketed HTTP URLs; UDP loopback

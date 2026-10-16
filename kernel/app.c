@@ -29,6 +29,8 @@
 #include "uspace.h"
 #include "idt.h"
 #include "uvm.h"
+#include "meminfo.h"
+#include "hmem.h"
 
 #define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
@@ -56,7 +58,10 @@ typedef struct {
     int       pid;             /* its task, -1 once it ended */
     int     (*fn)(void*);
     void*     arg;
-    uint8_t*  stack;           /* APP_STACK bytes (the app's memory), APP_GUARD under them */
+    uint8_t*  stack;           /* stack_size bytes (the app's memory), APP_GUARD under them */
+    size_t    stack_size;
+    int       own_stack;       /* the app gave it (thread_start): not freed here */
+    int       detached;        /* its record goes as soon as it ends (no thread_join) */
     uint8_t*  kstack;          /* 64-bit: its system calls' stack (kstack_new) */
     uintptr_t saved_sp;        /* app_enter(): where app_leave() returns to */
     int       running;         /* in app code (between app_enter() and its return) */
@@ -101,6 +106,7 @@ typedef struct {
     athread_t threads[APP_THREADS];
     int       exit_req;        /* a thread called exit() / crashed: every thread stops */
     int       exit_req_code;
+    int       seq;             /* its process id (getpid): counts the apps started since boot */
 } app_proc_t;
 
 static app_proc_t g_procs[APP_MAX];
@@ -294,6 +300,9 @@ static int a_vm_protect(void* addr, unsigned long len, int prot) {
     app_proc_t* p = cur();
     if (!p || !addr) return -1;
 #ifdef __x86_64__
+    /* its ordinary memory (malloc: a JIT making code runnable) is always
+     * readable, writable and runnable: nothing to change */
+    if (umem_owns(p->mem, addr, len ? len : 1)) return 0;
     return uvm_protect(p->us, (uintptr_t)addr, len, prot);
 #else
     (void)prot;
@@ -1108,17 +1117,18 @@ static void kstack_free(uint8_t* m) {
 
 static uintptr_t kstack_top(const uint8_t* m) { return (uintptr_t)m + 4096 + APP_KSTACK; }
 
-/* runs fn(a0, a1, a2) in ring 3 on the app's stack (stack .. stack +
- * APP_STACK) until it returns or the app ends: its exit code */
+/* runs fn(a0, a1, a2) in ring 3 on the stack [stack, stack + size) until
+ * it returns or the app ends: its exit code */
 static int enter_user(app_proc_t* p, uintptr_t fn, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                      uint8_t* stack, uint8_t* kstack, uintptr_t* saved_sp) {
+                      uint8_t* stack, size_t size, uint8_t* kstack, uintptr_t* saved_sp) {
     /* where fn returns to: a system call that ends the thread (at 8 mod 16,
      * as after a call) */
-    uintptr_t usp = (uintptr_t)stack + APP_STACK - 8;
-    *(uintptr_t*)usp = p->ret_stub;
+    uintptr_t usp = (((uintptr_t)stack + size) & ~(uintptr_t)15) - 8;
     task_set_user(uspace_cr3(p->us), kstack_top(kstack));
+    *(uintptr_t*)usp = p->ret_stub;         /* (a stack it mapped: its tables are loaded now) */
     int rc = app_enter_user(fn, a0, a1, a2, usp, saved_sp);
     task_set_user(0, 0);                    /* the kernel's tables: the app's may go now */
+    task_set_fs(0);
     return rc;
 }
 #else
@@ -1130,7 +1140,7 @@ static int thread_tramp(void* arg) {
 
 /* a thread's stacks back to the app / the kernel */
 static void thread_free(app_proc_t* p, athread_t* t) {
-    umem_free_pages(p->mem, t->stack, APP_GUARD);
+    if (!t->own_stack) umem_free_pages(p->mem, t->stack, APP_GUARD);
 #ifdef __x86_64__
     kstack_free(t->kstack);
 #endif
@@ -1146,9 +1156,9 @@ static void thread_entry(void) {
     else task_set_background();
     t->running = 1;
 #ifdef __x86_64__
-    t->ret = enter_user(p, (uintptr_t)t->fn, (uintptr_t)t->arg, 0, 0, t->stack, t->kstack, &t->saved_sp);
+    t->ret = enter_user(p, (uintptr_t)t->fn, (uintptr_t)t->arg, 0, 0, t->stack, t->stack_size, t->kstack, &t->saved_sp);
 #else
-    t->ret = app_enter(thread_tramp, t, t->stack + APP_STACK, &t->saved_sp);
+    t->ret = app_enter(thread_tramp, t, t->stack + t->stack_size, &t->saved_sp);
 #endif
     t->running = 0;
     /* The task ends now and its slot (and pid) goes to the next task
@@ -1159,18 +1169,34 @@ static void thread_entry(void) {
      * its old stack - both apps crashed, and then the kernel. */
     pid_clear(t->pid, p->id);
     t->pid = -1;
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
     t->done = 1;
+    int gone = t->detached;                 /* nobody will join it: its record goes now */
+    __asm__ volatile("push %0; popf" :: "r"(f) : "memory", "cc");
+    if (gone) { thread_free(p, t); t->used = 0; }
 }
 
-static int a_thread_create(int (*fn)(void*), void* arg) {
+/* a new thread running fn(arg): on stack [stack, stack + size) if the app
+ * gives one (its memory, kept by it), else on size bytes (0: APP_STACK)
+ * of new memory with guard pages under it; its id, or -1 */
+static int thread_new(int (*fn)(void*), void* arg, void* stack, unsigned long size) {
     app_proc_t* p = cur();
     if (!p || !fn || p->exit_req || !uok((const void*)fn, 1)) return -1;
+    if (stack ? (size < 16384 || !uok(stack, size)) : size > (256ul << 20)) return -1;
     athread_t* t = NULL;
     int id = -1;
     for (int i = 0; i < APP_THREADS; i++) if (!p->threads[i].used) { t = &p->threads[i]; id = i; break; }
     if (!t) return -1;
     memset(t, 0, sizeof(*t));
-    t->stack = (uint8_t*)umem_alloc_pages(p->mem, APP_STACK, APP_GUARD);
+    if (stack) {
+        t->stack = (uint8_t*)stack;
+        t->stack_size = size;
+        t->own_stack = 1;
+    } else {
+        t->stack_size = size ? (size + 4095) & ~4095ul : APP_STACK;
+        t->stack = (uint8_t*)umem_alloc_pages(p->mem, t->stack_size, APP_GUARD);
+    }
 #ifdef __x86_64__
     t->kstack = kstack_new();
     if (!t->kstack) { thread_free(p, t); return -1; }
@@ -1197,6 +1223,51 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
     pid_set(pid, p->id, id);
     return id + 1;
 }
+
+static int a_thread_create(int (*fn)(void*), void* arg) { return thread_new(fn, arg, NULL, 0); }
+
+static int a_thread_start(int (*fn)(void*), void* arg, void* stack, unsigned long size) {
+    return thread_new(fn, arg, stack, size);
+}
+
+/* nobody will thread_join it: its record (and stack) go when it ends */
+static int a_thread_detach(int id) {
+    app_proc_t* p = cur();
+    if (!p || id < 1 || id > APP_THREADS) return -1;
+    athread_t* t = &p->threads[id - 1];
+    if (!t->used || t->detached) return -1;
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    t->detached = 1;
+    int done = t->done;
+    __asm__ volatile("push %0; popf" :: "r"(f) : "memory", "cc");
+    if (done) { thread_free(p, t); t->used = 0; }
+    return 0;
+}
+
+/* the calling thread's thread pointer: FS base (64-bit TLS, <pthread.h>) */
+static int a_tls_set(void* tp) {
+#ifdef __x86_64__
+    if (!cur()) return -1;
+    task_set_fs((uintptr_t)tp);
+    return 0;
+#else
+    (void)tp;
+    return -1;
+#endif
+}
+
+/* the computer's memory for apps, in bytes: what there is and what is free
+ * (sysconf(_SC_PHYS_PAGES) - a Java heap is sized from it) */
+static void a_mem_info(unsigned long long* total, unsigned long long* avail) {
+    meminfo_t mi;
+    meminfo_get(&mi);
+    uint64_t ht = hmem_total_bytes(), hu = hmem_used_bytes();
+    if (total) *total = (uint64_t)mi.total_kb * 1024 + ht;
+    if (avail) *avail = (uint64_t)mi.avail_kb * 1024 + (ht > hu ? ht - hu : 0);
+}
+
+static int a_app_id(void) { app_proc_t* p = cur(); return p ? p->seq : -1; }
 
 static int a_thread_join(int id) {
     app_proc_t* p = cur();
@@ -1446,6 +1517,11 @@ static void spec_init(void) {
     SPEC(vm_map, "iiii", 0);            /* (addresses: checked in uvm) */
     SPEC(vm_unmap, "ii", 0);
     SPEC(vm_protect, "iii", 0);
+    SPEC(thread_start, "iiii", 0);      /* fn, stack: checked in it */
+    SPEC(thread_detach, "i", 0);
+    SPEC(tls_set, "i", 0);              /* (only loaded into FS: the app's own business) */
+    SPEC(mem_info, "LL", 0);
+    SPEC(app_id, "", 0);
 
     LOCAL(ticks_ms, LOCAL_YES);
     LOCAL(cpu_count, LOCAL_YES);
@@ -1460,6 +1536,7 @@ static void spec_init(void) {
     LOCAL(vm_map, LOCAL_YES);           /* (its own tables and memory, under their locks) */
     LOCAL(vm_unmap, LOCAL_YES);
     LOCAL(vm_protect, LOCAL_YES);
+    LOCAL(app_id, LOCAL_YES);
 }
 
 /* the pointers of a call, against the app's memory (NULL is left to the call) */
@@ -1713,6 +1790,11 @@ static void api_init(void) {
     g_api.vm_map = G(a_vm_map);
     g_api.vm_unmap = G(a_vm_unmap);
     g_api.vm_protect = G(a_vm_protect);
+    g_api.thread_start = G(a_thread_start);
+    g_api.thread_detach = G(a_thread_detach);
+    g_api.tls_set = G(a_tls_set);
+    g_api.mem_info = G(a_mem_info);
+    g_api.app_id = G(a_app_id);
 #ifdef __x86_64__
     spec_init();
 #endif
@@ -1965,7 +2047,7 @@ static int run(app_proc_t* p) {
 #ifdef __x86_64__
     p->guarded = 1;                                     /* (its guard pages: umem_alloc_pages) */
     p->exit_code = enter_user(p, (uintptr_t)p->entry, (uintptr_t)p->uapi, (uintptr_t)p->argc,
-                              (uintptr_t)p->argv, p->stack, p->kstack, &p->saved_sp);
+                              (uintptr_t)p->argv, p->stack, APP_STACK, p->kstack, &p->saved_sp);
 #else
     p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp);
 #endif
@@ -2044,6 +2126,8 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     int id = p->id;
     memset(p, 0, sizeof(*p));
     p->id = id;
+    static int s_seq = 100;
+    p->seq = ++s_seq;
     fs_file_t* f = fs_get_file(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
 #ifdef __x86_64__

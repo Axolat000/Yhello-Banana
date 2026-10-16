@@ -213,8 +213,11 @@ const char* banana_paste(void) { unsigned long n; return __banana->clipboard_get
 
 static int has_threads(void) { return __banana->version >= 3 && __banana->size > (unsigned)((const char*)&__banana->thread_create - (const char*)__banana); }
 
-int  banana_thread(int (*fn)(void*), void* arg) { return has_threads() ? __banana->thread_create(fn, arg) : -1; }
-int  banana_join(int id) { return has_threads() ? __banana->thread_join(id) : -1; }
+/* (pthread.c: the same threads as pthread_create - each with its record and TLS) */
+int  __pthread_raw_create(int (*fn)(void*), void* arg);
+int  __pthread_raw_join(int id);
+int  banana_thread(int (*fn)(void*), void* arg) { return has_threads() ? __pthread_raw_create(fn, arg) : -1; }
+int  banana_join(int id) { return has_threads() ? __pthread_raw_join(id) : -1; }
 int  banana_thread_id(void) { return has_threads() ? __banana->thread_id() : 0; }
 void banana_thread_exit(int ret) { if (has_threads()) __banana->thread_exit(ret); __banana->exit(ret); }
 int  banana_cpus(void) { return has_threads() ? __banana->cpu_count() : 1; }

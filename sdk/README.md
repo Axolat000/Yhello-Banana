@@ -409,6 +409,23 @@ writes are not written back). System calls take mapped buffers like any
 other memory. The 32-bit system has no paging: `mmap` hands out zeroed
 memory right away and protection is not enforced. `selftest posix` checks it.
 
+### Threads: <pthread.h> (API version 17)
+
+`<pthread.h>`, `<semaphore.h>` and `<sched.h>` are the POSIX ones: threads
+with the stack size you ask for (mapped, a guard page under it), joinable or
+detached (more than the 64 that can run at once over an app's life: a
+detached thread's slot comes back), `pthread_getattr_np` (its stack),
+mutexes (normal, recursive, error-checking, timed), condition variables on
+`CLOCK_REALTIME` or `CLOCK_MONOTONIC`, read-write locks, once, keys with
+destructors, spinlocks, barriers, unnamed semaphores. `__thread` variables
+work on the 64-bit system (the kernel keeps each thread's FS base) in every
+thread started by `pthread_create` or `banana_thread`, and in the main one;
+the 32-bit system has no thread pointer - use keys there. `errno` is per
+thread. Also new: `clock_gettime` / `nanosleep` / `clock_nanosleep`
+(millisecond resolution), `sysconf` (`_SC_NPROCESSORS_ONLN`, `_SC_PHYS_PAGES`,
+`_SC_PAGESIZE`...), `getpid`, `gettid`, `sched_getaffinity`, `gmtime_r`.
+`selftest posix threads` checks them.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and

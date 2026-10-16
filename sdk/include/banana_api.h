@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 16.
+ * The Banana OS application interface (ABI), version 17.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 16u
+#define BANANA_API_VERSION 17u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -409,7 +409,26 @@ typedef struct banana_api {
     /* touching a page against its protection is a bad access: 0, or -1
      * if some of the range is not mapped */
     int   (*vm_protect)(void* addr, unsigned long len, int prot);
+
+    /* ── version 17: threads for <pthread.h> ───────────────────── */
+    /* like thread_create, on the stack [stack, stack + size) - the app's
+     * memory (mapped, with its own guard pages), kept by it - or, with
+     * stack NULL, on size bytes of new stack (0: 1 MiB). Id, or -1 */
+    int   (*thread_start)(int (*fn)(void* arg), void* arg, void* stack, unsigned long size);
+    /* nobody will thread_join it: it is forgotten as soon as it ends; 0, -1 */
+    int   (*thread_detach)(int id);
+    /* the calling thread's thread pointer - FS on x86_64, what __thread
+     * variables are found from; -1 on the 32-bit system (no TLS there) */
+    int   (*tls_set)(void* tp);
+    /* the memory there is for apps and what is free now, in bytes */
+    void  (*mem_info)(unsigned long long* total, unsigned long long* avail);
+    /* this app's process id (getpid): no two apps since boot share one */
+    int   (*app_id)(void);
 } banana_api_t;
+
+/* 1 if the running system's table has the call `field` (newer than the app?) */
+#define BANANA_HAS(api, field) \
+    ((api)->size >= (unsigned long)((const char*)&(api)->field - (const char*)(api)) + sizeof(void*))
 
 /* vm_map / vm_protect (the same values as kernel/uvm.h) */
 #define BANANA_PROT_NONE  0

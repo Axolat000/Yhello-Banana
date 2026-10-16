@@ -86,6 +86,7 @@ typedef struct task {
     uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
     uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
+    uintptr_t    fs_base;                 /* ... and its thread pointer (TLS, 64-bit): task_set_fs */
 } task_t;
 
 static task_t           g_tasks[TASK_MAX];
@@ -407,6 +408,8 @@ static void enter_space(const task_t* t, int cpu) {
     uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
     __asm__ volatile("mov %%cr3, %0" : "=r"(have));
     if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
+    /* its thread pointer (an app thread's TLS; the kernel does not use FS) */
+    __asm__ volatile("wrmsr" :: "a"((uint32_t)t->fs_base), "d"((uint32_t)((uint64_t)t->fs_base >> 32)), "c"(0xC0000100u));
 #else
     (void)t; (void)cpu;
 #endif
@@ -417,6 +420,13 @@ void task_set_user(uintptr_t cr3, uintptr_t rsp0) {
     if (!t) return;
     t->cr3 = cr3;
     t->rsp0 = rsp0;
+    enter_space(t, 0);
+}
+
+void task_set_fs(uintptr_t base) {
+    task_t* t = g_current;
+    if (!t) return;
+    t->fs_base = base;
     enter_space(t, 0);
 }
 
@@ -587,6 +597,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->came_home = 0;
     t->cr3 = 0;
     t->rsp0 = 0;
+    t->fs_base = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
 
     /* Keep stacks allocated on demand; large kernel tasks also get the

@@ -12,6 +12,7 @@
 
 extern const banana_api_t* __banana;
 void __time_init(void);
+void __pthread_init(void);
 
 struct _bfile {
     int  fd;
@@ -38,6 +39,7 @@ void __libc_init(void) {
         g_std[i].is_term = 1;
     }
     __time_init();
+    __pthread_init();                   /* the main thread's record (and TLS) */
 }
 
 int fflush(FILE* f) {

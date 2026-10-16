@@ -10,7 +10,17 @@
 #include "banana_api.h"
 
 extern const banana_api_t* __banana;
+
+/* errno, one per thread (by the system's thread id: every kind of thread
+ * has its own, however it was started). The main thread's is the global
+ * `errno` that code built before build 163 (the FFmpeg libraries) uses. */
+#undef errno
 int errno;
+static int g_errno[130];
+int* __errno_location(void) {
+    unsigned id = __banana && __banana->version >= 3 ? (unsigned)__banana->thread_id() : 0;
+    return id ? &g_errno[id < 129 ? id : 129] : &errno;
+}
 
 /* ── memory / strings ─────────────────────────────────────────────── */
 
@@ -347,8 +357,8 @@ time_t time(time_t* t) {
 
 clock_t clock(void) { return (clock_t)(__banana->ticks_ms() - g_start_ms); }
 
-struct tm* gmtime(const time_t* t) {
-    static struct tm tm;
+struct tm* gmtime_r(const time_t* t, struct tm* out) {
+    struct tm tm;
     long s = (long)*t, days = s / 86400, rem = s % 86400;
     if (rem < 0) { rem += 86400; days--; }
     tm.tm_hour = (int)(rem / 3600);
@@ -364,10 +374,69 @@ struct tm* gmtime(const time_t* t) {
     tm.tm_mon = m;
     tm.tm_mday = (int)days + 1;
     tm.tm_isdst = 0;
-    return &tm;
+    *out = tm;
+    return out;
 }
 
-struct tm* localtime(const time_t* t) { return gmtime(t); }   /* the clock chip keeps local time */
+struct tm* gmtime(const time_t* t) { static struct tm tm; return gmtime_r(t, &tm); }
+/* the clock chip keeps local time */
+struct tm* localtime(const time_t* t) { return gmtime(t); }
+struct tm* localtime_r(const time_t* t, struct tm* out) { return gmtime_r(t, out); }
+
+/* ── POSIX clocks (the system timer: milliseconds) ────────────────── */
+
+int clock_gettime(clockid_t clk, struct timespec* ts) {
+    if (!ts) { errno = EFAULT; return -1; }
+    unsigned ms = __banana->ticks_ms();
+    switch (clk) {
+    case CLOCK_REALTIME: case CLOCK_REALTIME_COARSE:
+        ts->tv_sec = time(0);
+        ts->tv_nsec = (long)(ms % 1000u) * 1000000L;
+        return 0;
+    case CLOCK_MONOTONIC: case CLOCK_MONOTONIC_RAW: case CLOCK_MONOTONIC_COARSE: case CLOCK_BOOTTIME:
+        break;
+    case CLOCK_PROCESS_CPUTIME_ID: case CLOCK_THREAD_CPUTIME_ID:
+        ms -= g_start_ms;
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+    ts->tv_sec = (time_t)(ms / 1000u);
+    ts->tv_nsec = (long)(ms % 1000u) * 1000000L;
+    return 0;
+}
+
+int clock_getres(clockid_t clk, struct timespec* ts) {
+    if (clk < 0 || clk > CLOCK_BOOTTIME) { errno = EINVAL; return -1; }
+    if (ts) { ts->tv_sec = 0; ts->tv_nsec = 1000000L; }
+    return 0;
+}
+
+int nanosleep(const struct timespec* req, struct timespec* rem) {
+    if (!req || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L || req->tv_sec < 0) { errno = EINVAL; return -1; }
+    unsigned long ms = (unsigned long)req->tv_sec * 1000ul + (unsigned long)((req->tv_nsec + 999999L) / 1000000L);
+    if (ms) __banana->sleep_ms(ms > 0xFFFFFFFFul ? 0xFFFFFFFFu : (unsigned)ms);
+    else __banana->yield();
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    return 0;
+}
+
+int clock_nanosleep(clockid_t clk, int flags, const struct timespec* req, struct timespec* rem) {
+    if (!req) return EINVAL;
+    struct timespec d = *req;
+    if (flags & TIMER_ABSTIME) {
+        struct timespec now;
+        if (clock_gettime(clk, &now) != 0) return EINVAL;
+        time_t s = req->tv_sec - now.tv_sec;
+        long ns = req->tv_nsec - now.tv_nsec;
+        if (ns < 0) { ns += 1000000000L; s--; }
+        if (s < 0 || (s == 0 && ns == 0)) return 0;
+        d.tv_sec = s;
+        d.tv_nsec = ns;
+    }
+    return nanosleep(&d, rem) == 0 ? 0 : errno;
+}
 
 int snprintf(char* buf, size_t n, const char* fmt, ...);
 
@@ -409,6 +478,42 @@ char* getcwd(char* buf, size_t size) { return __banana->getcwd(buf, (int)size) =
 int chdir(const char* path) { return __banana->chdir(path); }
 int unlink(const char* path) { return __banana->remove(path); }
 int rmdir(const char* path) { return __banana->remove(path); }
+
+static int has_v17(void) {
+    return __banana->version >= 17 && BANANA_HAS(__banana, app_id);
+}
+
+pid_t getpid(void) { return has_v17() ? __banana->app_id() : 1; }
+pid_t getppid(void) { return 1; }
+/* a thread's id: the app's and the thread's, so no two threads share one */
+pid_t gettid(void) { return getpid() * 1000 + (__banana->version >= 3 ? __banana->thread_id() : 0); }
+int getpagesize(void) { return 4096; }
+uid_t getuid(void) { return 1000; }
+uid_t geteuid(void) { return 1000; }
+gid_t getgid(void) { return 1000; }
+gid_t getegid(void) { return 1000; }
+
+long sysconf(int name) {
+    unsigned long long total = 512ull << 20, avail = 256ull << 20;
+    switch (name) {
+    case _SC_PAGESIZE: return 4096;
+    case _SC_CLK_TCK: return 1000;
+    case _SC_OPEN_MAX: return 64;
+    case _SC_NPROCESSORS_CONF: case _SC_NPROCESSORS_ONLN:
+        return __banana->version >= 3 ? __banana->cpu_count() : 1;
+    case _SC_PHYS_PAGES: case _SC_AVPHYS_PAGES:
+        if (has_v17()) __banana->mem_info(&total, &avail);
+        return (long)((name == _SC_PHYS_PAGES ? total : avail) / 4096);
+    case _SC_THREAD_STACK_MIN: return 16384;
+    case _SC_HOST_NAME_MAX: return 64;
+    case _SC_LINE_MAX: return 2048;
+    case _SC_GETPW_R_SIZE_MAX: case _SC_GETGR_R_SIZE_MAX: return 1024;
+    case _SC_IOV_MAX: return 1024;
+    case _SC_THREAD_KEYS_MAX: return 128;
+    case _SC_THREAD_THREADS_MAX: return 64;
+    default: errno = EINVAL; return -1;
+    }
+}
 
 /* ── floating point ───────────────────────────────────────────────── */
 
