@@ -30,3 +30,4 @@ __pycache__/
 # tools/dev.sh logs
 build/logs/
 build/test/
+sdk/examples/posixtest/*.so
