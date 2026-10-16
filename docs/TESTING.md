@@ -1,0 +1,176 @@
+# Testing Banana OS
+
+Banana OS checks itself in two places: **commands inside Banana OS** that test a
+feature where it runs (a real PC, a VM), and **tools on the Linux build host**
+that build the ISO, boot it in QEMU and drive those commands over the serial
+console. Most of them came with pull request #30 (builds 141-150); `fsck` and
+`vmtools` were added later (builds 151-152).
+
+Every test prints one line per check - `ok`, `FAIL` (with the reason) or
+`skip` (with why it cannot run here) - and a summary with the number failed.
+
+## Inside Banana OS
+
+### `selftest [part]`
+
+Checks the system's foundations, from user mode to every processor core. What
+has to run as an app is done by `systest` (`sdk/examples/systest`), installed
+from the copy built into the kernel; each of its modes' exit code is the result.
+
+```
+selftest                 ring3, memory, limits and cores (about 5 s)
+selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
+selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
+                         holds, and it is given back when the app ends
+                         (skipped without RAM above 4 GiB: MEM=8G tools/dev.sh run)
+selftest limits          an app with 60 threads, an app with 60 files open,
+                         24 apps at once
+selftest cores           threads calling malloc / free / a lock on every core, and
+                         whether they spread over the cores (SMP=4 in QEMU)
+selftest opencl          installs and runs the cltest example: build errors in the
+                         log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
+                         __local arguments, barrier(), local arrays, float4 / int /
+                         float8-16 vectors, refused group sizes
+selftest ipv6 [host [port]]
+                         IPv6 off blocks TCP, UDP and resolution; address parsing and
+                         formatting; localhost; bracketed HTTP URLs; UDP loopback
+                         (odd lengths, bad checksums and truncation dropped, extension
+                         headers, fragments); TCP connect / listen / accept, 8193
+                         bytes both ways, orderly close; IPv4 unaffected. With a host
+                         (and port, 80 by default): an AAAA lookup and a TCP
+                         connection over the real network. IPv6 is switched on for
+                         the test and put back as it was; saved settings are untouched.
+```
+
+Expected: `selftest: N passed, 0 failed`.
+
+### `fstest [-k] <mount point>`
+
+Checks a mounted FAT32 or exFAT drive end to end, in a folder of its own on it
+(`fstest/`): make a folder, write a small file and append to it, write 300 KiB
+and append 100 KiB, rename (to a Unicode name on exFAT), make a sub-folder and
+move a file into it, 300 files so the folder outgrows its first cluster, delete
+half of them, then **unmount and mount again** and read everything back from the
+drive itself - the renamed file, every byte of the 400 KiB file, the 150 files
+left and none of the deleted ones. Then the test folder is removed; `-k` keeps it to look at.
+
+```
+fstest /mnt/usb          a USB stick
+fstest -k /mnt/virtio    a virtio disk, keeping /mnt/virtio/fstest
+```
+
+Works on real SD cards and sticks as well as in QEMU. `lsblk` and `mount` list
+the mount points.
+
+### `crashtest [mode]`
+
+The kernel crash screen (stop code, registers, faulting address, stack words).
+
+```
+crashtest                (= preview) shows the screen safely; Enter or Esc returns
+crashtest report         prints a sample report in the terminal
+crashtest panic          a real kernel panic          - HALTS the system
+crashtest ud2            an invalid-opcode exception  - HALTS the system
+crashtest pagefault      a read of page zero (64-bit) - HALTS the system
+```
+
+Save your work before the last three; the full report also goes to COM1.
+
+### `toggle6` / `ipv6`
+
+Not tests themselves, but `selftest ipv6` uses them: `toggle6 [on|off]` (or
+`ipv6 on|off`, Settings > Network) switches IPv6; `ipv6` shows the addresses.
+
+### Later additions
+
+- `fsck [-f] [-y]` (build 151): the filesystem tree, both metadata copies on the
+  installed disk and the extents; `-f` reads every file back against its CRC-32C.
+- `vmtools` (build 152): which hypervisor, and which guest tools answer.
+- `help --check` (build 153): every shell command has a help page.
+
+## On the build host (Linux)
+
+Run these from the repository root. They need `nasm`, `gcc-multilib`,
+`xorriso`, `mtools`, `python3` and `qemu-system-x86` (Debian:
+`sudo apt install nasm gcc-multilib binutils xorriso mtools python3 qemu-system-x86 ovmf`).
+
+### `tools/dev.sh`
+
+```
+tools/dev.sh build                    build the ISO; log in build/logs/build.log
+tools/dev.sh run  [bios|uefi|32]      build, then boot in a QEMU window; the serial
+                                      console in the terminal and build/logs/serial-<fw>.log
+tools/dev.sh test [bios|uefi|32] [s]  build, boot headless for s seconds (60), fail on a PANIC
+tools/dev.sh apps [bios|uefi|32]      build, boot headless and run selftest and the
+                                      threads / cltest examples over the serial console
+tools/dev.sh clean                    make clean
+```
+
+Environment: `MEM` (QEMU memory, default `512M`), `SMP` (cores, default `4`),
+`NIC` (default `e1000`), `OVMF` (UEFI firmware file), `DISK` (an image attached
+as a virtio disk, mounted at `/mnt/virtio`). For example `MEM=8G tools/dev.sh apps`
+exercises the RAM above 4 GiB.
+
+### `tools/serialtest.py`
+
+Boots Banana OS in QEMU without a window and types commands at its serial
+console, each once the prompt is back. A command fails if its output shows a
+panic or a crashed app, or - written `command ## text` - lacks `text`.
+
+```
+tools/serialtest.py [--qemu BIN] [--log FILE] [--timeout S] [--boot-timeout S]
+                    [--cmd "..."]... [--cmds-file FILE] [--window] [--keep] -- <qemu args>
+```
+
+Without `--cmd` / `--cmds-file` it runs the default app tests: `selftest`,
+installs and runs `threads 4 200000` and `cltest`, then `free`. In a commands
+file: one command a line, `#wait N` waits N seconds, other `#` lines are
+comments. `--window` shows QEMU's screen, `--keep` leaves it running afterwards.
+Exit code 0 when every command passed.
+
+### `tools/test-exfat.sh [bios|uefi]`
+
+The exFAT driver end to end (needs `exfatprogs`): makes an empty 64 MiB exFAT
+image, boots Banana OS with it as a virtio disk and runs `mount`, `df` and
+`fstest -k /mnt/virtio`; then, on Linux, `fsck.exfat` must find the volume clean
+and `tools/exfat_check.py` checks what Banana OS left there - the tree, 150 files
+in `fstest/many`, the Unicode-named file, and the 400 KiB file byte for byte.
+`HEADLESS=1` runs without a window, `KEEP=1` keeps QEMU open first.
+
+### `tools/exfat_check.py`
+
+An exFAT reader of its own (not Banana OS's driver), used by test-exfat.sh:
+
+```
+tools/exfat_check.py IMAGE list              every file and folder, with sizes
+tools/exfat_check.py IMAGE cat PATH          a file's contents
+tools/exfat_check.py IMAGE cmp PATH LOCAL    exit 0 if the file equals LOCAL
+```
+
+### `tools/test_opencl.sh [x86_64|i686]`
+
+The OpenCL runtime and its `cltest` checks, built and run on the host with the
+same TinyCC vector patch and `setjmp` as Banana OS, once with 1 and once with 4
+worker threads. Run `ports/tcc/build.sh` first (it prepares the TinyCC sources).
+
+### `tools/test_crashscreen.py`
+
+The crash screen's real formatter and renderer (`kernel/crash_draw.c`), compiled
+for the host with `tools/tests/crashscreen.c`: 32- and 64-bit reports, fault
+flags, long messages, clipped and padded framebuffers (nothing drawn outside
+them). It writes preview PNGs and reports to `build/test/crashscreen/` without
+booting anything; prints `PASS` when every check holds.
+
+## A full check before a release
+
+```
+tools/dev.sh test bios && tools/dev.sh test uefi && tools/dev.sh test 32
+tools/dev.sh apps
+MEM=8G tools/dev.sh apps
+tools/test-exfat.sh
+tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
+python3 tools/test_crashscreen.py
+```
+
+Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an
+installed disk, `fstest` on a real stick, and `crashtest` for the screen.

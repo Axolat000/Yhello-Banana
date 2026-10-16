@@ -163,8 +163,12 @@ static const page_t PAGES[] = {
       "Writes every change to the installed disk at once. Changes are saved by themselves about 2 seconds "
       "after the last one; sync is for right now.", NULL, NULL, "fsck, install" },
     { "fstest", "disks", "fstest [-k] <mount point>", "test a FAT32 or exFAT drive",
-      "Writes, appends, makes folders that grow, deletes, unmounts, mounts again and reads everything back "
-      "on the volume. -k keeps the test folder.", "-k|keep the test files", "fstest /mnt/virtio", "mount" },
+      "Checks a mounted FAT32 or exFAT drive end to end, in a folder of its own (fstest/): a folder, a small "
+      "file and an append, 300 KiB plus 100 KiB appended, a rename (to a Unicode name on exFAT), a sub-folder "
+      "and a move, 300 files in one folder and 150 of them deleted; then it unmounts the drive, mounts it again "
+      "and reads everything back from the drive itself, every byte. Works on real sticks and SD cards. One "
+      "ok / FAIL line a check, then the number failed. All the tests: docs/TESTING.md.",
+      "-k|keep the test folder afterwards", "fstest /mnt/usb\nfstest -k /mnt/virtio", "mount, lsblk, selftest" },
     { "install", "disks", "install [number]", "install Banana OS on a disk (live CD)",
       "Copies Banana OS from the CD or USB stick onto a hard disk and writes the current files to it: the "
       "disk then boots by itself, with files saved. Everything on that disk is erased; the other disks are "
@@ -210,8 +214,13 @@ static const page_t PAGES[] = {
     { "hw_info", "system", "hw_info [-c -m -g -u -k -r]", "a hardware summary", NULL, NULL, NULL, "lscpu, lsgpu" },
     { "lscpu", "system", "lscpu", "processors: cores, threads, packages, each one's load", NULL, NULL, NULL, "proc_info" },
     { "crashtest", "system", "crashtest [preview|report|panic|ud2|pagefault]", "the crash screen",
-      "preview shows the stop screen safely (Enter or Esc returns), report prints a sample report. "
-      "panic, ud2 and pagefault really stop the system - save your work first.", NULL, NULL, "selftest" },
+      "Tests the kernel crash screen (stop code, registers, faulting address, stack words; the full report "
+      "also goes to COM1). preview (the default) shows it safely - Enter or Esc returns; report prints a "
+      "sample report here. panic, ud2 (an invalid opcode) and pagefault (a read of page zero, 64-bit kernel) "
+      "really stop the system - save your work first.",
+      "preview|the screen, safely\nreport|a sample report in the terminal\npanic|a kernel panic (halts)\n"
+      "ud2|an invalid-opcode exception (halts)\npagefault|a page fault (halts; 64-bit)",
+      "crashtest\ncrashtest report", "selftest" },
     { "kptest", "system", "kptest <picture> <drawing.svg> [seconds]", "check kernel preemption", NULL, NULL, NULL, "selftest" },
     /* ── network ── */
     { "ifconfig", "network", "ifconfig [<if> <ip> [netmask m] [gw g] [dns d] | <if> up | reset]", "network settings",
@@ -341,9 +350,18 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|limits|cores|opencl|ipv6]", "check the system",
-      "Runs the built-in checks: user mode, memory above 4 GiB, app/thread/file limits, system calls on "
-      "every core, OpenCL, and IPv6 (off by default) - or only the part named.", NULL, "selftest\nselftest opencl", "fstest, fsck" },
+    { "selftest", "vm", "selftest [ring3|memory|limits|cores|opencl|ipv6 [host [port]]]", "check the system",
+      "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
+      "ring3, memory, limits and cores (a few seconds); a part name runs only that part. The app side is "
+      "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
+      "ring3|an app runs in user mode (64-bit kernel)\n"
+      "memory|RAM above 4 GiB: 64 MiB for an app, given back after\n"
+      "limits|60 threads, 60 open files, 24 apps at once\n"
+      "cores|malloc / free / a lock from threads on every core\n"
+      "opencl|the cltest example: barriers, local memory, vectors...\n"
+      "ipv6|IPv6 UDP / TCP on ::1, parsing, URLs; IPv6 is put back as it was\n"
+      "ipv6 HOST [PORT]|also an AAAA lookup and a TCP connection (port 80)",
+      "selftest\nselftest opencl\nselftest ipv6 example.com", "fstest, crashtest, fsck, vmtools" },
 };
 #define NPAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
