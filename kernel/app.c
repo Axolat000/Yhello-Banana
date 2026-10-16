@@ -522,11 +522,11 @@ static int a_stat(const char* path, banana_stat_t* st) {
 }
 
 static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
-    static int idx[FS_MAX_FILES];
+    static int idx[FS_LIST_MAX];
     if (!path || !ent || index < 0) return -1;
-    int nd = fs_list_dirs(path, idx, FS_MAX_DIRS);
+    int nd = fs_list_dirs(path, idx, FS_LIST_MAX);
     if (nd < 0) return -1;
-    if (index < nd && index < FS_MAX_DIRS) {
+    if (index < nd && index < FS_LIST_MAX) {
         const fs_dir_t* d = fs_get_dir(idx[index]);
         if (!d) return -1;
         kstrlcpy(ent->name, d->name, sizeof(ent->name));
@@ -535,8 +535,8 @@ static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
         return 0;
     }
     index -= nd;
-    int nf = fs_list_files(path, idx, FS_MAX_FILES);
-    if (index >= nf || index >= FS_MAX_FILES) return -1;
+    int nf = fs_list_files(path, idx, FS_LIST_MAX);
+    if (index >= nf || index >= FS_LIST_MAX) return -1;
     fs_file_t* f = fs_file_info(idx[index]);
     kstrlcpy(ent->name, f->name, sizeof(ent->name));
     ent->size = f->size;

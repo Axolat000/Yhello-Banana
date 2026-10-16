@@ -4,13 +4,28 @@
 #include "types.h"
 
 /* The tables grow as they fill (256 entries at a time), up to these. */
-#define FS_MAX_FILES     65536
-#define FS_MAX_DIRS      16384
-#define FS_NAME_LEN      32
-#define FS_PATH_LEN      128
+#define FS_MAX_FILES     1048576
+#define FS_MAX_DIRS      262144
+/* most entries one folder listing hands out (fs_list_files / fs_list_dirs callers) */
+#define FS_LIST_MAX      65536
+/* names up to 255 bytes, like ext4 (the + 1 is the NUL) */
+#define FS_NAME_LEN      256
+#define FS_PATH_LEN      512
 /* Largest single file (downloads, images, videos). The data of a file in
- * use lives on the kernel heap, so the practical limit is free RAM. */
-#define FS_MAX_FILE_SIZE (128u * 1024u * 1024u)
+ * use lives on the kernel heap, so the practical limit is free RAM; files
+ * on the installed disk bigger than the RAM are read in pieces (fs_read). */
+#define FS_MAX_FILE_SIZE 0x7FFFF000u
+
+/* mode bits, as in Unix and ext4: the type, then rwxrwxrwx */
+#define FS_S_IFMT   0170000u
+#define FS_S_IFDIR  0040000u
+#define FS_S_IFREG  0100000u
+#define FS_S_IFLNK  0120000u
+#define FS_MODE_FILE (FS_S_IFREG | 0644u)
+#define FS_MODE_DIR  (FS_S_IFDIR | 0755u)
+#define FS_MODE_LINK (FS_S_IFLNK | 0777u)
+#define FS_UID_ROOT   0u
+#define FS_UID_BANANA 1000u
 
 typedef struct {
     char     name[FS_NAME_LEN];
@@ -30,6 +45,9 @@ typedef struct {
     uint16_t pins;       /* held by someone for a while (fs_pin): never evicted */
     uint32_t mtime;      /* last change of its data, ctime: made (rtc_now(); 0 = not known) */
     uint32_t ctime;
+    uint32_t atime;      /* last read (relatime: at most once a day, or after a change) */
+    uint32_t mode;       /* FS_S_IF* | permissions; 0 = not set yet (FS_MODE_FILE) */
+    uint32_t uid, gid;
 } fs_file_t;
 
 typedef struct {
@@ -44,6 +62,9 @@ typedef struct {
     int32_t  kid_file, last_file;   /* its files */
     uint32_t mtime;      /* last time something in it was added, removed or renamed; ctime: made */
     uint32_t ctime;
+    uint32_t atime;
+    uint32_t mode;       /* FS_S_IFDIR | permissions; 0 = not set yet (FS_MODE_DIR) */
+    uint32_t uid, gid;
 } fs_dir_t;
 
 void fs_init(void);
@@ -216,5 +237,44 @@ void fs_set_times(int is_dir, int idx, uint32_t mtime, uint32_t ctime);
 int  fs_touch(const char* path);
 /* 1 once the tree exists (fs_init() ran, or a disk was loaded) */
 int  fs_is_ready(void);
+
+/* ── Unix metadata, symbolic links, checking (ext4-style) ───────────
+ * Every file and folder has a mode (type + rwxrwxrwx), an owner and a group
+ * and three dates (atime / mtime / ctime). Permissions are checked with the
+ * owner's bits (everything runs as the one user): writing a file needs its
+ * w bit, making / deleting / renaming in a folder needs the folder's.
+ * Symbolic links are files of type FS_S_IFLNK holding the target path; path
+ * lookups follow them (up to FS_MAX_LINKS deep), rm / mv act on the link. */
+#define FS_MAX_LINKS 8
+
+typedef struct {
+    int      is_dir, is_link;
+    uint32_t mode, uid, gid;
+    uint32_t size;
+    uint32_t atime, mtime, ctime;
+    uint16_t mnt;
+    int      index;          /* fs_get_file / fs_get_dir index */
+} fs_stat_t;
+
+/* follow: 1 like stat(), 0 like lstat(); 0 or -1 */
+int  fs_stat(const char* path, int follow, fs_stat_t* st);
+int  fs_chmod(const char* path, uint32_t perms);          /* the low 12 bits; 0 or -1 */
+int  fs_chown(const char* path, int uid, int gid);        /* -1 keeps that one; 0 or -1 */
+/* makes linkpath, pointing at target (stored as given): file index, or -1 */
+int  fs_symlink(const char* target, const char* linkpath);
+/* a link's target into out: its length, or -1 (not a link) */
+int  fs_readlink(const char* path, char* out, int cap);
+int  fs_is_symlink(int idx);
+/* the mode of a file / folder (the default when not set yet) */
+uint32_t fs_file_mode(int idx);
+uint32_t fs_dir_mode(int idx);
+/* 1 if the last failed call failed for want of permission (EACCES) */
+int  fs_perm_error(void);
+/* restoring a saved tree: everything but the name and the dates */
+void fs_set_meta(int is_dir, int idx, uint32_t mode, uint32_t uid, uint32_t gid, uint32_t atime);
+/* checks the tree's own consistency (links, hash chains, parents, sizes);
+ * fix: repairs what it can. Writes a line per problem with out(); the
+ * number of problems found. */
+int  fs_check(int fix, void (*out)(const char* line));
 
 #endif

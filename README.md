@@ -14,6 +14,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **An ext4-class filesystem** (build 151) - the installed disk's filesystem now does what ext4 does for a desktop: **file names up to 255 bytes** (were 31) and paths up to 511, **Unix permissions and owners** on every file and folder (`ls -l` shows `-rw-r-----  banana banana`; `chmod 640`, `chmod u+x,go-w`, `chown root:banana`, `chgrp`; a file without its `w` bit cannot be changed, a folder without it cannot have things made, deleted or renamed in it), **symbolic links** (`ln -s`, `readlink`; `cd`, `cat`, `cp`, Files and apps follow them, `rm` and `mv` act on the link), **three dates** per entry with ext4's *relatime* for the access time, **CRC-32C checksums** (ext4's metadata checksum) on the metadata and every file written, room for **1,048,576 files and 262,144 folders** (were 65,536 / 16,384) and **files up to 2 GiB** (were 128 MB). Saves stay copy-on-write - new data never goes over the copy the last save points at - so a power cut at any moment leaves the previous save whole, which is what ext4's journal is for. `fsck` checks the tree, both metadata copies and the extents (`fsck -f` also reads every file back against its checksum, `fsck -y` repairs the tree), `stat` shows everything about one entry. Disks from earlier builds are read as they are and written in the new format (metadata version 7) from their first save on; FAT32 and exFAT volumes have no owners, modes or links, so `chmod`, `chown` and `ln -s` refuse there. Going back to an earlier build after that is not supported
 - **Verbose kernel crash screen** - a blue stop-screen header and a dark diagnostic console show the stop code, exception/error details, full-width registers, CPU/task/uptime, control registers and a bounded raw stack snapshot. Page faults explain the attempted access and protection bits. The fatal path draws directly to the framebuffer and sends the full report to COM1, without entering the desktop or allocator. `crashtest` previews it safely; Enter/Esc returns to the OS. `crashtest report` prints a simulated report. Explicit `crashtest panic`, `ud2` and `pagefault` modes halt the OS for testing (save work first).
 
 - **Browser crashes stay in the browser** - the web engine runs in the kernel, so a page that made it crash used to stop all of Banana OS. Now a crash in the browser (or in an app's web view) - a bad memory access, an invalid instruction, a too-deep recursion running off its stack (guard pages under it now) - closes only the page that caused it: the tab says *This page crashed the browser's engine*, the other tabs and the rest of the system go on. `about:crash` crashes the engine on purpose, to see it
@@ -861,7 +862,13 @@ include /path/to/banana-sdk/driver/driver.mk
 | `whoami` | Print current user |
 | `hostname` | Print system hostname |
 | `date` | Print current date/time (from RTC) |
-| `ls [-l] [path]` | List a directory (long format with `-l`: size and date modified - the time this year, the year for older files) |
+| `ls [-l] [path]` | List a directory (long format with `-l`: mode, owner, group, size and date modified - the time this year, the year for older files; links as `name -> target`) |
+| `chmod MODE <file>...` | Change permissions: octal (`755`, `0640`) or symbolic (`u+x`, `go-w`, `a=r`, `u=rwx,g=rx,o=`) |
+| `chown OWNER[:GROUP] <file>...` / `chgrp GROUP <file>...` | Change the owner / group (`root`, `banana` or a number) |
+| `ln -s [-f] <target> <link>` | Make a symbolic link (`-f` replaces an existing file) |
+| `readlink <link>` | Print where a symbolic link points |
+| `stat [-L] <path>...` | Everything about a file or folder: type, size, mode, owner, the three dates (`-L` follows links) |
+| `fsck [-f] [-y]` | Check the filesystem: the tree in memory, both metadata copies and the extents on the installed disk (`-f`: read every file back against its CRC-32C; `-y`: repair the tree, lost entries go to `/lost+found`) |
 | `pwd` | Print current directory (full absolute path) |
 | `cd [path]` | Change directory (no arg or `~` goes home, `..` up) |
 | `mkdir [-p] <dir>` | Create directory (`-p` creates parents too) |

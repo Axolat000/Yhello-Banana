@@ -43,10 +43,10 @@ void fileops_unique(const char* dir, const char* base, char* out, int cap) {
 int fileops_copy_tree(const char* src, const char* dst, int depth) {
     if (depth > 12 || fs_mkdir(dst) < 0) return -1;
     int rc = 0;
-    int* idx = (int*)kmalloc(sizeof(int) * FS_MAX_FILES);
+    int* idx = (int*)kmalloc(sizeof(int) * FS_LIST_MAX);
     if (!idx) return -1;
-    int nf = fs_list_files(src, idx, FS_MAX_FILES);
-    for (int i = 0; i < nf && i < FS_MAX_FILES; i++) {
+    int nf = fs_list_files(src, idx, FS_LIST_MAX);
+    for (int i = 0; i < nf && i < FS_LIST_MAX; i++) {
         char s[FS_PATH_LEN], d[FS_PATH_LEN];
         const char* name = fs_file_info(idx[i])->name;
         join(src, name, s, sizeof(s));

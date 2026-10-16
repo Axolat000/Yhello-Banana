@@ -23,8 +23,8 @@ static int        g_dfree = 1, g_ffree;    /* no free entry below these */
 /* Names are found through hash tables keyed by (folder, name), and every
  * folder keeps lists of its subfolders and files: a lookup or a listing
  * costs the same with 50 files as with 50000. */
-#define DHASH 4096
-#define FHASH 16384
+#define DHASH 16384
+#define FHASH 65536
 static int32_t g_dhash[DHASH], g_fhash[FHASH];
 
 static int       cwd      = 0;   /* current dir index (0 = root) */
@@ -40,6 +40,7 @@ typedef struct {
 } mount_t;
 static mount_t mounts[FS_MAX_MOUNTS + 1];
 static int     g_io_err;
+static int     g_perm_err;    /* the last failure was a permission check (EACCES) */
 static int     g_ready;       /* the tree is set up (fs_init / a loaded disk) */
 
 static void dir_abs_path(int idx, char* buf, int buflen);
@@ -299,12 +300,58 @@ static void touched(void) { g_fs_gen++; }
 static void dir_changed(int d);
 uint32_t fs_generation(void) { return g_fs_gen; }
 
+/* ── modes and permissions ──────────────────────────────────────── */
+
+static uint32_t dmode(int d) { return D(d).mode ? D(d).mode : FS_MODE_DIR; }
+static uint32_t fmode(int i) { return F(i).mode ? F(i).mode : FS_MODE_FILE; }
+static int      is_link(int i) { return (F(i).mode & FS_S_IFMT) == FS_S_IFLNK; }
+
+/* the owner's w bit decides (everything runs as the one user) */
+static int dir_writable(int d) {
+    if (dmode(d) & 0200u) return 1;
+    g_perm_err = 1;
+    return 0;
+}
+
+static int file_writable(int i) {
+    if (fmode(i) & 0200u) return 1;
+    g_perm_err = 1;
+    return 0;
+}
+
+/* a new entry: the default mode, owned like the folder it is made in */
+static void init_dir_meta(int i, int parent) {
+    D(i).mode = FS_MODE_DIR;
+    D(i).uid = parent >= 0 ? D(parent).uid : FS_UID_ROOT;
+    D(i).gid = parent >= 0 ? D(parent).gid : FS_UID_ROOT;
+    D(i).mtime = D(i).ctime = D(i).atime = rtc_now();
+}
+
+static void init_file_meta(int i, int parent) {
+    F(i).mode = FS_MODE_FILE;
+    F(i).uid = D(parent).uid;
+    F(i).gid = D(parent).gid;
+    F(i).mtime = F(i).ctime = F(i).atime = rtc_now();
+}
+
+/* relatime, ext4's default: a read updates atime only when it is older
+ * than the last change, or a day old - not a metadata write per read */
+static void read_now(fs_file_t* f) {
+    uint32_t now = rtc_now();
+    if (!now || f->mnt) return;
+    if (f->atime <= f->mtime || now - f->atime > 86400u) {
+        f->atime = now;
+        touched();
+    }
+}
+
 static int mkdir_in(int parent, const char* name_in) {
     touched();
     char name[FS_NAME_LEN];
     k_strcpy(name, name_in, FS_NAME_LEN);
     if (find_dir_in(parent, name) >= 0)  return -1; /* already exists */
     if (find_file_in(parent, name) >= 0) return -1; /* name clash */
+    if (!dir_writable(parent)) return -1;
     int i = new_dir_slot();
     if (i < 0) return -1;                           /* FS_MAX_DIRS folders */
     uint32_t node = 0;
@@ -319,7 +366,7 @@ static int mkdir_in(int parent, const char* name_in) {
     D(i).node       = node;
     D(i).kid_dir = D(i).last_dir = D(i).kid_file = D(i).last_file = -1;
     k_strcpy(D(i).name, name, FS_NAME_LEN);
-    D(i).mtime = D(i).ctime = rtc_now();
+    init_dir_meta(i, parent);
     link_dir(i);
     dir_changed(parent);
     return i;
@@ -337,6 +384,7 @@ static void free_dir(int i) {
     D(i).used = 0;
     D(i).mnt = 0;
     D(i).node = 0;
+    D(i).mode = D(i).uid = D(i).gid = D(i).atime = 0;
     if (i < g_dfree) g_dfree = i;
 }
 
@@ -355,11 +403,13 @@ static void free_file(int i) {
     F(i).loaded = 0;
     F(i).node = 0;
     F(i).pins = 0;
+    F(i).mode = F(i).uid = F(i).gid = F(i).atime = 0;
 }
 
 /* deletes a file, on its volume too */
 static int remove_file(int i) {
     touched();
+    if (!dir_writable(F(i).parent_dir)) return -1;
     mount_t* m = mount_of(F(i).mnt);
     if (m && m->ops->remove(m->ctx, F(i).node, 0) != 0) { g_io_err = 1; return -1; }
     int parent = F(i).parent_dir;
@@ -411,6 +461,7 @@ static int create_file_in(int parent, const char* name_in) {
     char name[FS_NAME_LEN];
     k_strcpy(name, name_in, FS_NAME_LEN);
     if (find_dir_in(parent, name) >= 0) return -1; /* name clash */
+    if (!dir_writable(parent)) return -1;
     int i = new_file_slot();
     if (i < 0) return -1;                          /* FS_MAX_FILES files */
     uint32_t node = 0;
@@ -435,7 +486,7 @@ static int create_file_in(int parent, const char* name_in) {
     F(i).pins       = 0;
     used_now(&F(i));
     k_strcpy(F(i).name, name, FS_NAME_LEN);
-    F(i).mtime = F(i).ctime = rtc_now();
+    init_file_meta(i, parent);
     link_file(i);
     dir_changed(parent);
     return i;
@@ -445,6 +496,8 @@ int fs_write(int idx, const void* data, uint32_t len) {
     touched();
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
+    g_perm_err = 0;
+    if (!file_writable(idx)) return -1;
     settle(f);
     used_now(f);
     if (reserve(f, len) != 0) return -1;
@@ -477,6 +530,8 @@ int fs_append(int idx, const void* data, uint32_t len) {
     touched();
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
+    g_perm_err = 0;
+    if (!file_writable(idx)) return -1;
     used_now(f);
     f->data_gen = g_fs_gen;
     f->mtime = rtc_now();
@@ -506,35 +561,63 @@ int fs_is_binary(int idx) {
     return 0;
 }
 
-/* consumes "." / ".." or looks up a real child dir */
-static int apply_component(int* cur, const char* name) {
+/* a symbolic link's target, in a fresh buffer (kfree it), or NULL */
+static char* link_target(int i) {
+    fs_file_t* f = &F(i);
+    if (ensure_loaded(f) != 0) return NULL;
+    uint32_t n = f->size < FS_PATH_LEN - 1 ? f->size : FS_PATH_LEN - 1;
+    char* t = (char*)kmalloc(n + 1);
+    if (!t) return NULL;
+    memcpy(t, f->content, n);
+    t[n] = '\0';
+    return t;
+}
+
+static int resolve_dir_at(int start, const char* path, int depth);
+
+/* consumes "." / ".." or looks up a real child dir - or a link to one
+ * (its target relative to the folder the link is in) */
+static int apply_component(int* cur, const char* name, int depth) {
     if (k_strcmp(name, ".") == 0) return 1;
     if (k_strcmp(name, "..") == 0) {
         if (D(*cur).parent_dir >= 0) *cur = D(*cur).parent_dir;
         return 1;
     }
     int nxt = find_dir_in(*cur, name);
-    if (nxt < 0) return 0;
+    if (nxt < 0) {
+        int l = find_file_in(*cur, name);
+        if (l < 0 || !is_link(l) || depth >= FS_MAX_LINKS) return 0;
+        char* t = link_target(l);
+        if (!t) return 0;
+        nxt = resolve_dir_at(t[0] == '/' ? 0 : *cur, t, depth + 1);
+        kfree(t);
+        if (nxt < 0) return 0;
+    }
     *cur = nxt;
     return 1;
 }
 
-/* Resolves a whole path (every component) to a directory index.
- * "" -> cwd, "/" -> root. Returns -1 if any component doesn't exist. */
-static int resolve_dir(const char* path) {
-    int cur = (path && path[0] == '/') ? 0 : cwd;
+/* Resolves a whole path (every component) from folder start to a
+ * directory index. Returns -1 if any component doesn't exist. */
+static int resolve_dir_at(int start, const char* path, int depth) {
+    int cur = (path && path[0] == '/') ? 0 : start;
     const char* p = path ? path : "";
     char comp[FS_NAME_LEN];
     while (next_component(&p, comp, sizeof(comp))) {
-        if (!apply_component(&cur, comp)) return -1;
+        if (!apply_component(&cur, comp, depth)) return -1;
     }
     return cur;
 }
 
+/* "" -> cwd, "/" -> root */
+static int resolve_dir(const char* path) {
+    return resolve_dir_at(cwd, path, 0);
+}
+
 /* Resolves every component except the last, which is copied verbatim into
  * leaf (it need not exist yet - used for create/find/delete targets). */
-static int resolve_parent_leaf(const char* path, char* leaf, int leaf_len) {
-    int cur = (path && path[0] == '/') ? 0 : cwd;
+static int resolve_parent_leaf_at(int start, const char* path, char* leaf, int leaf_len, int depth) {
+    int cur = (path && path[0] == '/') ? 0 : start;
     const char* p = path ? path : "";
     char comp[FS_NAME_LEN];
     char pending[FS_NAME_LEN];
@@ -542,7 +625,7 @@ static int resolve_parent_leaf(const char* path, char* leaf, int leaf_len) {
 
     while (next_component(&p, comp, sizeof(comp))) {
         if (have) {
-            if (!apply_component(&cur, pending)) return -1;
+            if (!apply_component(&cur, pending, depth)) return -1;
         }
         k_strcpy(pending, comp, FS_NAME_LEN);
         have = 1;
@@ -551,6 +634,28 @@ static int resolve_parent_leaf(const char* path, char* leaf, int leaf_len) {
     if (!have) { leaf[0] = '\0'; return cur; }
     k_strcpy(leaf, pending, leaf_len);
     return cur;
+}
+
+static int resolve_parent_leaf(const char* path, char* leaf, int leaf_len) {
+    return resolve_parent_leaf_at(cwd, path, leaf, leaf_len, 0);
+}
+
+/* the file leaf in folder parent names, its links followed (open(), not
+ * lstat()): the file's index, or -1 (none, a dangling link, a loop) */
+static int follow_file(int parent, const char* leaf) {
+    int i = find_file_in(parent, leaf);
+    for (int depth = 0; i >= 0 && is_link(i); depth++) {
+        if (depth >= FS_MAX_LINKS) return -1;
+        char* t = link_target(i);
+        if (!t) return -1;
+        char lf[FS_NAME_LEN];
+        int p = resolve_parent_leaf_at(t[0] == '/' ? 0 : parent, t, lf, sizeof(lf), depth + 1);
+        kfree(t);
+        if (p < 0 || !lf[0]) return -1;
+        i = find_file_in(p, lf);
+        parent = p;
+    }
+    return i;
 }
 
 /* 1 if a mount point lies at or below directory idx */
@@ -576,6 +681,7 @@ static int delete_dir_recursive(int idx) {
         if (delete_dir_recursive(i) != 0) rc = -1;
     }
     if (rc) return rc;
+    if (!dir_writable(D(idx).parent_dir)) return -1;
     mount_t* m = mount_of(D(idx).mnt);
     if (m && m->ops->remove(m->ctx, D(idx).node, 1) != 0) { g_io_err = 1; return -1; }
     free_dir(idx);
@@ -591,22 +697,26 @@ void fs_init(void) {
     D(0).used       = 1;
     D(0).parent_dir = -1;
     k_strcpy(D(0).name, "/", FS_NAME_LEN);
+    init_dir_meta(0, -1);
     cwd = 0;
 
-    /* seed a standard-ish Unix directory hierarchy */
+    /* seed a standard-ish Unix directory hierarchy (owned by root) */
     int bin  = mkdir_in(0, "bin");
     int etc  = mkdir_in(0, "etc");
     int home = mkdir_in(0, "home");
     mkdir_in(0, "usr");
     mkdir_in(0, "var");
-    mkdir_in(0, "tmp");
+    int tmp = mkdir_in(0, "tmp");
+    if (tmp > 0) D(tmp).mode = FS_S_IFDIR | 01777u;       /* everyone's, sticky */
     mkdir_in(0, "dev");
-    mkdir_in(0, "root");
+    int root = mkdir_in(0, "root");
+    if (root > 0) D(root).mode = FS_S_IFDIR | 0700u;
     mkdir_in(0, "mnt");                /* USB sticks are mounted here */
     mkdir_in(0, "apps");               /* installed apps (pkg) */
     (void)bin;
 
     home_dir = mkdir_in(home, "banana");
+    if (home_dir > 0) D(home_dir).uid = D(home_dir).gid = FS_UID_BANANA;   /* (what is made in it: banana's) */
     mkdir_in(home_dir, "Pictures");    /* user wallpapers go here */
     mkdir_in(home_dir, "Downloads");   /* the browser saves files here */
 
@@ -643,6 +753,7 @@ int fs_mkdir(const char* path) {
     expand_tilde(path, p, sizeof(p));
     char leaf[FS_NAME_LEN];
     g_io_err = 0;
+    g_perm_err = 0;
     int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
     if (parent < 0 || !leaf[0]) return -1;
     return mkdir_in(parent, leaf);
@@ -653,6 +764,7 @@ int fs_mkdir_p(const char* path) {
     expand_tilde(path, p, sizeof(p));
     if (!p[0]) return -1;
     g_io_err = 0;
+    g_perm_err = 0;
 
     int cur = (p[0] == '/') ? 0 : cwd;
     const char* q = p;
@@ -664,7 +776,8 @@ int fs_mkdir_p(const char* path) {
             if (D(cur).parent_dir >= 0) cur = D(cur).parent_dir;
             continue;
         }
-        int nxt = find_dir_in(cur, comp);
+        int nxt = find_dir_in(cur, comp), via = cur;
+        if (nxt < 0 && apply_component(&via, comp, 0)) nxt = via;   /* a link to a folder */
         if (nxt < 0) {
             if (find_file_in(cur, comp) >= 0) return -1; /* name clash */
             nxt = mkdir_in(cur, comp);
@@ -681,9 +794,32 @@ int fs_find_dir(const char* path) {
     return resolve_dir(p);
 }
 
-static void print_perm_size(int is_dir, uint32_t size, uint32_t mtime) {
-    terminal_write(is_dir ? "drwxr-xr-x  " : "-rw-r--r--  ");
-    terminal_write("banana  ");
+/* "drwxr-xr-x" */
+static void mode_string(uint32_t mode, char out[11]) {
+    uint32_t t = mode & FS_S_IFMT;
+    out[0] = t == FS_S_IFDIR ? 'd' : t == FS_S_IFLNK ? 'l' : '-';
+    static const char RWX[] = "rwxrwxrwx";
+    for (int k = 0; k < 9; k++) out[1 + k] = (mode & (0400u >> k)) ? RWX[k] : '-';
+    if (mode & 04000u) out[3] = (mode & 0100u) ? 's' : 'S';
+    if (mode & 02000u) out[6] = (mode & 0010u) ? 's' : 'S';
+    if (mode & 01000u) out[9] = (mode & 0001u) ? 't' : 'T';
+    out[10] = '\0';
+}
+
+/* "root", "banana", or the number */
+static void owner_name(uint32_t uid, char* out, int cap) {
+    if (uid == FS_UID_ROOT) k_strcpy(out, "root", cap);
+    else if (uid == FS_UID_BANANA) k_strcpy(out, "banana", cap);
+    else ksnprintf(out, (size_t)cap, "%u", uid);
+}
+
+static void print_perm_size(uint32_t mode, uint32_t uid, uint32_t gid, uint32_t size, uint32_t mtime) {
+    char ms[11], on[12], gn[12], col[40];
+    mode_string(mode, ms);
+    owner_name(uid, on, sizeof(on));
+    owner_name(gid, gn, sizeof(gn));
+    ksnprintf(col, sizeof(col), "%s  %-6s %-6s ", ms, on, gn);
+    terminal_write(col);
     char b[16];
     char* s = u32_to_str(size, b, sizeof(b));
     int l = k_strlen(s);
@@ -742,14 +878,22 @@ void fs_ls_long(const char* path) {
     }
     int any = 0;
     for (int i = D(target).kid_dir; i >= 0; i = D(i).sib) {
-        print_perm_size(1, 4096, D(i).mtime);
+        print_perm_size(dmode(i), D(i).uid, D(i).gid, 4096, D(i).mtime);
         terminal_write_color(D(i).name, VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
         terminal_writeln("/");
         any = 1;
     }
     for (int i = D(target).kid_file; i >= 0; i = F(i).sib) {
-        print_perm_size(0, F(i).size, F(i).mtime);
-        terminal_writeln(F(i).name);
+        print_perm_size(fmode(i), F(i).uid, F(i).gid, F(i).size, F(i).mtime);
+        if (is_link(i)) {
+            terminal_write_color(F(i).name, VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+            char* t = link_target(i);
+            terminal_write(" -> ");
+            terminal_writeln(t ? t : "?");
+            kfree(t);
+        } else {
+            terminal_writeln(F(i).name);
+        }
         any = 1;
     }
     if (!any) terminal_writeln("(empty)");
@@ -761,10 +905,11 @@ int fs_create(const char* path) {
     expand_tilde(path, p, sizeof(p));
     char leaf[FS_NAME_LEN];
     g_io_err = 0;
+    g_perm_err = 0;
     int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
     if (parent < 0 || !leaf[0]) return -1;
     int existing = find_file_in(parent, leaf);
-    if (existing >= 0) return existing;
+    if (existing >= 0) return is_link(existing) ? follow_file(parent, leaf) : existing;
     return create_file_in(parent, leaf);
 }
 
@@ -792,7 +937,7 @@ int fs_find_file(const char* path) {
     char leaf[FS_NAME_LEN];
     int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
     if (parent < 0 || !leaf[0]) return -1;
-    return find_file_in(parent, leaf);
+    return follow_file(parent, leaf);
 }
 
 fs_file_t* fs_file_info(int idx) {
@@ -803,7 +948,7 @@ fs_file_t* fs_file_info(int idx) {
 fs_file_t* fs_get_file(int idx) {
     if (idx < 0 || idx >= g_fslots) return (void*)0;
     fs_file_t* f = &F(idx);
-    if (f->used) used_now(f);
+    if (f->used) { used_now(f); read_now(f); }
     if (f->used && !f->loaded && ensure_loaded(f) != 0) {
         /* unreadable (stick pulled out...): callers get zeros, not garbage */
         if (reserve(f, f->size) != 0) return (void*)0;
@@ -818,6 +963,7 @@ void fs_delete(const char* path, int recursive) {
     expand_tilde(path, p, sizeof(p));
     char leaf[FS_NAME_LEN];
     g_io_err = 0;
+    g_perm_err = 0;
     int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
     if (parent < 0 || !leaf[0]) {
         terminal_write_color("rm: no such file or directory: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -828,7 +974,8 @@ void fs_delete(const char* path, int recursive) {
     int fidx = find_file_in(parent, leaf);
     if (fidx >= 0) {
         if (remove_file(fidx) != 0) {
-            terminal_write_color("rm: cannot delete it on its volume: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(g_perm_err ? "rm: permission denied: " : "rm: cannot delete it on its volume: ",
+                                 VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
             terminal_writeln(path);
         }
         return;
@@ -861,7 +1008,9 @@ void fs_delete(const char* path, int recursive) {
             return;
         }
         if (delete_dir_recursive(didx) != 0) {
-            terminal_write_color("rm: some of it could not be deleted on its volume: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(g_perm_err ? "rm: permission denied (some of it is left): "
+                                            : "rm: some of it could not be deleted on its volume: ",
+                                 VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
             terminal_writeln(path);
         }
         return;
@@ -894,11 +1043,12 @@ int fs_copy(const char* src, const char* dst) {
     expand_tilde(src, sp, sizeof(sp));
     expand_tilde(dst, dp, sizeof(dp));
     g_io_err = 0;
+    g_perm_err = 0;
 
     char sleaf[FS_NAME_LEN];
     int sparent = resolve_parent_leaf(sp, sleaf, sizeof(sleaf));
     if (sparent < 0 || !sleaf[0]) return -1;
-    int sidx = find_file_in(sparent, sleaf);
+    int sidx = follow_file(sparent, sleaf);             /* cp copies what a link points at */
     if (sidx < 0) return -1;
 
     int target_dir; char target_name[FS_NAME_LEN];
@@ -922,6 +1072,7 @@ int fs_move(const char* src, const char* dst) {
     expand_tilde(src, sp, sizeof(sp));
     expand_tilde(dst, dp, sizeof(dp));
     g_io_err = 0;
+    g_perm_err = 0;
 
     char sleaf[FS_NAME_LEN];
     int sparent = resolve_parent_leaf(sp, sleaf, sizeof(sleaf));
@@ -934,6 +1085,7 @@ int fs_move(const char* src, const char* dst) {
     int target_dir; char target_name[FS_NAME_LEN];
     if (!resolve_target(dp, sleaf, &target_dir, target_name, sizeof(target_name)))
         return -1;
+    if (!dir_writable(sparent) || !dir_writable(target_dir)) return -1;
 
     if (sfile >= 0) {
         int existing = find_file_in(target_dir, target_name);
@@ -1005,25 +1157,23 @@ void fs_cd(const char* path) {
     cwd = idx;
 }
 
+/* Written from the leaf back to the root, each name at its final place
+ * (a path longer than buf is cut at the end, as before) - no copy of the
+ * names on the stack, however deep the folder. */
 static void dir_abs_path(int idx, char* buf, int buflen) {
-    char parts[16][FS_NAME_LEN];
-    int  depth = 0;
-    int  cur   = idx;
-    while (cur > 0 && depth < 16) {
-        k_strcpy(parts[depth], D(cur).name, FS_NAME_LEN);
-        depth++;
-        cur = D(cur).parent_dir;
-        if (cur < 0) break;
+    if (buflen <= 0) return;
+    int total = 0, depth = 0;
+    for (int c = idx; c > 0 && depth < FS_MAX_DIRS; c = D(c).parent_dir, depth++)
+        total += 1 + (int)k_strlen(D(c).name);
+    if (!total) { k_strcpy(buf, "/", buflen); return; }
+    int end = total, d = 0;
+    for (int c = idx; c > 0 && d < depth; c = D(c).parent_dir, d++) {
+        int l = (int)k_strlen(D(c).name), start = end - l;
+        for (int k = 0; k < l; k++) if (start + k < buflen - 1) buf[start + k] = D(c).name[k];
+        if (start - 1 < buflen - 1) buf[start - 1] = '/';
+        end = start - 1;
     }
-
-    int pos = 0;
-    if (pos < buflen - 1) buf[pos++] = '/';
-    for (int d = depth - 1; d >= 0; d--) {
-        int l = (int)k_strlen(parts[d]);
-        for (int c = 0; c < l && pos < buflen - 1; c++) buf[pos++] = parts[d][c];
-        if (d > 0 && pos < buflen - 1) buf[pos++] = '/';
-    }
-    buf[pos] = '\0';
+    buf[total < buflen - 1 ? total : buflen - 1] = '\0';
 }
 
 void fs_cwd_path(char* buf, int buflen) {
@@ -1044,21 +1194,24 @@ static void join_path(const char* prefix, const char* name, char* out, int outle
     out[pos] = '\0';
 }
 
-static void find_recursive(int dir_idx, const char* prefix, const char* filter) {
+/* path holds the folder's own path (len bytes); each level adds its name
+ * and takes it off again - one buffer for the whole walk, not one a level */
+static void find_recursive(int dir_idx, char* path, int len, const char* filter) {
     for (int i = D(dir_idx).kid_dir; i >= 0; i = D(i).sib) {
-        char path[FS_PATH_LEN];
-        join_path(prefix, D(i).name, path, sizeof(path));
+        join_path(path, D(i).name, path, FS_PATH_LEN);
+        int l2 = (int)k_strlen(path);
         if (!filter[0] || k_strstr(D(i).name, filter)) {
             terminal_write_color(path, VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
             terminal_writeln("/");
         }
-        find_recursive(i, path, filter);
+        find_recursive(i, path, l2, filter);
+        path[len] = '\0';
     }
     for (int i = D(dir_idx).kid_file; i >= 0; i = F(i).sib) {
         if (!filter[0] || k_strstr(F(i).name, filter)) {
-            char path[FS_PATH_LEN];
-            join_path(prefix, F(i).name, path, sizeof(path));
+            join_path(path, F(i).name, path, FS_PATH_LEN);
             terminal_writeln(path);
+            path[len] = '\0';
         }
     }
 }
@@ -1079,7 +1232,7 @@ void fs_find(const char* path, const char* name_filter) {
         terminal_write_color(base, VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
         terminal_writeln("/");
     }
-    find_recursive(target, base, filt);
+    find_recursive(target, base, (int)k_strlen(base), filt);
 }
 
 void fs_pwd(void) {
@@ -1155,6 +1308,7 @@ int fs_mount(const char* path, const fs_mount_ops_t* ops, void* ctx, uint32_t ro
     dir_abs_path(dir, mounts[id].point, FS_PATH_LEN);
     D(dir).mnt = (uint16_t)id;
     D(dir).node = root_node;
+    D(dir).uid = D(dir).gid = FS_UID_BANANA;
     return id;
 }
 
@@ -1174,6 +1328,8 @@ int fs_mount_add_dir(int mnt, int parent, const char* name, uint32_t node) {
     D(i).node = node;
     D(i).kid_dir = D(i).last_dir = D(i).kid_file = D(i).last_file = -1;
     k_strcpy(D(i).name, name, FS_NAME_LEN);
+    D(i).mode = FS_MODE_DIR;
+    D(i).uid = D(i).gid = FS_UID_BANANA;      /* (a FAT or exFAT volume has no owners: the user's) */
     link_dir(i);
     return i;
 }
@@ -1193,6 +1349,8 @@ int fs_mount_add_file(int mnt, int parent, const char* name, uint32_t node, uint
     F(i).size = size;
     F(i).cap = 0;
     k_strcpy(F(i).name, name, FS_NAME_LEN);
+    F(i).mode = FS_MODE_FILE;
+    F(i).uid = F(i).gid = FS_UID_BANANA;
     link_file(i);
     return i;
 }
@@ -1232,10 +1390,12 @@ const char* fs_mount_point(int mnt) {
 
 /* ── on-disk persistence ────────────────────────────────────────── */
 
-/* a dirs record on disk (v2, v3): name[FS_NAME_LEN], int32 used, int32 parent */
-#define DIR_REC (FS_NAME_LEN + 8u)
-/* per used file: name[FS_NAME_LEN], int32 parent, uint32 size, data */
-#define FILE_REC_HDR (FS_NAME_LEN + 8u)
+/* names in the whole-tree snapshots of layouts 1-4 (and of version-5/6 metadata) are 32 bytes */
+#define LEGACY_NAME 32u
+/* a dirs record on disk (v2, v3): name[LEGACY_NAME], int32 used, int32 parent */
+#define DIR_REC (LEGACY_NAME + 8u)
+/* per used file: name[LEGACY_NAME], int32 parent, uint32 size, data */
+#define FILE_REC_HDR (LEGACY_NAME + 8u)
 #define V2_DIRS 64u
 
 static int file_saved(int i) {
@@ -1257,10 +1417,10 @@ void fs_snapshot_save(uint8_t* buf) {
     for (int i = 0; i < g_dslots; i++) {
         int32_t used = D(i).used && !D(i).mnt;
         int32_t parent = D(i).parent_dir;
-        memset(buf + off, 0, FS_NAME_LEN);
-        if (used) memcpy(buf + off, D(i).name, FS_NAME_LEN);
-        memcpy(buf + off + FS_NAME_LEN, &used, 4);
-        memcpy(buf + off + FS_NAME_LEN + 4, &parent, 4);
+        memset(buf + off, 0, LEGACY_NAME);
+        if (used) memcpy(buf + off, D(i).name, LEGACY_NAME);
+        memcpy(buf + off + LEGACY_NAME, &used, 4);
+        memcpy(buf + off + LEGACY_NAME + 4, &parent, 4);
         off += DIR_REC;
     }
     int32_t hd = (int32_t)home_dir;
@@ -1272,10 +1432,10 @@ void fs_snapshot_save(uint8_t* buf) {
     off += 4;
     for (int i = 0; i < g_fslots; i++) {
         if (!file_saved(i)) continue;
-        memcpy(buf + off, F(i).name, FS_NAME_LEN);
+        memcpy(buf + off, F(i).name, LEGACY_NAME);
         int32_t parent = F(i).parent_dir;
-        memcpy(buf + off + FS_NAME_LEN, &parent, 4);
-        memcpy(buf + off + FS_NAME_LEN + 4, &F(i).size, 4);
+        memcpy(buf + off + LEGACY_NAME, &parent, 4);
+        memcpy(buf + off + LEGACY_NAME + 4, &F(i).size, 4);
         off += FILE_REC_HDR;
         if (ensure_loaded(&F(i)) == 0) memcpy(buf + off, F(i).content, F(i).size);
         else memset(buf + off, 0, F(i).size);
@@ -1288,7 +1448,7 @@ static void clear_tree(void) {
     for (int m = 1; m <= FS_MAX_MOUNTS; m++) if (mounts[m].used) fs_unmount(m);
     reset_links();
     for (int i = 0; i < g_fslots; i++) free_file(i);
-    for (int i = 0; i < g_dslots; i++) { D(i).used = 0; D(i).mnt = 0; D(i).node = 0; }
+    for (int i = 0; i < g_dslots; i++) { D(i).used = 0; D(i).mnt = 0; D(i).node = 0; D(i).mode = D(i).uid = D(i).gid = D(i).atime = 0; }
     g_dfree = 1;
     g_ffree = 0;
 }
@@ -1298,10 +1458,10 @@ static void load_dirs(const uint8_t* p, uint32_t nd) {
     grow_dirs((int)nd);
     for (uint32_t i = 0; i < nd && (int)i < g_dslots; i++) {
         int32_t used, parent;
-        memcpy(D(i).name, p + i * DIR_REC, FS_NAME_LEN);
-        D(i).name[FS_NAME_LEN - 1] = '\0';
-        memcpy(&used, p + i * DIR_REC + FS_NAME_LEN, 4);
-        memcpy(&parent, p + i * DIR_REC + FS_NAME_LEN + 4, 4);
+        memcpy(D(i).name, p + i * DIR_REC, LEGACY_NAME);
+        D(i).name[LEGACY_NAME - 1] = '\0';
+        memcpy(&used, p + i * DIR_REC + LEGACY_NAME, 4);
+        memcpy(&parent, p + i * DIR_REC + LEGACY_NAME + 4, 4);
         D(i).used = used ? 1 : 0;
         D(i).parent_dir = parent;
         if (D(i).used && (parent < -1 || parent >= (int32_t)nd)) D(i).used = 0;
@@ -1315,7 +1475,7 @@ static void load_dirs(const uint8_t* p, uint32_t nd) {
 #define V1_FILES    64
 #define V1_CONTENT  2048
 typedef struct {
-    char    name[FS_NAME_LEN];
+    char    name[LEGACY_NAME];
     char    content[V1_CONTENT];
     int32_t used;
     int32_t parent_dir;
@@ -1331,11 +1491,11 @@ static int load_v1(const uint8_t* buf, uint32_t len) {
         v1_file_t vf;
         memcpy(&vf, p + (uint32_t)i * sizeof(v1_file_t), sizeof(vf));
         if (!vf.used) continue;
-        vf.name[FS_NAME_LEN - 1] = '\0';
+        vf.name[LEGACY_NAME - 1] = '\0';
         vf.content[V1_CONTENT - 1] = '\0';
         int idx = new_file_slot();
         if (idx < 0) break;
-        k_strcpy(F(idx).name, vf.name, FS_NAME_LEN);
+        k_strcpy(F(idx).name, vf.name, LEGACY_NAME);
         F(idx).parent_dir = vf.parent_dir;
         F(idx).used = 1;
         F(idx).content = NULL;
@@ -1361,7 +1521,7 @@ static int load_tree(const uint8_t* buf, uint32_t len, uint32_t dir_off, uint32_
     for (uint32_t i = 0; i < count; i++) {
         if (off + FILE_REC_HDR > len) return -1;
         uint32_t size;
-        memcpy(&size, buf + off + FS_NAME_LEN + 4, 4);
+        memcpy(&size, buf + off + LEGACY_NAME + 4, 4);
         if (size > FS_MAX_FILE_SIZE || off + FILE_REC_HDR + size > len) return -1;
         off += FILE_REC_HDR + size;
     }
@@ -1376,12 +1536,12 @@ static int load_tree(const uint8_t* buf, uint32_t len, uint32_t dir_off, uint32_
     off = hdr + 8u;
     for (uint32_t i = 0; i < count; i++) {
         fs_file_t* f = &F(i);
-        memcpy(f->name, buf + off, FS_NAME_LEN);
-        f->name[FS_NAME_LEN - 1] = '\0';
+        memcpy(f->name, buf + off, LEGACY_NAME);
+        f->name[LEGACY_NAME - 1] = '\0';
         int32_t parent;
         uint32_t size;
-        memcpy(&parent, buf + off + FS_NAME_LEN, 4);
-        memcpy(&size, buf + off + FS_NAME_LEN + 4, 4);
+        memcpy(&parent, buf + off + LEGACY_NAME, 4);
+        memcpy(&size, buf + off + LEGACY_NAME + 4, 4);
         off += FILE_REC_HDR;
         f->parent_dir = parent;
         f->used = 1;
@@ -1464,6 +1624,13 @@ void fs_restore_end(int home) {
     finish_load();
 }
 
+/* 1 if folder d is the home folder or inside it */
+static int in_home(int d) {
+    for (int n = 0; d > 0 && n < FS_MAX_DIRS; d = D(d).parent_dir, n++)
+        if (d == home_dir) return 1;
+    return 0;
+}
+
 /* after a whole tree was loaded */
 static void finish_load(void) {
     /* anything not reachable from / (corrupt parent links) is dropped */
@@ -1471,6 +1638,21 @@ static void finish_load(void) {
         if (F(i).used && (F(i).parent_dir < 0 || F(i).parent_dir >= g_dslots ||
                               !D(F(i).parent_dir).used))
             free_file(i);
+    /* saved before modes and owners (layouts 1-4, metadata 5/6): the
+     * defaults - the home folder's things banana's, the rest root's */
+    for (int i = 0; i < g_dslots; i++) {
+        if (!D(i).used || D(i).mode) continue;
+        D(i).mode = FS_MODE_DIR;
+        D(i).uid = D(i).gid = (home_dir > 0 && in_home(i)) ? FS_UID_BANANA : FS_UID_ROOT;
+        if (!D(i).atime) D(i).atime = D(i).mtime;
+    }
+    for (int i = 0; i < g_fslots; i++) {
+        if (!F(i).used || F(i).mode) continue;
+        F(i).mode = FS_MODE_FILE;
+        F(i).uid = F(i).gid = (home_dir > 0 && in_home(F(i).parent_dir)) ? FS_UID_BANANA : FS_UID_ROOT;
+        if (!F(i).atime) F(i).atime = F(i).mtime;
+    }
+    if (D(0).mode == FS_MODE_DIR) { D(0).uid = D(0).gid = FS_UID_ROOT; }
     relink_all();
     cwd = home_dir; /* real shells start in $HOME, same as fs_init() */
     g_ready = 1;
@@ -1527,6 +1709,7 @@ int fs_read(int idx, uint32_t off, void* buf, uint32_t len) {
     if (off >= f->size) return 0;
     if (len > f->size - off) len = f->size - off;
     used_now(f);
+    read_now(f);
     if (!f->loaded && !f->mnt && g_disk_read_range && f->size > STREAM_MIN) {
         f->loading = 1;                     /* (a write or a delete waits for it) */
         int rc = g_disk_read_range(idx, off, (uint8_t*)buf, len);
@@ -1618,4 +1801,235 @@ void fs_trim(void) {
         drop(best);
     }
     if (got) klog("fs: memory low - %u KiB of file data dropped from RAM (still on the disk)\n", got / 1024u);
+}
+
+/* ── Unix metadata, symbolic links, checking (see fs.h) ─────────────── */
+
+int fs_perm_error(void) { return g_perm_err; }
+
+int fs_is_symlink(int idx) {
+    return idx >= 0 && idx < g_fslots && F(idx).used && is_link(idx);
+}
+
+uint32_t fs_file_mode(int idx) { return (idx >= 0 && idx < g_fslots && F(idx).used) ? fmode(idx) : 0; }
+uint32_t fs_dir_mode(int idx)  { return (idx >= 0 && idx < g_dslots && D(idx).used) ? dmode(idx) : 0; }
+
+void fs_set_meta(int is_dir, int idx, uint32_t mode, uint32_t uid, uint32_t gid, uint32_t atime) {
+    if (is_dir) {
+        if (idx < 0 || idx >= g_dslots) return;
+        D(idx).mode = FS_S_IFDIR | (mode & 07777u);
+        D(idx).uid = uid;
+        D(idx).gid = gid;
+        D(idx).atime = atime;
+    } else {
+        if (idx < 0 || idx >= g_fslots) return;
+        uint32_t t = mode & FS_S_IFMT;
+        F(idx).mode = (t == FS_S_IFLNK ? FS_S_IFLNK : FS_S_IFREG) | (mode & 07777u);
+        F(idx).uid = uid;
+        F(idx).gid = gid;
+        F(idx).atime = atime;
+    }
+}
+
+/* what a path names: 1 a folder (*idx), 0 a file, -1 nothing. follow:
+ * a link as the last part is followed (stat), else it is the answer (lstat) */
+static int lookup(const char* path, int follow, int* idx) {
+    char p[FS_PATH_LEN];
+    expand_tilde(path, p, sizeof(p));
+    char leaf[FS_NAME_LEN];
+    int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
+    if (parent < 0) return -1;
+    if (!leaf[0] || k_strcmp(leaf, ".") == 0 || k_strcmp(leaf, "..") == 0) {
+        int d = resolve_dir(p);
+        if (d < 0) return -1;
+        *idx = d;
+        return 1;
+    }
+    int f = find_file_in(parent, leaf);
+    if (f >= 0) {
+        if (!follow || !is_link(f)) { *idx = f; return 0; }
+        int d = resolve_dir(p);                       /* a link to a folder */
+        if (d >= 0) { *idx = d; return 1; }
+        f = follow_file(parent, leaf);
+        if (f < 0) return -1;
+        *idx = f;
+        return 0;
+    }
+    int d = find_dir_in(parent, leaf);
+    if (d < 0) return -1;
+    *idx = d;
+    return 1;
+}
+
+int fs_stat(const char* path, int follow, fs_stat_t* st) {
+    int idx, k = lookup(path, follow, &idx);
+    if (k < 0) return -1;
+    memset(st, 0, sizeof(*st));
+    st->index = idx;
+    st->is_dir = k;
+    if (k) {
+        st->mode = dmode(idx);
+        st->uid = D(idx).uid; st->gid = D(idx).gid;
+        st->size = 4096;
+        st->atime = D(idx).atime; st->mtime = D(idx).mtime; st->ctime = D(idx).ctime;
+        st->mnt = D(idx).mnt;
+    } else {
+        st->mode = fmode(idx);
+        st->is_link = is_link(idx);
+        st->uid = F(idx).uid; st->gid = F(idx).gid;
+        st->size = F(idx).size;
+        st->atime = F(idx).atime; st->mtime = F(idx).mtime; st->ctime = F(idx).ctime;
+        st->mnt = F(idx).mnt;
+    }
+    return 0;
+}
+
+int fs_chmod(const char* path, uint32_t perms) {
+    g_io_err = g_perm_err = 0;
+    int idx, k = lookup(path, 1, &idx);
+    if (k < 0) return -1;
+    if (k ? D(idx).mnt : F(idx).mnt) { g_io_err = 1; return -1; }   /* FAT / exFAT keep no modes */
+    touched();
+    if (k) D(idx).mode = FS_S_IFDIR | (perms & 07777u);
+    else F(idx).mode = (fmode(idx) & FS_S_IFMT) | (perms & 07777u);
+    return 0;
+}
+
+int fs_chown(const char* path, int uid, int gid) {
+    g_io_err = g_perm_err = 0;
+    int idx, k = lookup(path, 1, &idx);
+    if (k < 0) return -1;
+    if (k ? D(idx).mnt : F(idx).mnt) { g_io_err = 1; return -1; }
+    touched();
+    if (k) {
+        if (uid >= 0) D(idx).uid = (uint32_t)uid;
+        if (gid >= 0) D(idx).gid = (uint32_t)gid;
+    } else {
+        if (uid >= 0) F(idx).uid = (uint32_t)uid;
+        if (gid >= 0) F(idx).gid = (uint32_t)gid;
+    }
+    return 0;
+}
+
+int fs_symlink(const char* target, const char* linkpath) {
+    if (!target || !target[0] || k_strlen(target) >= FS_PATH_LEN) return -1;
+    char p[FS_PATH_LEN];
+    expand_tilde(linkpath, p, sizeof(p));
+    char leaf[FS_NAME_LEN];
+    g_io_err = g_perm_err = 0;
+    int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
+    if (parent < 0 || !leaf[0]) return -1;
+    if (find_file_in(parent, leaf) >= 0 || find_dir_in(parent, leaf) >= 0) return -1;
+    if (D(parent).mnt) { g_io_err = 1; return -1; }    /* FAT / exFAT have no links */
+    int i = create_file_in(parent, leaf);
+    if (i < 0) return -1;
+    if (fs_write(i, target, k_strlen(target)) != 0) { remove_file(i); return -1; }
+    F(i).mode = FS_MODE_LINK;
+    return i;
+}
+
+int fs_readlink(const char* path, char* out, int cap) {
+    int idx;
+    if (lookup(path, 0, &idx) != 0 || !is_link(idx)) return -1;
+    char* t = link_target(idx);
+    if (!t) return -1;
+    k_strcpy(out, t, cap);
+    int n = (int)k_strlen(out);
+    kfree(t);
+    return n;
+}
+
+/* ── fsck for the tree in RAM ───────────────────────────────────────── */
+
+static void check_say(void (*out)(const char*), int* n, const char* fmt, const char* a, int b) {
+    (*n)++;
+    if (!out) return;
+    char line[FS_NAME_LEN + 96];
+    ksnprintf(line, sizeof(line), fmt, a, b);
+    out(line);
+}
+
+/* the folder lost things go to (fsck -y), made when first needed */
+static int lost_found(void) {
+    int lf = find_dir_in(0, "lost+found");
+    if (lf < 0) lf = mkdir_in(0, "lost+found");
+    return lf;
+}
+
+int fs_check(int fix, void (*out)(const char* line)) {
+    int problems = 0;
+    /* 1. every folder hangs from / (a used parent, no loop) */
+    for (int i = 1; i < g_dslots; i++) {
+        if (!D(i).used) continue;
+        int p = D(i).parent_dir, steps = 0, a = i;
+        int bad = p < 0 || p >= g_dslots || !D(p).used;
+        while (!bad && a > 0) {
+            a = D(a).parent_dir;
+            if (a < 0 || a >= g_dslots || !D(a).used || ++steps > g_dslots) bad = 1;
+        }
+        if (!bad) continue;
+        check_say(out, &problems, "folder '%s' (#%d) is not reachable from /", D(i).name, i);
+        if (fix && !D(i).mnt) {
+            int lf = lost_found();
+            if (lf > 0 && lf != i) { unlink_dir(i); D(i).parent_dir = lf; link_dir(i); }
+        }
+    }
+    /* 2. every file in a used folder, with a sane size */
+    for (int i = 0; i < g_fslots; i++) {
+        if (!F(i).used) continue;
+        int p = F(i).parent_dir;
+        if (p < 0 || p >= g_dslots || !D(p).used) {
+            check_say(out, &problems, "file '%s' (#%d) is in no folder", F(i).name, i);
+            if (fix && !F(i).mnt) {
+                int lf = lost_found();
+                if (lf > 0) { unlink_file(i); F(i).parent_dir = lf; link_file(i); }
+            }
+        }
+        if (F(i).size > FS_MAX_FILE_SIZE || (F(i).loaded && F(i).content && F(i).size >= F(i).cap))
+            check_say(out, &problems, "file '%s' (#%d) has a size past its data", F(i).name, i);
+        if (!F(i).name[0])
+            check_say(out, &problems, "file%s #%d has no name", "", i);
+        if (is_link(i) && F(i).size == 0)
+            check_say(out, &problems, "symbolic link '%s' (#%d) is empty", F(i).name, i);
+    }
+    /* 3. names are found again, and the folder lists hold every entry once */
+    for (int i = 1; i < g_dslots; i++) {
+        if (!D(i).used || D(i).parent_dir < 0) continue;
+        if (find_dir_in(D(i).parent_dir, D(i).name) != i)
+            check_say(out, &problems, "folder '%s' (#%d): its name leads elsewhere (duplicate, or a broken hash chain)", D(i).name, i);
+    }
+    for (int i = 0; i < g_fslots; i++) {
+        if (!F(i).used || F(i).parent_dir < 0) continue;
+        if (find_file_in(F(i).parent_dir, F(i).name) != i)
+            check_say(out, &problems, "file '%s' (#%d): its name leads elsewhere (duplicate, or a broken hash chain)", F(i).name, i);
+    }
+    int listed_f = 0, listed_d = 0, used_f = 0, used_d = 0;
+    for (int i = 0; i < g_dslots; i++) {
+        if (!D(i).used) continue;
+        if (i) used_d++;
+        int n = 0;
+        for (int c = D(i).kid_dir; c >= 0 && n <= g_dslots; c = D(c).sib, n++)
+            if (!D(c).used || D(c).parent_dir != i) {
+                check_say(out, &problems, "folder '%s' (#%d) lists a folder that is not in it", D(i).name, i);
+                break;
+            }
+        listed_d += n;
+        n = 0;
+        for (int c = D(i).kid_file; c >= 0 && n <= g_fslots; c = F(c).sib, n++)
+            if (!F(c).used || F(c).parent_dir != i) {
+                check_say(out, &problems, "folder '%s' (#%d) lists a file that is not in it", D(i).name, i);
+                break;
+            }
+        listed_f += n;
+    }
+    for (int i = 0; i < g_fslots; i++) if (F(i).used) used_f++;
+    if (listed_d != used_d) check_say(out, &problems, "the folder lists are off by %s%d folders", "", used_d - listed_d);
+    if (listed_f != used_f) check_say(out, &problems, "the folder lists are off by %s%d files", "", used_f - listed_f);
+    if (home_dir < 0 || home_dir >= g_dslots || !D(home_dir).used)
+        check_say(out, &problems, "the home folder %s(#%d) is gone", "", home_dir);
+    if (fix && problems) {
+        relink_all();
+        touched();
+    }
+    return problems;
 }

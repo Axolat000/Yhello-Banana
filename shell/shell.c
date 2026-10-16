@@ -24,6 +24,7 @@
 #include "srvcmds.h"
 #include "syscmds.h"
 #include "moncmds.h"
+#include "fscmds.h"
 #include "../kernel/serial.h"
 #include "../kernel/kstring.h"
 #include "../kernel/kheap.h"
@@ -1392,7 +1393,9 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver", (void*)0
+    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
+    /* shell/fscmds.c */
+    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
@@ -1742,7 +1745,7 @@ static void cmd_mkdir(const char* args) {
     }
     int r = recursive ? fs_mkdir_p(path) : fs_mkdir(path);
     if (r < 0) {
-        terminal_write_color("mkdir: cannot create directory: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "mkdir: permission denied: " : "mkdir: cannot create directory: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(path);
     }
 }
@@ -1770,7 +1773,7 @@ static void cmd_touch(const char* args) {
     while (next_token(&p, tok, sizeof(tok))) {
         any = 1;
         if (fs_touch(tok) < 0) {
-            terminal_write_color("touch: cannot create: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(fs_perm_error() ? "touch: permission denied: " : "touch: cannot create: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
             terminal_writeln(tok);
         }
     }
@@ -1785,7 +1788,7 @@ static void cmd_cp(const char* args) {
         return;
     }
     if (fs_copy(src, dst) < 0) {
-        terminal_write_color("cp: cannot copy: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "cp: permission denied: " : "cp: cannot copy: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(src);
     }
 }
@@ -1798,7 +1801,7 @@ static void cmd_mv(const char* args) {
         return;
     }
     if (fs_move(src, dst) < 0) {
-        terminal_write_color("mv: cannot move: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "mv: permission denied: " : "mv: cannot move: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(src);
     }
 }
@@ -2674,6 +2677,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     /* network commands (shell/netcmds.c) */
     if (syscmd_dispatch(line)) return;
     if (moncmd_dispatch(line)) return;
+    if (fscmd_dispatch(line)) return;
     if (srvcmd_dispatch(line)) return;
     if (netcmd_dispatch(line)) return;
 

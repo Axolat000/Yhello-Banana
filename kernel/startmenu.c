@@ -127,14 +127,14 @@ static void add_all_programs(const char* q) {
 /* files whose name has the query, under the home folder (a few) */
 static void add_files(const char* q, int max) {
     static char queue[48][FS_PATH_LEN];
-    static int idx[FS_MAX_FILES];
+    static int idx[FS_LIST_MAX];
     int qh = 0, qt = 0, found = 0;
     kstrlcpy(queue[qt++], HOME, FS_PATH_LEN);
     while (qh < qt && found < max) {
         char dir[FS_PATH_LEN];
         kstrlcpy(dir, queue[qh++], sizeof(dir));
-        int nf = fs_list_files(dir, idx, FS_MAX_FILES);
-        for (int i = 0; i < nf && i < FS_MAX_FILES && found < max; i++) {
+        int nf = fs_list_files(dir, idx, FS_LIST_MAX);
+        for (int i = 0; i < nf && i < FS_LIST_MAX && found < max; i++) {
             fs_file_t* f = fs_file_info(idx[i]);
             if (!f || !contains_ci(f->name, q)) continue;
             entry_t* e = add(E_FILE);
@@ -143,8 +143,8 @@ static void add_files(const char* q, int max) {
             ksnprintf(e->path, sizeof(e->path), "%s/%s", dir, f->name);
             found++;
         }
-        int nd = fs_list_dirs(dir, idx, FS_MAX_FILES);
-        for (int i = 0; i < nd && i < FS_MAX_FILES && qt < 48; i++) {
+        int nd = fs_list_dirs(dir, idx, FS_LIST_MAX);
+        for (int i = 0; i < nd && i < FS_LIST_MAX && qt < 48; i++) {
             const fs_dir_t* d = fs_get_dir(idx[i]);
             if (!d) continue;
             if (contains_ci(d->name, q) && found < max) {

@@ -619,8 +619,8 @@ static int fetch_file(const char* path, char** data, uint32_t* len, char* ctype,
     sb_str(&b, "</h2><table>");
     const char* slash = strcmp(p, "/") == 0 ? "" : "/";
     if (strcmp(p, "/") != 0) sb_str(&b, "<tr class=\"d\"><td><a href=\"..\">..</a></td><td></td></tr>");
-    static int idx[FS_MAX_FILES > FS_MAX_DIRS ? FS_MAX_FILES : FS_MAX_DIRS];   /* (too big for a task's stack) */
-    int nd = fs_list_dirs(p, idx, FS_MAX_DIRS);
+    static int idx[FS_LIST_MAX];   /* (too big for a task's stack) */
+    int nd = fs_list_dirs(p, idx, FS_LIST_MAX);
     int row = 0;
     for (int i = 0; i < nd; i++, row++) {
         const fs_dir_t* d = fs_get_dir(idx[i]);
@@ -632,7 +632,7 @@ static int fetch_file(const char* path, char** data, uint32_t* len, char* ctype,
         sb_esc(&b, d->name, (uint32_t)strlen(d->name));
         sb_str(&b, "/</a></td><td>folder</td></tr>");
     }
-    int nf = fs_list_files(p, idx, FS_MAX_FILES);
+    int nf = fs_list_files(p, idx, FS_LIST_MAX);
     for (int i = 0; i < nf; i++, row++) {
         fs_file_t* f = fs_file_info(idx[i]);
         char link[FS_PATH_LEN + 16], size[24];

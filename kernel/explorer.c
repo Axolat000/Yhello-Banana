@@ -292,16 +292,16 @@ static void clamp_scroll(void) {
 }
 
 static void scan(void) {
-    static int d[FS_MAX_DIRS], f[FS_MAX_FILES];   /* static: the GUI runs on 16 KiB task stacks */
-    int nd = fs_list_dirs(g_path, d, FS_MAX_DIRS);
+    static int d[FS_LIST_MAX], f[FS_LIST_MAX];   /* static: the GUI runs on 16 KiB task stacks */
+    int nd = fs_list_dirs(g_path, d, FS_LIST_MAX);
     if (nd < 0) {                       /* folder vanished: go home */
         kstrlcpy(g_path, HOME, sizeof(g_path));
-        nd = fs_list_dirs(g_path, d, FS_MAX_DIRS);
-        if (nd < 0) { kstrlcpy(g_path, "/", sizeof(g_path)); nd = fs_list_dirs(g_path, d, FS_MAX_DIRS); }
+        nd = fs_list_dirs(g_path, d, FS_LIST_MAX);
+        if (nd < 0) { kstrlcpy(g_path, "/", sizeof(g_path)); nd = fs_list_dirs(g_path, d, FS_LIST_MAX); }
     }
-    int nf = fs_list_files(g_path, f, FS_MAX_FILES);
-    if (nd > FS_MAX_DIRS) nd = FS_MAX_DIRS;
-    if (nf > FS_MAX_FILES) nf = FS_MAX_FILES;
+    int nf = fs_list_files(g_path, f, FS_LIST_MAX);
+    if (nd > FS_LIST_MAX) nd = FS_LIST_MAX;
+    if (nf > FS_LIST_MAX) nf = FS_LIST_MAX;
     g_count = 0;
     /* names starting with a dot are hidden (settings, the Recycle Bin's
      * folder), like Windows' hidden files - unless Organize shows them */
@@ -643,10 +643,10 @@ static char g_rename[FS_NAME_LEN];
 
 static int copy_tree(const char* src, const char* dst, int depth) {
     if (depth > 12 || fs_mkdir(dst) < 0) return -1;
-    static int idx[FS_MAX_FILES];
+    static int idx[FS_LIST_MAX];
     int rc = 0;
-    int nf = fs_list_files(src, idx, FS_MAX_FILES);
-    for (int i = 0; i < nf && i < FS_MAX_FILES; i++) {
+    int nf = fs_list_files(src, idx, FS_LIST_MAX);
+    for (int i = 0; i < nf && i < FS_LIST_MAX; i++) {
         char s[FS_PATH_LEN], d[FS_PATH_LEN];
         const char* name = fs_file_info(idx[i])->name;
         ksnprintf(s, sizeof(s), "%s/%s", src, name);
@@ -655,7 +655,8 @@ static int copy_tree(const char* src, const char* dst, int depth) {
     }
     int dirs[32];
     int nd = fs_list_dirs(src, dirs, 32);
-    char names[32][FS_NAME_LEN];
+    char (*names)[FS_NAME_LEN] = kmalloc(32 * FS_NAME_LEN);     /* (8 KiB: not on the GUI's stack) */
+    if (!names) return -1;
     int n = nd < 32 ? nd : 32;
     for (int i = 0; i < n; i++) kstrlcpy(names[i], fs_get_dir(dirs[i])->name, FS_NAME_LEN);
     for (int i = 0; i < n; i++) {
@@ -664,6 +665,7 @@ static int copy_tree(const char* src, const char* dst, int depth) {
         ksnprintf(d, sizeof(d), "%s/%s", dst, names[i]);
         if (copy_tree(s, d, depth + 1) < 0) rc = -1;
     }
+    kfree(names);
     return rc;
 }
 

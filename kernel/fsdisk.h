@@ -77,6 +77,10 @@ int  fsdisk_set_boot_video(const char* value);
 void fsdisk_space(uint64_t* used_bytes, uint64_t* capacity_bytes);
 /* the installed disk's name ("SATA port 0") and model, for df ("" if none) */
 void fsdisk_describe(char* out, int cap);
+/* fsck: checks the installed disk - both metadata slots, the extents, the
+ * saved records; full: reads every file back against its checksum. Writes
+ * a line per finding with out(); the number of problems. */
+int  fsdisk_check(int full, void (*out)(const char* line));
 /* how far an install / update / comparison is (done of total) */
 void fsdisk_progress(uint32_t* done, uint32_t* total);
 
