@@ -138,7 +138,20 @@ ports/openjdk/build.sh)
 Copyright (c) Oracle and/or its affiliates. Licensed under the GNU General
 Public License version 2 with the Classpath Exception.
 
+LWJGL 3.3.3 (ports/lwjgl/build.sh: its jars from Maven Central and its native
+libraries built from its sources)
+Copyright (c) 2012-present Lightweight Java Game Library. All rights reserved.
+Licensed under the BSD 3-clause licence: redistributions of source code must
+retain the copyright notice, this list of conditions and the disclaimer;
+redistributions in binary form must reproduce them in the documentation and/or
+other materials; neither the name LWJGL nor the names of its contributors may
+be used to endorse or promote products derived from it without specific prior
+written permission. THE SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND
+CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.
+(ports/lwjgl/native/glfw.c implements GLFW 3.4's API; it has no GLFW code.)
+
 libffi 3.4.8 (ports/openjdk/include/ffi.h, ffitarget.h; linked into libjvm.so)
+and libffi 3.4.6 (built by ports/lwjgl/build.sh into liblwjgl.so)
 Copyright (c) 2011, 2014, 2019, 2021, 2022, 2024 Anthony Green
 Copyright (c) 1996-2003, 2007, 2008 Red Hat, Inc.
 

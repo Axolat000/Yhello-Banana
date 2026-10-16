@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds OpenJDK 17 (the Zero interpreter, 64-bit) for Banana OS:
 #     ports/openjdk/build.sh [output dir]      (default: ports/openjdk/build)
-# Out: <output>/jdk - a JDK image with java.base (copy it to /jdk, or a
+# Out: <output>/jdk - a JDK image with java.base and jdk.unsupported (copy it to /jdk, or a
 # disk's jdk folder: the java app finds /jdk, /mnt/usb/jdk, /mnt/virtio/jdk,
 # /mnt/sata/jdk, or JAVA_HOME) - and <output>/jdkdisk.img, a FAT32 disk with
 # jdk/, java.bpk and the test classes (Hello, NetTest) for QEMU
@@ -90,11 +90,11 @@ so libnet "$W"/libnet/objs/*.o -ljvm -ljava
 so libnio "$W"/libnio/objs/*.o -ljava -lnet
 so libjimage "$W"/libjimage/objs/*.o -ljvm
 so libverify "$W"/libverify/objs/*.o -ljvm
-so libzip "$W"/libzip/objs/*.o "$W"/zlib/*.o -ljvm
+so libzip "$W"/libzip/objs/*.o "$W"/zlib/*.o -ljvm -ljava
 
-# ── the image: java.base (jlink), with the Banana OS libraries ────────
+# ── the image: java.base and jdk.unsupported (sun.misc.Unsafe: LWJGL) ─
 rm -rf "$OUT/jdk"
-"$REFB/images/jdk/bin/jlink" --add-modules java.base --strip-debug --no-header-files --no-man-pages --output "$OUT/jdk"
+"$REFB/images/jdk/bin/jlink" --add-modules java.base,jdk.unsupported --strip-debug --no-header-files --no-man-pages --output "$OUT/jdk"
 rm -rf "$OUT/jdk/bin" "$OUT/jdk/lib/jexec" "$OUT/jdk/lib/jspawnhelper" "$OUT/jdk/lib/libjli.so" \
        "$OUT/jdk/lib/libjsig.so" "$OUT/jdk/lib/server/libjsig.so"
 cp "$L"/*.so "$OUT/jdk/lib/"
