@@ -32,6 +32,8 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
                          float8-16 vectors, refused group sizes
+selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
+                         highlight, countdown, clipping, color, stride and fallback checks
 selftest mouse           deterministic relative-movement, ownership and release-state checks
 selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
                          click to capture, look around, Escape releases, Q exits
@@ -210,3 +212,19 @@ See [the fixture documentation](../web/fixtures/README.md) for coverage and limi
 implementation, the SDK wrappers on older API tables, and shared input math.
 Use `--32` for the i686 ABI or `--sanitize` for ASan/UBSan. This uses host
 framebuffer/heap stubs; it does not validate physical devices or hypervisor I/O.
+
+### Boot menu host checks
+
+`python3 tools/test_bootmenu.py` runs the same renderer checks as `selftest boot`
+and exports 640x480, 1024x768 and 1920x1080 PNG previews under `build/test/boot/`.
+Use `--32` or `--sanitize` for the i686 ABI or ASan/UBSan. These renderer tests
+need neither QEMU nor Pillow. `tools/build_boot_font.py` optionally regenerates
+the committed atlas from `fonts/DejaVuSans.ttf` (Pillow required; license in
+`fonts/LICENSE`). Normal OS builds consume the atlas directly.
+
+Firmware smoke coverage for build 168: an isolated ISO booted under SeaBIOS and
+64-bit OVMF, detected the graphical menu, paused the timer, moved selection with
+the arrow keys and started the kernel with Enter. The 32-bit UEFI loader was
+compiled, linked and checked for relocations and valid PE conversion; it was not
+run under 32-bit UEFI firmware. Rebuild with `tools/dev.sh run` to see the menu;
+`tools/dev.sh run uefi` selects the UEFI path.

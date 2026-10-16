@@ -103,7 +103,7 @@ loader/mbr.bin: loader/mbr.asm
 LOADER_CFLAGS32 = -m32 -march=i686 -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
                   -fno-asynchronous-unwind-tables -mgeneral-regs-only -fno-delete-null-pointer-checks \
                   --param=min-pagesize=0 $(WARN)
-loader/bios.bin: loader/bios.asm loader/bios.c loader/common.h loader/bios.ld
+loader/bios.bin: loader/bios.asm loader/bios.c loader/common.h loader/boot_ui.h loader/boot_font.h loader/bios.ld
 	$(AS) -f elf32 loader/bios.asm -o loader/bios_asm.o
 	$(CC) $(LOADER_CFLAGS32) -c loader/bios.c -o loader/bios_c.o
 	ld -m elf_i386 -T loader/bios.ld -o $@ loader/bios_asm.o loader/bios_c.o
@@ -116,7 +116,7 @@ loader/bios.bin: loader/bios.asm loader/bios.c loader/common.h loader/bios.ld
 # hold the SHA-256 of both kernels (under Secure Boot they start no other).
 LOADER_CFLAGS_EFI = -O2 -ffreestanding -fpie -fno-stack-protector -fno-stack-check -fshort-wchar \
                     -mgeneral-regs-only -fno-asynchronous-unwind-tables -fvisibility=hidden $(WARN)
-EFI_DEPS = loader/efi.c loader/efi.h loader/common.h loader/sha256.h loader/kernel_hashes.h
+EFI_DEPS = loader/efi.c loader/efi.h loader/common.h loader/boot_ui.h loader/boot_font.h loader/sha256.h loader/kernel_hashes.h
 
 loader/kernel_hashes.h: kernel.bin kernel64.bin
 	{ echo "/* made by the Makefile: the kernels this loader starts under Secure Boot */"; \

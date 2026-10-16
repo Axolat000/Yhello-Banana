@@ -119,3 +119,7 @@ constitute direct or contributory patent infringement, or inducement of
 patent infringement, then any patent rights granted to you under this License
 for these implementations of WebM shall terminate as of the date such
 litigation is filed.
+
+DejaVu Sans (fonts/ and the generated loader/boot_font.h atlas)
+Copyright Bitstream, Inc.; DejaVu changes are in the public domain.
+The complete Bitstream Vera and related font notices are in fonts/LICENSE.

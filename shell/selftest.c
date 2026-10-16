@@ -1,4 +1,5 @@
 #include "selftest.h"
+#include "../kernel/bootmenu_test.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/gui.h"
 #include "../kernel/browser_test.h"
@@ -179,13 +180,14 @@ static void mouse_demo(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | browser [swm] | mouse [demo] | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot")) {
+        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
         terminal_writeln("usage: selftest mouse [demo]");return 1;
     }
+    if(only && !strcmp(only,"boot") && argc!=2) { terminal_writeln("usage: selftest boot");return 1; }
     uint16_t ipv6_port = 80;
     if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
         terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
@@ -205,7 +207,9 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if(only && !strcmp(only,"mouse")) {
+    if(only && !strcmp(only,"boot")) {
+        section("graphical boot menu rendering");bootmenu_tests_run(report);
+    } else if(only && !strcmp(only,"mouse")) {
         section("mouse capture and relative movement");mouse_capture_tests(report);
         if(argc==3)mouse_demo();
     } else if (only && !strcmp(only, "browser")) {
@@ -232,6 +236,7 @@ int selftest_cmd(int argc, char** argv) {
             t_opencl();
             browser_test_run(report);
             mouse_capture_tests(report);
+            bootmenu_tests_run(report);
             t_posix(NULL);
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");

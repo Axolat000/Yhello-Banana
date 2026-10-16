@@ -7,6 +7,8 @@
  * (VBE), and starts it with the Multiboot2 information: the command line,
  * the memory map (E820), the framebuffer, the boot drive and the ACPI RSDP. */
 #include "common.h"
+#include "boot_ui.h"
+static boot_ui_fb g_menu_fb;
 
 typedef struct {
     u32 eax, ebx, ecx, edx, esi, edi, ebp;
@@ -389,8 +391,16 @@ static const char* label(int i) {
 static int row_of(int i) { return i < KERNEL_ENTRIES ? 4 + i : 5 + i; }   /* a gap before the extras */
 
 static void draw_menu(int sel, int secs) {
-    fill_row(1, 0x1E);
-    put_at(1, 2, "Banana Boot", 0x1E);
+    if(boot_ui_valid(&g_menu_fb)) {
+        char video[80];vmode_label(video,g_modes,g_nmodes,g_vsel);
+        boot_ui_menu m={.count=ENTRIES,.selected=sel,.seconds=secs,.video=video,
+            .firmware=g_cd?"BIOS / CD or DVD":"BIOS / disk or USB",.status="Keyboard ready"};
+        for(int i=0;i<ENTRIES;i++)m.labels[i]=i<KERNEL_ENTRIES?boot_ui_kernel_label(i):label(i);
+        boot_ui_draw(&g_menu_fb,&m);return;
+    }
+
+    fill_row(1, 0x0E);
+    put_at(1, 2, "Banana Boot", 0x0E);
     put_at(1, 62, g_cd ? "(CD/DVD)" : "(disk / USB)", 0x1B);
     for (int i = 0; i < ENTRIES; i++) {
         int r = row_of(i);
@@ -477,7 +487,15 @@ void loader_main(u32 drive, u32 cd) {
         g_vsel = vw ? vmode_find(g_modes, g_nmodes, vw, vh) : -1;
     }
 
+    fbinfo_t menu_fb;set_video(1024,768,&menu_fb);
+    if(menu_fb.ok && menu_fb.rs==8 && menu_fb.gs==8 && menu_fb.bs==8 &&
+       (u64)menu_fb.addr+(u64)menu_fb.pitch*menu_fb.h<=0x100000000ull) {
+        g_menu_fb=(boot_ui_fb){(volatile u8*)(unsigned long)menu_fb.addr,(int)menu_fb.w,(int)menu_fb.h,
+            (int)menu_fb.pitch,menu_fb.rp,menu_fb.gp,menu_fb.bp};
+    }
+    if(!boot_ui_valid(&g_menu_fb)) { rm_regs_t r={0};r.eax=3;bios_int(0x10,&r);g_menu_fb.pixels=0;hide_cursor(); }
     int entry = menu(has_long_mode() ? 0 : 2);
+    if(g_menu_fb.pixels) { rm_regs_t r={0};r.eax=3;bios_int(0x10,&r);g_menu_fb.pixels=0;hide_cursor(); }
     cls();
     if (entry == ENTRY_NEXT) {
         /* the BIOS boots the next device in its boot order (or says there is none) */
