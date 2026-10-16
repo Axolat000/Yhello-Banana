@@ -6,9 +6,9 @@
 #include "terminal.h"
 #include "serial.h"
 
-#define TCP_MAX_CONN  16
-#define TCP_MAX_LISTEN 4
-#define TCP_BACKLOG   4                 /* handshaking + not yet accepted, per listener */
+#define TCP_MAX_CONN  64
+#define TCP_MAX_LISTEN 16
+#define TCP_BACKLOG   8                 /* handshaking + not yet accepted, per listener */
 #define TCP6_MSS      1220              /* 1280-byte minimum IPv6 MTU - 40 - 20 */
 #define TCP_MSS       1460              /* what we accept: 1500 - IP - TCP headers */
 #define RBUF_SIZE     65536u            /* receive ring (window capped at 65535) */
@@ -921,3 +921,27 @@ uint32_t tcp_send_space(const tcp_conn_t* c) {
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return 0;
     return SBUF_SIZE - c->sb_len;
 }
+
+/* ── for sockets (kernel/usock.c) ─────────────────────────────────── */
+
+/* up to max received bytes copied without taking them: how many */
+int tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max) {
+    uint32_t n = min_u32(max, c->rb_len);
+    uint32_t first = min_u32(n, RBUF_SIZE - c->rb_head);
+    memcpy(buf, c->rbuf + c->rb_head, first);
+    if (n > first) memcpy((uint8_t*)buf + first, c->rbuf, n - first);
+    return (int)n;
+}
+
+/* connections that completed the handshake and wait for tcp_accept() */
+int tcp_pending(const tcp_listener_t* l) {
+    int n = 0;
+    if (!l || !l->used) return 0;
+    for (int i = 0; i < TCP_MAX_CONN; i++) {
+        const tcp_conn_t* c = &g_conns[i];
+        if (c->used && c->listener == l && (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT)) n++;
+    }
+    return n;
+}
+
+uint16_t tcp_local_port(const tcp_conn_t* c) { return c->lport; }

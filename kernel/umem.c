@@ -429,6 +429,14 @@ size_t umem_size(umem_t* m, const void* p) {
     return n;
 }
 
+size_t umem_pages_size(umem_t* m, const void* p) {
+    if (!m) return 0;
+    spin_lock(&m->lock);
+    size_t n = pinned(m, p) ? size_l(m, p) : 0;
+    spin_unlock(&m->lock);
+    return n;
+}
+
 void* umem_alloc_pages(umem_t* m, size_t size, size_t guard) {
     if (!m || (guard & (PAGE - 1))) return NULL;
     size_t total = (size + guard + PAGE - 1) & ~(size_t)(PAGE - 1);

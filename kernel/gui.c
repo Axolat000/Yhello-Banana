@@ -150,10 +150,20 @@ static int g_front_app = -1;                        /* -1: a terminal window is 
 static int g_app_order[APP_COUNT] = { APP_FILES, APP_BROWSER, APP_NOTEPAD, APP_LAUNCHER, APP_TASKMGR, APP_SETTINGS, APP_INSTALLER, APP_APPWIN };   /* back to front */
 static int g_app_min[APP_COUNT];                    /* minimized to the taskbar */
 
-/* open and not minimized (the app windows minimize one by one) */
+/* ── the window manager's state (see "the window manager" below) ──
+ * Every window - terminals, the built-in apps, the installed apps' windows
+ * as one layer - is in ONE stacking order (g_z), on one of NDESK virtual
+ * desktops, and may be kept above the others (always on top). */
+#define NDESK 4
+static int     g_cur_desk;
+static uint8_t g_app_desk[APP_COUNT], g_app_top[APP_COUNT];
+static void    z_raise(int h);
+static int     g_force_redraw;              /* (defined with the view below) */
+
+/* open, not minimized, and on the desktop shown (the app windows minimize one by one) */
 static int app_visible(int a) {
     if (a == APP_APPWIN) return appwin_any_visible();
-    return g_apps[a].is_open() && !g_app_min[a];
+    return g_apps[a].is_open() && !g_app_min[a] && g_app_desk[a] == g_cur_desk;
 }
 
 static void raise_app(int a) {
@@ -162,6 +172,7 @@ static void raise_app(int a) {
     for (int i = pos; i < APP_COUNT - 1; i++) g_app_order[i] = g_app_order[i + 1];
     g_app_order[APP_COUNT - 1] = a;
     g_front_app = a;
+    z_raise(2 << 8 | a);                            /* (WK_APP) */
 }
 
 /* the topmost app window at a point, -1 if none (with_front: also the one above the terminals) */
@@ -197,7 +208,13 @@ typedef struct {
     int selecting, sel;           /* mouse text selection (cells, buffer rows) */
     int s_r0, s_c0, s_r1, s_c1;
     int minimized;                /* to the taskbar */
+    int snapped;                  /* in a half / quarter of the screen (sx.. restore it) */
+    int px, py;                   /* where a drag started */
+    int desk, top;                /* its virtual desktop; always on top */
 } term_win_t;
+
+/* shown: open, not minimized, on the desktop shown */
+#define TERM_SHOWN(t) ((t)->open && !(t)->minimized && (t)->desk == g_cur_desk)
 
 #define TERM_WIN_MAX 4
 static term_win_t g_terms[TERM_WIN_MAX] = {
@@ -542,13 +559,14 @@ static void bring_term_front(int idx) {
     if (pos < 0) return;
     for (int i = pos; i < TERM_WIN_MAX - 1; i++) g_term_order[i] = g_term_order[i + 1];
     g_term_order[TERM_WIN_MAX - 1] = idx;
+    z_raise(1 << 8 | idx);                          /* (WK_TERM) */
 }
 
 /* the frontmost open terminal window at a point, as index + 1 (0 = none) */
 static int term_at(int mx, int my) {
     for (int oi = TERM_WIN_MAX - 1; oi >= 0; oi--) {
         term_win_t* w = &g_terms[g_term_order[oi]];
-        if (w->open && !w->minimized && mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w->h) return g_term_order[oi] + 1;
+        if (TERM_SHOWN(w) && mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w->h) return g_term_order[oi] + 1;
     }
     return 0;
 }
@@ -569,6 +587,8 @@ static int open_new_terminal(void) {
         }
 
         g_terms[i].open = 1;
+        g_terms[i].desk = g_cur_desk;            /* (opens on the desktop shown) */
+        g_terms[i].top = 0;
         g_terms[i].minimized = 0;
         g_terms[i].dragging = 0;
         g_terms[i].sel = 0;
@@ -582,7 +602,7 @@ static int open_new_terminal(void) {
 }
 
 static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
-    if (!win || !win->open || win->minimized) return;
+    if (!win || !TERM_SHOWN(win)) return;
     if (!fi) return;
 
     term_win_t w = *win;
@@ -1016,7 +1036,7 @@ void gui_cursor_tick(void) {
 static int cursor_shape(int mx, int my) {
     for (int i = 0; i < TERM_WIN_MAX; i++) {
         term_win_t* w = &g_terms[i];
-        if (!w->open || w->minimized) continue;
+        if (!TERM_SHOWN(w)) continue;
         if (w->resizing || (mx >= w->x + w->w - GRIP && mx < w->x + w->w && my >= w->y + w->h - GRIP && my < w->y + w->h))
             return CUR_RESIZE;
     }
@@ -1059,7 +1079,7 @@ static int win_front(void) {
     if (g_front_app >= 0) return app_visible(g_front_app) ? (WK_APP << 8 | g_front_app) : 0;
     for (int oi = TERM_WIN_MAX - 1; oi >= 0; oi--) {
         int wi = g_term_order[oi];
-        if (g_terms[wi].open && !g_terms[wi].minimized) return WK_TERM << 8 | wi;
+        if (TERM_SHOWN(&g_terms[wi])) return WK_TERM << 8 | wi;
     }
     return 0;
 }
@@ -1078,9 +1098,12 @@ static void win_title(int h, char* out, int cap) {
 }
 
 /* keeps g_tb in step with the windows that exist */
+static int wm_desk_of(int h);
+
+/* (only the windows of the desktop shown: each desktop has its own taskbar) */
 static void sync_taskbar(void) {
     int n = 0;
-    for (int j = 0; j < g_ntb; j++) if (win_exists(g_tb[j])) g_tb[n++] = g_tb[j];
+    for (int j = 0; j < g_ntb; j++) if (win_exists(g_tb[j]) && wm_desk_of(g_tb[j]) == g_cur_desk) g_tb[n++] = g_tb[j];
     if (n != g_ntb) g_tb_gen++;
     g_ntb = n;
     int cand[TB_MAX], nc = 0;
@@ -1095,6 +1118,7 @@ static void sync_taskbar(void) {
             if (k == WK_APP) g_app_min[i] = 0;
             continue;
         }
+        if (wm_desk_of(cand[c]) != g_cur_desk) continue;
         int have = 0;
         for (int j = 0; j < g_ntb; j++) if (g_tb[j] == cand[c]) have = 1;
         if (!have && g_ntb < TB_MAX) { g_tb[g_ntb++] = cand[c]; g_tb_gen++; }
@@ -1125,6 +1149,384 @@ static void win_close(int h) {
     g_tb_gen++;
 }
 
+/* ── the window manager ─────────────────────────────────────────────────
+ * One stacking order for every window: the terminals, the built-in apps
+ * and the installed apps' windows (those as one layer - they keep their own
+ * order inside it). A click raises the window under the mouse whatever it
+ * is; when the front window closes or is minimized, the next one down gets
+ * the keyboard. Windows "always on top" stay above the rest. Each window is
+ * on one of NDESK virtual desktops; only the shown desktop's windows are
+ * drawn, listed on the taskbar and given the mouse. Windows snap to halves,
+ * quarters and the whole screen (kernel/winframe.c), by dragging or with
+ * Win+arrows, and a right-click on a title bar gives the window's menu. */
+
+#define ZMAX (TERM_WIN_MAX + APP_COUNT)
+static int      g_z[ZMAX], g_nz;                 /* back to front: WK_TERM / WK_APP handles */
+static uint8_t  g_app_was_open[APP_COUNT];
+static uint8_t  g_awin_desk[APPWIN_MAX], g_awin_seen[APPWIN_MAX];
+static uint32_t g_desk_osd_until;                /* "Desktop 2" shows until then */
+static int      g_desk_osd;
+
+static int z_open(int h) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) return i < TERM_WIN_MAX && g_terms[i].open;
+    if (k == WK_APP) return i < APP_COUNT && (i == APP_APPWIN ? appwin_is_open() : g_apps[i].is_open());
+    return 0;
+}
+
+static void z_remove(int h) {
+    int n = 0;
+    for (int j = 0; j < g_nz; j++) if (g_z[j] != h) g_z[n++] = g_z[j];
+    g_nz = n;
+}
+
+static void z_raise(int h) {
+    if (!h) return;
+    z_remove(h);
+    if (g_nz < ZMAX) g_z[g_nz++] = h;
+}
+
+static int z_shown(int h) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) return TERM_SHOWN(&g_terms[i]);
+    if (k == WK_APP) return app_visible(i);
+    return 0;
+}
+
+static int z_ontop(int h) {
+    int k = h >> 8, i = h & 0xFF;
+    return k == WK_TERM ? g_terms[i].top : k == WK_APP ? g_app_top[i] : 0;
+}
+
+/* closed windows leave the order, new ones come in on top - on the desktop shown */
+static void z_sync(void) {
+    int n = 0;
+    for (int j = 0; j < g_nz; j++) if (z_open(g_z[j])) g_z[n++] = g_z[j];
+    g_nz = n;
+    for (int i = 0; i < TERM_WIN_MAX; i++) {
+        int h = WK_TERM << 8 | i, have = 0;
+        for (int j = 0; j < g_nz; j++) if (g_z[j] == h) have = 1;
+        if (g_terms[i].open && !have) z_raise(h);
+    }
+    for (int a = 0; a < APP_COUNT; a++) {
+        int open = z_open(WK_APP << 8 | a);
+        if (open && !g_app_was_open[a]) {        /* (re)opened: on this desktop, not on top */
+            if (a != APP_APPWIN) g_app_desk[a] = (uint8_t)g_cur_desk;
+            g_app_top[a] = 0;
+            int have = 0;
+            for (int j = 0; j < g_nz; j++) if (g_z[j] == (WK_APP << 8 | a)) have = 1;
+            if (!have) z_raise(WK_APP << 8 | a);
+        }
+        g_app_was_open[a] = (uint8_t)open;
+    }
+    /* the installed apps' windows: a new one is on the desktop shown */
+    for (int id = 0; id < APPWIN_MAX; id++) {
+        int used = appwin_info(id, NULL, 0, NULL);
+        if (used && !g_awin_seen[id]) g_awin_desk[id] = (uint8_t)g_cur_desk;
+        g_awin_seen[id] = (uint8_t)used;
+        if (used) appwin_set_hidden(id, g_awin_desk[id] != g_cur_desk);
+    }
+}
+
+/* the window that should have the keyboard: the top one shown */
+static int z_top(void) {
+    for (int pass = 1; pass >= 0; pass--)
+        for (int j = g_nz - 1; j >= 0; j--)
+            if (z_ontop(g_z[j]) == pass && z_shown(g_z[j])) return g_z[j];
+    return 0;
+}
+
+static void z_focus(void) {
+    int h = z_top();
+    if ((h >> 8) == WK_APP) {
+        int a = h & 0xFF;
+        if (g_front_app != a) {
+            int pos = 0;
+            while (pos < APP_COUNT && g_app_order[pos] != a) pos++;
+            for (int i = pos; i < APP_COUNT - 1; i++) g_app_order[i] = g_app_order[i + 1];
+            g_app_order[APP_COUNT - 1] = a;
+            g_front_app = a;
+        }
+    } else {
+        g_front_app = -1;
+        if (h) {                                 /* that terminal is the front one */
+            int idx = h & 0xFF, pos = -1;
+            for (int i = 0; i < TERM_WIN_MAX; i++) if (g_term_order[i] == idx) pos = i;
+            if (pos >= 0 && pos != TERM_WIN_MAX - 1) {
+                for (int i = pos; i < TERM_WIN_MAX - 1; i++) g_term_order[i] = g_term_order[i + 1];
+                g_term_order[TERM_WIN_MAX - 1] = idx;
+            }
+        }
+    }
+}
+
+static int z_contains(int h, int mx, int my) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) {
+        term_win_t* w = &g_terms[i];
+        return mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w->h;
+    }
+    return g_apps[i].contains(mx, my);
+}
+
+/* the window under the mouse (the ones on top first), 0 if none */
+static int z_at(int mx, int my) {
+    for (int pass = 1; pass >= 0; pass--)
+        for (int j = g_nz - 1; j >= 0; j--) {
+            int h = g_z[j];
+            if (z_ontop(h) == pass && z_shown(h) && z_contains(h, mx, my)) return h;
+        }
+    return 0;
+}
+
+/* the built-in apps' geometry (their own modules keep it) */
+static win_geom_t* app_geom(int a) {
+    switch (a) {
+    case APP_FILES:     return explorer_geom();
+    case APP_BROWSER:   return browser_geom();
+    case APP_NOTEPAD:   return notepad_geom();
+    case APP_LAUNCHER:  return launcher_geom();
+    case APP_TASKMGR:   return taskmgr_geom();
+    case APP_SETTINGS:  return settings_geom();
+    case APP_INSTALLER: return installer_geom();
+    default:            return NULL;
+    }
+}
+
+/* a window as the menu and the keys know it: an installed app's own window, not its layer */
+static int wm_target(int h) {
+    if (h == (WK_APP << 8 | APP_APPWIN)) { int id = appwin_front_id(); return id >= 0 ? (WK_APPWIN << 8 | id) : 0; }
+    return h;
+}
+
+/* maximized / snapped */
+static void wm_state(int h, int* maxed, int* snapped) {
+    int k = h >> 8, i = h & 0xFF;
+    *maxed = *snapped = 0;
+    if (k == WK_TERM) { *maxed = g_terms[i].maxed; *snapped = g_terms[i].snapped; }
+    else if (k == WK_APP) { win_geom_t* g = app_geom(i); if (g) { *maxed = g->maxed; *snapped = g->snapped; } }
+    else if (k == WK_APPWIN) appwin_state(i, maxed, snapped, NULL);
+}
+
+static void term_snap(const fb_info_t* fi, term_win_t* w, const win_rect_t* r, int where) {
+    if (!w->maxed && !w->snapped) { w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h; }
+    w->x = r->x; w->y = r->y; w->w = r->w; w->h = r->h;
+    w->maxed = where == SNAP_MAX;
+    w->snapped = where == SNAP_HALF;
+    w->dragging = w->resizing = 0;
+    clamp_win(fi, w);
+    term_apply_size(w);
+}
+
+static void term_unsnap(const fb_info_t* fi, term_win_t* w) {
+    if (!w->maxed && !w->snapped) return;
+    w->x = w->sx; w->y = w->sy; w->w = w->sw; w->h = w->sh;
+    w->maxed = w->snapped = 0;
+    clamp_win(fi, w);
+    term_apply_size(w);
+}
+
+/* puts window h at a named place ('l', 'r', '1'-'4', 'm'; 0: back to its own size) */
+static void wm_place(int h, char where) {
+    const fb_info_t* fi = fb_info();
+    if (!fi) return;
+    h = wm_target(h);
+    win_rect_t r;
+    int z = where == 'm' ? SNAP_MAX : SNAP_HALF;
+    if (where) winframe_snap_rect(where, &r);
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) {
+        if (where) term_snap(fi, &g_terms[i], &r, z); else term_unsnap(fi, &g_terms[i]);
+    } else if (k == WK_APP) {
+        win_geom_t* g = app_geom(i);
+        if (g) { if (where) win_snap(g, &r, z); else win_unsnap(g); }
+    } else if (k == WK_APPWIN) {
+        appwin_snap(i, &r, where ? z : SNAP_NONE);
+    }
+    g_force_redraw = 1;
+}
+
+/* the window's virtual desktop / always-on-top flag */
+static int wm_desk_of(int h) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) return g_terms[i].desk;
+    if (k == WK_APP) return i == APP_APPWIN ? g_cur_desk : g_app_desk[i];
+    if (k == WK_APPWIN) return g_awin_desk[i];
+    return g_cur_desk;
+}
+
+static void wm_to_desk(int h, int d) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) g_terms[i].desk = d;
+    else if (k == WK_APP && i != APP_APPWIN) g_app_desk[i] = (uint8_t)d;
+    else if (k == WK_APPWIN) { g_awin_desk[i] = (uint8_t)d; appwin_set_hidden(i, d != g_cur_desk); }
+    g_tb_gen++;
+    g_force_redraw = 1;
+}
+
+static void wm_set_top(int h, int on) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) g_terms[i].top = on;
+    else if (k == WK_APP || k == WK_APPWIN) g_app_top[k == WK_APP ? i : APP_APPWIN] = (uint8_t)on;
+    g_force_redraw = 1;
+}
+
+static int wm_top_of(int h) {
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) return g_terms[i].top;
+    return g_app_top[k == WK_APP ? i : APP_APPWIN];
+}
+
+static void desk_switch(int d) {
+    if (d < 0 || d >= NDESK || d == g_cur_desk) return;
+    g_cur_desk = d;
+    for (int id = 0; id < APPWIN_MAX; id++)
+        if (appwin_info(id, NULL, 0, NULL)) appwin_set_hidden(id, g_awin_desk[id] != d);
+    g_desk_osd = 1;
+    g_desk_osd_until = timer_ms() + 1200;
+    g_menu_open = 0;
+    g_tb_gen++;
+    g_force_redraw = 1;
+    z_focus();
+}
+
+/* how many windows are on desktop d (the switcher's dots) */
+static int desk_count(int d) {
+    int n = 0;
+    for (int i = 0; i < TERM_WIN_MAX; i++) if (g_terms[i].open && g_terms[i].desk == d) n++;
+    for (int a = 0; a < APP_APPWIN; a++) if (g_apps[a].is_open() && g_app_desk[a] == d) n++;
+    for (int id = 0; id < APPWIN_MAX; id++) if (appwin_info(id, NULL, 0, NULL) && g_awin_desk[id] == d) n++;
+    return n;
+}
+
+/* the title bar under the mouse: the window's handle (an installed app's own), 0 if none */
+static int wm_title_at(int mx, int my) {
+    int h = z_at(mx, my);
+    int k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) return my < g_terms[i].y + TERM_TITLE_H ? h : 0;
+    if (k == WK_APP && i == APP_APPWIN) {
+        int title, id = appwin_at(mx, my, &title);
+        return id >= 0 && title ? (WK_APPWIN << 8 | id) : 0;
+    }
+    if (k == WK_APP) {
+        win_geom_t* g = app_geom(i);
+        return g && my < g->y + 24 ? h : 0;
+    }
+    return 0;
+}
+
+/* Alt+drag: the window under the mouse moves, wherever it was taken */
+static int wm_alt_drag(int mx, int my) {
+    int h = z_at(mx, my);
+    int k = h >> 8, i = h & 0xFF;
+    if (!h) return 0;
+    if (k == WK_TERM) {
+        term_win_t* w = &g_terms[i];
+        bring_term_front(i);
+        g_front_app = -1;
+        w->dragging = 1;
+        w->drag_dx = mx - w->x;
+        w->drag_dy = my - w->y;
+        w->px = mx;
+        w->py = my;
+        return 1;
+    }
+    if (i == APP_APPWIN) {
+        int id = appwin_at(mx, my, NULL);
+        if (id < 0) return 0;
+        raise_app(APP_APPWIN);
+        appwin_start_drag(id, mx, my);
+        return 1;
+    }
+    win_geom_t* g = app_geom(i);
+    if (!g) return 0;
+    raise_app(i);
+    g->dragging = 1;
+    g->dx = mx - g->x;
+    g->dy = my - g->y;
+    g->px = mx;
+    g->py = my;
+    return 1;
+}
+
+/* the window menu: a right-click on a title bar */
+enum { WM_RESTORE = 300, WM_MIN, WM_MAX, WM_LEFT, WM_RIGHT, WM_TOP, WM_DESK0, WM_CLOSE = WM_DESK0 + NDESK };
+static int  g_wmenu_h;
+static char g_wmenu_desk[NDESK][24];
+
+static void wm_menu_cb(int id, void* arg) {
+    (void)arg;
+    int h = g_wmenu_h;
+    if (!win_exists(h)) return;
+    switch (id) {
+    case WM_RESTORE: wm_place(h, 0); break;
+    case WM_MIN:     win_minimize(h); break;
+    case WM_MAX:     wm_place(h, 'm'); break;
+    case WM_LEFT:    wm_place(h, 'l'); break;
+    case WM_RIGHT:   wm_place(h, 'r'); break;
+    case WM_TOP:     wm_set_top(h, !wm_top_of(h)); break;
+    case WM_CLOSE:   win_close(h); break;
+    default:
+        if (id >= WM_DESK0 && id < WM_DESK0 + NDESK) wm_to_desk(h, id - WM_DESK0);
+        break;
+    }
+    g_force_redraw = 1;
+}
+
+static void open_window_menu(int h, int mx, int my) {
+    h = wm_target(h);
+    if (!h) return;
+    g_wmenu_h = h;
+    int maxed, snapped;
+    wm_state(h, &maxed, &snapped);
+    int resizable = 1;
+    if ((h >> 8) == WK_APPWIN) appwin_state(h & 0xFF, NULL, NULL, &resizable);
+    ctx_item_t items[CTX_MAX_ITEMS];
+    int n = 0;
+    items[n++] = (ctx_item_t){ "Restore", WM_RESTORE, !(maxed || snapped) };
+    items[n++] = (ctx_item_t){ "Minimize", WM_MIN, 0 };
+    items[n++] = (ctx_item_t){ "Maximize", WM_MAX, maxed || !resizable };
+    items[n++] = (ctx_item_t){ "Snap to the left half", WM_LEFT, !resizable };
+    items[n++] = (ctx_item_t){ "Snap to the right half", WM_RIGHT, !resizable };
+    items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
+    items[n++] = (ctx_item_t){ wm_top_of(h) ? "Always on top: on" : "Always on top: off", WM_TOP, 0 };
+    for (int d = 0; d < NDESK && n < CTX_MAX_ITEMS - 2; d++) {
+        if (d == wm_desk_of(h)) continue;
+        ksnprintf(g_wmenu_desk[d], sizeof(g_wmenu_desk[d]), "Move to desktop %d", d + 1);
+        items[n++] = (ctx_item_t){ g_wmenu_desk[d], WM_DESK0 + d, 0 };
+    }
+    items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
+    items[n++] = (ctx_item_t){ "Close", WM_CLOSE, 0 };
+    ctxmenu_open(mx, my, items, n, wm_menu_cb, NULL);
+    g_force_redraw = 1;
+}
+
+/* Win+Left / Win+Right / Win+Up / Win+Down on the front window, as in Windows */
+static void wm_arrow(int c) {
+    int h = wm_target(win_front());
+    if (!h) return;
+    int maxed, snapped;
+    wm_state(h, &maxed, &snapped);
+    win_rect_t a;
+    winframe_work_area(&a);
+    int left_half = 0, k = h >> 8, i = h & 0xFF;
+    if (k == WK_TERM) left_half = g_terms[i].x == a.x;
+    else if (k == WK_APP) { win_geom_t* g = app_geom(i); left_half = g && g->x == a.x; }
+    else { int x, y, w, hh; if (appwin_get_rect(i, &x, &y, &w, &hh)) left_half = x == a.x; }
+    if (c == KEYW_LEFT) {
+        if (snapped && !left_half) wm_place(h, 0);       /* the right half: back to its own place */
+        else if (!snapped || !left_half) wm_place(h, 'l');
+    } else if (c == KEYW_RIGHT) {
+        if (snapped && left_half) wm_place(h, 0);
+        else if (!snapped || left_half) wm_place(h, 'r');
+    } else if (c == KEYW_UP) {
+        wm_place(h, 'm');
+    } else if (c == KEYW_DOWN) {
+        if (maxed || snapped) wm_place(h, 0);
+        else win_minimize(h);
+    }
+}
+
 /* taskbar geometry: Start button, window buttons, then the tray */
 #define BAR_H     28
 #define START_X   4
@@ -1153,8 +1555,34 @@ static int tray_x(const fb_info_t* fi) {
     return (int)fi->width - 8 - 64 - 16 - (int)strlen(net) * 8 - badge;
 }
 
+/* the virtual desktops' switcher, left of the tray: a box a desktop */
+#define DSW_BOX 18
+#define DSW_W   (NDESK * (DSW_BOX + 2) + 10)
+static int dsw_x(const fb_info_t* fi) { return tray_x(fi) - DSW_W; }
+
+static int desk_switch_at(const fb_info_t* fi, int mx, int my) {
+    int bar_y = (int)fi->height - BAR_H, x0 = dsw_x(fi);
+    if (my < bar_y + 4 || my >= bar_y + BAR_H - 4 || mx < x0) return -1;
+    int d = (mx - x0) / (DSW_BOX + 2);
+    return d < NDESK && (mx - x0) % (DSW_BOX + 2) < DSW_BOX ? d : -1;
+}
+
+static int desk_count(int d);
+
+static void draw_desk_switcher(const fb_info_t* fi) {
+    int bar_y = (int)fi->height - BAR_H, x0 = dsw_x(fi);
+    for (int d = 0; d < NDESK; d++) {
+        int x = x0 + d * (DSW_BOX + 2), y = bar_y + 5, cur = d == g_cur_desk;
+        uint32_t base = cur ? 0x00405478u : 0x00262D38u;
+        draw_bevel_box(x, y, DSW_BOX, BAR_H - 10, base, cur ? 0x00222A36u : 0x00434D5Eu, cur ? 0x006B7892u : 0x0015191Fu);
+        char t[2] = { (char)('1' + d), 0 };
+        gfx_draw_text(x + 5, y + 5, t, cur ? 0x00FFFFFFu : 0x009AA6B6u, base);
+        if (desk_count(d)) gfx_fill_rect(x + DSW_BOX / 2 - 2, y + BAR_H - 13, 4, 2, cur ? 0x0068A8F0u : 0x00808C9Cu);
+    }
+}
+
 static int tb_btn_w(const fb_info_t* fi) {
-    int avail = tray_x(fi) - 12 - TB_X;
+    int avail = dsw_x(fi) - 12 - TB_X;
     if (!g_ntb) return TB_BTN_W;
     int w = avail / g_ntb;
     return w > TB_BTN_W ? TB_BTN_W : w;
@@ -1217,6 +1645,7 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
         if ((int)strlen(t) > maxc) { t[maxc] = 0; if (maxc > 1) t[maxc - 1] = '.'; }
         gfx_draw_text(tx, bar_y + 10, t, min ? 0x009AA6B6u : 0x00E8EEF6u, base);
     }
+    draw_desk_switcher(fi);
     /* tray: network, clock */
     char clk[9], net[40];
     format_clock(clk);
@@ -1246,7 +1675,7 @@ typedef struct {
     int term_w[TERM_WIN_MAX], term_h[TERM_WIN_MAX], term_sel[TERM_WIN_MAX], term_min[TERM_WIN_MAX];
     int front_app, app_order[APP_COUNT], app_min[APP_COUNT];
     uint32_t sec, term_gen, wp_gen, net_state, app_sig[APP_COUNT], ctx_sig, tb_gen;
-    uint32_t desk_sig;
+    uint32_t desk_sig, wm_sig;
     int desk_sel, sub_slot;
 } gui_view_t;
 
@@ -1279,6 +1708,13 @@ static void capture_view(gui_view_t* v, uint32_t sec) {
     }
     v->ctx_sig = ctxmenu_signature() ^ (g_menu_open ? startmenu_signature() : 0) ^ (uint32_t)g_start_hover * 0x9E37u;
     v->tb_gen = g_tb_gen;
+    /* the window manager: the stacking order, desktops, on-top flags, the snap preview */
+    uint32_t s = (uint32_t)g_nz * 31u + (uint32_t)g_cur_desk * 7919u + (uint32_t)g_desk_osd;
+    for (int j = 0; j < g_nz; j++) s = s * 131u + (uint32_t)g_z[j] * 2u + (uint32_t)z_ontop(g_z[j]);
+    win_rect_t pr;
+    if (winframe_preview(&pr)) s ^= (uint32_t)(pr.x * 3 + pr.y * 5 + pr.w * 7 + pr.h * 11 + 1) * 2654435761u;
+    for (int i = 0; i < TERM_WIN_MAX; i++) s = s * 31u + (uint32_t)g_terms[i].desk;
+    v->wm_sig = s;
 }
 
 static gui_view_t g_last_view;
@@ -1639,7 +2075,7 @@ static int      g_osd_shown;
 static int front_term(void) {
     for (int oi = TERM_WIN_MAX - 1; oi >= 0; oi--) {
         int i = g_term_order[oi];
-        if (g_terms[i].open && !g_terms[i].minimized) return i;
+        if (TERM_SHOWN(&g_terms[i])) return i;
     }
     return -1;
 }
@@ -1666,16 +2102,10 @@ static void close_front_window(const fb_info_t* fi) {
 }
 
 static void toggle_max_term(const fb_info_t* fi, term_win_t* w) {
-    if (!w->maxed) {
-        w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
-        w->x = 0; w->y = 0; w->w = (int)fi->width; w->h = (int)fi->height - BAR_H;
-        w->maxed = 1;
-    } else {
-        w->x = w->sx; w->y = w->sy; w->w = w->sw; w->h = w->sh;
-        w->maxed = 0;
-    }
-    clamp_win(fi, w);
-    term_apply_size(w);
+    if (w->maxed) { term_unsnap(fi, w); return; }
+    win_rect_t r;
+    winframe_snap_rect('m', &r);
+    term_snap(fi, w, &r, SNAP_MAX);
 }
 
 /* play / pause, stop, next, previous: the music player has them first (1 if taken) */
@@ -1762,17 +2192,52 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
 
     draw_desktop_icons(fi);
 
-    /* windows back to front: the app windows behind the terminals, the
-     * terminals, then the app window in front of them (if any) */
-    for (int i = 0; i < APP_COUNT; i++)
-        if (g_app_order[i] != g_front_app && app_visible(g_app_order[i])) g_apps[g_app_order[i]].draw(fi);
-    for (int oi = 0; oi < TERM_WIN_MAX; oi++) {
-        term_win_t* w = &g_terms[g_term_order[oi]];
-        draw_terminal_window(fi, w);
+    /* windows back to front in the one stacking order, the ones always on
+     * top last; each with a soft shadow under it */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int j = 0; j < g_nz; j++) {
+            int h = g_z[j], k = h >> 8, i = h & 0xFF;
+            if (z_ontop(h) != pass || !z_shown(h)) continue;
+            if (k == WK_TERM) {
+                term_win_t* w = &g_terms[i];
+                if (!w->maxed) winframe_shadow(w->x, w->y, w->w, w->h);
+                draw_terminal_window(fi, w);
+            } else if (i == APP_APPWIN) {
+                for (int id = 0; id < APPWIN_MAX; id++) {
+                    int x, y, ww, hh, min = 0, mx2 = 0;
+                    if (!appwin_info(id, NULL, 0, &min) || min || g_awin_desk[id] != g_cur_desk) continue;
+                    appwin_state(id, &mx2, NULL, NULL);
+                    if (!mx2 && appwin_get_rect(id, &x, &y, &ww, &hh)) winframe_shadow(x, y, ww, hh);
+                }
+                g_apps[i].draw(fi);
+            } else {
+                win_geom_t* g = app_geom(i);
+                if (g && !g->maxed) winframe_shadow(g->x, g->y, g->w, g->h);
+                g_apps[i].draw(fi);
+            }
+        }
     }
-    if (g_front_app >= 0 && app_visible(g_front_app)) g_apps[g_front_app].draw(fi);
+
+    /* a window dragged over a snap zone: where it would go */
+    {
+        win_rect_t r;
+        if (winframe_preview(&r)) {
+            winframe_tint(r.x + 4, r.y + 4, r.w - 8, r.h - 8, 0x003A7BD5u, 70);
+            gfx_fill_rect(r.x + 4, r.y + 4, r.w - 8, 2, 0x0068A8F0u);
+            gfx_fill_rect(r.x + 4, r.y + r.h - 6, r.w - 8, 2, 0x0068A8F0u);
+            gfx_fill_rect(r.x + 4, r.y + 4, 2, r.h - 8, 0x0068A8F0u);
+            gfx_fill_rect(r.x + r.w - 6, r.y + 4, 2, r.h - 8, 0x0068A8F0u);
+        }
+    }
 
     draw_taskbar_fb(fi);
+    if (g_desk_osd) {                               /* "Desktop 2", after switching */
+        char t[24];
+        ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
+        int w = 180, h = 44, x = ((int)fi->width - w) / 2, y = ((int)fi->height - BAR_H) / 2 - h / 2;
+        draw_bevel_box(x, y, w, h, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
+        gfx_draw_text_scaled(x + (w - (int)strlen(t) * 16) / 2, y + 14, 2, t, 0x00E8EEF6u, 0x001D232Cu);
+    }
 
     /* the Start menu */
     if (g_menu_open) startmenu_draw(fi);
@@ -2086,10 +2551,12 @@ static void gui_poll_body(void) {
         static uint32_t last_frame_ms = 0;
         static int prev_left = 0;
 
-        sync_taskbar();
-        if (g_front_app >= 0 && !app_visible(g_front_app)) g_front_app = -1;
         if (appwin_take_new()) raise_app(APP_APPWIN);   /* a new app window comes up in front */
+        z_sync();                                       /* the stacking order: new and closed windows */
+        sync_taskbar();
+        z_focus();                                      /* the keyboard: the top window shown */
         appwin_focus(g_front_app == APP_APPWIN);
+        if (g_desk_osd && (int32_t)(timer_ms() - g_desk_osd_until) >= 0) { g_desk_osd = 0; g_force_redraw = 1; }
 
         /* Notepad and app windows have no keyboard task of their own:
          * while one is in front, keys are handed to it from here (Ctrl+T
@@ -2207,8 +2674,8 @@ static void gui_poll_body(void) {
             startmenu_wheel(ms.dz);
         } else if (ms.dz) {
             /* the wheel scrolls the window under the mouse */
-            int a = (g_front_app >= 0 && app_visible(g_front_app) && g_apps[g_front_app].contains(mx, my)) ? g_front_app : app_at(mx, my, 0);
-            if (a >= 0 && g_app_wheel[a]) g_app_wheel[a](mx, my, ms.dz);
+            int h = z_at(mx, my);
+            if ((h >> 8) == WK_APP && g_app_wheel[h & 0xFF]) g_app_wheel[h & 0xFF](mx, my, ms.dz);
         }
         if (mx < 0) mx = 0;
         if (my < 0) my = 0;
@@ -2249,18 +2716,21 @@ static void gui_poll_body(void) {
             /* right-click: the menu of whatever is under the mouse */
             ctxmenu_close();
             g_menu_open = 0;
-            int a = (g_front_app >= 0 && app_visible(g_front_app) && g_apps[g_front_app].contains(mx, my)) ? g_front_app : -1;
-            int wi = a < 0 ? term_at(mx, my) : 0;
-            if (a < 0 && !wi) a = app_at(mx, my, 0);
+            int h = my < bar_y ? z_at(mx, my) : 0;
+            int th = my < bar_y ? wm_title_at(mx, my) : 0;
             if (my >= bar_y) {
                 open_taskbar_menu(fi, mx, my);
-            } else if (a >= 0) {
+            } else if (th) {                         /* a title bar: the window's menu */
+                win_activate(th);
+                open_window_menu(th, mx, my);
+            } else if ((h >> 8) == WK_APP) {
+                int a = h & 0xFF;
                 if (a != g_front_app) raise_app(a);
                 g_apps[a].rclick(mx, my);
-            } else if (wi) {
-                bring_term_front(wi - 1);
+            } else if ((h >> 8) == WK_TERM) {
+                bring_term_front(h & 0xFF);
                 g_front_app = -1;
-                open_term_menu(wi - 1, mx, my);
+                open_term_menu(h & 0xFF, mx, my);
             } else {
                 int slot = icon_at(mx, my);
                 if (slot >= 0) open_icon_menu(slot, mx, my);
@@ -2282,6 +2752,8 @@ static void gui_poll_body(void) {
                 if (mx >= START_X && mx < START_X + START_W) {
                     if (g_menu_open) g_menu_open = 0;
                     else start_open();
+                } else if (desk_switch_at(fi, mx, my) >= 0) {
+                    desk_switch(desk_switch_at(fi, mx, my));
                 } else if (pin_at(mx, my) >= 0) {
                     pin_open(pin_at(mx, my));
                     g_menu_open = 0;
@@ -2306,21 +2778,24 @@ static void gui_poll_body(void) {
                 if (click) g_menu_open = 0;   /* a click elsewhere closes the menu */
             }
 
-            /* the app window in front of the terminals */
-            if (click && g_front_app >= 0 && app_visible(g_front_app) && g_apps[g_front_app].contains(mx, my)) {
-                g_apps[g_front_app].click(mx, my);
-                if (winframe_take_minimize()) win_minimize(WK_APP << 8 | g_front_app);
+            /* Alt+drag: the window under the mouse moves, wherever it is taken */
+            if (click && (keyboard_mods() & 4) && wm_alt_drag(mx, my)) click = 0;
+
+            /* the window under the mouse, in the one stacking order */
+            int zh = click ? z_at(mx, my) : 0;
+            if ((zh >> 8) == WK_APP) {
+                int a = zh & 0xFF;
+                if (a != g_front_app) raise_app(a);
+                g_apps[a].click(mx, my);
+                if (winframe_take_minimize()) win_minimize(WK_APP << 8 | a);
                 click = 0;
             }
 
-            /* terminal windows hit testing (front-to-back) */
-            for (int oi = TERM_WIN_MAX - 1; click && oi >= 0; oi--) {
-                int wi = g_term_order[oi];
+            if ((zh >> 8) == WK_TERM) {
+                int wi = zh & 0xFF;
                 term_win_t* w = &g_terms[wi];
-                if (!w->open || w->minimized) continue;
-
-                int title_h = 20;
-                if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w->h) {
+                int title_h = TERM_TITLE_H;
+                {
                     /* Bringing a window to front changes keyboard focus
                      * (gui_focused_vt() below), but must NOT retarget
                      * where terminal output is written - that's owned by
@@ -2340,28 +2815,22 @@ static void gui_poll_body(void) {
                     } else if (my < w->y + title_h) {
                         uint32_t now = timer_ms();
                         if (tbtn == WIN_BTN_MAX || now - w->title_click_ms < 400) {   /* maximize / restore */
-                            if (!w->maxed) {
-                                w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
-                                w->x = 0; w->y = 0; w->w = (int)fi->width; w->h = (int)fi->height - BAR_H;
-                                w->maxed = 1;
-                            } else {
-                                w->x = w->sx; w->y = w->sy; w->w = w->sw; w->h = w->sh;
-                                w->maxed = 0;
-                            }
-                            clamp_win(fi, w);
-                            term_apply_size(w);
+                            if (w->maxed) term_unsnap(fi, w);
+                            else { win_rect_t r; winframe_snap_rect('m', &r); term_snap(fi, w, &r, SNAP_MAX); }
                             w->title_click_ms = 0;
                         } else {
                             w->title_click_ms = now;
                             w->dragging = 1;
                             w->drag_dx = mx - w->x;
                             w->drag_dy = my - w->y;
+                            w->px = mx;
+                            w->py = my;
                         }
                     } else if (mx >= w->x + w->w - GRIP && my >= w->y + w->h - GRIP) {
                         w->resizing = 1;
                         w->drag_dx = w->x + w->w - mx;
                         w->drag_dy = w->y + w->h - my;
-                        w->maxed = 0;
+                        w->maxed = w->snapped = 0;
                     } else {
                         /* start a text selection (a plain click clears it) */
                         w->selecting = 1;
@@ -2370,18 +2839,6 @@ static void gui_poll_body(void) {
                         w->s_r1 = w->s_r0;
                         w->s_c1 = w->s_c0;
                     }
-                    click = 0;
-                    break;
-                }
-            }
-
-            /* an app window behind the terminals: clicking raises it */
-            if (click) {
-                int a = app_at(mx, my, 0);
-                if (a >= 0) {
-                    raise_app(a);
-                    g_apps[a].click(mx, my);
-                    if (winframe_take_minimize()) win_minimize(WK_APP << 8 | a);
                     click = 0;
                 }
             }
@@ -2427,10 +2884,28 @@ static void gui_poll_body(void) {
             if (!g_terms[i].open) continue;
             term_win_t* t = &g_terms[i];
             if (left && t->dragging) {
-                t->x = mx - t->drag_dx;
-                t->y = my - t->drag_dy;
-                t->maxed = 0;
-                clamp_win(fi, t);
+                /* snapped or maximized, dragged away: back to its own size */
+                if ((t->maxed || t->snapped) && (mx - t->px > 6 || t->px - mx > 6 || my - t->py > 6 || t->py - my > 6)) {
+                    int ow0 = t->w > 0 ? t->w : 1;
+                    t->drag_dx = t->drag_dx * t->sw / ow0;
+                    t->w = t->sw;
+                    t->h = t->sh;
+                    t->maxed = t->snapped = 0;
+                    term_apply_size(t);
+                }
+                if (!t->maxed && !t->snapped) {
+                    t->x = mx - t->drag_dx;
+                    t->y = my - t->drag_dy;
+                    clamp_win(fi, t);
+                }
+                win_rect_t r;
+                winframe_set_preview(winframe_snap_zone(mx, my, &r) ? &r : NULL);
+            }
+            if (!left && t->dragging) {          /* let go over a snap zone: it goes there */
+                win_rect_t r;
+                int z = winframe_snap_zone(mx, my, &r);
+                if (z) term_snap(fi, t, &r, z);
+                winframe_set_preview(NULL);
             }
             if (left && t->resizing) {
                 int nw = mx + t->drag_dx - t->x, nh = my + t->drag_dy - t->y;
@@ -2555,7 +3030,7 @@ int gui_focused_vt(void) {
      * slot, closed or not, so this has to skip closed ones explicitly. */
     for (int oi = TERM_WIN_MAX - 1; oi >= 0; oi--) {
         int wi = g_term_order[oi];
-        if (g_terms[wi].open && !g_terms[wi].minimized) return g_terms[wi].vt;
+        if (TERM_SHOWN(&g_terms[wi])) return g_terms[wi].vt;
     }
 
     /* No window open yet: fall back to the (hidden) console's vt0 rather
@@ -2674,6 +3149,13 @@ int gui_open_apps(void) {
 
 int gui_open_settings(void) {
     if (!gfx_available() || !g_gui_enabled) return 0;
+    do_action(ACT_SETTINGS);
+    return 1;
+}
+
+int gui_open_settings_app(const char* name) {
+    if (!gfx_available() || !g_gui_enabled) return 0;
+    settings_show_app(name);
     do_action(ACT_SETTINGS);
     return 1;
 }
@@ -2988,13 +3470,25 @@ static int kb_global(int k) {
     case 'l': do_action(ACT_LOCK); break;
     case 'r': do_action(ACT_TERMINAL); break;
     case 't': g_bar_kb = g_ntb > 0; g_bar_sel = 0; break;
-    case KEYW_DOWN: { int f = win_front(); if (f) win_minimize(f); break; }
+    case KEYW_LEFT:
+    case KEYW_RIGHT: {
+        int mods = keyboard_mods(), d = g_cur_desk + (c == KEYW_LEFT ? -1 : 1);
+        if (mods & 2) {                              /* Win+Ctrl(+Shift)+Left / Right: the desktops */
+            if (d < 0 || d >= NDESK) break;
+            int f = (mods & 1) ? wm_target(win_front()) : 0;
+            if (f) wm_to_desk(f, d);                 /* (+Shift: the front window goes along) */
+            desk_switch(d);
+            if (f) win_activate(f);
+        } else {
+            wm_arrow(c);                             /* the left / right half, and back */
+        }
+        break;
+    }
+    case KEYW_DOWN: wm_arrow(c); break;              /* restore a snapped one, else minimize */
     case KEYW_UP: {
-        mru_update();
+        if (win_front()) { wm_arrow(c); break; }     /* maximize the front window */
+        mru_update();                                /* none: the last one minimized comes back */
         for (int i = 0; i < g_nmru; i++) if (win_minimized(g_mru[i])) { win_activate(g_mru[i]); break; }
-        int t = front_term();
-        const fb_info_t* fi = fb_info();
-        if (t >= 0 && g_front_app < 0 && fi && !g_terms[t].maxed) toggle_max_term(fi, &g_terms[t]);
         break;
     }
     default:

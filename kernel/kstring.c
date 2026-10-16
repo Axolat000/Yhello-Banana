@@ -174,9 +174,10 @@ static void ob_num(outbuf_t* o, uint64_t v, int base, int upper, int neg,
     int n = 0;
     const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     if (v == 0) tmp[n++] = '0';
-    /* base is 10 or 16 only: avoid a 64-bit divide for hex */
+    /* base is 8, 10 or 16: shifts for 8 and 16, no 64-bit divide */
     while (v) {
         if (base == 16) { tmp[n++] = digits[v & 0xF]; v >>= 4; }
+        else if (base == 8) { tmp[n++] = digits[v & 7]; v >>= 3; }
         else {
             /* 64-bit /10 without libgcc when the value fits in 32 bits */
             if (v <= 0xFFFFFFFFull) {
@@ -228,6 +229,12 @@ int kvsnprintf(char* buf, size_t n, const char* fmt, __builtin_va_list ap) {
             uint64_t v = (lng >= 2) ? __builtin_va_arg(ap, unsigned long long)
                                     : (uint64_t)__builtin_va_arg(ap, unsigned int);
             ob_num(&o, v, 16, *p == 'X', 0, width, zero, left);
+            break;
+        }
+        case 'o': {                                  /* (modes: chmod, stat) */
+            uint64_t v = (lng >= 2) ? __builtin_va_arg(ap, unsigned long long)
+                                    : (uint64_t)__builtin_va_arg(ap, unsigned int);
+            ob_num(&o, v, 8, 0, 0, width, zero, left);
             break;
         }
         case 'p': {

@@ -104,6 +104,8 @@ void task_kpreempt(uintptr_t ip);       /* kernel/idt.c, every hardware interrup
  * and the kernel stack ring 3 enters on, loaded now and at every switch
  * back to it on any core; (0, 0) when the app is done */
 void task_set_user(uintptr_t cr3, uintptr_t rsp0);
+/* the calling task's FS base from now on (an app thread's TLS; 64-bit) */
+void task_set_fs(uintptr_t base);
 
 /* Real sleep: marks the calling task SLEEPING and does not resume it
  * until at least `ms` milliseconds have passed (or task_wake()). */

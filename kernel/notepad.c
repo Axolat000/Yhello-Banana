@@ -655,3 +655,6 @@ void notepad_draw(const fb_info_t* fi) {
 void notepad_fkey(int k) {
     if (k == KEYF_F1 + 2) find_next();                    /* F3, like Ctrl+G */
 }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* notepad_geom(void) { return &g_win; }

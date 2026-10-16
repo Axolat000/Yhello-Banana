@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 6.
+ * The Banana OS application interface (ABI), version 19.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 15u
+#define BANANA_API_VERSION 19u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -396,7 +396,129 @@ typedef struct banana_api {
     int   (*repo_add_source)(const char* url, const char* key_hex, int trusted, char* msg, int mcap);
     /* removes the one with this URL: 0, or -1 (msg) */
     int   (*repo_remove_source)(const char* url, char* msg, int mcap);
+
+    /* ── version 16: mapped memory (mmap, <sys/mman.h>) ────────── */
+    /* 64-bit: len bytes of addresses of the app's own (rounded up to 4 KiB
+     * pages) that get memory - zeroed - when first touched, so a big range
+     * can be reserved and used little by little. prot: BANANA_PROT_*;
+     * flags BANANA_MAP_FIXED: at addr exactly, replacing what was mapped
+     * there (otherwise addr is a hint). The address, or NULL. 32-bit:
+     * zeroed memory right away, prot not enforced. */
+    void* (*vm_map)(void* addr, unsigned long len, int prot, int flags);
+    int   (*vm_unmap)(void* addr, unsigned long len);           /* 0, or -1 */
+    /* touching a page against its protection is a bad access: 0, or -1
+     * if some of the range is not mapped */
+    int   (*vm_protect)(void* addr, unsigned long len, int prot);
+
+    /* ── version 17: threads for <pthread.h> ───────────────────── */
+    /* like thread_create, on the stack [stack, stack + size) - the app's
+     * memory (mapped, with its own guard pages), kept by it - or, with
+     * stack NULL, on size bytes of new stack (0: 1 MiB). Id, or -1 */
+    int   (*thread_start)(int (*fn)(void* arg), void* arg, void* stack, unsigned long size);
+    /* nobody will thread_join it: it is forgotten as soon as it ends; 0, -1 */
+    int   (*thread_detach)(int id);
+    /* the calling thread's thread pointer - FS on x86_64, what __thread
+     * variables are found from; -1 on the 32-bit system (no TLS there) */
+    int   (*tls_set)(void* tp);
+    /* the memory there is for apps and what is free now, in bytes */
+    void  (*mem_info)(unsigned long long* total, unsigned long long* avail);
+    /* this app's process id (getpid): no two apps since boot share one */
+    int   (*app_id)(void);
+
+    /* ── version 18: BSD sockets (<sys/socket.h>), TCP and UDP over IPv4 ── */
+    /* Linux's constants and struct sockaddr_in; a socket is a file
+     * descriptor (read, write, close work on it); errors are negative
+     * errno numbers. Waiting calls let the app be stopped meanwhile. */
+    int   (*sock_open)(int family, int type, int proto);      /* fd */
+    int   (*sock_bind)(int fd, const void* sa, int len);
+    int   (*sock_listen)(int fd, int backlog);
+    int   (*sock_accept)(int fd, void* sa, int* len);          /* a new fd */
+    int   (*sock_connect)(int fd, const void* sa, int len);
+    /* sa NULL: to the connected peer; bytes sent */
+    long  (*sock_send)(int fd, const void* buf, unsigned long len, int flags, const void* sa, int salen);
+    /* bytes received (0: the peer closed); the sender in sa if given */
+    long  (*sock_recv)(int fd, void* buf, unsigned long len, int flags, void* sa, int* salen);
+    int   (*sock_shutdown)(int fd, int how);
+    /* get (set 0) or set (1) an option: val holds *len bytes */
+    int   (*sock_opt)(int fd, int set, int level, int name, void* val, int* len);
+    int   (*sock_name)(int fd, int peer, void* sa, int* len);  /* getsockname / getpeername */
+    /* op 1: non-blocking (arg 1 on, 0 off); 2: non-blocking?; 3: bytes to read */
+    int   (*sock_ctl)(int fd, int op, int arg);
+    /* struct pollfd { int fd; short events, revents; } fds[n]: how many are
+     * ready (sockets, files, the terminal), 0 after timeout_ms (-1: none) */
+    int   (*poll)(void* fds, int n, int timeout_ms);
+    /* a host name's IPv4 address (DNS; dotted ones and localhost too) into
+     * ip[4], network order: 0, or -1 */
+    int   (*resolve)(const char* name, unsigned char* ip);
+
+    /* ── version 19: signals (<signal.h>) ──────────────────────────── */
+    /* Linux's numbers. The SDK gives the system one entry point, entry(sig,
+     * info, uc), run on the thread's stack (or its sigaltstack) with a
+     * banana_siginfo_t and a banana_ucontext_t: the registers it was
+     * stopped with, which the handler may change - returning resumes from
+     * them (sigreturn). 64-bit: a CPU fault in app code (bad access,
+     * division by zero, invalid instruction...) becomes SIGSEGV / SIGFPE /
+     * SIGILL / SIGBUS / SIGTRAP for a handler; other signals come when the
+     * thread next leaves a system call or is interrupted. 32-bit: only
+     * raise() reaches a handler (the SDK calls it itself). */
+    int   (*sig_entry)(void (*entry)(int sig, void* info, void* uc));
+    /* what sig does: BANANA_SIG_DEFAULT / IGNORE / CATCH; onstack: on the
+     * alternate stack (SA_ONSTACK) */
+    int   (*sig_action)(int sig, int disposition, int onstack);
+    /* the calling thread's blocked signals (bit sig - 1): how 0 block, 1
+     * unblock, 2 set; old gets the previous mask (either may be NULL) */
+    int   (*sig_mask)(int how, const unsigned long long* set, unsigned long long* old);
+    /* sends sig to one of the app's threads (thread id, as thread_id()), or
+     * to the app (-1: whichever thread does not block it): 0, -1 */
+    int   (*sig_send)(int thread, int sig);
+    /* the calling thread's alternate signal stack: ss {sp, flags, size},
+     * old the previous one (either may be NULL); 0, -1 */
+    int   (*sig_altstack)(const void* ss, void* old);
+    /* the signals pending for the calling thread (or the app), bit sig - 1 */
+    unsigned long long (*sig_pending)(void);
 } banana_api_t;
+
+#define BANANA_SIG_DEFAULT 0
+#define BANANA_SIG_IGNORE  1
+#define BANANA_SIG_CATCH   2
+
+/* what a signal handler gets (the SDK's siginfo_t and ucontext_t are these) */
+typedef struct {
+    int   si_signo, si_errno, si_code, __pad0;
+    void* si_addr;                     /* the address a bad access touched */
+    int   si_pid, si_uid;
+    long  si_value;
+    long  __pad1[11];
+} banana_siginfo_t;
+
+typedef struct { void* ss_sp; int ss_flags; unsigned long ss_size; } banana_stack_t;
+
+/* the registers, Linux's order for x86_64 (REG_R8 = 0 ... REG_RIP = 16) */
+typedef struct {
+    long long gregs[23];
+    void*     fpregs;                  /* -> fpregs_mem (FXSAVE format) */
+    unsigned long long __reserved[8];
+} banana_mcontext_t;
+
+typedef struct banana_ucontext {
+    unsigned long           uc_flags;
+    struct banana_ucontext* uc_link;
+    banana_stack_t          uc_stack;
+    banana_mcontext_t       uc_mcontext;
+    unsigned long long      uc_sigmask[16];    /* (the first word: signals 1-64) */
+    unsigned char           fpregs_mem[512] __attribute__((aligned(16)));
+} banana_ucontext_t;
+
+/* 1 if the running system's table has the call `field` (newer than the app?) */
+#define BANANA_HAS(api, field) \
+    ((api)->size >= (unsigned long)((const char*)&(api)->field - (const char*)(api)) + sizeof(void*))
+
+/* vm_map / vm_protect (the same values as kernel/uvm.h) */
+#define BANANA_PROT_NONE  0
+#define BANANA_PROT_READ  1
+#define BANANA_PROT_WRITE 2
+#define BANANA_PROT_EXEC  4
+#define BANANA_MAP_FIXED  1
 
 /* the app's entry point (the SDK's crt0 provides it) */
 typedef int (*banana_entry_t)(const banana_api_t* api, int argc, char** argv);

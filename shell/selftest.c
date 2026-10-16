@@ -22,6 +22,7 @@
 
 extern const uint8_t ex_systest[], ex_systest_end[];
 extern const uint8_t ex_cltest[], ex_cltest_end[];
+extern const uint8_t ex_posixtest[], ex_posixtest_end[];
 
 static int g_fail, g_ok;
 
@@ -145,10 +146,27 @@ static void t_opencl(void) {
     report("OpenCL kernel tests", rc == 0, rc < 0 ? msg : "see individual checks above");
 }
 
+/* posixtest (the POSIX layer for ported programs), from the kernel's copy */
+static void t_posix(const char* part) {
+    section("the POSIX layer: mmap (build 162), pthreads (163), sockets (164), signals (165)");
+    const char* tmp = "/tmp/posixtest.bpk";
+    char msg[160] = { 0 };
+    if (fs_write_path(tmp, ex_posixtest, (uint32_t)(ex_posixtest_end - ex_posixtest)) < 0 ||
+        pkg_install(tmp, msg, sizeof(msg)) != 0) {
+        fs_delete(tmp, 0);
+        report("install posixtest", 0, msg);
+        return;
+    }
+    fs_delete(tmp, 0);
+    char* args[] = { "posixtest", (char*)part };
+    int rc = pkg_run("posixtest", part ? 2 : 1, args, 0, msg, sizeof(msg));
+    report("POSIX checks", rc == 0, rc < 0 ? msg : "see the checks above");
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only,"browser")) {
-        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | browser | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser")) {
+        terminal_writeln("usage: selftest [ring3 | memory | limits | cores | opencl | browser [swm] | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     uint16_t ipv6_port = 80;
@@ -168,6 +186,7 @@ int selftest_cmd(int argc, char** argv) {
     terminal_writeln(only && !strcmp(only, "browser") ? (argc==3?"selftest: checking live swm.mxtpasontop.fr":"selftest: checking browser frameworks (offline)") :
                      only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
+                     only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if (only && !strcmp(only, "browser")) {
         if(argc==3) {
@@ -179,6 +198,8 @@ int selftest_cmd(int argc, char** argv) {
         }
     } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
+    } else if (only && !strcmp(only, "posix")) {
+        t_posix(argc > 2 ? argv[2] : NULL);
     } else if (only && !strcmp(only, "ipv6")) {
         section("IPv6 TCP, UDP and toggle checks");
         ipv6test_run(argc > 2 ? argv[2] : NULL, ipv6_port, report);
@@ -190,6 +211,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only) {
             t_opencl();
             browser_test_run(report);
+            t_posix(NULL);
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

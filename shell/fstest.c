@@ -71,19 +71,16 @@ static int same(const char* path, const void* data, uint32_t len, char* why, int
     return 1;
 }
 
-/* unmounts the drive behind mount mnt and lets the automount task mount it
- * again: the new mount id (its point may differ), or 0 */
+/* unmounts the volume behind mount mnt and mounts it again at the same
+ * place (its drive's other volumes stay): the new mount id, or 0 */
 static int remount(int mnt) {
-    blockdev_t* bd = NULL;
-    for (int i = 0; i < BLOCKDEV_MAX; i++) {
-        blockdev_t* b = blockdev_get(i);
-        if (b && b->mount_state == 1 && b->mnt == mnt) bd = b;
-    }
+    uint32_t base = 0;
+    blockdev_t* bd = blockdev_of_mount(mnt, &base);
+    char point[FS_PATH_LEN], err[96];
+    kstrlcpy(point, fs_mount_point(mnt), sizeof(point));
     if (!bd || !blockdev_eject(mnt)) return 0;
-    bd->mount_state = 0;                                    /* (what `mount -a` does) */
-    uint32_t t0 = timer_ms();
-    while (bd->mount_state == 0 && timer_ms() - t0 < 20000) task_sleep_ms(50);
-    return bd->mount_state == 1 ? bd->mnt : 0;
+    int m = volume_mount_at(bd, base, point, err, sizeof(err));
+    return m > 0 ? m : 0;
 }
 
 int fstest_cmd(int argc, char** argv) {

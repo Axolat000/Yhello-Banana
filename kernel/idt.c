@@ -171,12 +171,25 @@ void isr_handler(registers_t* regs) {
     uint32_t n = regs->int_no;
     if(crash_in_progress())crash_abort_nested();
 
+    /* a page an app mapped, touched for the first time (by it, or by a system
+     * call working for it): it gets its memory and the access goes on */
+    if (n == 14) {
+        uintptr_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (app_vm_fault(cr2, (uint32_t)regs->err_code)) return;
+    }
+
     /* app memory another core still knew as the kernel's: try it again */
     if (n == 14 && (regs->cs & 3) == 3) {
         uintptr_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         if (uspace_fault_is_stale(cr2, (uint32_t)regs->err_code)) return;
     }
+
+#ifdef __x86_64__
+    /* app code faulted and has a handler for it: the signal (SIGSEGV...) */
+    if (n < 32 && n != 2 && n != 8 && n != 18 && (regs->cs & 3) == 3 && app_signal_fault(regs)) return;
+#endif
 
     /* on another core it is app code that faulted: the app is stopped on
      * the boot core (kernel/task.c) - this returns only for a kernel bug */
@@ -300,7 +313,7 @@ void irq_handler(registers_t* regs) {
     if (irq >= 8) pic_outb(PIC2_CMD, 0x20);
     pic_outb(PIC1_CMD, 0x20);
     /* app code is safe to switch away from (kernel code is not) */
-    app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
+    app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3, regs);
     task_kpreempt((uintptr_t)REG_IP(regs));     /* (kernel code that may be preempted) */
 }
 
@@ -462,7 +475,7 @@ void ipi_handler(registers_t* regs) {
         /* the boot core's local APIC timer, standing in for the PIT (IRQ 0) */
         for (int i = 0; i < IRQ_CHAIN && irq_handlers[0][i]; i++) irq_handlers[0][i]();
         smp_eoi();
-        app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
+        app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3, regs);
         task_kpreempt((uintptr_t)REG_IP(regs));
         return;
     }

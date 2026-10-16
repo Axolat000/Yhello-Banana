@@ -28,6 +28,11 @@
 #include "umem.h"
 #include "uspace.h"
 #include "idt.h"
+#include "uvm.h"
+#include "meminfo.h"
+#include "hmem.h"
+#include "usock.h"
+#include "../net/net.h"
 
 #define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
@@ -42,11 +47,20 @@
 
 /* ── per-app state ─────────────────────────────────────────────────── */
 
+/* a thread's signals: blocked and pending ones (bit sig - 1), its sigaltstack */
+typedef struct {
+    uint64_t  blocked, pending;
+    uintptr_t alt_sp;
+    uint64_t  alt_size;
+    int       alt_flags;
+} sigstate_t;
+
 typedef struct {
     int      used;
     int      fidx;
     uint32_t pos;
     int      flags;
+    usock_t* sock;            /* a socket (kernel/usock.c), not a file */
 } afd_t;
 
 /* a thread an app started: a task of its own running app code on its own stack */
@@ -55,12 +69,16 @@ typedef struct {
     int       pid;             /* its task, -1 once it ended */
     int     (*fn)(void*);
     void*     arg;
-    uint8_t*  stack;           /* APP_STACK bytes (the app's memory), APP_GUARD under them */
+    uint8_t*  stack;           /* stack_size bytes (the app's memory), APP_GUARD under them */
+    size_t    stack_size;
+    int       own_stack;       /* the app gave it (thread_start): not freed here */
+    int       detached;        /* its record goes as soon as it ends (no thread_join) */
     uint8_t*  kstack;          /* 64-bit: its system calls' stack (kstack_new) */
     uintptr_t saved_sp;        /* app_enter(): where app_leave() returns to */
     int       running;         /* in app code (between app_enter() and its return) */
     int       done;
     int       ret;
+    sigstate_t sig;            /* its mask, signals sent to it, its alternate stack */
 } athread_t;
 
 typedef struct {
@@ -100,10 +118,20 @@ typedef struct {
     athread_t threads[APP_THREADS];
     int       exit_req;        /* a thread called exit() / crashed: every thread stops */
     int       exit_req_code;
+    int       seq;             /* its process id (getpid): counts the apps started since boot */
+    /* signals (version 19): what each does, where handlers start, the main
+     * thread's mask and alternate stack, signals sent to the app itself */
+    sigstate_t msig;
+    uint8_t   sig_disp[65];    /* BANANA_SIG_* */
+    uint64_t  sig_onstack;     /* bit sig - 1: on the alternate stack */
+    uint64_t  sig_pending;     /* sent to the app: the first thread not blocking one takes it */
+    uintptr_t sig_entry;       /* the SDK's entry(sig, info, uc) */
+    uintptr_t sigret_stub;     /* ... returns there: sigreturn */
 } app_proc_t;
 
 static app_proc_t g_procs[APP_MAX];
 static banana_api_t g_api;
+static sigstate_t* sig_state(app_proc_t* p);     /* (the calling thread's signals) */
 
 
 /* which app - and which of its threads - each task runs (by pid): every
@@ -202,6 +230,12 @@ static void breathe(app_proc_t* p, int force) {
         char c = keyboard_try_getchar();
         if (c == 3) {
             p->interrupted = 1;
+#ifdef __x86_64__
+            /* a SIGINT handler (or SIG_IGN) takes Ctrl+C instead */
+            if (p->sig_disp[2] == BANANA_SIG_CATCH) p->sig_pending |= 1ull << 1;
+            else if (p->sig_disp[2] == BANANA_SIG_IGNORE) {}
+            else
+#endif
             if (!p->handles_int) { terminal_writeln("^C"); leave(p, 130); }
         } else if (c) {
             key_push(p, (unsigned char)c);
@@ -241,12 +275,81 @@ void app_mem_free(int owner, void* ptr) {
     umem_free(g_procs[owner].mem, ptr);
 }
 
+#ifdef __x86_64__
+/* 1 if [ptr, ptr + n) is p's: its blocks, or what it mapped (kernel/uvm.h) */
+static int own(app_proc_t* p, const void* ptr, size_t n) {
+    return umem_owns(p->mem, ptr, n) || uvm_owns(p->us, ptr, n);
+}
+
+static int own_str(app_proc_t* p, const char* s) {
+    return umem_owns_str(p->mem, s) || uvm_owns_str(p->us, s);
+}
+#endif
+
+/* ── mmap (version 16) ─────────────────────────────────────────────────
+ * 64-bit: reserved addresses, pages on first touch, protection (uvm.h).
+ * 32-bit: no paging - zeroed app memory, protection ignored. */
+
+static void* a_vm_map(void* addr, unsigned long len, int prot, int flags) {
+    app_proc_t* p = cur();
+    if (!p || !len) return NULL;
+#ifdef __x86_64__
+    return (void*)uvm_map(p->us, p->mem, (uintptr_t)addr, len, prot, flags);
+#else
+    (void)prot;
+    if ((flags & UVM_FIXED) && addr) {                  /* only over memory it has: cleared */
+        if (!umem_owns(p->mem, addr, len)) return NULL;
+        memset(addr, 0, len);
+        return addr;
+    }
+    if (len > (256ul << 20)) return NULL;
+    void* m = umem_alloc_pages(p->mem, (len + 4095) & ~4095ul, 0);
+    if (m) memset(m, 0, (len + 4095) & ~4095ul);
+    return m;
+#endif
+}
+
+static int a_vm_unmap(void* addr, unsigned long len) {
+    app_proc_t* p = cur();
+    if (!p || !addr) return -1;
+#ifdef __x86_64__
+    return uvm_unmap(p->us, p->mem, (uintptr_t)addr, len);
+#else
+    if (!umem_owns(p->mem, addr, len)) return -1;
+    size_t whole = umem_pages_size(p->mem, addr);
+    if (whole && len >= whole) umem_free_pages(p->mem, addr, 0);   /* a whole mapping goes */
+    else memset(addr, 0, len);                          /* (part of one: it stays, cleared) */
+    return 0;
+#endif
+}
+
+static int a_vm_protect(void* addr, unsigned long len, int prot) {
+    app_proc_t* p = cur();
+    if (!p || !addr) return -1;
+#ifdef __x86_64__
+    /* its ordinary memory (malloc: a JIT making code runnable) is always
+     * readable, writable and runnable: nothing to change */
+    if (umem_owns(p->mem, addr, len ? len : 1)) return 0;
+    return uvm_protect(p->us, (uintptr_t)addr, len, prot);
+#else
+    (void)prot;
+    return umem_owns(p->mem, addr, len) ? 0 : -1;
+#endif
+}
+
+/* kernel/idt.c, every page fault (any core, either mode): a page of the
+ * running app's mmap region touched for the first time gets its memory */
+int app_vm_fault(uintptr_t addr, uint32_t err) {
+    app_proc_t* p = cur();
+    return p && p->us && uvm_fault(p->us, p->mem, addr, err);
+}
+
 /* 1 if [ptr, ptr + n) is the calling app's memory (64-bit: what a system
  * call may touch on its behalf; the 32-bit kernel does not check) */
 static int uok(const void* ptr, size_t n) {
 #ifdef __x86_64__
     app_proc_t* p = cur();
-    return p && umem_owns(p->mem, ptr, n);
+    return p && own(p, ptr, n);
 #else
     (void)ptr; (void)n;
     return 1;
@@ -256,7 +359,7 @@ static int uok(const void* ptr, size_t n) {
 static int ustr(const char* s) {
 #ifdef __x86_64__
     app_proc_t* p = cur();
-    return p && umem_owns_str(p->mem, s);
+    return p && own_str(p, s);
 #else
     (void)s;
     return 1;
@@ -405,6 +508,7 @@ static afd_t* get_fd(app_proc_t* p, int fd) {
     if (!p || fd < 3 || fd >= APP_FD_MAX + 3) return NULL;
     afd_t* f = &p->fds[fd - 3];
     if (!f->used) return NULL;
+    if (f->sock) return f;
     fs_file_t* ff = fs_file_info(f->fidx);
     if (!ff || !ff->used) return NULL;         /* deleted meanwhile */
     return f;
@@ -426,6 +530,7 @@ static int a_open(const char* path, int flags) {
         if (p->fds[i].used) continue;
         p->fds[i].used = 1;
         p->fds[i].fidx = idx;
+        p->fds[i].sock = NULL;
         p->fds[i].flags = flags ? flags : BANANA_O_READ;
         p->fds[i].pos = (flags & BANANA_O_APPEND) ? fs_file_info(idx)->size : 0;
         return i + 3;
@@ -445,6 +550,7 @@ static long a_read(int fd, void* buf, unsigned long len) {
     }
     afd_t* f = get_fd(p, fd);
     if (!f) return -1;
+    if (f->sock) return usock_recv(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, NULL);
     /* the part asked for only: a big file on the disk is not read whole */
     int n = fs_read(f->fidx, f->pos, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len);
     if (n < 0) return -1;
@@ -455,6 +561,7 @@ static long a_read(int fd, void* buf, unsigned long len) {
 
 static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len) {
     afd_t* f = get_fd(p, fd);
+    if (f && f->sock) return usock_send(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, 0);
     if (!f || !(f->flags & (BANANA_O_WRITE | BANANA_O_APPEND))) return -1;
     fs_file_t* ff = fs_get_file(f->fidx);
     if (!ff) return -1;
@@ -481,7 +588,7 @@ static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len
 
 static long a_seek(int fd, long off, int whence) {
     afd_t* f = get_fd(cur(), fd);
-    if (!f) return -1;
+    if (!f || f->sock) return -1;
     long base = whence == BANANA_SEEK_CUR ? (long)f->pos : whence == BANANA_SEEK_END ? (long)fs_file_info(f->fidx)->size : 0;
     long np = base + off;
     if (np < 0) return -1;
@@ -496,7 +603,166 @@ static int a_close(int fd) {
         if (p && fd >= 3 && fd < APP_FD_MAX + 3) p->fds[fd - 3].used = 0;
         return -1;
     }
+    if (f->sock) { usock_close(f->sock); f->sock = NULL; }
     f->used = 0;
+    return 0;
+}
+
+/* ── sockets (version 18, kernel/usock.c) ──────────────────────────────
+ * In the app's file descriptors, so read / write / close work on them.
+ * Errors are negative errno numbers. */
+
+#define SOCK_NONBLOCK_F 04000
+#define SOCK_CLOEXEC_F  02000000
+
+/* waiting in a socket call: the app can be stopped, the desktop paints */
+static void sock_breathe(void) { breathe(cur(), 1); }
+
+static usock_t* sock_of(int fd) {
+    afd_t* f = get_fd(cur(), fd);
+    return f ? f->sock : NULL;
+}
+
+/* a descriptor for socket s: its number, or -EMFILE (s closed) */
+static int sock_fd(app_proc_t* p, usock_t* s) {
+    for (int i = 0; i < APP_FD_MAX; i++) {
+        if (p->fds[i].used) continue;
+        memset(&p->fds[i], 0, sizeof(afd_t));
+        p->fds[i].used = 1;
+        p->fds[i].fidx = -1;
+        p->fds[i].flags = BANANA_O_READ | BANANA_O_WRITE;
+        p->fds[i].sock = s;
+        return i + 3;
+    }
+    usock_close(s);
+    return -24;                                         /* EMFILE */
+}
+
+static int a_sock_open(int family, int type, int proto) {
+    app_proc_t* p = cur();
+    (void)proto;
+    if (!p) return -22;
+    usock_set_wait(sock_breathe);
+    int err = 0;
+    usock_t* s = usock_new(family, type & ~(SOCK_NONBLOCK_F | SOCK_CLOEXEC_F), &err);
+    if (!s) return err;
+    if (type & SOCK_NONBLOCK_F) usock_set_nonblock(s, 1);
+    return sock_fd(p, s);
+}
+
+static int a_sock_bind(int fd, const void* sa, int len) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_bind(s, sa, len) : -88;            /* ENOTSOCK */
+}
+
+static int a_sock_listen(int fd, int backlog) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_listen(s, backlog) : -88;
+}
+
+static int a_sock_accept(int fd, void* sa, int* len) {
+    app_proc_t* p = cur();
+    usock_t* s = sock_of(fd);
+    if (!p || !s) return -88;
+    if (len && !uok(len, sizeof(int))) return -14;      /* EFAULT */
+    if (sa && (!len || *len < 0 || !uok(sa, (size_t)*len))) return -14;
+    int err = 0;
+    usock_t* n = usock_accept(s, sa, len, &err);
+    return n ? sock_fd(p, n) : err;
+}
+
+static int a_sock_connect(int fd, const void* sa, int len) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_connect(s, sa, len) : -88;
+}
+
+static long a_sock_send(int fd, const void* buf, unsigned long len, int flags, const void* sa, int salen) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (sa && (salen < 0 || !uok(sa, (size_t)salen))) return -14;
+    return usock_send(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
+}
+
+static long a_sock_recv(int fd, void* buf, unsigned long len, int flags, void* sa, int* salen) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (salen && !uok(salen, sizeof(int))) return -14;
+    if (sa && (!salen || *salen < 0 || !uok(sa, (size_t)*salen))) return -14;
+    return usock_recv(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
+}
+
+static int a_sock_shutdown(int fd, int how) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_shutdown(s, how) : -88;
+}
+
+static int a_sock_opt(int fd, int set, int level, int name, void* val, int* len) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (!len || !uok(len, sizeof(int)) || *len < 0 || (val && !uok(val, (size_t)*len))) return -14;
+    return usock_opt(s, set, level, name, val, len);
+}
+
+static int a_sock_name(int fd, int peer, void* sa, int* len) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (!len || !uok(len, sizeof(int)) || *len < 0 || (sa && !uok(sa, (size_t)*len))) return -14;
+    return usock_name(s, peer, sa, len);
+}
+
+/* op 1: non-blocking on (arg 1) / off; 2: is it?; 3: bytes waiting (FIONREAD) */
+static int a_sock_ctl(int fd, int op, int arg) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (op == 1) { usock_set_nonblock(s, arg); return 0; }
+    if (op == 2) return usock_nonblock(s);
+    if (op == 3) return usock_nread(s);
+    return -22;
+}
+
+/* poll(): struct pollfd { int fd; short events, revents; } x n; how many
+ * are ready, 0 after timeout_ms (-1: no limit) */
+typedef struct { int fd; short events, revents; } apollfd_t;
+#define APOLLIN   0x1
+#define APOLLOUT  0x4
+#define APOLLNVAL 0x20
+
+static int a_poll(void* fds, int n, int timeout_ms) {
+    app_proc_t* p = cur();
+    if (!p || n < 0 || n > 4096 || (n && !uok(fds, (size_t)n * sizeof(apollfd_t)))) return -22;
+    apollfd_t* pf = (apollfd_t*)fds;
+    uint32_t start = timer_ms();
+    for (;;) {
+        int ready = 0;
+        for (int i = 0; i < n; i++) {
+            int fd = pf[i].fd, ev = pf[i].events, r = 0;
+            if (fd < 0) { pf[i].revents = 0; continue; }
+            if (fd == 0) r = p->kq_head != p->kq_tail ? APOLLIN : 0;
+            else if (fd <= 2) r = APOLLOUT;
+            else {
+                afd_t* f = get_fd(p, fd);
+                if (!f) r = APOLLNVAL;
+                else if (f->sock) r = usock_poll(f->sock, ev);
+                else r = (APOLLIN | APOLLOUT) & ev;     /* (a file is always ready) */
+            }
+            pf[i].revents = (short)r;
+            if (r) ready++;
+        }
+        if (ready || !timeout_ms) return ready;
+        if (timeout_ms > 0 && timer_ms() - start >= (uint32_t)timeout_ms) return 0;
+        net_wait(10);
+        breathe(p, 1);
+    }
+}
+
+/* a host name (or a dotted address, or localhost): its IPv4 address in
+ * ip[4] (network order); 0, or -1 if it could not be found */
+static int a_resolve(const char* name, unsigned char* ip) {
+    if (!name || !ip || !uok(ip, 4)) return -1;
+    ip4_t a = 0;
+    if (dns_resolve(name, &a, 5000) != NET_OK) return -1;   /* (dotted and localhost too) */
+    ip[0] = (unsigned char)(a >> 24); ip[1] = (unsigned char)(a >> 16);
+    ip[2] = (unsigned char)(a >> 8);  ip[3] = (unsigned char)a;
     return 0;
 }
 
@@ -522,11 +788,11 @@ static int a_stat(const char* path, banana_stat_t* st) {
 }
 
 static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
-    static int idx[FS_MAX_FILES];
+    static int idx[FS_LIST_MAX];
     if (!path || !ent || index < 0) return -1;
-    int nd = fs_list_dirs(path, idx, FS_MAX_DIRS);
+    int nd = fs_list_dirs(path, idx, FS_LIST_MAX);
     if (nd < 0) return -1;
-    if (index < nd && index < FS_MAX_DIRS) {
+    if (index < nd && index < FS_LIST_MAX) {
         const fs_dir_t* d = fs_get_dir(idx[index]);
         if (!d) return -1;
         kstrlcpy(ent->name, d->name, sizeof(ent->name));
@@ -535,8 +801,8 @@ static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
         return 0;
     }
     index -= nd;
-    int nf = fs_list_files(path, idx, FS_MAX_FILES);
-    if (index >= nf || index >= FS_MAX_FILES) return -1;
+    int nf = fs_list_files(path, idx, FS_LIST_MAX);
+    if (index >= nf || index >= FS_LIST_MAX) return -1;
     fs_file_t* f = fs_file_info(idx[index]);
     kstrlcpy(ent->name, f->name, sizeof(ent->name));
     ent->size = f->size;
@@ -560,6 +826,8 @@ static int a_chdir(const char* path) {
 
 static unsigned int a_ticks(void) { return timer_ms(); }
 
+static int sig_waiting(app_proc_t* p);
+
 static void a_sleep(unsigned int ms) {
     app_proc_t* p = cur();
     uint32_t end = timer_ms() + ms;
@@ -573,6 +841,7 @@ static void a_sleep(unsigned int ms) {
          * (it yields) would hand the processor to the busy tasks again */
         if ((int32_t)(end - timer_ms()) <= 0) break;
         breathe(p, 0);                      /* (every 20 ms: Ctrl+C, End task, painting) */
+        if (p && sig_waiting(p)) break;     /* (a signal ends the sleep, as EINTR does) */
     }
 }
 
@@ -1041,17 +1310,18 @@ static void kstack_free(uint8_t* m) {
 
 static uintptr_t kstack_top(const uint8_t* m) { return (uintptr_t)m + 4096 + APP_KSTACK; }
 
-/* runs fn(a0, a1, a2) in ring 3 on the app's stack (stack .. stack +
- * APP_STACK) until it returns or the app ends: its exit code */
+/* runs fn(a0, a1, a2) in ring 3 on the stack [stack, stack + size) until
+ * it returns or the app ends: its exit code */
 static int enter_user(app_proc_t* p, uintptr_t fn, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                      uint8_t* stack, uint8_t* kstack, uintptr_t* saved_sp) {
+                      uint8_t* stack, size_t size, uint8_t* kstack, uintptr_t* saved_sp) {
     /* where fn returns to: a system call that ends the thread (at 8 mod 16,
      * as after a call) */
-    uintptr_t usp = (uintptr_t)stack + APP_STACK - 8;
-    *(uintptr_t*)usp = p->ret_stub;
+    uintptr_t usp = (((uintptr_t)stack + size) & ~(uintptr_t)15) - 8;
     task_set_user(uspace_cr3(p->us), kstack_top(kstack));
+    *(uintptr_t*)usp = p->ret_stub;         /* (a stack it mapped: its tables are loaded now) */
     int rc = app_enter_user(fn, a0, a1, a2, usp, saved_sp);
     task_set_user(0, 0);                    /* the kernel's tables: the app's may go now */
+    task_set_fs(0);
     return rc;
 }
 #else
@@ -1063,7 +1333,7 @@ static int thread_tramp(void* arg) {
 
 /* a thread's stacks back to the app / the kernel */
 static void thread_free(app_proc_t* p, athread_t* t) {
-    umem_free_pages(p->mem, t->stack, APP_GUARD);
+    if (!t->own_stack) umem_free_pages(p->mem, t->stack, APP_GUARD);
 #ifdef __x86_64__
     kstack_free(t->kstack);
 #endif
@@ -1079,9 +1349,9 @@ static void thread_entry(void) {
     else task_set_background();
     t->running = 1;
 #ifdef __x86_64__
-    t->ret = enter_user(p, (uintptr_t)t->fn, (uintptr_t)t->arg, 0, 0, t->stack, t->kstack, &t->saved_sp);
+    t->ret = enter_user(p, (uintptr_t)t->fn, (uintptr_t)t->arg, 0, 0, t->stack, t->stack_size, t->kstack, &t->saved_sp);
 #else
-    t->ret = app_enter(thread_tramp, t, t->stack + APP_STACK, &t->saved_sp);
+    t->ret = app_enter(thread_tramp, t, t->stack + t->stack_size, &t->saved_sp);
 #endif
     t->running = 0;
     /* The task ends now and its slot (and pid) goes to the next task
@@ -1092,18 +1362,35 @@ static void thread_entry(void) {
      * its old stack - both apps crashed, and then the kernel. */
     pid_clear(t->pid, p->id);
     t->pid = -1;
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
     t->done = 1;
+    int gone = t->detached;                 /* nobody will join it: its record goes now */
+    __asm__ volatile("push %0; popf" :: "r"(f) : "memory", "cc");
+    if (gone) { thread_free(p, t); t->used = 0; }
 }
 
-static int a_thread_create(int (*fn)(void*), void* arg) {
+/* a new thread running fn(arg): on stack [stack, stack + size) if the app
+ * gives one (its memory, kept by it), else on size bytes (0: APP_STACK)
+ * of new memory with guard pages under it; its id, or -1 */
+static int thread_new(int (*fn)(void*), void* arg, void* stack, unsigned long size) {
     app_proc_t* p = cur();
     if (!p || !fn || p->exit_req || !uok((const void*)fn, 1)) return -1;
+    if (stack ? (size < 16384 || !uok(stack, size)) : size > (256ul << 20)) return -1;
     athread_t* t = NULL;
     int id = -1;
     for (int i = 0; i < APP_THREADS; i++) if (!p->threads[i].used) { t = &p->threads[i]; id = i; break; }
     if (!t) return -1;
     memset(t, 0, sizeof(*t));
-    t->stack = (uint8_t*)umem_alloc_pages(p->mem, APP_STACK, APP_GUARD);
+    t->sig.blocked = sig_state(p)->blocked;     /* (a new thread starts with its creator's mask) */
+    if (stack) {
+        t->stack = (uint8_t*)stack;
+        t->stack_size = size;
+        t->own_stack = 1;
+    } else {
+        t->stack_size = size ? (size + 4095) & ~4095ul : APP_STACK;
+        t->stack = (uint8_t*)umem_alloc_pages(p->mem, t->stack_size, APP_GUARD);
+    }
 #ifdef __x86_64__
     t->kstack = kstack_new();
     if (!t->kstack) { thread_free(p, t); return -1; }
@@ -1130,6 +1417,148 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
     pid_set(pid, p->id, id);
     return id + 1;
 }
+
+static int a_thread_create(int (*fn)(void*), void* arg) { return thread_new(fn, arg, NULL, 0); }
+
+static int a_thread_start(int (*fn)(void*), void* arg, void* stack, unsigned long size) {
+    return thread_new(fn, arg, stack, size);
+}
+
+/* nobody will thread_join it: its record (and stack) go when it ends */
+static int a_thread_detach(int id) {
+    app_proc_t* p = cur();
+    if (!p || id < 1 || id > APP_THREADS) return -1;
+    athread_t* t = &p->threads[id - 1];
+    if (!t->used || t->detached) return -1;
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    t->detached = 1;
+    int done = t->done;
+    __asm__ volatile("push %0; popf" :: "r"(f) : "memory", "cc");
+    if (done) { thread_free(p, t); t->used = 0; }
+    return 0;
+}
+
+/* the calling thread's thread pointer: FS base (64-bit TLS, <pthread.h>) */
+static int a_tls_set(void* tp) {
+#ifdef __x86_64__
+    if (!cur()) return -1;
+    task_set_fs((uintptr_t)tp);
+    return 0;
+#else
+    (void)tp;
+    return -1;
+#endif
+}
+
+/* ── signals (version 19): the calls ──────────────────────────────────── */
+
+static sigstate_t* sig_state(app_proc_t* p) {
+    athread_t* t = cur_thread(p);
+    return t ? &t->sig : &p->msig;
+}
+
+static int a_sig_entry(void (*entry)(int, void*, void*)) {
+    app_proc_t* p = cur();
+    if (!p || (entry && !uok((const void*)entry, 1))) return -1;
+    p->sig_entry = (uintptr_t)entry;
+    return 0;
+}
+
+static int a_sig_action(int sig, int disp, int onstack) {
+    app_proc_t* p = cur();
+    if (!p || sig < 1 || sig > 64 || disp < 0 || disp > 2) return -1;
+    if ((sig == 9 || sig == 19) && disp) return -1;             /* SIGKILL, SIGSTOP: never */
+    p->sig_disp[sig] = (uint8_t)disp;
+    if (onstack) p->sig_onstack |= 1ull << (sig - 1);
+    else p->sig_onstack &= ~(1ull << (sig - 1));
+    return 0;
+}
+
+static int a_sig_mask(int how, const unsigned long long* set, unsigned long long* old) {
+    app_proc_t* p = cur();
+    if (!p || (set && !uok(set, 8)) || (old && !uok(old, 8))) return -1;
+    sigstate_t* st = sig_state(p);
+    if (old) *old = st->blocked;
+    if (!set) return 0;
+    uint64_t s = *set & ~((1ull << 8) | (1ull << 18));         /* (SIGKILL, SIGSTOP) */
+    if (how == 0) st->blocked |= s;
+    else if (how == 1) st->blocked &= ~s;
+    else if (how == 2) st->blocked = s;
+    else return -1;
+    return 0;
+}
+
+/* to thread id (thread_id()'s numbering), or the app (-1); it is
+ * delivered when that thread next goes back to its code */
+static int a_sig_send(int thread, int sig) {
+    app_proc_t* p = cur();
+    if (!p || sig < 0 || sig > 64) return -1;
+    if (thread < -1 || thread > APP_THREADS) return -1;
+    sigstate_t* st = thread == -1 ? NULL : thread == 0 ? &p->msig : &p->threads[thread - 1].sig;
+    if (thread > 0 && (!p->threads[thread - 1].used || p->threads[thread - 1].done)) return -1;
+    if (!sig) return 0;                                          /* (only: does it exist?) */
+#ifdef __x86_64__
+    if (st) st->pending |= 1ull << (sig - 1);
+    else p->sig_pending |= 1ull << (sig - 1);
+    /* a thread sleeping in wait() looks at its signals (EINTR-like wake) */
+    if (thread > 0 && p->threads[thread - 1].pid >= 0) task_wake(p->threads[thread - 1].pid);
+    else if (thread == 0 || thread == -1) task_wake(p->pid);
+    return 0;
+#else
+    (void)st;
+    return -1;                                                   /* (32-bit: raise() only, in the SDK) */
+#endif
+}
+
+static int a_sig_altstack(const void* ss, void* old) {
+    app_proc_t* p = cur();
+    if (!p || (ss && !uok(ss, sizeof(banana_stack_t))) || (old && !uok(old, sizeof(banana_stack_t)))) return -1;
+    sigstate_t* st = sig_state(p);
+    if (old) {
+        banana_stack_t* o = (banana_stack_t*)old;
+        o->ss_sp = (void*)st->alt_sp;
+        o->ss_size = st->alt_size;
+        o->ss_flags = st->alt_size ? 0 : 2;                      /* SS_DISABLE */
+    }
+    if (ss) {
+        const banana_stack_t* n = (const banana_stack_t*)ss;
+        if (n->ss_flags & 2) { st->alt_sp = 0; st->alt_size = 0; return 0; }
+        if (n->ss_size < 2048 || !uok(n->ss_sp, n->ss_size)) return -1;
+        st->alt_sp = (uintptr_t)n->ss_sp;
+        st->alt_size = n->ss_size;
+    }
+    return 0;
+}
+
+static unsigned long long a_sig_pending(void) {
+    app_proc_t* p = cur();
+    if (!p) return 0;
+    return sig_state(p)->pending | p->sig_pending;
+}
+
+/* 1 if the calling thread has a signal to take now (a wait should end) */
+static int sig_waiting(app_proc_t* p) {
+#ifdef __x86_64__
+    sigstate_t* st = sig_state(p);
+    return ((st->pending | p->sig_pending) & ~st->blocked) != 0;
+#else
+    (void)p;
+    return 0;                                   /* (32-bit: nothing is delivered) */
+#endif
+}
+
+/* the computer's memory for apps, in bytes: what there is and what is free
+ * (sysconf(_SC_PHYS_PAGES) - a Java heap is sized from it) */
+static void a_mem_info(unsigned long long* total, unsigned long long* avail) {
+    meminfo_t mi;
+    meminfo_get(&mi);
+    uint64_t ht = hmem_total_bytes(), hu = hmem_used_bytes();
+    if (total) *total = (uint64_t)mi.total_kb * 1024 + ht;
+    if (avail) *avail = (uint64_t)mi.avail_kb * 1024 + (ht > hu ? ht - hu : 0);
+}
+
+static int a_app_id(void) { app_proc_t* p = cur(); return p ? p->seq : -1; }
 
 static int a_thread_join(int id) {
     app_proc_t* p = cur();
@@ -1184,6 +1613,7 @@ static int a_wait(volatile int* addr, int expected, int timeout_ms) {
         if (*addr != expected) return 0;
         if (timeout_ms >= 0 && (int32_t)(timer_ms() - end) >= 0) return 1;
         breathe(p, 0);                      /* (every 20 ms) */
+        if (sig_waiting(p)) return 0;       /* a signal for it: it goes to the handler first */
         if (*addr != expected) return 0;
         /* registered only while asleep: if the app is stopped in breathe()
          * no stale entry is left behind; a wake in between costs <= 10 ms */
@@ -1207,7 +1637,11 @@ static int a_wake(volatile int* addr, int count) {
  * own code was running (not inside the kernel), switching to another task
  * is safe - so a busy app or thread cannot freeze the desktop, and the
  * threads of an app share the CPU. An app asked to stop is stopped here. */
-void app_preempt(uintptr_t ip, int from_user) {
+#ifdef __x86_64__
+static void sig_preempt(app_proc_t* p, void* regs);
+#endif
+
+void app_preempt(uintptr_t ip, int from_user, void* regs) {
     app_proc_t* p = cur();
 #ifdef __x86_64__
     /* (anything in ring 3 is the app's: its code, and code it made - tcc, OpenCL) */
@@ -1225,6 +1659,11 @@ void app_preempt(uintptr_t ip, int from_user) {
      * that draws it), notice Ctrl+C / End task, let the other tasks run */
     breathe(p, 0);
     task_maybe_yield();                     /* slice over, or a woken task waits (task_should_yield) */
+#ifdef __x86_64__
+    sig_preempt(p, regs);                   /* signals sent to it: to their handlers */
+#else
+    (void)regs;
+#endif
     if (p->has_term) terminal_vt_set_active(p->vt);
     /* a free processor core takes the app code from here (kernel/task.h):
      * nothing of the kernel may run after this - it may be on that core now */
@@ -1376,6 +1815,33 @@ static void spec_init(void) {
     SPEC(repo_sources, "ii", 0);        /* out: checked in it */
     SPEC(repo_add_source, "ssibi", 0);
     SPEC(repo_remove_source, "sbi", 0);
+    SPEC(vm_map, "iiii", 0);            /* (addresses: checked in uvm) */
+    SPEC(vm_unmap, "ii", 0);
+    SPEC(vm_protect, "iii", 0);
+    SPEC(thread_start, "iiii", 0);      /* fn, stack: checked in it */
+    SPEC(thread_detach, "i", 0);
+    SPEC(tls_set, "i", 0);              /* (only loaded into FS: the app's own business) */
+    SPEC(mem_info, "LL", 0);
+    SPEC(app_id, "", 0);
+    SPEC(sock_open, "iii", 0);
+    SPEC(sock_bind, "ibi", 0);
+    SPEC(sock_listen, "ii", 0);
+    SPEC(sock_accept, "iii", 0);          /* sa, len: checked in it */
+    SPEC(sock_connect, "ibi", 0);
+    SPEC(sock_send, "iBiiii", 0);         /* sa: checked in it */
+    SPEC(sock_recv, "iBiiii", 0);         /* sa, salen: checked in it */
+    SPEC(sock_shutdown, "ii", 0);
+    SPEC(sock_opt, "iiiiii", 0);          /* val, len: checked in it */
+    SPEC(sock_name, "iiii", 0);           /* sa, len: checked in it */
+    SPEC(sock_ctl, "iii", 0);
+    SPEC(poll, "iii", 0);                 /* fds: checked in it */
+    SPEC(resolve, "si", 0);               /* ip: checked in it */
+    SPEC(sig_entry, "i", 0);              /* checked in it */
+    SPEC(sig_action, "iii", 0);
+    SPEC(sig_mask, "iii", 0);             /* checked in it */
+    SPEC(sig_send, "ii", 0);
+    SPEC(sig_altstack, "ii", 0);          /* checked in it */
+    SPEC(sig_pending, "", 0);
 
     LOCAL(ticks_ms, LOCAL_YES);
     LOCAL(cpu_count, LOCAL_YES);
@@ -1387,6 +1853,12 @@ static void spec_init(void) {
     LOCAL(draw_text, LOCAL_YES);
     LOCAL(wake, LOCAL_YES);             /* (task_wake only moves a deadline: any core may) */
     LOCAL(wait, LOCAL_WAIT);
+    LOCAL(vm_map, LOCAL_YES);           /* (its own tables and memory, under their locks) */
+    LOCAL(vm_unmap, LOCAL_YES);
+    LOCAL(vm_protect, LOCAL_YES);
+    LOCAL(app_id, LOCAL_YES);
+    LOCAL(sig_mask, LOCAL_YES);           /* (the calling thread's own state) */
+    LOCAL(sig_pending, LOCAL_YES);
 }
 
 /* the pointers of a call, against the app's memory (NULL is left to the call) */
@@ -1396,7 +1868,7 @@ static int args_ok(app_proc_t* p, const sysspec_t* sp, const uint64_t* a) {
         if (!ptr) continue;
         size_t n;
         switch (sp->args[i]) {
-        case 's': if (!umem_owns_str(p->mem, (const char*)ptr)) return 0; continue;
+        case 's': if (!own_str(p, (const char*)ptr)) return 0; continue;
         case 'b': n = (int32_t)a[i + 1] > 0 ? (size_t)(int32_t)a[i + 1] : 1; break;
         case 'B': n = a[i + 1] ? (size_t)a[i + 1] : 1; if (a[i + 1] >> 32) return 0; break;
         case 'I': n = 4; break;
@@ -1404,7 +1876,7 @@ static int args_ok(app_proc_t* p, const sysspec_t* sp, const uint64_t* a) {
         case 'o': n = sp->osize; break;
         default: continue;
         }
-        if (!umem_owns(p->mem, ptr, n)) return 0;
+        if (!own(p, ptr, n)) return 0;
     }
     return 1;
 }
@@ -1416,6 +1888,158 @@ typedef struct {
     uint64_t int_no, err_code;
     uint64_t rip, cs, rflags, rsp, ss;
 } sysframe_t;
+
+/* ── signals (64-bit delivery) ─────────────────────────────────────────
+ * A signal for a handler is delivered by changing the registers a thread
+ * goes back to ring 3 with: a frame (siginfo, the registers it had in a
+ * ucontext, its FPU/SSE state) is put on its stack - or its alternate
+ * stack - and it resumes at the SDK's entry point, which calls the handler
+ * and returns to the sigreturn stub: the kernel then takes the registers
+ * back from the frame (maybe changed by the handler). */
+
+#define SYS_SIGRETURN (API_SLOTS + 1)
+
+static void __attribute__((noreturn)) bad_call(app_proc_t* p, uint64_t slot, const char* why);
+
+/* Linux's register order in mcontext gregs */
+enum { G_R8, G_R9, G_R10, G_R11, G_R12, G_R13, G_R14, G_R15, G_RDI, G_RSI, G_RBP, G_RBX, G_RDX,
+       G_RAX, G_RCX, G_RSP, G_RIP, G_EFL, G_CSGSFS, G_ERR, G_TRAPNO, G_OLDMASK, G_CR2 };
+
+typedef struct {
+    banana_siginfo_t  info;
+    banana_ucontext_t uc;
+} sigbody_t;
+
+static sigstate_t* sigst(app_proc_t* p) {
+    athread_t* t = cur_thread(p);
+    return t ? &t->sig : &p->msig;
+}
+
+/* sig for a handler now (the thread's registers in r): 1 if delivered */
+static int sig_deliver(app_proc_t* p, sysframe_t* r, int sig, int code, uintptr_t addr, uint32_t trapno) {
+    sigstate_t* st = sigst(p);
+    if (!p->sig_entry || p->sig_disp[sig] != BANANA_SIG_CATCH) return 0;
+    uint64_t sp = r->rsp;
+    int on_alt = st->alt_size && sp - st->alt_sp < st->alt_size;
+    if (((p->sig_onstack >> (sig - 1)) & 1) && st->alt_size && !on_alt) sp = st->alt_sp + st->alt_size;
+    else sp -= 128;                                      /* (past any red zone) */
+    uint64_t body_at = (sp - sizeof(sigbody_t)) & ~15ull;
+    uint64_t top = body_at - 8;                          /* the return address: as after a call */
+    if (!uvm_user_writable(p->us, p->mem, (uintptr_t)top, sizeof(sigbody_t) + 8)) return 0;
+    sigbody_t* b = (sigbody_t*)(uintptr_t)body_at;
+    memset(b, 0, sizeof(*b));
+    b->info.si_signo = sig;
+    b->info.si_code = code;
+    b->info.si_addr = (void*)addr;
+    b->info.si_pid = p->seq;
+    b->info.si_uid = 1000;
+    long long* g = b->uc.uc_mcontext.gregs;
+    g[G_R8] = (long long)r->r8;   g[G_R9] = (long long)r->r9;   g[G_R10] = (long long)r->r10; g[G_R11] = (long long)r->r11;
+    g[G_R12] = (long long)r->r12; g[G_R13] = (long long)r->r13; g[G_R14] = (long long)r->r14; g[G_R15] = (long long)r->r15;
+    g[G_RDI] = (long long)r->rdi; g[G_RSI] = (long long)r->rsi; g[G_RBP] = (long long)r->rbp; g[G_RBX] = (long long)r->rbx;
+    g[G_RDX] = (long long)r->rdx; g[G_RAX] = (long long)r->rax; g[G_RCX] = (long long)r->rcx; g[G_RSP] = (long long)r->rsp;
+    g[G_RIP] = (long long)r->rip; g[G_EFL] = (long long)r->rflags; g[G_CSGSFS] = (long long)r->cs;
+    g[G_ERR] = (long long)r->err_code; g[G_TRAPNO] = trapno; g[G_CR2] = (long long)addr;
+    b->uc.uc_mcontext.fpregs = b->uc.fpregs_mem;
+    b->uc.uc_sigmask[0] = st->blocked;
+    b->uc.uc_stack.ss_sp = (void*)st->alt_sp;
+    b->uc.uc_stack.ss_size = st->alt_size;
+    b->uc.uc_stack.ss_flags = st->alt_size ? (on_alt ? 1 : 0) : 2;     /* SS_ONSTACK / SS_DISABLE */
+    __asm__ volatile("fxsave64 (%0)" :: "r"(b->uc.fpregs_mem) : "memory");   /* (the app's: the kernel has no FPU code) */
+    *(uint64_t*)(uintptr_t)top = p->sigret_stub;
+    st->blocked |= 1ull << (sig - 1);                    /* (the SDK's entry sets sa_mask) */
+    r->rip = p->sig_entry;
+    r->rsp = top;
+    r->rdi = (uint64_t)sig;
+    r->rsi = (uint64_t)(uintptr_t)&b->info;
+    r->rdx = (uint64_t)(uintptr_t)&b->uc;
+    r->rax = 0;
+    r->rflags &= ~0x500ull;                              /* TF and DF off, as the ABI wants */
+    return 1;
+}
+
+/* the registers back from a handler's frame (sigreturn) */
+static void sig_return(app_proc_t* p, sysframe_t* r) {
+    sigbody_t* b = (sigbody_t*)(uintptr_t)r->rsp;        /* (the handler's ret popped the stub's address) */
+    if (!own(p, b, sizeof(*b))) bad_call(p, SYS_SIGRETURN, "a signal frame that is not its own");
+    const long long* g = b->uc.uc_mcontext.gregs;
+    r->r8 = (uint64_t)g[G_R8];   r->r9 = (uint64_t)g[G_R9];   r->r10 = (uint64_t)g[G_R10]; r->r11 = (uint64_t)g[G_R11];
+    r->r12 = (uint64_t)g[G_R12]; r->r13 = (uint64_t)g[G_R13]; r->r14 = (uint64_t)g[G_R14]; r->r15 = (uint64_t)g[G_R15];
+    r->rdi = (uint64_t)g[G_RDI]; r->rsi = (uint64_t)g[G_RSI]; r->rbp = (uint64_t)g[G_RBP]; r->rbx = (uint64_t)g[G_RBX];
+    r->rdx = (uint64_t)g[G_RDX]; r->rax = (uint64_t)g[G_RAX]; r->rcx = (uint64_t)g[G_RCX]; r->rsp = (uint64_t)g[G_RSP];
+    r->rip = (uint64_t)g[G_RIP];
+    /* only the arithmetic flags, DF, TF and AC are the app's to set */
+    const uint64_t user = 0x40DD5ull;
+    r->rflags = (r->rflags & ~user) | ((uint64_t)g[G_EFL] & user);
+    /* the FPU/SSE state: MXCSR's reserved bits would fault in fxrstor */
+    *(uint32_t*)(b->uc.fpregs_mem + 24) &= 0xFFBFu;
+    __asm__ volatile("fxrstor64 (%0)" :: "r"(b->uc.fpregs_mem) : "memory");
+    sigstate_t* st = sigst(p);
+    st->blocked = b->uc.uc_sigmask[0] & ~((1ull << 8) | (1ull << 18));    /* (never SIGKILL, SIGSTOP) */
+}
+
+/* a pending signal the thread does not block, taken off the list: 0 if none */
+static int sig_take(app_proc_t* p, sigstate_t* st) {
+    uint64_t ready = (st->pending | p->sig_pending) & ~st->blocked;
+    if (!ready) return 0;
+    int sig = __builtin_ctzll(ready) + 1;
+    uint64_t bit = 1ull << (sig - 1);
+    if (st->pending & bit) st->pending &= ~bit;
+    else p->sig_pending &= ~bit;
+    return sig;
+}
+
+/* the thread goes back to ring 3 with registers r: its pending signals now */
+static void sig_check(app_proc_t* p, sysframe_t* r) {
+    for (int guard = 0; guard < 64; guard++) {
+        sigstate_t* st = sigst(p);
+        int sig = sig_take(p, st);
+        if (!sig) return;
+        int d = p->sig_disp[sig];
+        if (d == BANANA_SIG_CATCH && sig_deliver(p, r, sig, -6 /* SI_TKILL */, 0, 0)) return;
+        if (d == BANANA_SIG_IGNORE) continue;
+        /* the default: these are ignored, the rest end the app */
+        if (sig == 17 || sig == 18 || sig == 23 || sig == 28) continue;   /* CHLD CONT URG WINCH */
+        ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: ended by signal %d", p->name, sig);
+        leave(p, 128 + sig);
+    }
+}
+
+/* kernel/idt.c, a CPU exception in app code (ring 3): 1 if it went to the
+ * app's handler as a signal (the CPU resumes there), 0 to stop the app */
+int app_signal_fault(void* regs) {
+    sysframe_t* r = (sysframe_t*)regs;
+    app_proc_t* p = cur();
+    if (!p || !p->sig_entry || (r->cs & 3) != 3) return 0;
+    athread_t* t = cur_thread(p);
+    if (t ? !t->running : !p->running) return 0;
+    uint32_t v = (uint32_t)r->int_no;
+    uintptr_t addr = 0;
+    int sig, code;
+    switch (v) {
+    case 14:
+        __asm__ volatile("mov %%cr2, %0" : "=r"(addr));
+        sig = 11; code = (r->err_code & 1) ? 2 /* SEGV_ACCERR */ : 1 /* SEGV_MAPERR */;
+        break;
+    case 13: case 12: sig = 11; code = 128 /* SI_KERNEL */; break;
+    case 0:  sig = 8; code = 1 /* FPE_INTDIV */; break;
+    case 16: case 19: sig = 8; code = 0; break;
+    case 6:  sig = 4; code = 2 /* ILL_ILLOPN */; addr = (uintptr_t)r->rip; break;
+    case 1: case 3: sig = 5; code = 1 /* TRAP_BRKPT */; break;
+    case 17: sig = 7; code = 1 /* BUS_ADRALN */; break;
+    default: return 0;
+    }
+    if ((sigst(p)->blocked >> (sig - 1)) & 1) return 0;  /* a fault it blocks: it cannot go on */
+    return sig_deliver(p, r, sig, code, addr, v);
+}
+
+/* the timer interrupted app code (kernel/idt.c via app_preempt) */
+static void sig_preempt(app_proc_t* p, void* regs) {
+    sysframe_t* r = (sysframe_t*)regs;
+    if (!r || (r->cs & 3) != 3) return;
+    sigstate_t* st = sigst(p);
+    if ((st->pending | p->sig_pending) & ~st->blocked) sig_check(p, r);
+}
 
 typedef uint64_t (*sysfn_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
                             uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -1435,7 +2059,7 @@ static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, 
     if (nargs > 6) {
         /* above the return address of the app's call */
         const uint64_t* st = (const uint64_t*)(uintptr_t)(r->rsp + 8);
-        if (!umem_owns(p->mem, st, (nargs - 6) * 8)) return 0;
+        if (!own(p, st, (nargs - 6) * 8)) return 0;
         for (uint32_t i = 6; i < nargs; i++) a[i] = st[i - 6];
     }
     return args_ok(p, sp, a);
@@ -1483,11 +2107,18 @@ void app_syscall(sysframe_t* r) {
         if (t) leave_thread(p, t, (int)r->rdi);
         leave(p, (int)r->rdi);
     }
+    if (slot == SYS_SIGRETURN) {                /* a signal handler returned */
+        sig_return(p, r);
+        sig_check(p, r);
+        __asm__ volatile("cli");
+        return;
+    }
     if (slot >= API_SLOTS || !g_spec[slot].args) bad_call(p, slot, "an unknown system call");
     uint64_t a[SYS_ARGS];
     if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
     sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
     r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    sig_check(p, r);                            /* signals sent to it go to their handlers now */
     __asm__ volatile("cli");
 }
 
@@ -1495,7 +2126,7 @@ void app_syscall(sysframe_t* r) {
  * a stub; the font and the strings copied; the return stub after them */
 static int make_uapi(app_proc_t* p) {
     size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
-    size_t stubs = API_SLOTS * 8 + 16;
+    size_t stubs = API_SLOTS * 8 + 32;              /* (+ the return and sigreturn stubs) */
     uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
     if (!m) return -1;
     banana_api_t* ua = (banana_api_t*)m;
@@ -1519,6 +2150,14 @@ static int make_uapi(app_proc_t* p) {
     memcpy(st + 3, &ret_slot, 4);
     st[7] = 0xCD; st[8] = SYSCALL_VECTOR;
     st[9] = 0x0F; st[10] = 0x0B;                        /* ud2: must not return */
+    /* where a signal handler returns to (sig_deliver): the frame is under rsp */
+    st += 16;
+    st[0] = 0xB8;                                       /* mov eax, SYS_SIGRETURN */
+    uint32_t sr_slot = SYS_SIGRETURN;
+    memcpy(st + 1, &sr_slot, 4);
+    st[5] = 0xCD; st[6] = SYSCALL_VECTOR;
+    st[7] = 0x0F; st[8] = 0x0B;                         /* ud2: does not return here */
+    p->sigret_stub = (uintptr_t)st;
     uint8_t* font = m + tab + stubs;
     memcpy(font, font8x8_basic, sizeof(font8x8_basic));
     ua->font8x8 = font;
@@ -1637,6 +2276,33 @@ static void api_init(void) {
     g_api.repo_sources = G(a_repo_sources);
     g_api.repo_add_source = G(a_repo_add_source);
     g_api.repo_remove_source = G(a_repo_remove_source);
+    g_api.vm_map = G(a_vm_map);
+    g_api.vm_unmap = G(a_vm_unmap);
+    g_api.vm_protect = G(a_vm_protect);
+    g_api.thread_start = G(a_thread_start);
+    g_api.thread_detach = G(a_thread_detach);
+    g_api.tls_set = G(a_tls_set);
+    g_api.mem_info = G(a_mem_info);
+    g_api.app_id = G(a_app_id);
+    g_api.sock_open = G(a_sock_open);
+    g_api.sock_bind = G(a_sock_bind);
+    g_api.sock_listen = G(a_sock_listen);
+    g_api.sock_accept = G(a_sock_accept);
+    g_api.sock_connect = G(a_sock_connect);
+    g_api.sock_send = G(a_sock_send);
+    g_api.sock_recv = G(a_sock_recv);
+    g_api.sock_shutdown = G(a_sock_shutdown);
+    g_api.sock_opt = G(a_sock_opt);
+    g_api.sock_name = G(a_sock_name);
+    g_api.sock_ctl = G(a_sock_ctl);
+    g_api.poll = G(a_poll);
+    g_api.resolve = G(a_resolve);
+    g_api.sig_entry = G(a_sig_entry);
+    g_api.sig_action = G(a_sig_action);
+    g_api.sig_mask = G(a_sig_mask);
+    g_api.sig_send = G(a_sig_send);
+    g_api.sig_altstack = G(a_sig_altstack);
+    g_api.sig_pending = G(a_sig_pending);
 #ifdef __x86_64__
     spec_init();
 #endif
@@ -1875,6 +2541,8 @@ static void discard(app_proc_t* p) {
 
 static void release(app_proc_t* p) {
     stop_threads(p);
+    for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
+        if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);
@@ -1889,7 +2557,7 @@ static int run(app_proc_t* p) {
 #ifdef __x86_64__
     p->guarded = 1;                                     /* (its guard pages: umem_alloc_pages) */
     p->exit_code = enter_user(p, (uintptr_t)p->entry, (uintptr_t)p->uapi, (uintptr_t)p->argc,
-                              (uintptr_t)p->argv, p->stack, p->kstack, &p->saved_sp);
+                              (uintptr_t)p->argv, p->stack, APP_STACK, p->kstack, &p->saved_sp);
 #else
     p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp);
 #endif
@@ -1968,6 +2636,8 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     int id = p->id;
     memset(p, 0, sizeof(*p));
     p->id = id;
+    static int s_seq = 100;
+    p->seq = ++s_seq;
     fs_file_t* f = fs_get_file(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
 #ifdef __x86_64__

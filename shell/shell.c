@@ -24,6 +24,9 @@
 #include "srvcmds.h"
 #include "syscmds.h"
 #include "moncmds.h"
+#include "fscmds.h"
+#include "help.h"
+#include "../kernel/vmtools.h"
 #include "../kernel/serial.h"
 #include "../kernel/kstring.h"
 #include "../kernel/kheap.h"
@@ -876,215 +879,9 @@ static void cmd_top(void) {
     }
 }
 
-static void cmd_help(void) {
-    static const char* all_lines[] = {
-        "Banana OS 0.6 - available commands:",
-        "",
-        "  help               show this message",
-        "  neofetch           system information",
-        "  echo <text>        print text",
-        "  clear              clear screen",
-        "  uname              print system name",
-        "  whoami             print current user",
-        "  hostname           print system hostname",
-        "  date               print current date/time",
-        "  ls [-l] [path]     list directory (absolute or relative path)",
-        "  cd [path]          change directory (no arg / ~ -> home, .. up)",
-        "  pwd                print working directory (full path)",
-        "  mkdir [-p] <dir>   create directory (-p makes parents too)",
-        "  rm [-r] <name>     remove file, or directory with -r",
-        "  touch <file>       create an empty file (or update if it exists)",
-        "  cp <src> <dst>     copy a file",
-        "  mv <src> <dst>     move/rename a file or directory",
-        "  edit <file>        open nano-style text editor",
-        "  cat <file>         print file contents",
-        "  grep [-n] <p> <f>  print lines in a file matching a substring",
-        "  wc <file>          count lines/words/bytes in a file",
-        "  head [-n N] <file> print first N lines (default 10)",
-        "  tail [-n N] <file> print last N lines (default 10)",
-        "  find [path]        recursively list files/dirs under path",
-        "  history            show command history",
-        "  which <cmd>        show whether a command is a shell builtin",
-        "  type <cmd>         like which, but alias-aware (bash-flavored)",
-        "  alias [n[=v]]      list/define a command alias (bash-flavored)",
-        "  unalias <name>     remove an alias",
-        "  export [N=V]       list/set an environment variable",
-        "  unset <name>       remove an environment variable",
-        "  env                list environment variables",
-        "  chsh [sh|bash]     show/set the DEFAULT shell for new sessions",
-        "  autologin [on|off] log in at boot without the password (Settings > Startup)",
-        "  ($VAR expands to env vars; \"!!\" repeats the last command)",
-        "  run <file.sh>      run script file line by line",
-        "  uptime             print current uptime",
-        "  top                live system monitor (press q to quit)",
-        "  htop               colour monitor: per-core meters (q quits, P/N/T sort)",
-        "  free [-h|-m|-k]    RAM: total, used, free",
-        "  df [-h|-k] [-i]    disk space: size, used, free (-i: files and folders)",
-        "  exit               close this GUI terminal window",
-        "  start              alias of startx",
-        "  stop               alias of stopx",
-        "  startx             start GUI desktop",
-        "  stopx              quit GUI desktop",
-        "  keyboardctl [lay]  show/set keyboard layout",
-        "  loadctl [lay]      alias of keyboardctl",
-        "  usbctl             show USB legacy handoff status",
-        "  proc_info [flags]  cpu info (-c -t -n -v -f -m -s -ht)",
-        "  ram_info [flags]   ram info (-t -u -h -f -p -m)",
-        "  gpu_info [flags]   gpu/fb info (-n -r -b -p -m)",
-        "  lsgpu              graphics cards: driver, mode, video memory, features",
-        "  brightness [0-100] a laptop panel's backlight (Intel graphics)",
-        "  resolution [WxH]   the screen's modes, or switch to one",
-        "  drivers            loaded drivers and driver modules (driver load <file>)",
-        "  hw_info [flags]    hardware summary (-c -m -g -u -k -r)",
-        "  shutdown [now|-c]  schedule shutdown (60s), now, or cancel",
-        "  reboot             immediate reboot",
-        "  halt               hard halt (no ACPI)",
-        "  disks              list the IDE and SATA drives",
-        "  install            install to a dedicated IDE or SATA disk (bootable, persistent)",
-        "  sync               re-write filesystem to the installed disk now",
-        "  update             from a newer CD: update the installed system, keeping your files",
-        "  installer          live CD: the graphical installer (desktop running)",
-        "  time <command>     run a command and print how long it took",
-        "",
-        "Networking:",
-        "  ifconfig [if ..]   show / set the network config (saved in /etc/network.conf)",
-        "  ifconfig reset     forget the saved network config (back to DHCP)",
-        "  ifconfig <if> up   make eth0 / usb0 the active interface",
-        "  lsusb              list USB controllers and devices",
-        "  usb rescan         look for newly plugged / unplugged USB devices",
-        "  mount [-a]         mounted USB sticks / NVMe (FAT32: /mnt/usb, /mnt/nvme)",
-        "  umount [path]      unmount (eject) a stick so it can be removed",
-        "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
-        "  crashtest [mode]   crash-screen preview/report; panic/ud2/pagefault halt the OS",
-        "  selftest [part]    ring3, memory, limits, cores, opencl, ipv6, browser",
-        "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
-        "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
-        "  <app> [args]       run an installed app by its name",
-        "  apps / taskmgr     open Apps / the Task Manager on the desktop",
-        "  play <f.wav>       play a sound (play -s stops); lsaudio: the sound card",
-        "  beep [hz] [ms]     a tone;  volume [0-100]: sound volume",
-        "  dhcp               request a new DHCP lease",
-        "  ping [-c N] <host> send ICMP echo requests (Ctrl+C stops)",
-        "  nslookup <host>    resolve a hostname with DNS (alias: host)",
-        "  curl [opt] <url>   HTTP/HTTPS client: -o f -O -L -I -i -v -s",
-        "  wget [-O f] <url>  download a file (follows redirects)",
-        "  netstat            list TCP connections",
-        "  arp                show the ARP cache",
-        "  cryptotest         run the TLS crypto self-tests",
-        "",
-        "Wallpaper:",
-        "  wallpaper          show/set the wallpaper (see: wallpaper help)",
-        "  wallpaper url <u>  download a picture to ~/Pictures and use it",
-        "  files [folder]     open the desktop's file explorer (also: Files icon)",
-        "  browser [url]      open the desktop's web browser (also: Browser icon)",
-        "  notepad [file]     open the desktop's text editor (also: Notepad icon)",
-        "",
-        "Servers:",
-        "  passwd             set the password of banana (the SSH login)",
-        "  sshd start|stop    SSH server (port 22): ssh banana@<this machine>",
-        "  rdpd start|stop    Remote Desktop server (port 3389): mstsc / FreeRDP",
-        "  rdp host[:port]    connect to a Remote Desktop server (a desktop window)",
-        "  httpd start|stop   web server (port 80) for /var/www, runs .php pages",
-        "  httpd expose       make it reachable from the Internet (router UPnP)",
-        "  sshd/rdpd/httpd enable  also start it at every boot (disable: undo)",
-        "",
-        "Shell: cmd > file, cmd >> file, cmd1; cmd2, cmd1 && cmd2",
-        "  Editor: arrows move, ^O/^S save, ^X exit, ^K cut line, ^U paste",
-        "",
-    };
-    /* (installing and updating: only on the live system) */
-    static const char* lines[sizeof(all_lines) / sizeof(all_lines[0])];
-    int line_count = 0;
-    for (int i = 0; i < (int)(sizeof(all_lines) / sizeof(all_lines[0])); i++) {
-        const char* l = all_lines[i];
-        if (!sysinfo_live_boot() && (k_strncmp(l, "  install ", 10) == 0 || k_strncmp(l, "  update ", 9) == 0 || k_strncmp(l, "  installer ", 12) == 0)) continue;
-        lines[line_count++] = l;
-    }
-    if (terminal_is_capturing()) {           /* help > file: no pager */
-        for (int i = 0; i < line_count; i++) terminal_writeln(lines[i]);
-        return;
-    }
-    const int view_rows = 21; /* keep last rows for status/help */
-    int top = 0;
-    int max_top = (line_count > view_rows) ? (line_count - view_rows) : 0;
-    int my_vt = terminal_vt_get_active();
+/* help: the pages live in shell/help.c */
+static void cmd_help(const char* args) { help_command(args); }
 
-    while (1) {
-        terminal_clear();
-        for (int r = 0; r < view_rows; r++) {
-            int idx = top + r;
-            if (idx >= line_count) {
-                terminal_putchar('\n');
-                continue;
-            }
-            /* headings are unindented, the editor note is grey, and
-             * every indented line is a command */
-            const char* l = lines[idx];
-            if (l[0] && l[0] != ' ') {
-                terminal_write_color(l, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else if (k_strncmp(l, "  Editor:", 9) == 0) {
-                terminal_write_color(l, VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else if (l[0]) {
-                terminal_write_color(l, VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else {
-                terminal_writeln(l);
-            }
-        }
-
-        terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
-        terminal_write(" help: up/down or j/k to scroll, q to quit ");
-        for (int i = 42; i < 80; i++) terminal_putchar(' ');
-        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-        terminal_putchar('\n');
-
-        terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
-        terminal_write(" lines ");
-        {
-            char b1[16], b2[16];
-            terminal_write(u32_to_str((uint32_t)(top + 1), b1, sizeof(b1)));
-            terminal_write("-");
-            int end_line = top + view_rows;
-            if (end_line > line_count) end_line = line_count;
-            terminal_write(u32_to_str((uint32_t)end_line, b2, sizeof(b2)));
-            terminal_write("/");
-            terminal_write(u32_to_str((uint32_t)line_count, b2, sizeof(b2)));
-        }
-        for (int i = 0; i < 62; i++) terminal_putchar(' ');
-        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-
-        char c = 0;
-        while (!c) {
-            gui_poll();
-            terminal_vt_set_active(my_vt);
-            if (gui_focused_vt() != my_vt) { task_sleep_ms(10); continue; }
-            c = keyboard_try_getchar();
-            if (!c) task_sleep_ms(10);
-        }
-        if (c == 'q' || c == 'Q' || c == 3) {
-            terminal_putchar('\n'); /* keep visible help text on screen */
-            return;
-        }
-        if (c == 'j' || c == 'J') {
-            if (top < max_top) top++;
-            continue;
-        }
-        if (c == 'k' || c == 'K') {
-            if (top > 0) top--;
-            continue;
-        }
-        if (c == 27) {
-            char c2 = keyboard_getchar();
-            char c3 = keyboard_getchar();
-            if (c2 != '[') continue;
-            if (c3 == 'A' && top > 0) top--;
-            if (c3 == 'B' && top < max_top) top++;
-            continue;
-        }
-    }
-}
 
 static void cmd_keyboardctl(const char* args) {
     const char* layout = k_skip_spaces(args);
@@ -1392,7 +1189,13 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver", (void*)0
+    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
+    /* shell/fscmds.c */
+    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
+    /* kernel/vmtools.c */
+    "vmtools",
+    /* shell/help.c */
+    "man", "apropos", "lsblk", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
@@ -1742,7 +1545,7 @@ static void cmd_mkdir(const char* args) {
     }
     int r = recursive ? fs_mkdir_p(path) : fs_mkdir(path);
     if (r < 0) {
-        terminal_write_color("mkdir: cannot create directory: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "mkdir: permission denied: " : "mkdir: cannot create directory: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(path);
     }
 }
@@ -1770,7 +1573,7 @@ static void cmd_touch(const char* args) {
     while (next_token(&p, tok, sizeof(tok))) {
         any = 1;
         if (fs_touch(tok) < 0) {
-            terminal_write_color("touch: cannot create: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(fs_perm_error() ? "touch: permission denied: " : "touch: cannot create: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
             terminal_writeln(tok);
         }
     }
@@ -1785,7 +1588,7 @@ static void cmd_cp(const char* args) {
         return;
     }
     if (fs_copy(src, dst) < 0) {
-        terminal_write_color("cp: cannot copy: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "cp: permission denied: " : "cp: cannot copy: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(src);
     }
 }
@@ -1798,7 +1601,7 @@ static void cmd_mv(const char* args) {
         return;
     }
     if (fs_move(src, dst) < 0) {
-        terminal_write_color("mv: cannot move: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_write_color(fs_perm_error() ? "mv: permission denied: " : "mv: cannot move: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         terminal_writeln(src);
     }
 }
@@ -1840,6 +1643,39 @@ static int prompt_yes_no(void) {
     }
 }
 
+/* a number from 1 to max, typed and Enter; 0 if cancelled (Enter alone,
+ * Esc, Ctrl+C) - a number out of range is asked again */
+static int prompt_number(int max) {
+    int my_vt = terminal_vt_get_active();
+    char buf[8];
+    int n = 0;
+    for (;;) {
+        gui_poll();
+        terminal_vt_set_active(my_vt);
+        if (gui_focused_vt() != my_vt) { task_sleep_ms(10); continue; }
+        char c = keyboard_try_getchar();
+        if (!c) { task_sleep_ms(10); continue; }
+        if (c == 3 || c == 27) { terminal_putchar('\n'); return 0; }
+        if (c == '\b' || c == 127) {
+            if (n) { n--; terminal_cursor_left(); terminal_putchar(' '); terminal_cursor_left(); }
+            continue;
+        }
+        if (c == '\n' || c == '\r') {
+            terminal_putchar('\n');
+            if (!n) return 0;
+            buf[n] = 0;
+            uint32_t v;
+            if (k_parse_u32(buf, &v) && v >= 1 && (int)v <= max) return (int)v;
+            char again[48];
+            ksnprintf(again, sizeof(again), "No disk %s - a number from 1 to %d: ", buf, max);
+            terminal_write_color(again, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+            n = 0;
+            continue;
+        }
+        if (c >= '0' && c <= '9' && n < (int)sizeof(buf) - 1) { buf[n++] = c; terminal_putchar(c); }
+    }
+}
+
 static void print_disk_line(const ata_disk_t* d) {
     char b[16], where[32];
     disk_describe(d, where, sizeof(where));
@@ -1864,32 +1700,82 @@ static void cmd_disks(void) {
     terminal_write(ahci_status());
 }
 
-static void cmd_install(void) {
-    ata_disk_t all[DISK_MAX];
-    int nd = disk_probe(all, DISK_MAX);
-
-    int found = 0;
-    ata_disk_t target;
-    for (int i = 0; i < nd; i++) {
-        print_disk_line(&all[i]);
-        if (!all[i].is_atapi) { found++; target = all[i]; }
+/* the hard disks, numbered for `install N` / `update N`; how many */
+static int list_targets(ata_disk_t* out, int max) {
+    int n = fsdisk_targets(out, max);
+    for (int i = 0; i < n; i++) {
+        char b[8];
+        terminal_write_color("  [", VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+        terminal_write_color(u32_to_str((uint32_t)i + 1u, b, sizeof(b)), VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+        terminal_write_color("]", VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+        if (fsdisk_holds_banana(&out[i])) terminal_write_color(" (Banana OS)", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+        print_disk_line(&out[i]);
     }
+    return n;
+}
+
+/* the disk the number in args names (1-based), the only one, or the one
+ * asked for when there are several; -1 (and why) */
+static int pick_target(const char* cmd, const char* args, int n) {
+    args = k_skip_spaces(args);
+    uint32_t v;
+    if (*args) {
+        if (!k_parse_u32(args, &v) || v < 1 || (int)v > n) {
+            terminal_write_color(cmd, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(": no such disk number - see the list above\n", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            return -1;
+        }
+        return (int)v - 1;
+    }
+    if (n == 1) return 0;
+    /* several: ask which one (a number and Enter; Enter alone, Esc or Ctrl+C cancels) */
+    char prompt[64];
+    ksnprintf(prompt, sizeof(prompt), "Which disk? [1-%d, Enter cancels] ", n);
+    terminal_write_color(prompt, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    int k = prompt_number(n);
+    if (k < 1) {
+        terminal_write(cmd);
+        terminal_writeln(": cancelled.");
+        return -1;
+    }
+    return k - 1;
+}
+
+static void cmd_install(const char* args) {
+    /* --full (the default), --standard, --minimal: the apps it puts on the disk */
+    int profile = PROFILE_FULL;
+    char num[16] = "";
+    for (const char* p = k_skip_spaces(args); *p; p = k_skip_spaces(p)) {
+        char w[24];
+        int n = 0;
+        while (p[n] && p[n] != ' ' && n < (int)sizeof(w) - 1) { w[n] = p[n]; n++; }
+        w[n] = 0;
+        while (p[n] && p[n] != ' ') n++;
+        p += n;
+        if (!k_strcmp(w, "--full")) profile = PROFILE_FULL;
+        else if (!k_strcmp(w, "--standard")) profile = PROFILE_STANDARD;
+        else if (!k_strcmp(w, "--minimal")) profile = PROFILE_MINIMAL;
+        else if (w[0] == '-') {
+            terminal_writeln("usage: install [number] [--full | --standard | --minimal]");
+            return;
+        } else k_strcpy_n(num, w, sizeof(num));
+    }
+    args = num;
+    ata_disk_t all[DISK_MAX];
+    int found = list_targets(all, DISK_MAX);
 
     if (found == 0) {
         terminal_write_color(
-            "install: no ATA hard disk found. Attach a second (blank) IDE/ATA disk\n"
+            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe or virtio disk\n"
             "to the VM - besides the boot CD - then try again.\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
-    if (found > 1) {
-        terminal_write_color(
-            "install: multiple hard disks found - detach extras so exactly one\n"
-            "is attached, then try again.\n", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
-        return;
-    }
+    int k = pick_target("install", args, found);
+    if (k < 0) return;
+    ata_disk_t target = all[k];
 
-    if (fsdisk_find_install(NULL))
+    if (fsdisk_holds_banana(&target))
         terminal_write_color(
             "This disk already has Banana OS on it, with your files. To get the new version\n"
             "and KEEP them, answer N and run 'update' instead.\n",
@@ -1898,15 +1784,24 @@ static void cmd_install(void) {
     terminal_write(target.model[0] ? target.model : "the disk above");
     terminal_write_color(
         " and make it directly bootable (copying the boot CD or USB stick onto it, then\n"
-        "writing the current filesystem). This can take a little while. Continue? [y/N] ",
+        "writing the current filesystem). This can take a little while.\n",
         VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    char ap[160];
+    ksnprintf(ap, sizeof(ap), "Apps: %s - %s\n", builtin_profile_name(profile), builtin_profile_apps(profile));
+    terminal_write(ap);
+    terminal_write_color("Continue? [y/N] ", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
     if (!prompt_yes_no()) {
         terminal_writeln("install: cancelled.");
         return;
     }
 
+    if (profile != PROFILE_FULL) {
+        int r = builtin_profile_apply(profile);
+        ksnprintf(ap, sizeof(ap), "install: %d app%s left out (App Store > Discover installs them)", r, r == 1 ? "" : "s");
+        terminal_writeln(ap);
+    }
     terminal_writeln("install: copying boot image and filesystem, please wait...");
-    int rc = fsdisk_install();
+    int rc = fsdisk_install_to(&target);
     switch (rc) {
         case FSDISK_OK:
             terminal_write_color(
@@ -1945,17 +1840,26 @@ static void cmd_install(void) {
 
 /* `update`: from a (newer) Banana OS CD, rewrites the installed disk's
  * system and leaves its files and settings alone */
-static void cmd_update(void) {
-    ata_disk_t d;
-    if (!fsdisk_find_install(&d)) {
+static void cmd_update(const char* args) {
+    ata_disk_t all[DISK_MAX], inst[DISK_MAX];
+    int n = fsdisk_targets(all, DISK_MAX), ni = 0;
+    for (int i = 0; i < n; i++) if (fsdisk_holds_banana(&all[i])) inst[ni++] = all[i];
+    if (!ni) {
         terminal_write_color("update: no disk with Banana OS installed was found (use 'install').\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
-    print_disk_line(&d);
+    for (int i = 0; i < ni; i++) {
+        char b[8];
+        if (ni > 1) { terminal_write("  ["); terminal_write(u32_to_str((uint32_t)i + 1u, b, sizeof(b))); terminal_write("]"); }
+        print_disk_line(&inst[i]);
+    }
+    int k = pick_target("update", args, ni);
+    if (k < 0) return;
+    ata_disk_t d = inst[k];
     terminal_writeln("update: comparing the installed system with this CD / USB stick...");
     terminal_flush();
-    int same = fsdisk_compare_boot();
+    int same = k == 0 ? fsdisk_compare_boot() : 0;    /* (the comparison reads the first install) */
     if (same == FSDISK_ERR_NO_SOURCE) {
         terminal_write_color("update: no Banana OS CD or USB stick found - plug in the one with the new version.\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -1983,7 +1887,7 @@ static void cmd_update(void) {
     }
     terminal_writeln("update: writing the new system, please wait (do not switch off)...");
     terminal_flush();
-    int rc = fsdisk_update();
+    int rc = fsdisk_update_on(&d);
     if (rc == FSDISK_OK) {
         terminal_write_color(
             "update: done. Remove the CD (or boot from the disk) and restart to use the new version.\n",
@@ -2468,8 +2372,23 @@ static void dispatch_cmd(const char* raw_line, int persona) {
         return;
     }
 
+    /* <command> --help: its page (shell/help.c) */
+    {
+        int l = k_strlen(line);
+        if (l > 7 && k_strcmp(line + l - 7, " --help") == 0) {
+            char first[32];
+            int n = 0;
+            while (line[n] && line[n] != ' ' && n < (int)sizeof(first) - 1) { first[n] = line[n]; n++; }
+            first[n] = 0;
+            if (help_show_page(first)) return;
+        }
+    }
+
     /* exact matches */
-    if (k_strcmp(line, "help")     == 0) { cmd_help();       return; }
+    if (k_strcmp(line, "help")     == 0) { cmd_help("");     return; }
+    if (k_strncmp(line, "help ", 5) == 0) { cmd_help(line + 5); return; }
+    if (k_strcmp(line, "man") == 0 || k_strncmp(line, "man ", 4) == 0) { help_man(line + 3); return; }
+    if (k_strcmp(line, "apropos") == 0 || k_strncmp(line, "apropos ", 8) == 0) { help_apropos(line + 7); return; }
     if (k_strcmp(line, "clear")    == 0) { terminal_clear(); return; }
     if (k_strcmp(line, "neofetch") == 0) { cmd_neofetch(persona); return; }
     if (k_strcmp(line, "uname")    == 0) { cmd_uname(persona);    return; }
@@ -2564,9 +2483,9 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (k_strcmp(line, "chsh")     == 0) { cmd_chsh("", persona); return; }
 
     if (k_strcmp(line, "disks")    == 0) { cmd_disks();       return; }
-    if (k_strcmp(line, "install")  == 0) { cmd_install();     return; }
+    if (k_strcmp(line, "install")  == 0 || k_strncmp(line, "install ", 8) == 0) { cmd_install(line + 7); return; }
     if (k_strcmp(line, "sync")     == 0) { cmd_sync();        return; }
-    if (k_strcmp(line, "update")   == 0) { cmd_update();      return; }
+    if (k_strcmp(line, "update")   == 0 || k_strncmp(line, "update ", 7) == 0) { cmd_update(line + 6); return; }
     if (k_strcmp(line, "nice") == 0 || k_strncmp(line, "nice ", 5) == 0) {
         /* nice [-n N | -N] command: the command runs with its nice value
          * raised by N (default 10: a smaller share of the processor;
@@ -2674,6 +2593,8 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     /* network commands (shell/netcmds.c) */
     if (syscmd_dispatch(line)) return;
     if (moncmd_dispatch(line)) return;
+    if (fscmd_dispatch(line)) return;
+    if (k_strcmp(line, "vmtools") == 0 || k_strncmp(line, "vmtools ", 8) == 0) { vmtools_command(line + 7); return; }
     if (srvcmd_dispatch(line)) return;
     if (netcmd_dispatch(line)) return;
 
@@ -2684,6 +2605,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     terminal_write_color(shell_kind_name(persona), VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_write_color(": command not found: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_writeln(line);
+    help_suggest(line);
 }
 
 static void run_script_text(const char* content, int persona) {
@@ -2764,6 +2686,7 @@ static void run_init_file(int persona) {
 /* ── entry ──────────────────────────────────────────────────────── */
 void shell_run(void) {
     char buf[SH_LINE_MAX];
+    help_set_known(known_cmds);         /* (help --check, did you mean) */
     /* Which persona a *new* shell instance boots into is decided once,
      * here, from g_default_shell_kind (as set by `chsh`) - see the
      * "shell personas" comment near the top of this file. */
@@ -2790,6 +2713,7 @@ void shell_run(void) {
             "filesystem; the disk is not written to unless you run 'install' again.\n\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     fsdisk_start_autosave();      /* changes reach the installed disk by themselves */
+    disk_attach_extra(fsdisk_holds_banana);   /* the other hard disks: their volumes mounted in /mnt */
     if (live)
         terminal_write_color("Running the LIVE CD.\n", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
     else if (fsdisk_is_installed())
@@ -2810,6 +2734,7 @@ void shell_run(void) {
     klog("boot: settings, servers\n");
     /* saved network settings, services enabled at boot (shell/srvcmds.c) */
     services_boot();
+    vmtools_init();                 /* guest tools: VMware, VirtualBox, the QEMU / Proxmox agent (kernel/vmtools.c) */
     {
         char sk[8];
         if (settings_get("shell", sk, sizeof(sk)))

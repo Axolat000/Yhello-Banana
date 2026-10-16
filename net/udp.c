@@ -5,7 +5,7 @@
 
 /* UDP (RFC 768): a small table of bound ports with receive callbacks. */
 
-#define UDP_BINDINGS 16
+#define UDP_BINDINGS 32
 
 typedef struct {
     uint16_t      port;

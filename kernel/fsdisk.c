@@ -12,6 +12,7 @@
 #include "timer.h"
 #include "task.h"
 #include "blockdev.h"
+#include "crc32c.h"
 
 #define FSDISK_MAGIC   0x414E4142u /* "BANA" */
 #define FSDISK_VERSION 3u   /* = FS_SNAPSHOT_V3; version 1 and 2 disks (Banana OS 0.4, 0.5) still load */
@@ -562,13 +563,39 @@ static void wipe_header(const ata_disk_t* d, uint32_t lba) {
 #define V5_MAGIC2       0x4B52414Du    /* "MARK" */
 #define V5_BLOCK_SECT   8u             /* 4 KiB blocks */
 #define V5_META_SECT    512u           /* per metadata slot */
-#define V5_DIR_REC      (4u + FS_NAME_LEN + 4u)               /* idx, name, parent */
-#define V5_FILE_REC     (4u + FS_NAME_LEN + 4u + 4u * 3u)     /* idx, name, parent, size, lba, check */
+#define V5_NAME         32u            /* names in version 5/6 records (Banana OS before build 151) */
+#define V5_MAX_DIRS     16384u         /* ... and the tables of then */
+#define V5_MAX_FILES    65536u
+#define V5_DIR_REC      (4u + V5_NAME + 4u)                   /* idx, name, parent */
+#define V5_FILE_REC     (4u + V5_NAME + 4u + 4u * 3u)         /* idx, name, parent, size, lba, check */
 #define V5_TIMES_MAGIC  0x454D4954u    /* "TIME": the dates, after the records */
 #define V5_TIME_REC     12u            /* idx, mtime, ctime */
-#define V5_BODY_MAX     (4u + FS_MAX_DIRS * V5_DIR_REC + 8u + FS_MAX_FILES * V5_FILE_REC + \
-                         12u + (FS_MAX_DIRS + FS_MAX_FILES) * V5_TIME_REC)
+#define V5_BODY_MAX     (4u + V5_MAX_DIRS * V5_DIR_REC + 8u + V5_MAX_FILES * V5_FILE_REC + \
+                         12u + (V5_MAX_DIRS + V5_MAX_FILES) * V5_TIME_REC)
 #define V5_INLINE_MAX   ((V5_META_SECT - 1u) * FSDISK_SECTOR) /* a body that fits in the slot */
+
+/* Version 7 (build 151): ext4-like metadata. Names up to 255 bytes, a mode,
+ * an owner, a group and three dates per entry, and CRC-32C (ext4's metadata
+ * checksum) over the header, the body and every file written since. The
+ * body is inline in the slot while it fits, else in an extent like v6's.
+ *
+ *   body:  "BFS7", home, ndirs, dir records, nfiles, file records
+ *   dir:   idx, parent, mode:16, namelen:16, uid, gid, mtime, ctime, atime, name (padded to 4)
+ *   file:  idx, parent, size, lba, check, mode:16, namelen:16, uid, gid,
+ *          mtime, ctime, atime, flags (V7_F_CRC: check is CRC-32C), name (padded to 4)
+ *
+ * Banana OS before build 151 does not read version 7 (it would load its
+ * older copy): going back to an older release is not supported. */
+#define V7_BODY_MAGIC   0x37534642u    /* "BFS7" */
+#define V7_DIR_FIXED    32u
+#define V7_FILE_FIXED   48u
+#define V7_F_CRC        1u
+#define V7_BODY_MAX     (512u * 1024u * 1024u)
+/* where the fields a save fills in late sit in a file record */
+#define V7_OFF_SIZE     8u
+#define V7_OFF_LBA      12u
+#define V7_OFF_CHECK    16u
+#define V7_OFF_FLAGS    44u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic, magic2;
@@ -605,6 +632,7 @@ typedef struct __attribute__((packed)) {
 /* where each file's saved copy is (by file index) */
 typedef struct {
     uint8_t  valid;
+    uint8_t  crc;          /* check is CRC-32C (written since version 7), else checksum_of() */
     uint32_t gen;          /* the file's data_gen when it was written */
     uint32_t lba, sectors; /* its extent (0 sectors: an empty file) */
     uint32_t size, check;
@@ -631,6 +659,15 @@ static uint32_t meta_check(const v5_meta_t* h) {
 }
 static uint32_t meta6_check(const v6_meta_t* h) {
     return checksum_of((const uint8_t*)h, (uint32_t)sizeof(*h) - 4u) ^ 0xC0FFEE66u;
+}
+/* version 7 has the v6 header's fields; CRC-32C seals it */
+static uint32_t meta7_check(const v6_meta_t* h) {
+    return crc32c(0x7BFA7A11u, h, (uint32_t)sizeof(*h) - 4u);
+}
+
+/* a file's saved data against its record's check */
+static uint32_t data_check(int crc, const uint8_t* buf, uint32_t len) {
+    return crc ? crc32c(0, buf, len) : checksum_of(buf, len);
 }
 
 /* records for file indexes below n: 0, or -1 (no memory) */
@@ -765,8 +802,9 @@ static int v5_detect(const ata_disk_t* d, v5_mark_t* out) {
 
 /* a metadata slot's header, either version */
 typedef struct {
+    uint32_t version;           /* 5, 6 or 7 */
     uint32_t seq, body_bytes, body_check;
-    uint32_t body_lba;          /* 0: right after the header, in the slot (version 5) */
+    uint32_t body_lba;          /* 0: right after the header, in the slot (version 5, inline 7) */
 } meta_info_t;
 
 /* one metadata slot, checked: its header and body (kfree the body) */
@@ -784,19 +822,30 @@ static int v5_read_meta(const ata_disk_t* d, const v5_mark_t* m, int slot, meta_
         if (h5.check != meta_check(&h5) || h5.body_bytes > V5_INLINE_MAX) return 0;
         h->seq = h5.seq; h->body_bytes = h5.body_bytes; h->body_check = h5.body_check; h->body_lba = 0;
         body_lba = lba + 1u;
-    } else if (h6.version == 6) {
-        if (h6.check != meta6_check(&h6)) return 0;
+    } else if (h6.version == 6 || h6.version == 7) {
+        if (h6.check != (h6.version == 7 ? meta7_check(&h6) : meta6_check(&h6))) return 0;
         h->seq = h6.seq; h->body_bytes = h6.body_bytes; h->body_check = h6.body_check; h->body_lba = h6.body_lba;
         body_lba = h6.body_lba;
-        if (body_lba < m->data_lba || body_lba + bytes_to_sectors(h6.body_bytes) > m->data_end) return 0;
+        if (h6.version == 7 && !body_lba) {                 /* inline, after the header */
+            if (h6.body_bytes > V5_INLINE_MAX) return 0;
+            body_lba = lba + 1u;
+        } else if (body_lba < m->data_lba || body_lba + bytes_to_sectors(h6.body_bytes) > m->data_end) {
+            return 0;
+        }
     } else {
         return 0;
     }
-    if (h->body_bytes < 12u || h->body_bytes > V5_BODY_MAX) return 0;
+    h->version = h5.version;
+    if (h->body_bytes < 12u || h->body_bytes > (h->version == 7 ? V7_BODY_MAX : V5_BODY_MAX)) return 0;
     uint32_t sectors = bytes_to_sectors(h->body_bytes);
     uint8_t* b = (uint8_t*)kmalloc(sectors * FSDISK_SECTOR);
     if (!b) return 0;
-    if (disk_read(d, body_lba, sectors, b) != 0 || checksum_of(b, h->body_bytes) != h->body_check) {
+    int rd = 0;
+    for (uint32_t s = 0; s < sectors && rd == 0; s += WRITE_CHUNK_SECTORS) {   /* (a big body: in pieces) */
+        uint32_t n = sectors - s < WRITE_CHUNK_SECTORS ? sectors - s : WRITE_CHUNK_SECTORS;
+        rd = disk_read(d, body_lba + s, n, b + s * FSDISK_SECTOR);
+    }
+    if (rd != 0 || data_check(h->version == 7, b, h->body_bytes) != h->body_check) {
         kfree(b);
         return 0;
     }
@@ -811,15 +860,15 @@ static void     wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
 static int v5_body_ok(const uint8_t* b, uint32_t len, const v5_mark_t* m) {
     uint32_t off = 0, nd = rd32(b);
     off = 4;
-    if (nd > FS_MAX_DIRS || off + nd * V5_DIR_REC + 8u > len) return 0;
+    if (nd > V5_MAX_DIRS || off + nd * V5_DIR_REC + 8u > len) return 0;
     off += nd * V5_DIR_REC + 4u;
     uint32_t nf = rd32(b + off);
     off += 4;
-    if (nf > FS_MAX_FILES || off + nf * V5_FILE_REC > len) return 0;
+    if (nf > V5_MAX_FILES || off + nf * V5_FILE_REC > len) return 0;
     for (uint32_t i = 0; i < nf; i++, off += V5_FILE_REC) {
         const uint8_t* r = b + off;
-        uint32_t idx = rd32(r), size = rd32(r + 4 + FS_NAME_LEN + 4), lba = rd32(r + 4 + FS_NAME_LEN + 8);
-        if (idx >= FS_MAX_FILES || size > FS_MAX_FILE_SIZE) return 0;
+        uint32_t idx = rd32(r), size = rd32(r + 4 + V5_NAME + 4), lba = rd32(r + 4 + V5_NAME + 8);
+        if (idx >= V5_MAX_FILES || size > FS_MAX_FILE_SIZE) return 0;
         if (size && (lba < m->data_lba || lba + v5_sectors_for(size) > m->data_end)) return 0;
     }
     return 1;
@@ -829,12 +878,12 @@ static int v5_body_ok(const uint8_t* b, uint32_t len, const v5_mark_t* m) {
  * until used (v5_read_file): a boot no longer reads every file. */
 static void v5_load_body(const uint8_t* b, uint32_t len) {
     uint32_t off = 4, nd = rd32(b);
-    char name[FS_NAME_LEN];
+    char name[V5_NAME];
     fs_restore_begin();
     for (uint32_t i = 0; i < nd; i++, off += V5_DIR_REC) {
-        memcpy(name, b + off + 4, FS_NAME_LEN);
-        name[FS_NAME_LEN - 1] = '\0';
-        fs_restore_dir((int)rd32(b + off), name, (int32_t)rd32(b + off + 4 + FS_NAME_LEN));
+        memcpy(name, b + off + 4, V5_NAME);
+        name[V5_NAME - 1] = '\0';
+        fs_restore_dir((int)rd32(b + off), name, (int32_t)rd32(b + off + 4 + V5_NAME));
     }
     int home = (int32_t)rd32(b + off);
     off += 4;
@@ -844,11 +893,11 @@ static void v5_load_body(const uint8_t* b, uint32_t len) {
     rec_reset();
     for (uint32_t i = 0; i < nf; i++, off += V5_FILE_REC) {
         const uint8_t* r = b + off;
-        uint32_t idx = rd32(r), size = rd32(r + 4 + FS_NAME_LEN + 4);
-        uint32_t lba = rd32(r + 4 + FS_NAME_LEN + 8), check = rd32(r + 4 + FS_NAME_LEN + 12);
-        int parent = (int32_t)rd32(r + 4 + FS_NAME_LEN);
-        memcpy(name, r + 4, FS_NAME_LEN);
-        name[FS_NAME_LEN - 1] = '\0';
+        uint32_t idx = rd32(r), size = rd32(r + 4 + V5_NAME + 4);
+        uint32_t lba = rd32(r + 4 + V5_NAME + 8), check = rd32(r + 4 + V5_NAME + 12);
+        int parent = (int32_t)rd32(r + 4 + V5_NAME);
+        memcpy(name, r + 4, V5_NAME);
+        name[V5_NAME - 1] = '\0';
         uint32_t sectors = v5_sectors_for(size);
         if (rec_grow((int)idx + 1) != 0 || fs_restore_file_lazy((int)idx, name, parent, size) != 0) continue;
         v5_rec_t* rec = &g_rec[idx];
@@ -869,6 +918,81 @@ static void v5_load_body(const uint8_t* b, uint32_t len) {
             for (uint32_t k = 0; k < n && off + V5_TIME_REC <= len; k++, off += V5_TIME_REC)
                 fs_set_times(kind, (int)rd32(b + off), rd32(b + off + 4), rd32(b + off + 8));
         }
+    }
+    ext_sort();
+    fs_restore_end(home);
+}
+
+static uint16_t rd16(const uint8_t* p) { uint16_t v; memcpy(&v, p, 2); return v; }
+static void     wr16(uint8_t* p, uint16_t v) { memcpy(p, &v, 2); }
+static uint32_t pad4(uint32_t n) { return (n + 3u) & ~3u; }
+
+/* a version-7 body, checked to the last byte before anything is replaced */
+static int v7_body_ok(const uint8_t* b, uint32_t len, const v5_mark_t* m) {
+    if (len < 16u || rd32(b) != V7_BODY_MAGIC) return 0;
+    uint32_t off = 12, nd = rd32(b + 8);
+    if (nd > FS_MAX_DIRS) return 0;
+    for (uint32_t i = 0; i < nd; i++) {
+        if (off + V7_DIR_FIXED > len) return 0;
+        uint32_t idx = rd32(b + off), nl = rd16(b + off + 10);
+        if (idx >= FS_MAX_DIRS || nl == 0 || nl >= FS_NAME_LEN) return 0;
+        off += V7_DIR_FIXED + pad4(nl);
+        if (off > len) return 0;
+    }
+    if (off + 4u > len) return 0;
+    uint32_t nf = rd32(b + off);
+    off += 4;
+    if (nf > FS_MAX_FILES) return 0;
+    for (uint32_t i = 0; i < nf; i++) {
+        if (off + V7_FILE_FIXED > len) return 0;
+        const uint8_t* r = b + off;
+        uint32_t idx = rd32(r), size = rd32(r + V7_OFF_SIZE), lba = rd32(r + V7_OFF_LBA), nl = rd16(r + 22);
+        if (idx >= FS_MAX_FILES || size > FS_MAX_FILE_SIZE || nl == 0 || nl >= FS_NAME_LEN) return 0;
+        if (size && (lba < m->data_lba || lba + v5_sectors_for(size) > m->data_end)) return 0;
+        off += V7_FILE_FIXED + pad4(nl);
+        if (off > len) return 0;
+    }
+    return 1;
+}
+
+static void v7_load_body(const uint8_t* b) {
+    char name[FS_NAME_LEN];
+    uint32_t off = 12, nd = rd32(b + 8);
+    int home = (int32_t)rd32(b + 4);
+    fs_restore_begin();
+    for (uint32_t i = 0; i < nd; i++) {
+        const uint8_t* r = b + off;
+        uint32_t idx = rd32(r), nl = rd16(r + 10);
+        memcpy(name, r + V7_DIR_FIXED, nl);
+        name[nl] = '\0';
+        fs_restore_dir((int)idx, name, (int32_t)rd32(r + 4));          /* (the root, #0, is there already) */
+        fs_set_times(1, (int)idx, rd32(r + 20), rd32(r + 24));
+        fs_set_meta(1, (int)idx, rd16(r + 8), rd32(r + 12), rd32(r + 16), rd32(r + 28));
+        off += V7_DIR_FIXED + pad4(nl);
+    }
+    uint32_t nf = rd32(b + off);
+    off += 4;
+    ext_reset();
+    rec_reset();
+    for (uint32_t i = 0; i < nf; i++) {
+        const uint8_t* r = b + off;
+        uint32_t idx = rd32(r), size = rd32(r + V7_OFF_SIZE), nl = rd16(r + 22);
+        off += V7_FILE_FIXED + pad4(nl);
+        memcpy(name, r + V7_FILE_FIXED, nl);
+        name[nl] = '\0';
+        uint32_t sectors = v5_sectors_for(size);
+        if (rec_grow((int)idx + 1) != 0 || fs_restore_file_lazy((int)idx, name, (int32_t)rd32(r + 4), size) != 0) continue;
+        fs_set_times(0, (int)idx, rd32(r + 32), rd32(r + 36));
+        fs_set_meta(0, (int)idx, rd16(r + 20), rd32(r + 24), rd32(r + 28), rd32(r + 40));
+        v5_rec_t* rec = &g_rec[idx];
+        rec->valid = 1;
+        rec->crc = (rd32(r + V7_OFF_FLAGS) & V7_F_CRC) ? 1 : 0;
+        rec->gen = fs_file_info((int)idx)->data_gen;
+        rec->lba = sectors ? rd32(r + V7_OFF_LBA) : 0;
+        rec->sectors = sectors;
+        rec->size = size;
+        rec->check = rd32(r + V7_OFF_CHECK);
+        ext_push(rec->lba, sectors);
     }
     ext_sort();
     fs_restore_end(home);
@@ -900,7 +1024,7 @@ static int v5_read_file(int idx, uint8_t* buf, uint32_t size) {
         memcpy(buf + full * FSDISK_SECTOR, sec, tail);
     }
     if (rc != 0) return -1;
-    if (checksum_of(buf, size) != r.check) {
+    if (data_check(r.crc, buf, size) != r.check) {
         klog("fsdisk: file #%d could not be read back (damaged)\n", idx);
         return -1;
     }
@@ -969,9 +1093,12 @@ static int v5_try_load(const ata_disk_t* d) {
     int rc = -1;
     for (int k = 0; k < 2 && rc < 0; k++) {
         int s = k ? first ^ 1 : first;
-        if (!have[s] || !v5_body_ok(body[s], h[s].body_bytes, &m)) continue;
+        if (!have[s]) continue;
+        if (h[s].version == 7 ? !v7_body_ok(body[s], h[s].body_bytes, &m) : !v5_body_ok(body[s], h[s].body_bytes, &m))
+            continue;
         g_mark = m;
-        v5_load_body(body[s], h[s].body_bytes);
+        if (h[s].version == 7) v7_load_body(body[s]);
+        else v5_load_body(body[s], h[s].body_bytes);
         g_body_lba = h[s].body_lba;
         g_body_sect = g_body_lba ? bytes_to_sectors(h[s].body_bytes) : 0;
         ext_add(g_body_lba, g_body_sect);
@@ -990,7 +1117,8 @@ static int v5_try_load(const ata_disk_t* d) {
 /* writes one file's private copy into a fresh extent */
 static int v5_write_file(const ata_disk_t* d, v5_rec_t* rec, const uint8_t* data) {
     rec->sectors = v5_sectors_for(rec->size);
-    rec->check = checksum_of(data, rec->size);
+    rec->crc = 1;
+    rec->check = crc32c(0, data, rec->size);
     if (!rec->sectors) { rec->lba = 0; return FSDISK_OK; }
     rec->lba = ext_alloc(rec->sectors);
     if (!rec->lba) { rec->sectors = 0; return FSDISK_ERR_FULL; }
@@ -1012,8 +1140,18 @@ static int v5_write_file(const ata_disk_t* d, v5_rec_t* rec, const uint8_t* data
 static int v5_sync(const ata_disk_t* d) {
     uint32_t gen = fs_generation();
     int nfs = fs_file_slots(), nds = fs_dir_slots();     /* (files made while this writes: the next save) */
-    uint32_t body_sect = bytes_to_sectors(4u + (uint32_t)nds * V5_DIR_REC + 8u + (uint32_t)nfs * V5_FILE_REC +
-                                          12u + (uint32_t)(nds + nfs) * V5_TIME_REC);
+    /* the body's size: every entry that may be saved, with its name */
+    uint64_t need = 16u;
+    for (int i = 0; i < nds; i++) {
+        const fs_dir_t* dir = fs_get_dir(i);
+        if (dir && dir->used && !dir->mnt) need += V7_DIR_FIXED + pad4((uint32_t)strlen(dir->name));
+    }
+    for (int i = 0; i < nfs; i++) {
+        fs_file_t* f = fs_file_info(i);
+        if (f && f->used && !f->mnt) need += V7_FILE_FIXED + pad4((uint32_t)strlen(f->name));
+    }
+    if (need > V7_BODY_MAX) return FSDISK_ERR_FULL;
+    uint32_t body_sect = bytes_to_sectors((uint32_t)need);
     if (rec_grow(nfs) != 0) return FSDISK_ERR_IO;
     uint8_t* meta = (uint8_t*)kzalloc((1u + body_sect) * FSDISK_SECTOR);
     uint32_t* rec_off = (uint32_t*)kzalloc((size_t)(nfs + 1) * sizeof(uint32_t));
@@ -1022,20 +1160,30 @@ static int v5_sync(const ata_disk_t* d) {
     uint8_t* b = meta + FSDISK_SECTOR;
     int rc = FSDISK_OK;
 
-    /* 1. the tree as it is now (nothing yields in here) */
-    uint32_t off = 4, nd = 0;
-    for (int i = 1; i < nds; i++) {
+    /* 1. the tree as it is now (nothing yields in here): version 7 */
+    uint32_t off = 12, nd = 0;
+    wr32(b, V7_BODY_MAGIC);
+    wr32(b + 4, (uint32_t)fs_home_dir());
+    for (int i = 0; i < nds; i++) {
         const fs_dir_t* dir = fs_get_dir(i);
         if (!dir || !dir->used || dir->mnt) continue;
-        wr32(b + off, (uint32_t)i);
-        memcpy(b + off + 4, dir->name, FS_NAME_LEN);
-        wr32(b + off + 4 + FS_NAME_LEN, (uint32_t)dir->parent_dir);
-        off += V5_DIR_REC;
+        uint32_t nl = (uint32_t)strlen(dir->name);
+        if (!nl) continue;
+        uint8_t* r = b + off;
+        wr32(r, (uint32_t)i);
+        wr32(r + 4, (uint32_t)dir->parent_dir);
+        wr16(r + 8, (uint16_t)fs_dir_mode(i));
+        wr16(r + 10, (uint16_t)nl);
+        wr32(r + 12, dir->uid);
+        wr32(r + 16, dir->gid);
+        wr32(r + 20, dir->mtime);
+        wr32(r + 24, dir->ctime);
+        wr32(r + 28, dir->atime);
+        memcpy(r + V7_DIR_FIXED, dir->name, nl);
+        off += V7_DIR_FIXED + pad4(nl);
         nd++;
     }
-    wr32(b, nd);
-    wr32(b + off, (uint32_t)fs_home_dir());
-    off += 4;
+    wr32(b + 8, nd);
     uint32_t nf_off = off, nf = 0;
     off += 4;
     for (int i = 0; i < nfs; i++) {
@@ -1051,43 +1199,25 @@ static int v5_sync(const ata_disk_t* d) {
             n->gen = f->data_gen;
             n->size = f->size;
         }
+        uint32_t nl = (uint32_t)strlen(f->name);
+        if (!nl) { *n = (v5_rec_t){0}; continue; }
         uint8_t* r = b + off;
         wr32(r, (uint32_t)i);
-        memcpy(r + 4, f->name, FS_NAME_LEN);
-        wr32(r + 4 + FS_NAME_LEN, (uint32_t)f->parent_dir);
-        wr32(r + 4 + FS_NAME_LEN + 4, n->size);
+        wr32(r + 4, (uint32_t)f->parent_dir);
+        wr32(r + V7_OFF_SIZE, n->size);
+        wr16(r + 20, (uint16_t)fs_file_mode(i));
+        wr16(r + 22, (uint16_t)nl);
+        wr32(r + 24, f->uid);
+        wr32(r + 28, f->gid);
+        wr32(r + 32, f->mtime);
+        wr32(r + 36, f->ctime);
+        wr32(r + 40, f->atime);
+        memcpy(r + V7_FILE_FIXED, f->name, nl);
         rec_off[i] = off;
-        off += V5_FILE_REC;
+        off += V7_FILE_FIXED + pad4(nl);
         nf++;
     }
     wr32(b + nf_off, nf);
-    /* the dates: after the records, where an older Banana OS stops reading */
-    wr32(b + off, V5_TIMES_MAGIC);
-    off += 4;
-    uint32_t td_off = off, ntd = 0;
-    off += 4;
-    for (int i = 0; i < nds; i++) {
-        const fs_dir_t* dir = fs_get_dir(i);
-        if (!dir || !dir->used || dir->mnt) continue;
-        wr32(b + off, (uint32_t)i);
-        wr32(b + off + 4, dir->mtime);
-        wr32(b + off + 8, dir->ctime);
-        off += V5_TIME_REC;
-        ntd++;
-    }
-    wr32(b + td_off, ntd);
-    uint32_t tf_off = off, ntf = 0;
-    off += 4;
-    for (int i = 0; i < nfs; i++) {
-        fs_file_t* f = fs_file_info(i);
-        if (!rec_off[i] || !f) continue;                    /* (only the files saved above) */
-        wr32(b + off, (uint32_t)i);
-        wr32(b + off + 4, f->mtime);
-        wr32(b + off + 8, f->ctime);
-        off += V5_TIME_REC;
-        ntf++;
-    }
-    wr32(b + tf_off, ntf);
     uint32_t body_bytes = off;
 
     /* 2. the changed files, each into a new extent (the other tasks run in
@@ -1108,52 +1238,42 @@ static int v5_sync(const ata_disk_t* d) {
             rc = v5_write_file(d, n, (const uint8_t*)f->content);
             f->loading = 0;
         }
-        wr32(b + rec_off[i] + 4 + FS_NAME_LEN + 4, n->size);
+        if (rec_off[i]) wr32(b + rec_off[i] + V7_OFF_SIZE, n->size);
         task_yield();
     }
     uint32_t new_body_lba = 0, new_body_sect = 0;
     if (rc == FSDISK_OK) {
         for (int i = 0; i < nfs; i++) {
-            if (!g_nrec[i].valid) continue;
-            wr32(b + rec_off[i] + 4 + FS_NAME_LEN + 8, g_nrec[i].lba);
-            wr32(b + rec_off[i] + 4 + FS_NAME_LEN + 12, g_nrec[i].check);
+            if (!g_nrec[i].valid || !rec_off[i]) continue;
+            wr32(b + rec_off[i] + V7_OFF_LBA, g_nrec[i].lba);
+            wr32(b + rec_off[i] + V7_OFF_CHECK, g_nrec[i].check);
+            wr32(b + rec_off[i] + V7_OFF_FLAGS, g_nrec[i].crc ? V7_F_CRC : 0u);
         }
         /* 3. the data is on the disk before the metadata that points at it */
         int slot = g_cur_slot ^ 1;
         uint32_t lba = g_mark.meta_lba + (uint32_t)slot * V5_META_SECT;
-        uint32_t seq = g_seq + 1, body_check = checksum_of(b, body_bytes);
+        uint32_t seq = g_seq + 1, body_check = crc32c(0, b, body_bytes);
         uint32_t hdr_sectors = 1u + bytes_to_sectors(body_bytes);     /* the header, and the body after it */
-        if (body_bytes <= V5_INLINE_MAX) {
-            v5_meta_t h;
-            memset(&h, 0, sizeof(h));
-            h.magic = V5_MAGIC;
-            h.version = 5;
-            h.nonce = g_mark.nonce;
-            h.seq = seq;
-            h.body_bytes = body_bytes;
-            h.body_check = body_check;
-            h.check = meta_check(&h);
-            memcpy(meta, &h, sizeof(h));
-        } else {
+        if (body_bytes > V5_INLINE_MAX) {
             /* too big for the slot: the body into an extent of its own, the slot gets the header */
             new_body_sect = bytes_to_sectors(body_bytes);
             new_body_lba = ext_alloc(new_body_sect);
             if (!new_body_lba) { new_body_sect = 0; rc = FSDISK_ERR_FULL; }
             else if (write_chunked(d, new_body_lba, new_body_sect, b) != 0) rc = FSDISK_ERR_IO;
-            v6_meta_t h;
-            memset(&h, 0, sizeof(h));
-            h.magic = V5_MAGIC;
-            h.version = 6;
-            h.nonce = g_mark.nonce;
-            h.seq = seq;
-            h.body_bytes = body_bytes;
-            h.body_check = body_check;
-            h.body_lba = new_body_lba;
-            h.check = meta6_check(&h);
-            memset(meta, 0, FSDISK_SECTOR);
-            memcpy(meta, &h, sizeof(h));
             hdr_sectors = 1;
         }
+        v6_meta_t h;
+        memset(&h, 0, sizeof(h));
+        h.magic = V5_MAGIC;
+        h.version = 7;
+        h.nonce = g_mark.nonce;
+        h.seq = seq;
+        h.body_bytes = body_bytes;
+        h.body_check = body_check;
+        h.body_lba = new_body_lba;                                  /* 0: inline, after the header */
+        h.check = meta7_check(&h);
+        memset(meta, 0, FSDISK_SECTOR);
+        memcpy(meta, &h, sizeof(h));
         if (rc == FSDISK_OK) {
             if (locked_flush(d) != 0 || locked_write(d, lba, hdr_sectors, meta) != 0 || locked_flush(d) != 0)
                 rc = FSDISK_ERR_IO;
@@ -1221,11 +1341,54 @@ static int v5_format(const ata_disk_t* d, uint32_t keep_lba, uint32_t keep_sect)
     return FSDISK_OK;
 }
 
+/* ── several disks ──────────────────────────────────────────────────
+ * Banana OS used to want exactly one hard disk: with a second one attached
+ * it found no installed system. Now every disk is looked at: the first
+ * holding a Banana OS install is the system's (its volumes never mounted),
+ * the others are ordinary drives, and install asks which disk to use. */
+
+int fsdisk_holds_banana(const ata_disk_t* d) {
+    if (d->is_atapi || !d->sectors) return 0;
+    v5_mark_t m;
+    layout_t l;
+    fsdisk_super_t sb[2];
+    int have[2];
+    return v5_detect(d, &m) || detect(d, &l, sb, have);
+}
+
+int fsdisk_find_installed(ata_disk_t* out) {
+    ata_disk_t all[DISK_MAX];
+    int n = disk_probe(all, DISK_MAX), found = 0;
+    for (int i = 0; i < n; i++) {
+        if (!fsdisk_holds_banana(&all[i])) continue;
+        if (!found && out) *out = all[i];
+        found++;
+    }
+    if (found > 1) klog("fsdisk: %d disks hold Banana OS - using the first one\n", found);
+    return found;
+}
+
+int fsdisk_targets(ata_disk_t* out, int max) {
+    ata_disk_t all[DISK_MAX];
+    int n = disk_probe(all, DISK_MAX), k = 0;
+    for (int i = 0; i < n && k < max; i++)
+        if (!all[i].is_atapi && all[i].sectors) out[k++] = all[i];
+    return k;
+}
+
 int fsdisk_install(void) {
     ata_disk_t target;
     int tr = fsdisk_find_target(&target);
     if (tr == 0) return FSDISK_ERR_NO_TARGET;
     if (tr < 0)  return FSDISK_ERR_AMBIGUOUS;
+    return fsdisk_install_to(&target);
+}
+
+int fsdisk_install_to(const ata_disk_t* tp) {
+    ata_disk_t target = *tp;
+    if (target.is_atapi || !target.sectors) return FSDISK_ERR_NO_TARGET;
+    /* what was mounted from it goes, and it is never mounted again */
+    blockdev_set_system(disk_blockdev(&target));
 
     img_src_t source;
     if (!find_source(&source)) return FSDISK_ERR_NO_SOURCE;
@@ -1256,8 +1419,26 @@ int fsdisk_install(void) {
     return FSDISK_OK;
 }
 
+/* a hypervisor backing the disk up (the guest agent's fsfreeze): everything
+ * is written now, then nothing until thawed - the disk stays as the backup
+ * reads it */
+static volatile int g_frozen;
+static uint32_t     g_frozen_at;
+
+int fsdisk_freeze(int on) {
+    if (!on) { g_frozen = 0; return FSDISK_OK; }
+    if (g_frozen) return FSDISK_OK;
+    int rc = g_have_target ? fsdisk_sync() : FSDISK_OK;
+    g_frozen = 1;
+    g_frozen_at = timer_ms();
+    return rc == FSDISK_ERR_NO_TARGET ? FSDISK_OK : rc;
+}
+
+int fsdisk_frozen(void) { return g_frozen; }
+
 int fsdisk_sync(void) {
     if (!g_have_target) return FSDISK_ERR_NO_TARGET;
+    if (g_frozen) return FSDISK_OK;           /* (frozen for a backup: written once thawed) */
     while (g_busy) task_sleep_ms(10);        /* the autosave task and `sync` take turns */
     g_busy = 1;
     int rc = g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
@@ -1268,7 +1449,8 @@ int fsdisk_sync(void) {
 
 int fsdisk_try_load(void) {
     ata_disk_t target;
-    if (fsdisk_find_target(&target) != 1) return 0; /* none, or ambiguous */
+    if (!fsdisk_find_installed(&target)) return 0;     /* (other disks: ordinary drives) */
+    blockdev_set_system(disk_blockdev(&target));
 
     int r5 = v5_try_load(&target);
     if (r5 < 0) return -1;
@@ -1329,7 +1511,11 @@ static void autosave_task(void) {
     for (;;) {
         task_sleep_ms(500);
         fs_trim();                              /* RAM low: cached file data goes */
-        if (!g_have_target) continue;
+        if (g_frozen && timer_ms() - g_frozen_at > 600000u) {     /* never thawed: not forever */
+            klog("fsdisk: frozen for 10 minutes - thawed\n");
+            g_frozen = 0;
+        }
+        if (!g_have_target || g_frozen) continue;
         uint32_t gen = fs_generation();
         if (gen == g_synced_gen) { warned = 0; continue; }
         /* RAM running low: save now, even while things change - a saved file's
@@ -1391,11 +1577,7 @@ int fsdisk_find_install(ata_disk_t* out) {
     if (g_fi_state < 0) {
         g_fi_state = 0;
         ata_disk_t d;
-        layout_t l;
-        fsdisk_super_t sb[2];
-        int have[2];
-        v5_mark_t m;
-        if (fsdisk_find_target(&d) == 1 && (v5_detect(&d, &m) || detect(&d, &l, sb, have))) {
+        if (fsdisk_find_installed(&d)) {
             g_fi_disk = d;
             g_fi_state = 1;
         }
@@ -1411,7 +1593,7 @@ int fsdisk_install_layout(void) {
     fsdisk_super_t sb[2];
     int have[2];
     v5_mark_t m;
-    if (fsdisk_find_target(&d) != 1) return 0;
+    if (!fsdisk_find_installed(&d)) return 0;
     if (v5_detect(&d, &m)) return 5;
     if (!detect(&d, &l, sb, have)) return 0;
     return (int)l.version;
@@ -1480,10 +1662,17 @@ static int migrate_to_v4(const ata_disk_t* d) {
 }
 
 int fsdisk_update(void) {
+    ata_disk_t d;
+    if (!fsdisk_find_install(&d)) return FSDISK_ERR_NO_INSTALL;
+    return fsdisk_update_on(&d);
+}
+
+int fsdisk_update_on(const ata_disk_t* dp) {
     ata_disk_t dst;
     img_src_t src;
     uint32_t iso_bytes;
-    if (!fsdisk_find_install(&dst)) return FSDISK_ERR_NO_INSTALL;
+    dst = *dp;
+    if (!fsdisk_holds_banana(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
     if (iso_bytes > V4_BASE_LBA * FSDISK_SECTOR) return FSDISK_ERR_ISO_TOO_BIG;
     int rc = migrate_to_v4(&dst);
@@ -1529,4 +1718,114 @@ int fsdisk_set_boot_video(const char* value) {
         cfg_persist();
     }
     return rc == 0 ? hits : -1;
+}
+
+/* ── fsck: the installed disk's metadata, extents and file data ──────── */
+
+/* reads a file's extent back in 64 KiB steps: 0 its check matches, 1 not, -1 unreadable */
+static int verify_rec(const v5_rec_t* r, uint8_t* buf) {
+    uint32_t done = 0, crc = 0, sum = 0;
+    while (done < r->size) {
+        uint32_t n = r->size - done;
+        if (n > RA_BYTES) n = RA_BYTES;
+        dlock();
+        int rc = disk_read(&g_target, r->lba + done / FSDISK_SECTOR, bytes_to_sectors(n), buf);
+        dunlock();
+        if (rc != 0) return -1;
+        if (r->crc) crc = crc32c(crc, buf, n);
+        else for (uint32_t k = 0; k < n; k++) sum = sum * 131u + buf[k];
+        done += n;
+        task_yield();
+    }
+    return (r->crc ? crc : sum) == r->check ? 0 : 1;
+}
+
+int fsdisk_check(int full, void (*out)(const char* line)) {
+    char line[160];
+    int problems = 0;
+    if (!g_have_target) { out("disk: none installed - the files live in RAM only"); return 0; }
+    if (!g_v5) {
+        ksnprintf(line, sizeof(line), "disk: layout %u (older) - its copies were checked when loaded", g_layout.version);
+        out(line);
+        return 0;
+    }
+    if (fsdisk_pending()) fsdisk_sync();              /* check what is on the disk now */
+    while (g_busy) task_sleep_ms(10);
+    g_busy = 1;
+    /* the two metadata slots: the one in use must be whole */
+    for (int s = 0; s < 2; s++) {
+        meta_info_t h;
+        uint8_t* body = NULL;
+        int ok = v5_read_meta(&g_target, &g_mark, s, &h, &body);
+        int good = ok && (h.version == 7 ? v7_body_ok(body, h.body_bytes, &g_mark) : v5_body_ok(body, h.body_bytes, &g_mark));
+        if (good)
+            ksnprintf(line, sizeof(line), "metadata slot %d: version %u, save #%u, %u bytes, checksums good%s",
+                      s, h.version, h.seq, h.body_bytes, s == g_cur_slot ? " (in use)" : "");
+        else
+            ksnprintf(line, sizeof(line), "metadata slot %d: %s", s, s == g_cur_slot ? "DAMAGED (the one in use)" : "empty or older (unused)");
+        out(line);
+        if (!good && s == g_cur_slot) problems++;
+        kfree(body);
+    }
+    /* the extents: inside the files' area, none over another */
+    uint32_t prev_end = g_mark.data_lba;
+    for (int i = 0; i < g_next; i++) {
+        uint32_t a = g_ext[i].lba, e = a + g_ext[i].sectors;
+        if (a < g_mark.data_lba || e > g_mark.data_end) {
+            ksnprintf(line, sizeof(line), "extent at sector %u (%u sectors) lies outside the files' area", a, g_ext[i].sectors);
+            out(line);
+            problems++;
+        } else if (a < prev_end && i) {
+            ksnprintf(line, sizeof(line), "extent at sector %u overlaps the one before it", a);
+            out(line);
+            problems++;
+        }
+        if (e > prev_end) prev_end = e;
+    }
+    /* every saved record belongs to a live file of that size */
+    int nrec = 0;
+    uint64_t bytes = 0;
+    for (int i = 0; i < g_nrecs; i++) {
+        if (!g_rec[i].valid) continue;
+        nrec++;
+        bytes += g_rec[i].size;
+        fs_file_t* f = fs_file_info(i);
+        if (!f || !f->used || f->mnt) {
+            ksnprintf(line, sizeof(line), "record #%d has no file (space not given back)", i);
+            out(line);
+            problems++;
+        } else if (!f->loaded && f->size != g_rec[i].size) {
+            ksnprintf(line, sizeof(line), "'%s': %u bytes, its saved copy %u", f->name, f->size, g_rec[i].size);
+            out(line);
+            problems++;
+        }
+    }
+    ksnprintf(line, sizeof(line), "extents: %d in use, %u files saved (%u MiB)", g_next, (uint32_t)nrec, (uint32_t)(bytes >> 20));
+    out(line);
+    /* -f: every file's data read back against its checksum */
+    if (full) {
+        uint8_t* buf = (uint8_t*)kmalloc(RA_BYTES);
+        int bad = 0, done = 0;
+        if (buf) {
+            for (int i = 0; i < g_nrecs; i++) {
+                if (!g_rec[i].valid || !g_rec[i].size) continue;
+                v5_rec_t r = g_rec[i];
+                int v = verify_rec(&r, buf);
+                done++;
+                if (v != 0) {
+                    fs_file_t* f = fs_file_info(i);
+                    ksnprintf(line, sizeof(line), "'%s' (#%d): %s", f && f->used ? f->name : "?", i,
+                              v < 0 ? "cannot be read" : "data does not match its checksum");
+                    out(line);
+                    bad++;
+                }
+            }
+            kfree(buf);
+        }
+        ksnprintf(line, sizeof(line), "data: %d files read back, %d bad", done, bad);
+        out(line);
+        problems += bad;
+    }
+    g_busy = 0;
+    return problems;
 }

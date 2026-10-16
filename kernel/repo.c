@@ -6,6 +6,7 @@
 #include "../net/http.h"
 #include "../crypto/sha256.h"
 #include "../crypto/ed25519.h"
+#include "builtin_apps.h"
 
 #define MAX_SOURCES   16
 #define MAX_PKGS      2048
@@ -21,8 +22,11 @@ static const char* DEFAULT_SOURCES =
     "# Make your own repository on Linux with tools/repo/banana-repo (see the\n"
     "# README): `banana-repo key` prints the line to put here.\n"
     "\n"
-    "# the examples that come with Banana OS\n"
-    "repo file:///home/banana/Examples trusted\n";
+    "# the apps and the examples that come with Banana OS (built into it: no network)\n"
+    "repo builtin: trusted\n";
+
+/* the built-in packages' source (kernel/builtin_apps.c) */
+#define BUILTIN_URL "builtin:"
 
 /* ── small helpers ───────────────────────────────────────────────── */
 
@@ -130,6 +134,12 @@ static void dl_progress(void* ctx, uint32_t got, int32_t total) {
 
 /* url: http://, https:// or file:///path; 0 with *data (kmalloc'd), or -1 */
 static int fetch(const char* url, const char* what, char** data, uint32_t* len, char* err, int ecap) {
+    if (!strncmp(url, BUILTIN_URL, 8)) {                 /* builtin:/name.bpk - out of the kernel */
+        const char* f = strrchr(url, '/');
+        f = f ? f + 1 : url + 8;
+        if (builtin_package(f, data, len) != 0) { ksnprintf(err, (size_t)ecap, "%s: not built in", f); return -1; }
+        return 0;
+    }
     if (!strncmp(url, "file://", 7)) {
         if (read_file(url + 7, data, len) != 0) { ksnprintf(err, (size_t)ecap, "%s: no such file", url + 7); return -1; }
         return 0;
@@ -166,7 +176,8 @@ static int fetch(const char* url, const char* what, char** data, uint32_t* len, 
 
 /* base + "/" + rel (rel may be a full URL already) */
 static void join_url(const char* base, const char* rel, char* out, int cap) {
-    if (!strncmp(rel, "http://", 7) || !strncmp(rel, "https://", 8) || !strncmp(rel, "file://", 7)) {
+    if (!strncmp(rel, "http://", 7) || !strncmp(rel, "https://", 8) || !strncmp(rel, "file://", 7) ||
+        !strncmp(rel, BUILTIN_URL, 8)) {
         kstrlcpy(out, rel, (size_t)cap);
         return;
     }
@@ -226,8 +237,9 @@ int repo_sources(repo_source_t* out, int max) {
 }
 
 int repo_add_source(const char* url, const char* key_hex, int trusted, char* msg, int mcap) {
-    if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8) && strncmp(url, "file://", 7)) {
-        kstrlcpy(msg, "the address must start with https://, http:// or file://", (size_t)mcap);
+    if (strncmp(url, "http://", 7) && strncmp(url, "https://", 8) && strncmp(url, "file://", 7) &&
+        strcmp(url, BUILTIN_URL)) {
+        kstrlcpy(msg, "the address must start with https://, http:// or file:// (or be builtin:)", (size_t)mcap);
         return -1;
     }
     if (strlen(url) >= sizeof(((repo_source_t*)0)->url)) { kstrlcpy(msg, "the address is too long", (size_t)mcap); return -1; }
@@ -739,6 +751,35 @@ int repo_autoremove(repo_log_t log, void* ctx, char* msg, int mcap) {
 
 /* ── apt update ──────────────────────────────────────────────────── */
 
+/* a package's stanza (as a signed index has it) added to the index being
+ * made in *out: 1, or 0 (not a package, or out of memory) */
+static int add_stanza(char** out, uint32_t* len, uint32_t* cap, const char* d, uint32_t dl, const char* fname) {
+    pkg_info_t info;
+    char err[96];
+    if (pkg_inspect_mem((const uint8_t*)d, dl, &info, err, sizeof(err)) != 0) return 0;
+    uint8_t h[32];
+    char hx[65], st[1024];
+    sha256(d, dl, h);
+    tohex(h, 32, hx);
+    ksnprintf(st, sizeof(st),
+              "Package: %s\nVersion: %s\nTitle: %s\nType: %s\nCategory: %s\nDescription: %s\nAuthor: %s\n"
+              "Depends: %s\nArch: %s%s%s\nFilename: %s\nSize: %u\nSHA256: %s\n\n",
+              info.name, info.version[0] ? info.version : "0", info.title, info.type, info.category,
+              info.description, info.author, info.depends, info.has_i686 ? "i686" : "",
+              info.has_i686 && info.has_x86_64 ? " " : "", info.has_x86_64 ? "x86_64" : "", fname, dl, hx);
+    uint32_t sl = (uint32_t)strlen(st);
+    if (*len + sl + 1 > *cap) {
+        uint32_t nc = (*len + sl + 1) * 2;
+        char* nb = (char*)krealloc(*out, nc);
+        if (!nb) return 0;
+        *out = nb;
+        *cap = nc;
+    }
+    memcpy(*out + *len, st, sl + 1);
+    *len += sl;
+    return 1;
+}
+
 /* a local folder without an index: its .bpk files are the packages */
 static char* flat_index(const char* dir, int* count) {
     int idx[128];
@@ -759,33 +800,71 @@ static char* flat_index(const char* dir, int* count) {
         char* d;
         uint32_t dl;
         if (read_file(path, &d, &dl) != 0) continue;
-        pkg_info_t info;
-        char err[96];
-        if (pkg_inspect_mem((const uint8_t*)d, dl, &info, err, sizeof(err)) == 0) {
-            uint8_t h[32];
-            char hx[65], st[1024];
-            sha256(d, dl, h);
-            tohex(h, 32, hx);
-            ksnprintf(st, sizeof(st),
-                      "Package: %s\nVersion: %s\nTitle: %s\nType: %s\nCategory: %s\nDescription: %s\nAuthor: %s\n"
-                      "Depends: %s\nArch: %s%s%s\nFilename: %s\nSize: %u\nSHA256: %s\n\n",
-                      info.name, info.version[0] ? info.version : "0", info.title, info.type, info.category,
-                      info.description, info.author, info.depends, info.has_i686 ? "i686" : "",
-                      info.has_i686 && info.has_x86_64 ? " " : "", info.has_x86_64 ? "x86_64" : "", fi->name, dl, hx);
-            uint32_t sl = (uint32_t)strlen(st);
-            if (len + sl + 1 > cap) {
-                cap = (len + sl + 1) * 2;
-                char* nb = (char*)krealloc(out, cap);
-                if (!nb) { kfree(d); break; }
-                out = nb;
-            }
-            memcpy(out + len, st, sl + 1);
-            len += sl;
-            (*count)++;
-        }
+        *count += add_stanza(&out, &len, &cap, d, dl, fi->name);
         kfree(d);
     }
     return out;
+}
+
+/* the packages built into the kernel (builtin:) */
+static char* builtin_index(int* count) {
+    uint32_t cap = 4096, len = 0;
+    char* out = (char*)kmalloc(cap);
+    if (!out) return NULL;
+    out[0] = 0;
+    *count = 0;
+    for (int i = 0; i < builtin_package_count(); i++) {
+        char fname[40];
+        kstrlcpy(fname, builtin_package_file(i), sizeof(fname));
+        char* d;
+        uint32_t dl;
+        if (builtin_package(fname, &d, &dl) != 0) continue;
+        *count += add_stanza(&out, &len, &cap, d, dl, fname);
+        kfree(d);
+    }
+    return out;
+}
+
+/* At boot: the builtin: source is in sources.list (systems from before
+ * build 159 get it; their ~/Examples source goes, the same packages being
+ * built in), and its list is made again when this kernel's packages
+ * changed - so the App Store shows them without an `apt update`. */
+void repo_builtin_refresh(void) {
+    static repo_source_t src[MAX_SOURCES];
+    int n = repo_sources(src, MAX_SOURCES), at = -1;
+    for (int i = 0; i < n; i++) if (!strcmp(src[i].url, BUILTIN_URL)) at = i;
+    if (at < 0) {
+        char msg[96];
+        repo_remove_source("file:///home/banana/Examples", msg, sizeof(msg));
+        if (repo_add_source(BUILTIN_URL, NULL, 1, msg, sizeof(msg)) != 0) return;
+        n = repo_sources(src, MAX_SOURCES);
+        for (int i = 0; i < n; i++) if (!strcmp(src[i].url, BUILTIN_URL)) at = i;
+        if (at < 0) return;
+    }
+    char path[FS_PATH_LEN], head[96];
+    list_path(at, path, sizeof(path));
+    ksnprintf(head, sizeof(head), "#source %s\n#stamp %x\n", BUILTIN_URL, builtin_packages_stamp());
+    char* d;
+    uint32_t len;
+    if (read_file(path, &d, &len) == 0) {
+        int same = len >= strlen(head) && !strncmp(d, head, strlen(head));
+        kfree(d);
+        if (same) return;                              /* (made from these packages already) */
+    }
+    int count = 0;
+    char* idx = builtin_index(&count);
+    if (!idx) return;
+    uint32_t hl = (uint32_t)strlen(head), il = (uint32_t)strlen(idx);
+    char* out = (char*)kmalloc(hl + il + 1);
+    if (out) {
+        memcpy(out, head, hl);
+        memcpy(out + hl, idx, il + 1);
+        fs_mkdir_p(REPO_LISTS);
+        fs_write_path(path, out, hl + il);
+        kfree(out);
+        g_loaded = 0;
+    }
+    kfree(idx);
 }
 
 int repo_update(repo_log_t log, void* ctx, char* msg, int mcap) {
@@ -803,7 +882,12 @@ int repo_update(repo_log_t log, void* ctx, char* msg, int mcap) {
         int flat = 0;
         join_url(s->url, "Packages", url, sizeof(url));
         say(log, ctx, "Get:%d %s", i + 1, s->url);
-        if (fetch(url, "the package list", &d, &len, err, sizeof(err)) != 0) {
+        if (!strcmp(s->url, BUILTIN_URL)) {                 /* the kernel's own packages */
+            int count = 0;
+            d = builtin_index(&count);
+            if (d) { len = (uint32_t)strlen(d); flat = 1; }
+            else { say(log, ctx, "Err:%d %s - out of memory", i + 1, s->url); bad++; continue; }
+        } else if (fetch(url, "the package list", &d, &len, err, sizeof(err)) != 0) {
             /* a plain local folder of .bpk files */
             if (!strncmp(s->url, "file://", 7) && fs_find_dir(s->url + 7) >= 0) {
                 int count = 0;

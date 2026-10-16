@@ -43,10 +43,16 @@ int  app_kill(int id);
 /* kernel/idt.c: CPU exception `vector` in the current task; if an app is
  * running there it is stopped (this does not return), else it returns */
 void app_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr);
+/* kernel/idt.c, every page fault: 1 if it was a page of the running app's
+ * mmap region touched for the first time (now there: the access goes on) */
+int  app_vm_fault(uintptr_t addr, uint32_t err);
 
 /* kernel/idt.c: a hardware interrupt came at ip, from ring 3 or not
  * (time-slices app code) */
-void app_preempt(uintptr_t ip, int from_user);
+void app_preempt(uintptr_t ip, int from_user, void* regs);
+/* kernel/idt.c, a CPU exception in app code (ring 3): 1 if it went to the
+ * app's signal handler (the CPU resumes there), 0 if the app must stop */
+int  app_signal_fault(void* regs);
 
 /* memory of app `owner` - what it may write to (its windows' pictures,
  * kernel/appwin.c); kernel memory on neither */

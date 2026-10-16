@@ -395,6 +395,71 @@ events too. Web pages get the same as `keydown` / `keyup` with `event.code`.
 The C library also has `setjmp` / `longjmp`, `gettimeofday` (`<sys/time.h>`),
 `realpath`, `strtold` and `ldexpl`.
 
+### mmap (API version 16)
+
+`<sys/mman.h>` has `mmap`, `munmap`, `mprotect` (and `madvise`, `msync`,
+`mlock` as no-ops), with Linux's flag values. On the 64-bit system an app
+has 2 TiB of addresses of its own for mappings: `mmap` only reserves them,
+and each 4 KiB page gets memory - zeroed - the first time it is touched, so
+reserving a big range (a garbage-collected heap) costs only what is used.
+`PROT_NONE` and `PROT_READ` are enforced: touching a page against its
+protection is a bad access. `MAP_FIXED` replaces what was mapped there with
+fresh pages. A file mapping is a private copy of the file (`MAP_SHARED`
+writes are not written back). System calls take mapped buffers like any
+other memory. The 32-bit system has no paging: `mmap` hands out zeroed
+memory right away and protection is not enforced. `selftest posix` checks it.
+
+### Threads: <pthread.h> (API version 17)
+
+`<pthread.h>`, `<semaphore.h>` and `<sched.h>` are the POSIX ones: threads
+with the stack size you ask for (mapped, a guard page under it), joinable or
+detached (more than the 64 that can run at once over an app's life: a
+detached thread's slot comes back), `pthread_getattr_np` (its stack),
+mutexes (normal, recursive, error-checking, timed), condition variables on
+`CLOCK_REALTIME` or `CLOCK_MONOTONIC`, read-write locks, once, keys with
+destructors, spinlocks, barriers, unnamed semaphores. `__thread` variables
+work on the 64-bit system (the kernel keeps each thread's FS base) in every
+thread started by `pthread_create` or `banana_thread`, and in the main one;
+the 32-bit system has no thread pointer - use keys there. `errno` is per
+thread. Also new: `clock_gettime` / `nanosleep` / `clock_nanosleep`
+(millisecond resolution), `sysconf` (`_SC_NPROCESSORS_ONLN`, `_SC_PHYS_PAGES`,
+`_SC_PAGESIZE`...), `getpid`, `gettid`, `sched_getaffinity`, `gmtime_r`.
+`selftest posix threads` checks them.
+
+### Sockets: <sys/socket.h> (API version 18)
+
+BSD sockets for TCP and UDP over IPv4, the loopback (127.0.0.1) included:
+`socket`, `bind`, `listen`, `accept` / `accept4`, `connect`, `send` / `recv`
+/ `sendto` / `recvfrom` / `sendmsg` / `recvmsg` (`MSG_PEEK`, `MSG_DONTWAIT`,
+`MSG_WAITALL`), `shutdown`, `getsockopt` / `setsockopt` (`SO_RCVTIMEO`,
+`SO_SNDTIMEO`, `SO_ERROR`, `SO_REUSEADDR`, `TCP_NODELAY`...), `getsockname` /
+`getpeername`. A socket is a file descriptor: `read`, `write`, `close`,
+`poll`, `select`, `ioctl(FIONREAD / FIONBIO)` and `fcntl(O_NONBLOCK)` work on
+it. `<netdb.h>` resolves names through the system's DNS (`getaddrinfo`,
+`gethostbyname`, `getnameinfo` with numbers), `<arpa/inet.h>` converts
+addresses (IPv4 and IPv6 text). Not there yet: IPv6 sockets (`AF_INET6`
+gives `EAFNOSUPPORT`, so Java uses IPv4), Unix-domain sockets, `socketpair`,
+half-closing (`shutdown(SHUT_WR)` sends no FIN until `close`). The system
+handles 64 TCP connections and 16 listening ports at once.
+`selftest posix sockets` checks them.
+
+### Signals: <signal.h> (API version 19)
+
+`sigaction` / `signal`, `sigprocmask` / `pthread_sigmask`, `sigpending`,
+`sigsuspend`, `kill` / `raise` / `pthread_kill`, `sigaltstack`, `sigsetjmp` /
+`siglongjmp`, with Linux's numbers and flags (`SA_SIGINFO`, `SA_ONSTACK`,
+`SA_NODEFER`, `SA_RESETHAND`). On the 64-bit system a CPU fault in an app's
+code becomes a signal for its handler: a bad access `SIGSEGV` (`si_addr`,
+`SEGV_MAPERR` / `SEGV_ACCERR`), a division by zero `SIGFPE`, an invalid
+instruction `SIGILL`, also `SIGBUS` and `SIGTRAP`. The handler gets a
+`ucontext_t` (`<ucontext.h>`, Linux's `REG_RIP`... order) whose registers it
+may change: returning resumes from them. Signals sent to a thread arrive when
+it next leaves a system call or the timer interrupts it, and they wake it from
+a wait or a sleep. Ctrl+C is `SIGINT` once the app handles (or ignores) it.
+The 32-bit system runs handlers for `raise` only. Not there: `sigwait`,
+`SIGPIPE` (a send to a closed socket fails with `EPIPE`), `alarm`.
+`selftest posix signals` checks it.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and

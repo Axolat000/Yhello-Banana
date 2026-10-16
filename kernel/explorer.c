@@ -40,6 +40,7 @@
 #include "audio.h"
 #include "ctxmenu.h"
 #include "blockdev.h"
+#include "volume.h"
 #include "fileicons.h"
 #include "fileops.h"
 #include "keyboard.h"
@@ -292,16 +293,16 @@ static void clamp_scroll(void) {
 }
 
 static void scan(void) {
-    static int d[FS_MAX_DIRS], f[FS_MAX_FILES];   /* static: the GUI runs on 16 KiB task stacks */
-    int nd = fs_list_dirs(g_path, d, FS_MAX_DIRS);
+    static int d[FS_LIST_MAX], f[FS_LIST_MAX];   /* static: the GUI runs on 16 KiB task stacks */
+    int nd = fs_list_dirs(g_path, d, FS_LIST_MAX);
     if (nd < 0) {                       /* folder vanished: go home */
         kstrlcpy(g_path, HOME, sizeof(g_path));
-        nd = fs_list_dirs(g_path, d, FS_MAX_DIRS);
-        if (nd < 0) { kstrlcpy(g_path, "/", sizeof(g_path)); nd = fs_list_dirs(g_path, d, FS_MAX_DIRS); }
+        nd = fs_list_dirs(g_path, d, FS_LIST_MAX);
+        if (nd < 0) { kstrlcpy(g_path, "/", sizeof(g_path)); nd = fs_list_dirs(g_path, d, FS_LIST_MAX); }
     }
-    int nf = fs_list_files(g_path, f, FS_MAX_FILES);
-    if (nd > FS_MAX_DIRS) nd = FS_MAX_DIRS;
-    if (nf > FS_MAX_FILES) nf = FS_MAX_FILES;
+    int nf = fs_list_files(g_path, f, FS_LIST_MAX);
+    if (nd > FS_LIST_MAX) nd = FS_LIST_MAX;
+    if (nf > FS_LIST_MAX) nf = FS_LIST_MAX;
     g_count = 0;
     /* names starting with a dot are hidden (settings, the Recycle Bin's
      * folder), like Windows' hidden files - unless Organize shows them */
@@ -643,10 +644,10 @@ static char g_rename[FS_NAME_LEN];
 
 static int copy_tree(const char* src, const char* dst, int depth) {
     if (depth > 12 || fs_mkdir(dst) < 0) return -1;
-    static int idx[FS_MAX_FILES];
+    static int idx[FS_LIST_MAX];
     int rc = 0;
-    int nf = fs_list_files(src, idx, FS_MAX_FILES);
-    for (int i = 0; i < nf && i < FS_MAX_FILES; i++) {
+    int nf = fs_list_files(src, idx, FS_LIST_MAX);
+    for (int i = 0; i < nf && i < FS_LIST_MAX; i++) {
         char s[FS_PATH_LEN], d[FS_PATH_LEN];
         const char* name = fs_file_info(idx[i])->name;
         ksnprintf(s, sizeof(s), "%s/%s", src, name);
@@ -655,7 +656,8 @@ static int copy_tree(const char* src, const char* dst, int depth) {
     }
     int dirs[32];
     int nd = fs_list_dirs(src, dirs, 32);
-    char names[32][FS_NAME_LEN];
+    char (*names)[FS_NAME_LEN] = kmalloc(32 * FS_NAME_LEN);     /* (8 KiB: not on the GUI's stack) */
+    if (!names) return -1;
     int n = nd < 32 ? nd : 32;
     for (int i = 0; i < n; i++) kstrlcpy(names[i], fs_get_dir(dirs[i])->name, FS_NAME_LEN);
     for (int i = 0; i < n; i++) {
@@ -664,6 +666,7 @@ static int copy_tree(const char* src, const char* dst, int depth) {
         ksnprintf(d, sizeof(d), "%s/%s", dst, names[i]);
         if (copy_tree(s, d, depth + 1) < 0) rc = -1;
     }
+    kfree(names);
     return rc;
 }
 
@@ -761,9 +764,21 @@ static void eject_here(void) {
     kstrlcpy(point, fs_mount_point(mnt), sizeof(point));
     go(HOME);
     if (!blockdev_eject(mnt)) fs_unmount(mnt);
-    ksnprintf(msg, sizeof(msg), "%s ejected - the stick can be removed", point);
+    ksnprintf(msg, sizeof(msg), "%s ejected - the drive can be removed", point);
     set_status(msg);
 }
+
+/* a drive's size: "62 MB", "1.5 GB", "931 GB" */
+static void drive_size(uint64_t b, char* out, int cap) {
+    static const char* const U[] = { "bytes", "KB", "MB", "GB", "TB" };
+    int u = 0;
+    uint64_t frac = 0;
+    while (b >= 1024 && u < 4) { frac = (b % 1024) * 10 / 1024; b /= 1024; u++; }
+    if (u && b < 10) ksnprintf(out, (size_t)cap, "%u.%u %s", (uint32_t)b, (uint32_t)frac, U[u]);
+    else ksnprintf(out, (size_t)cap, "%u %s", (uint32_t)b, U[u]);
+}
+
+static void drive_label(int mnt, char* out, int cap, fileicon_t* icon);
 
 static void properties(void) {
     char msg[112], size[24], type[40];
@@ -772,7 +787,19 @@ static void properties(void) {
         uint32_t bytes = 0;
         for (int i = 0; i < g_count; i++) { if (g_items[i].is_dir) nd++; else { nf++; bytes += item_size(&g_items[i]); } }
         human_size(bytes, size, sizeof(size));
-        ksnprintf(msg, sizeof(msg), "%s: %d folders, %d files, %s", g_path, nd, nf, size);
+        int mnt = fs_path_mount(g_path);
+        uint64_t total = 0, avail = 0;
+        if (mnt && !strcmp(fs_mount_point(mnt), g_path) && volume_space(mnt, &total, &avail)) {
+            /* a drive: what it holds, its filesystem, size and free space */
+            char lab[48], tot[24], fr[24];
+            fileicon_t ic;
+            drive_label(mnt, lab, sizeof(lab), &ic);
+            drive_size(total, tot, sizeof(tot));
+            drive_size(avail, fr, sizeof(fr));
+            ksnprintf(msg, sizeof(msg), "%s: %s, %s free of %s", lab, volume_fs_name(mnt), fr, tot);
+        } else {
+            ksnprintf(msg, sizeof(msg), "%s: %d folders, %d files, %s", g_path, nd, nf, size);
+        }
     } else {
         const item_t* it = &g_items[g_sel];
         type_of(it, type, sizeof(type));
@@ -785,7 +812,7 @@ static void properties(void) {
         } else {
             fs_file_t* f = fs_file_info(it->idx);
             human_size(f->size, size, sizeof(size));
-            ksnprintf(msg, sizeof(msg), "%s: %s, %s (%u bytes)%s", f->name, type, size, f->size, f->mnt ? ", USB stick" : "");
+            ksnprintf(msg, sizeof(msg), "%s: %s, %s (%u bytes)%s%s", f->name, type, size, f->size, f->mnt ? ", on " : "", f->mnt ? fs_mount_point(f->mnt) : "");
         }
     }
     set_status(msg);
@@ -931,7 +958,7 @@ static void item_menu(int mx, int my, int row) {
         items[n++] = (ctx_item_t){ "New text document", M_NEWFILE, 0 };
         items[n++] = (ctx_item_t){ "Open a terminal here", M_TERMINAL, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
-        if (fs_path_mount(g_path)) items[n++] = (ctx_item_t){ "Eject this USB stick", M_EJECT, 0 };
+        if (fs_path_mount(g_path)) items[n++] = (ctx_item_t){ "Eject this drive", M_EJECT, 0 };
         items[n++] = (ctx_item_t){ "Properties", M_PROPS, 0 };
     }
     g_gen++;
@@ -1001,9 +1028,11 @@ static int item_at(int mx, int my) {
     return i < g_count ? i : -1;
 }
 
-/* the navigation pane's places */
+/* the navigation pane's places: the fixed ones, and under Computer every
+ * mounted drive - each partition of each disk, stick and card - with its
+ * label, rebuilt whenever something is mounted or unmounted */
 typedef struct { const char* label; fileicon_t icon; const char* path; int head; } place_t;
-static const place_t PLACES[] = {
+static const place_t BASE_PLACES[] = {
     { "Favorites", FI_FAVORITES, NULL, 1 },
     { "Downloads", FI_DOWNLOADS, HOME "/Downloads", 0 },
     { "banana", FI_HOME, HOME, 0 },
@@ -1014,27 +1043,101 @@ static const place_t PLACES[] = {
     { "Videos", FI_VIDEOS, HOME "/Videos", 0 },
     { "Computer", FI_COMPUTER, "/", 1 },
     { "Local Disk (/)", FI_DISK, "/", 0 },
-    { "USB stick", FI_USB, "/mnt/usb", 0 },
     { "Recycle Bin", FI_TRASH, TRASH_FILES, 1 },
 };
-#define NPLACES (int)(sizeof(PLACES) / sizeof(PLACES[0]))
+#define NBASE (int)(sizeof(BASE_PLACES) / sizeof(BASE_PLACES[0]))
 #define NAV_ROW 22
 
-static int place_visible(int i) {
-    return strcmp(PLACES[i].label, "USB stick") != 0 || fs_find_dir("/mnt/usb") >= 0;
+static place_t g_places[NBASE + FS_MAX_MOUNTS];
+static char    g_drive_label[FS_MAX_MOUNTS][48];
+static char    g_drive_path[FS_MAX_MOUNTS][FS_PATH_LEN];
+static int     g_nplaces;
+#define PLACES  g_places
+#define NPLACES g_nplaces
+
+/* "USB stick", "SATA disk"... for a drive without a volume label */
+static const char* kind_name(const char* kind) {
+    if (!strcmp(kind, "usb")) return "USB stick";
+    if (!strcmp(kind, "sd")) return "SD card";
+    if (!strcmp(kind, "nvme")) return "NVMe disk";
+    if (!strcmp(kind, "virtio")) return "Virtual disk";
+    if (!strcmp(kind, "sata")) return "SATA disk";
+    if (!strcmp(kind, "ide")) return "IDE disk";
+    return "Drive";
 }
 
-/* the y (relative to the window) of place i, -1 if hidden */
+/* "DATA (sata2)": the volume's label (else what the drive is), then its folder */
+static void drive_label(int mnt, char* out, int cap, fileicon_t* icon) {
+    char line[160], label[40] = "";
+    if (volume_describe(mnt, line, sizeof(line))) {
+        const char* q = strchr(line, '"');
+        const char* e = q ? strchr(q + 1, '"') : NULL;
+        if (q && e && e > q + 1) {
+            int n = (int)(e - q - 1);
+            if (n >= (int)sizeof(label)) n = (int)sizeof(label) - 1;
+            memcpy(label, q + 1, (size_t)n);
+            label[n] = 0;
+            while (n && label[n - 1] == ' ') label[--n] = 0;
+        }
+    }
+    blockdev_t* bd = blockdev_of_mount(mnt, NULL);
+    *icon = bd && (!strcmp(bd->kind, "usb") || !strcmp(bd->kind, "sd")) ? FI_USB : FI_DISK;
+    const char* point = fs_mount_point(mnt);
+    const char* base = strrchr(point, '/');
+    base = base ? base + 1 : point;
+    ksnprintf(out, (size_t)cap, "%s (%s)", label[0] ? label : kind_name(bd ? bd->kind : ""), base);
+}
+
+static void build_places(void) {
+    int n = 0, nd = 0;
+    for (int i = 0; i < NBASE; i++) {
+        g_places[n++] = BASE_PLACES[i];
+        if (BASE_PLACES[i].icon != FI_DISK) continue;
+        /* the drives, after Local Disk */
+        for (int m = 1; m <= FS_MAX_MOUNTS && nd < FS_MAX_MOUNTS; m++) {
+            const char* point = fs_mount_point(m);
+            if (!point[0]) continue;
+            fileicon_t icon;
+            drive_label(m, g_drive_label[nd], sizeof(g_drive_label[nd]), &icon);
+            kstrlcpy(g_drive_path[nd], point, sizeof(g_drive_path[nd]));
+            g_places[n++] = (place_t){ g_drive_label[nd], icon, g_drive_path[nd], 0 };
+            nd++;
+        }
+    }
+    g_nplaces = n;
+}
+
+static int place_visible(int i) {
+    return i >= 0 && i < g_nplaces;
+}
+
+/* the pane scrolls (the wheel over it) when the drives do not fit */
+static int g_nav_scroll;
+
+static int places_height(void) {
+    int y = 6;
+    for (int k = 0; k < g_nplaces; k++) y += NAV_ROW + (k + 1 < g_nplaces && PLACES[k + 1].head ? 8 : 0);
+    return y + 6;
+}
+
+static void clamp_nav_scroll(void) {
+    int max = places_height() - body_h();
+    if (g_nav_scroll > max) g_nav_scroll = max;
+    if (g_nav_scroll < 0) g_nav_scroll = 0;
+}
+
+/* the y (relative to the window) of place i, -1 if hidden or scrolled away */
 static int place_y(int i) {
-    int y = BODY_Y + 6;
+    int y = BODY_Y + 6 - g_nav_scroll;
     for (int k = 0; k < i; k++) {
         if (!place_visible(k)) continue;
-        y += NAV_ROW + (PLACES[k + 1].head ? 8 : 0);
+        y += NAV_ROW + (k + 1 < g_nplaces && PLACES[k + 1].head ? 8 : 0);
     }
-    return place_visible(i) ? y : -1;
+    return place_visible(i) && y >= BODY_Y ? y : -1;
 }
 
 static int place_at(int mx, int my) {
+    build_places();
     int lx = mx - g_x, ly = my - g_y;
     if (lx < 2 || lx >= PANE_W || ly < BODY_Y || ly >= BODY_Y + body_h()) return -1;
     for (int i = 0; i < NPLACES; i++) {
@@ -1247,7 +1350,13 @@ void explorer_fkey(int k) {
 }
 
 void explorer_wheel(int mx, int my, int dz) {
-    (void)mx; (void)my;
+    if (mx - g_x < PANE_W && my - g_y >= BODY_Y) {          /* over the navigation pane: it scrolls */
+        build_places();
+        g_nav_scroll += dz * NAV_ROW;
+        clamp_nav_scroll();
+        g_gen++;
+        return;
+    }
     g_scroll += dz * (g_view_icons ? 1 : 3);
     clamp_scroll();
     g_gen++;
@@ -1594,9 +1703,17 @@ static void draw_toolbars(void) {
 }
 
 static void draw_nav_pane(void) {
+    build_places();
+    clamp_nav_scroll();
     int x = g_x + 3, y = g_y + BODY_Y, h = body_h();
     gfx_fill_rect(x, y, PANE_W - 3, h, C_PANE);
     gfx_fill_rect(x + PANE_W - 3, y, 1, h, C_LINE);
+    int total = places_height();
+    if (total > h) {                                  /* more than fits: a thin bar says where */
+        int bh = h * h / total, by = (h - bh) * g_nav_scroll / (total - h);
+        if (bh < 16) bh = 16;
+        gfx_fill_rect(x + PANE_W - 7, y + by, 3, bh, 0x00B0B8C4u);
+    }
     for (int i = 0; i < NPLACES; i++) {
         int py = place_y(i);
         if (py < 0 || py + NAV_ROW > BODY_Y + h) continue;
@@ -1896,3 +2013,6 @@ void explorer_launch(const char* path) {
 }
 
 void explorer_refresh(void) { if (g_open) { scan(); g_gen++; } }
+
+/* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
+win_geom_t* explorer_geom(void) { return &g_win; }

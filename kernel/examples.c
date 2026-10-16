@@ -9,6 +9,7 @@ extern const uint8_t ex_webview[], ex_webview_end[];
 extern const uint8_t ex_gears[], ex_gears_end[];
 extern const uint8_t ex_cltest[], ex_cltest_end[];
 extern const uint8_t ex_systest[], ex_systest_end[];
+extern const uint8_t ex_posixtest[], ex_posixtest_end[];
 
 static const struct { const char* name; const uint8_t* start; const uint8_t* end; } g_examples[] = {
     { "hello.bpk", ex_hello, ex_hello_end },
@@ -22,6 +23,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "gears.bpk", ex_gears, ex_gears_end },
     { "cltest.bpk", ex_cltest, ex_cltest_end },
     { "systest.bpk", ex_systest, ex_systest_end },
+    { "posixtest.bpk", ex_posixtest, ex_posixtest_end },
 };
 
 void examples_seed(void) {
@@ -35,4 +37,13 @@ void examples_seed(void) {
         path[n] = 0;
         fs_write_path(path, g_examples[i].start, (uint32_t)(g_examples[i].end - g_examples[i].start));
     }
+}
+
+/* the App Store's builtin: source serves them too (kernel/builtin_apps.c) */
+int examples_count(void) { return (int)(sizeof(g_examples) / sizeof(g_examples[0])); }
+const char* examples_file(int i) { return i >= 0 && i < examples_count() ? g_examples[i].name : ""; }
+const uint8_t* examples_data(int i, uint32_t* len) {
+    if (i < 0 || i >= examples_count()) return 0;
+    *len = (uint32_t)(g_examples[i].end - g_examples[i].start);
+    return g_examples[i].start;
 }

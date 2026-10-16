@@ -2,6 +2,7 @@
 #define NOTEPAD_H
 
 #include "types.h"
+#include "winframe.h"
 #include "fb.h"
 
 /*
@@ -28,5 +29,8 @@ void notepad_fkey(int k);          /* F3: find the next one (KEYF_*) */
 void notepad_paste(void);
 
 void notepad_wheel(int mx, int my, int dz);   /* scrolls the text (+ = down) */
+
+/* its window's geometry, for the window manager (kernel/gui.c) */
+win_geom_t* notepad_geom(void);
 
 #endif

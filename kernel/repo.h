@@ -75,6 +75,9 @@ int  repo_remove_source(const char* which, char* msg, int mcap);
 
 /* fetches every source's index: how many packages are known, or -1 */
 int  repo_update(repo_log_t log, void* ctx, char* msg, int mcap);
+/* at boot: the builtin: source (the kernel's own apps and examples) is listed
+ * and its package list is up to date - no apt update needed for it */
+void repo_builtin_refresh(void);
 /* the known packages (from the last update): count, and each by index */
 int  repo_count(void);
 const repo_pkg_t* repo_at(int i);

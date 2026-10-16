@@ -182,10 +182,10 @@ static value_t ext(interp_t* I, const char* nm, int argc, value_t* argv, int* fo
         obj_t* a = obj_new(I, OBJ_PHPARRAY);
         php_array_push(I, a, v_str(I, "."));
         php_array_push(I, a, v_str(I, ".."));
-        static int idx[FS_MAX_FILES];
-        int nd = fs_list_dirs(path, idx, FS_MAX_DIRS);
+        static int idx[FS_LIST_MAX];
+        int nd = fs_list_dirs(path, idx, FS_LIST_MAX);
         for (int i = 0; i < nd; i++) php_array_push(I, a, v_str(I, fs_get_dir(idx[i])->name));
-        int nf = fs_list_files(path, idx, FS_MAX_FILES);
+        int nf = fs_list_files(path, idx, FS_LIST_MAX);
         for (int i = 0; i < nf; i++) php_array_push(I, a, v_str(I, fs_file_info(idx[i])->name));
         return v_obj(a);
     }

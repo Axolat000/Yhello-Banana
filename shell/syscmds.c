@@ -8,6 +8,10 @@
 #include "../kernel/fs.h"
 #include "../kernel/fat32.h"
 #include "../kernel/blockdev.h"
+#include "../kernel/volume.h"
+#include "../kernel/disk.h"
+#include "../kernel/fsdisk.h"
+#include "../kernel/kheap.h"
 #include "../usb/usbcore.h"
 #include "../kernel/pkg.h"
 #include "../kernel/app.h"
@@ -35,10 +39,128 @@ static void fail(const char* cmd, const char* msg) {
 
 /* ── mount / umount ───────────────────────────────────────────────── */
 
+/* "sata1" -> the drive, number 0; "sata1p2" -> the drive, partition 2 */
+static blockdev_t* parse_dev(const char* s, int* part) {
+    char name[16];
+    int n = 0;
+    while (s[n] && n < (int)sizeof(name) - 1) { name[n] = s[n]; n++; }
+    name[n] = 0;
+    *part = 0;
+    blockdev_t* bd = blockdev_find(name);
+    if (bd) return bd;
+    /* a trailing p<N> */
+    for (int i = n - 1; i > 0; i--) {
+        if (name[i] >= '0' && name[i] <= '9') continue;
+        if (name[i] != 'p' || i == n - 1) break;
+        uint32_t v;
+        if (!k_parse_u32(name + i + 1, &v)) break;
+        name[i] = 0;
+        *part = (int)v;
+        return blockdev_find(name);
+    }
+    return NULL;
+}
+
+static void size_str(uint64_t bytes, char* out, int cap) {
+    static const char U[] = "BKMGTP";
+    int u = 0;
+    uint64_t whole = bytes, frac = 0;
+    while (whole >= 1024 && u < 5) { frac = (whole % 1024) * 10 / 1024; whole /= 1024; u++; }
+    if (u && whole < 10) ksnprintf(out, (size_t)cap, "%u.%u%c", (uint32_t)whole, (uint32_t)frac, U[u]);
+    else ksnprintf(out, (size_t)cap, "%u%c", (uint32_t)whole, U[u]);
+}
+
+/* the mount point of bd's volume at base ("" if not mounted) */
+static const char* point_of(blockdev_t* bd, uint32_t base) {
+    for (int v = 0; v < bd->nvol; v++) if (bd->vol_base[v] == base) return fs_mount_point(bd->vol_mnt[v]);
+    return "";
+}
+
+static void lsblk_dev(blockdev_t* bd) {
+    char sz[16], b[200];
+    size_str((uint64_t)bd->sectors * bd->sector_size, sz, sizeof(sz));
+    const char* whole = point_of(bd, 0);
+    ksnprintf(b, sizeof(b), "%-10s %7s  disk  %-6s %-16s %s", bd->name, sz,
+              whole[0] ? volume_fs_name(bd->vol_mnt[0]) : "", bd->system ? "(Banana OS)" : whole, bd->model);
+    terminal_write_color(b, VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+    terminal_putchar('\n');
+    vol_part_t* parts = (vol_part_t*)kmalloc(sizeof(vol_part_t) * VOL_MAX_PARTS);
+    if (!parts) return;
+    int gpt = 0, np = volume_partitions(bd, parts, VOL_MAX_PARTS, &gpt);
+    for (int i = 0; i < np; i++) {
+        const char* pt = point_of(bd, parts[i].base);
+        const char* fst = "";
+        for (int v = 0; v < bd->nvol; v++) if (bd->vol_base[v] == parts[i].base) fst = volume_fs_name(bd->vol_mnt[v]);
+        char nm[24];
+        ksnprintf(nm, sizeof(nm), "%s%sp%d", i + 1 < np ? "|-" : "`-", bd->name, parts[i].number);
+        size_str((uint64_t)parts[i].sectors * bd->sector_size, sz, sizeof(sz));
+        ksnprintf(b, sizeof(b), "%-10s %7s  part  %-6s %-16s %s%s%s", nm, sz, fst, pt, parts[i].type,
+                  parts[i].label[0] ? " - " : "", parts[i].label);
+        terminal_writeln(b);
+    }
+    kfree(parts);
+}
+
+static void cmd_lsblk(void) {
+    terminal_write_color("NAME          SIZE  TYPE  FSTYPE MOUNTPOINT       MODEL / PARTITION TYPE\n",
+                         VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    /* the disks that are no block device: the installed one (IDE / SATA) and CD drives */
+    ata_disk_t all[DISK_MAX];
+    int n = disk_probe(all, DISK_MAX);
+    ata_disk_t inst;
+    int have_inst = fsdisk_is_installed() && fsdisk_find_installed(&inst);
+    for (int i = 0; i < n; i++) {
+        const ata_disk_t* d = &all[i];
+        if (disk_blockdev(d) && !d->is_atapi) continue;
+        char where[32], sz[16], b[200];
+        disk_describe(d, where, sizeof(where));
+        if (d->is_atapi) {
+            ksnprintf(b, sizeof(b), "%-10s %7s  rom   %-6s %-16s %s", "cd", "-", "iso9660", "", d->model);
+        } else {
+            size_str((uint64_t)d->sectors * 512u, sz, sizeof(sz));
+            int sys = have_inst && disk_same(d, &inst);
+            ksnprintf(b, sizeof(b), "%-10s %7s  disk  %-6s %-16s %s (%s)", sys ? "system" : "disk", sz,
+                      sys ? "banana" : "", sys ? "/" : "", d->model, where);
+        }
+        terminal_writeln(b);
+    }
+    for (int i = 0; i < BLOCKDEV_MAX; i++) {
+        blockdev_t* bd = blockdev_get(i);
+        if (bd && bd->present) lsblk_dev(bd);
+    }
+}
+
 static void cmd_mount(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "-a") == 0) {
         blockdev_retry_all();
-        say("looking for USB sticks to mount again...\n");
+        say("looking for drives to mount again...\n");
+        return;
+    }
+    if (argc >= 2) {
+        /* mount <drive>[p<N>] [folder] */
+        int part = 0;
+        blockdev_t* bd = parse_dev(argv[1], &part);
+        if (!bd) { fail(argv[0], "no such drive (lsblk lists them: sata1, usb0, nvme0p2...)"); return; }
+        if (bd->system) { fail(argv[0], "that is Banana OS's own disk"); return; }
+        char err[96];
+        if (!part) {
+            if (bd->nvol) { say("%s: already mounted at %s\n", bd->name, fs_mount_point(bd->mnt)); return; }
+            int k = volume_mount_all(bd, err, sizeof(err));
+            if (k <= 0) { fail(argv[0], err); bd->mount_state = -1; return; }
+            for (int v = 0; v < bd->nvol; v++) say("%s: mounted at %s\n", bd->name, fs_mount_point(bd->vol_mnt[v]));
+            return;
+        }
+        vol_part_t* parts = (vol_part_t*)kmalloc(sizeof(vol_part_t) * VOL_MAX_PARTS);
+        if (!parts) return;
+        int np = volume_partitions(bd, parts, VOL_MAX_PARTS, NULL), found = -1;
+        for (int i = 0; i < np; i++) if (parts[i].number == part) found = i;
+        if (found < 0) { kfree(parts); fail(argv[0], "no such partition"); return; }
+        uint32_t base = parts[found].base;
+        kfree(parts);
+        if (point_of(bd, base)[0]) { say("%sp%d: already mounted at %s\n", bd->name, part, point_of(bd, base)); return; }
+        int m = volume_mount_at(bd, base, argc >= 3 ? argv[2] : NULL, err, sizeof(err));
+        if (m <= 0) { fail(argv[0], err); return; }
+        say("%sp%d: mounted at %s\n", bd->name, part, fs_mount_point(m));
         return;
     }
     int any = 0;
@@ -48,24 +170,32 @@ static void cmd_mount(int argc, char** argv) {
         terminal_writeln(line);
         any = 1;
     }
-    /* sticks that are plugged in but not mounted */
+    /* drives that are there but not mounted */
     for (int i = 0; i < BLOCKDEV_MAX; i++) {
         blockdev_t* bd = blockdev_get(i);
-        if (!bd || !bd->present || bd->mount_state == 1) continue;
+        if (!bd || !bd->present || bd->mount_state == 1 || bd->system) continue;
         uint32_t mib = (uint32_t)(((uint64_t)bd->sectors * bd->sector_size) >> 20);
         say("%s: %s, %u MiB - %s\n", bd->name, bd->model, mib,
-            bd->mount_state == 0 ? "mounting..." : bd->mount_state == 2 ? "unmounted (`mount -a` mounts it again)"
+            bd->mount_state == 0 ? "mounting..." : bd->mount_state == 2 ? "unmounted (`mount -a` or `mount <drive>` mounts it again)"
                                                                      : "no FAT32 or exFAT volume (see the boot log)");
         any = 1;
     }
-    if (!any) terminal_writeln("no USB stick mounted - plug one in (FAT32 or exFAT), or `usb rescan`");
+    if (!any) terminal_writeln("no drive mounted - plug one in (FAT32 or exFAT), or `usb rescan`");
 }
 
 static void cmd_umount(int argc, char** argv) {
     int mnt = 0;
     if (argc >= 2) {
+        int part = 0;
+        blockdev_t* bd = argv[1][0] != '/' && argv[1][0] != '~' ? parse_dev(argv[1], &part) : NULL;
+        if (bd && !part) {                           /* a whole drive: every volume */
+            if (!bd->nvol) { fail(argv[0], "nothing of it is mounted"); return; }
+            blockdev_eject_all(bd);
+            say("%s unmounted - the drive can be removed\n", bd->name);
+            return;
+        }
         mnt = fs_path_mount(argv[1]);
-        if (!mnt) { fail(argv[0], "not a mounted USB stick"); return; }
+        if (!mnt) { fail(argv[0], "not a mounted drive"); return; }
     } else {
         for (int m = 1; m <= FS_MAX_MOUNTS && !mnt; m++) if (fs_mount_point(m)[0]) mnt = m;
         if (!mnt) { fail(argv[0], "nothing is mounted"); return; }
@@ -190,6 +320,7 @@ int syscmd_dispatch(const char* line) {
     int argc = shell_split_args(buf, argv, 16);
     if (argc == 0) return 0;
     if (strcmp(argv[0], "mount") == 0) { cmd_mount(argc, argv); return 1; }
+    if (strcmp(argv[0], "lsblk") == 0) { cmd_lsblk(); return 1; }
     if (strcmp(argv[0], "umount") == 0 || strcmp(argv[0], "eject") == 0) { cmd_umount(argc, argv); return 1; }
     if (strcmp(argv[0], "fstest") == 0) return fstest_cmd(argc, argv);
     if (strcmp(argv[0], "crashtest") == 0) return crashtest_cmd(argc, argv);
@@ -210,7 +341,9 @@ int syscmd_dispatch(const char* line) {
         return 1;
     }
     if (strcmp(argv[0], "settings") == 0) {
-        if (!gui_open_settings()) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
+        int apps = argc > 1 && strcmp(argv[1], "apps") == 0;           /* `settings apps [name]` */
+        if (argc > 1 && !apps) { terminal_writeln("usage: settings [apps [name]]"); return 1; }
+        if (!(apps ? gui_open_settings_app(argc > 2 ? argv[2] : NULL) : gui_open_settings())) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
         return 1;
     }
     if (strcmp(argv[0], "taskmgr") == 0) {

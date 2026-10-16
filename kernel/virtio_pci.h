@@ -30,7 +30,7 @@ typedef struct {
     volatile uint8_t* isr;
     volatile uint8_t* device;
     uint32_t notify_mul;
-    uint16_t notify_off[8];             /* (per queue) */
+    uint16_t notify_off[32];            /* (per queue: virtio-serial has 2 per port) */
 } vio_t;
 
 typedef struct __attribute__((packed)) { uint64_t addr; uint32_t len; uint16_t flags, next; } vio_desc_t;

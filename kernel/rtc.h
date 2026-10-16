@@ -22,6 +22,9 @@ int rtc_read_datetime(rtc_datetime_t* out);
 uint32_t rtc_now(void);
 uint32_t rtc_make_time(int year, int month, int day, int hour, int minute, int second);
 void     rtc_split_time(uint32_t t, rtc_datetime_t* out);
+/* sets the clock (the CMOS RTC) to t, seconds since 1970 as rtc_now()
+ * counts them: 0, or -1 (outside 2000-2099) */
+int      rtc_set_time(uint32_t t);
 /* "10/10/2026 16:45" (day/month/year), "" for 0 */
 void     rtc_format(uint32_t t, char* out, int cap);
 

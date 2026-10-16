@@ -34,6 +34,14 @@ int fsdisk_find_target(ata_disk_t* out);
  * Destroys any prior disk contents. Returns FSDISK_OK on success, or one
  * of the FSDISK_ERR_* codes above on failure. */
 int fsdisk_install(void);
+/* the same onto the disk chosen (several disks: the installer asks which) */
+int fsdisk_install_to(const ata_disk_t* target);
+/* the hard disks one could install on (not CD/DVD drives): how many */
+int fsdisk_targets(ata_disk_t* out, int max);
+/* 1 if d holds a Banana OS install (any layout) */
+int fsdisk_holds_banana(const ata_disk_t* d);
+/* the disks holding Banana OS: how many; *out the first (the one used) */
+int fsdisk_find_installed(ata_disk_t* out);
 
 /* Re-writes the current in-memory filesystem to the disk this session
  * installed to or booted from (leaves the boot image alone). Returns
@@ -65,6 +73,8 @@ int  fsdisk_last_error(void);
 int  fsdisk_find_install(ata_disk_t* out);
 int  fsdisk_compare_boot(void);
 int  fsdisk_update(void);
+/* the same on the disk chosen (several disks holding Banana OS) */
+int  fsdisk_update_on(const ata_disk_t* target);
 /* the installed disk's layout: 4 (128 MB boot area, slots over the whole
  * disk), 3 (before: 32 MB, fixed slots - `update` moves it), 0 none */
 int  fsdisk_install_layout(void);
@@ -77,6 +87,14 @@ int  fsdisk_set_boot_video(const char* value);
 void fsdisk_space(uint64_t* used_bytes, uint64_t* capacity_bytes);
 /* the installed disk's name ("SATA port 0") and model, for df ("" if none) */
 void fsdisk_describe(char* out, int cap);
+/* freezes (1: everything written, then no writes) or thaws (0) the installed
+ * disk, for a hypervisor's backup; FSDISK_OK or an error */
+int  fsdisk_freeze(int on);
+int  fsdisk_frozen(void);
+/* fsck: checks the installed disk - both metadata slots, the extents, the
+ * saved records; full: reads every file back against its checksum. Writes
+ * a line per finding with out(); the number of problems. */
+int  fsdisk_check(int full, void (*out)(const char* line));
 /* how far an install / update / comparison is (done of total) */
 void fsdisk_progress(uint32_t* done, uint32_t* total);
 

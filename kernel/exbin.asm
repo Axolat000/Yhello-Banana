@@ -4,7 +4,7 @@
 
 global ex_hello, ex_hello_end, ex_guess, ex_guess_end, ex_paint, ex_paint_end
 global ex_clock, ex_clock_end, ex_tones, ex_tones_end, ex_mandel, ex_mandel_end, ex_threads, ex_threads_end, ex_webview, ex_webview_end, ex_gears, ex_gears_end, ex_cltest, ex_cltest_end
-global ex_systest, ex_systest_end
+global ex_systest, ex_systest_end, ex_posixtest, ex_posixtest_end
 
 section .rodata
 align 16
@@ -39,3 +39,6 @@ ex_cltest_end:
 align 16
 ex_systest: incbin "sdk/examples/systest/systest.bpk"
 ex_systest_end:
+align 16
+ex_posixtest: incbin "sdk/examples/posixtest/posixtest.bpk"
+ex_posixtest_end:

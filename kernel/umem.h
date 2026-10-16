@@ -27,6 +27,8 @@ size_t  umem_size(umem_t* m, const void* p);   /* the block's usable size, 0 if 
 /* whole 4 KiB pages; the lowest guard bytes (a multiple of 4 KiB) fault */
 void*   umem_alloc_pages(umem_t* m, size_t size, size_t guard);
 void    umem_free_pages(umem_t* m, void* p, size_t guard);
+/* the size of the umem_alloc_pages() run starting at p (no guard), 0 if none */
+size_t  umem_pages_size(umem_t* m, const void* p);
 
 uint32_t umem_used(umem_t* m);                  /* bytes handed out */
 

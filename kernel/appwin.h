@@ -4,6 +4,7 @@
 #include "fs.h"
 #include "types.h"
 #include "fb.h"
+#include "winframe.h"
 #include "../sdk/include/banana_api.h"
 
 /*
@@ -65,5 +66,15 @@ void     appwin_request_close(int id);          /* as its close button */
 int      appwin_any_visible(void);
 /* 1 once after a window opened (the desktop brings it to the front) */
 int      appwin_take_new(void);
+
+/* the window manager (kernel/gui.c): virtual desktops hide windows, and
+ * snapping, moving and dragging (Alt+drag) work on any of them */
+void     appwin_set_hidden(int id, int hidden);
+int      appwin_get_rect(int id, int* x, int* y, int* w, int* h);   /* outer; 0 if unused */
+int      appwin_state(int id, int* maxed, int* snapped, int* resizable);
+void     appwin_snap(int id, const win_rect_t* r, int where);        /* SNAP_NONE: back to its size */
+void     appwin_move(int id, int x, int y);
+void     appwin_start_drag(int id, int mx, int my);
+int      appwin_at(int mx, int my, int* title);                     /* the window there, -1 */
 
 #endif
