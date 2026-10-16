@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "examples.h"
 #include "repo.h"
+#include "crc32c.h"
 
 extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[];
 
@@ -21,22 +22,38 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "store", app_store, app_store_end },
 };
 
-/* /etc/builtin-apps: "name=version" of each one installed from here */
+/* /etc/builtin-apps: "name=version#crc" of each one installed from here - the
+ * CRC-32C of the package, as an app can change without a new version number
+ * (systems from before build 161 have "name=version" lines) */
 #define MARKS "/etc/builtin-apps"
 
-static int marked(const char* name, const char* version) {
+/* 1 if a line of MARKS starts with "name=version" followed by one of ends */
+static int marked_as(const char* name, const char* version, const char* key_end, const char* ends) {
     int fi = fs_find_file(MARKS);
     if (fi < 0) return 0;
     fs_file_t* f = fs_get_file(fi);
     if (!f || !f->content) return 0;
-    char want[64];
-    ksnprintf(want, sizeof(want), "%s=%s\n", name, version);
-    return strstr(f->content, want) != NULL;
+    char want[72];
+    ksnprintf(want, sizeof(want), "%s=%s%s", name, version, key_end);
+    int n = (int)strlen(want);
+    for (const char* p = f->content; (p = strstr(p, want)); p++)
+        if ((p == f->content || p[-1] == '\n') && p[n] && strchr(ends, p[n])) return 1;
+    return 0;
 }
 
-static void mark(const char* name, const char* version) {
-    char line[64];
-    ksnprintf(line, sizeof(line), "%s=%s\n", name, version);
+/* this very package was installed from here (and may have been removed since) */
+static int marked(const char* name, const char* version, uint32_t crc) {
+    char k[16];
+    ksnprintf(k, sizeof(k), "#%08x", crc);
+    return marked_as(name, version, k, "\n");
+}
+
+/* some package of this version was (a removed app stays removed) */
+static int marked_version(const char* name, const char* version) { return marked_as(name, version, "", "\n#"); }
+
+static void mark(const char* name, const char* version, uint32_t crc) {
+    char line[80];
+    ksnprintf(line, sizeof(line), "%s=%s#%08x\n", name, version, crc);
     int fi = fs_find_file(MARKS);
     if (fi < 0) { fs_mkdir_p("/etc"); fi = fs_create(MARKS); }
     if (fi >= 0) fs_append(fi, line, (uint32_t)strlen(line));
@@ -66,13 +83,21 @@ void builtin_apps_install(void) {
         char err[96];
         if (pkg_inspect_mem(bpk, (uint32_t)len, &mine, err, sizeof(err)) == 0) {
             int installed = pkg_get(mine.name, &have) == 0;
-            /* installed already (this version), removed by the user, or left out by
-             * the install profile (and not installed again since): left as it is */
-            if (!(installed && !strcmp(have.version, mine.version)) && !marked(mine.name, mine.version) &&
-                !(skipped(mine.name) && !installed)) {
+            uint32_t crc = crc32c(0, bpk, (uint32_t)len);
+            int want;
+            if (installed)
+                /* left as it is when a newer version came from a repository, or it
+                 * is this very package; else upgraded - also when the app changed
+                 * under the same version number (an `update`d system gets it) */
+                want = repo_vercmp(have.version, mine.version) <= 0 && !marked(mine.name, mine.version, crc);
+            else
+                /* removed by the user, or left out by the install profile (and not
+                 * installed again since): stays out */
+                want = !skipped(mine.name) && !marked_version(mine.name, mine.version);
+            if (want) {
                 char msg[160];
                 if (pkg_install_mem(bpk, (uint32_t)len, msg, sizeof(msg)) == 0) {
-                    mark(mine.name, mine.version);
+                    mark(mine.name, mine.version, crc);
                     klog("apps: %s\n", msg);
                 } else klog("apps: %s: %s\n", mine.name, msg);
             }
