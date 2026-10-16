@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""mkexports OUT.c OBJ... - the table of an app's global symbols for dlopen.
+
+Every symbol the objects define (functions and data: the app's and the
+SDK's C library) becomes an entry {name, address} of __dl_exports, sorted
+by name, so the shared libraries an app opens (sdk/lib/dl.c) can use them.
+"""
+import os
+import re
+import subprocess
+import sys
+import time
+
+out, objs = sys.argv[1], sys.argv[2:]
+nm = os.environ.get("NM", "nm")
+names = set()
+if objs:
+    # (a parallel make may be writing one of them: a few tries)
+    for attempt in range(5):
+        r = subprocess.run([nm, "-g", "--defined-only", *objs], capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        time.sleep(0.5)
+    else:
+        sys.exit("mkexports: " + r.stderr.strip())
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] in "TDBRWVCGS" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", parts[2]):
+            names.add(parts[2])
+names.discard("__dl_exports")
+names = sorted(names)
+
+tmp = out + ".tmp%d" % os.getpid()
+with open(tmp, "w") as f:
+    f.write("/* made by sdk/tools/mkexports: the app's symbols, for dlopen (sdk/lib/dl.c) */\n")
+    f.write("struct __dl_export { const char* name; void* addr; };\n")
+    for i, n in enumerate(names):
+        f.write('extern char __x%d __asm__("%s");\n' % (i, n))
+    f.write("const struct __dl_export __dl_exports[] = {\n")
+    for i, n in enumerate(names):
+        f.write('    { "%s", &__x%d },\n' % (n, i))
+    f.write("    { 0, 0 }\n};\n")
+os.replace(tmp, out)

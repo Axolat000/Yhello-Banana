@@ -374,7 +374,7 @@ static const page_t PAGES[] = {
       "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"
       "mouse [demo]|relative mouse capture tests; demo opens a look-around window\n"
       "browser swm|live checks against https://swm.mxtpasontop.fr/\n"
-      "posix [PART]|mmap, threads, sockets and signals (the posixtest example)\n"
+      "posix [PART]|mmap, threads, sockets, signals and dlopen (the posixtest example)\n"
       "ipv6|IPv6 UDP / TCP on ::1, parsing, URLs; IPv6 is put back as it was\n"
       "ipv6 HOST [PORT]|also an AAAA lookup and a TCP connection (port 80)",
       "selftest\nselftest browser\nselftest browser swm\nselftest posix\nselftest ipv6 example.com", "fstest, crashtest, fsck, vmtools" },
