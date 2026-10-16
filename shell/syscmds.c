@@ -341,7 +341,9 @@ int syscmd_dispatch(const char* line) {
         return 1;
     }
     if (strcmp(argv[0], "settings") == 0) {
-        if (!gui_open_settings()) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
+        int apps = argc > 1 && strcmp(argv[1], "apps") == 0;           /* `settings apps [name]` */
+        if (argc > 1 && !apps) { terminal_writeln("usage: settings [apps [name]]"); return 1; }
+        if (!(apps ? gui_open_settings_app(argc > 2 ? argv[2] : NULL) : gui_open_settings())) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
         return 1;
     }
     if (strcmp(argv[0], "taskmgr") == 0) {

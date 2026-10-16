@@ -7,8 +7,8 @@
 
 /*
  * "Settings": the system's preferences in one window - wallpaper, sound
- * volume, keyboard layout, network, date & time and information about
- * the computer. Open it from the desktop, the Start menu or `settings`
+ * volume, keyboard layout, network, date & time, the installed apps
+ * (open, stop, update, uninstall) and information about the computer. Open it from the desktop, the Start menu or `settings`
  * in a terminal.
  *
  * Volume and keyboard layout are kept in /etc/settings.conf and applied
@@ -23,7 +23,10 @@ void settings_open(void);
 #define SETTINGS_PAGE_FONTS   1
 #define SETTINGS_PAGE_TASKBAR 3
 #define SETTINGS_PAGE_STARTUP 9
-#define SETTINGS_PAGE_ABOUT   10
+#define SETTINGS_PAGE_APPS    10
+#define SETTINGS_PAGE_ABOUT   11
+/* the Apps page, with this installed app selected (the launcher's Details) */
+void settings_show_app(const char* name);
 void settings_show_status(const char* msg);
 void settings_open_page(int page);
 void settings_close(void);

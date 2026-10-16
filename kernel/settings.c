@@ -34,6 +34,10 @@
 #include "serial.h"
 #include "gui.h"
 #include "image.h"
+#include "pkg.h"
+#include "repo.h"
+#include "app.h"
+#include "task.h"
 
 void shell_power(int reboot);
 
@@ -51,8 +55,8 @@ void shell_power(int reboot);
 #define C_ACCENT 0x003A7BD5u
 #define C_SEL    0x002C3E5Cu
 
-enum { PG_DISPLAY = 0, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_ABOUT, PG_COUNT };
-static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "About" };
+enum { PG_DISPLAY = 0, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
+static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
 
 static const char* const LAYOUTS[] = { "EN (Default)", "fr_CH", "FR", "DE", "de_CH", "BEPO" };
 #define NLAYOUTS ((int)(sizeof(LAYOUTS) / sizeof(LAYOUTS[0])))
@@ -398,11 +402,13 @@ static void click_fonts(int mx, int my) {
     }
 }
 
+static void apps_wheel(int dz);
 void settings_wheel(int mx, int my, int dz) {
     (void)mx; (void)my;
     if (!g_open) return;
     if (fc_active()) { fc_wheel(dz); g_gen++; return; }
     if (g_page == PG_FONTS) { g_font_top += dz; g_gen++; }
+    if (g_page == PG_APPS) { apps_wheel(dz); g_gen++; }
 }
 
 static void draw_sound(void) {
@@ -920,6 +926,244 @@ static void draw_about(void) {
         label(x, ly, "Running: not installed - changes are lost at shutdown", 0x00FFB060u);
 }
 
+/* ── Apps: the installed apps, with Open, Stop, Update and Uninstall ─ */
+
+#define APPS_MAX   64
+#define APP_ROW_H  34
+#define APP_INFO_H 104                           /* the selected app's details, under the list */
+
+static pkg_info_t g_al[APPS_MAX];
+static int        g_nal, g_al_top, g_al_confirm;
+static char       g_al_newer[APPS_MAX][24];      /* a newer version the sources have, or "" */
+static char       g_al_sel[PKG_NAME_MAX];        /* the selected app, by name (survives rescans) */
+static uint32_t   g_al_scanned;
+static char       g_al_job[PKG_NAME_MAX];        /* the app being updated (by the worker task) */
+static volatile int g_al_busy;
+static int        g_al_worker = -1;
+
+/* what an installed app takes: its folder's files, counted down to 4 levels */
+static void dir_usage(const char* path, int depth, uint32_t* files, uint32_t* bytes) {
+    static int fi[256];
+    int n = fs_list_files(path, fi, 256);
+    for (int i = 0; i < n && i < 256; i++) {
+        fs_file_t* f = fs_file_info(fi[i]);
+        if (f) { (*files)++; *bytes += f->size; }
+    }
+    if (depth >= 4) return;
+    int di[32];
+    int nd = fs_list_dirs(path, di, 32);
+    for (int i = 0; i < nd && i < 32; i++) {
+        const fs_dir_t* d = fs_get_dir(di[i]);
+        char p[FS_PATH_LEN];
+        if (!d) continue;
+        ksnprintf(p, sizeof(p), "%s/%s", path, d->name);
+        dir_usage(p, depth + 1, files, bytes);
+    }
+}
+
+static void apps_scan(void) {
+    g_al_scanned = timer_ms() | 1;
+    if (g_al_busy) return;                       /* (the package lists are being rewritten) */
+    int n = pkg_list(g_al, APPS_MAX);
+    g_nal = n < 0 ? 0 : n > APPS_MAX ? APPS_MAX : n;
+    for (int i = 0; i < g_nal; i++) {
+        char p[FS_PATH_LEN];
+        ksnprintf(p, sizeof(p), "%s/%s", PKG_DIR, g_al[i].name);
+        g_al[i].files = g_al[i].bytes = 0;
+        dir_usage(p, 0, &g_al[i].files, &g_al[i].bytes);
+        const repo_pkg_t* c = repo_candidate(g_al[i].name);
+        g_al_newer[i][0] = 0;
+        if (c && repo_vercmp(c->version, g_al[i].version) > 0) kstrlcpy(g_al_newer[i], c->version, sizeof(g_al_newer[i]));
+    }
+    g_gen++;
+}
+
+static int apps_sel(void) {
+    for (int i = 0; i < g_nal; i++) if (!strcmp(g_al[i].name, g_al_sel)) return i;
+    return -1;
+}
+
+/* the running copies of an app (pkg_run names them after it) */
+static int apps_running(const char* name, int* ids, int max) {
+    static app_info_t a[APP_MAX];
+    int n = app_snapshot(a, APP_MAX), k = 0;
+    for (int i = 0; i < n && i < APP_MAX; i++)
+        if (!strcmp(a[i].name, name)) { if (ids && k < max) ids[k] = a[i].id; k++; }
+    return k;
+}
+
+static void fmt_size(uint32_t b, char* out, int cap) {
+    if (b < 1024) ksnprintf(out, (size_t)cap, "%u B", b);
+    else if (b < 1024u * 1024) ksnprintf(out, (size_t)cap, "%u KB", (b + 1023) / 1024);
+    else ksnprintf(out, (size_t)cap, "%u.%u MB", b >> 20, ((b & 0xFFFFF) * 10) >> 20);
+}
+
+static int al_list_y(void) { return cy0() + 40; }
+static int al_info_y(void) { return g_win.y + g_win.h - 26 - APP_INFO_H; }
+static int al_rows(void) { int r = (al_info_y() - 8 - al_list_y()) / APP_ROW_H; return r < 1 ? 1 : r; }
+
+static void al_clamp(void) {
+    int max = g_nal - al_rows();
+    if (g_al_top > max) g_al_top = max;
+    if (g_al_top < 0) g_al_top = 0;
+}
+static void apps_wheel(int dz) { g_al_top += dz; al_clamp(); }
+
+/* the worker: updates run here, the window keeps drawing meanwhile */
+static void apps_worker(void) {
+    for (;;) {
+        if (!g_al_job[0]) { task_sleep_ms(100); continue; }
+        char m[96], st[96];
+        if (repo_install(g_al_job, 0, NULL, NULL, m, sizeof(m)) == 0) ksnprintf(st, sizeof(st), "%s updated", g_al_job);
+        else ksnprintf(st, sizeof(st), "%s: %s", g_al_job, m);
+        kstrlcpy(g_status, st, sizeof(g_status));
+        g_al_job[0] = 0;
+        g_al_busy = 0;
+        g_al_scanned = 0;                        /* rescan, with the new version */
+        g_gen++;
+    }
+}
+
+static void draw_apps(void) {
+    int x = cx0(), y = cy0(), w = cw();
+    if (!g_al_scanned) apps_scan();
+    al_clamp();
+    label(x, y, "Apps", C_HEAD);
+    uint32_t total = 0;
+    int updates = 0;
+    for (int i = 0; i < g_nal; i++) { total += g_al[i].bytes; if (g_al_newer[i][0]) updates++; }
+    char line[128], sz[24];
+    fmt_size(total, sz, sizeof(sz));
+    if (updates) ksnprintf(line, sizeof(line), "%d installed, %s - %d update%s", g_nal, sz, updates, updates == 1 ? "" : "s");
+    else ksnprintf(line, sizeof(line), "%d installed, %s", g_nal, sz);
+    label(x, y + 18, g_nal ? line : "No apps are installed: get some in the App Store.", C_DIM);
+    button(x + w - 110, y + 10, 110, "App Store", 0);
+
+    int ly = al_list_y(), rows = al_rows(), sel = apps_sel();
+    bevel(x, ly - 2, w, rows * APP_ROW_H + 4, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    for (int r = 0; r < rows && g_al_top + r < g_nal; r++) {
+        int i = g_al_top + r, ry = ly + r * APP_ROW_H;
+        const pkg_info_t* p = &g_al[i];
+        uint32_t bg = i == sel ? C_SEL : 0x00141920u;
+        gfx_fill_rect(x + 1, ry, w - 2, APP_ROW_H - 1, bg);
+        kbnav_add(&g_nav, x + 1, ry, w - 2, APP_ROW_H - 1);
+        if (i == sel) gfx_fill_rect(x + 1, ry, 3, APP_ROW_H - 1, C_ACCENT);
+        gfx_draw_text(x + 10, ry + 5, p->title[0] ? p->title : p->name, i == sel ? C_HEAD : C_TEXT, bg);
+        ksnprintf(line, sizeof(line), "%s %s%s%s%s", p->name, p->version, p->category[0] ? " - " : "", p->category,
+                  repo_is_auto(p->name) ? " - needed by another app" : "");
+        int maxc = (w - 150) / 8;
+        if (maxc > 0 && (int)strlen(line) > maxc) line[maxc] = 0;
+        gfx_draw_text(x + 10, ry + 19, line, C_DIM, bg);
+        fmt_size(p->bytes, sz, sizeof(sz));
+        gfx_draw_text(x + w - 10 - (int)strlen(sz) * 8, ry + 5, sz, C_DIM, bg);
+        const char* tag = g_al_busy && !strcmp(g_al_job, p->name) ? "updating..."
+                        : apps_running(p->name, NULL, 0) ? "running" : g_al_newer[i][0] ? "update" : "";
+        uint32_t tc = !strcmp(tag, "running") ? 0x0080E080u : 0x00FFC060u;
+        if (tag[0]) gfx_draw_text(x + w - 10 - (int)strlen(tag) * 8, ry + 19, tag, tc, bg);
+    }
+    if (g_nal > rows) {                          /* where the list is scrolled to */
+        int th = rows * APP_ROW_H, kh = th * rows / g_nal, ky = ly + (th - kh) * g_al_top / (g_nal - rows);
+        gfx_fill_rect(x + w - 4, ky, 3, kh < 8 ? 8 : kh, 0x00505D72u);
+    }
+
+    /* the selected app */
+    int iy = al_info_y();
+    if (sel < 0) { if (g_nal) label(x, iy + 8, "Select an app to open, update or uninstall it.", C_DIM); return; }
+    const pkg_info_t* p = &g_al[sel];
+    ksnprintf(line, sizeof(line), "%s %s", p->title[0] ? p->title : p->name, p->version);
+    label(x, iy, line, C_HEAD);
+    kstrlcpy(line, p->description[0] ? p->description : "No description.", sizeof(line));
+    if ((int)strlen(line) * 8 > w) line[w / 8] = 0;
+    label(x, iy + 18, line, C_TEXT);
+    fmt_size(p->bytes, sz, sizeof(sz));
+    ksnprintf(line, sizeof(line), "%s app, %u files, %s%s%s", !strcmp(p->type, "gui") ? "Desktop" : "Terminal", p->files, sz,
+              p->author[0] ? " - by " : "", p->author);
+    if ((int)strlen(line) * 8 > w) line[w / 8] = 0;
+    label(x, iy + 34, line, C_DIM);
+    int by = iy + 58, bx = x, running = apps_running(p->name, NULL, 0);
+    button(bx, by, 80, "Open", 0); bx += 90;
+    if (running) { button(bx, by, 80, "Stop", 0); bx += 90; }
+    if (g_al_newer[sel][0] && !g_al_busy) {
+        ksnprintf(line, sizeof(line), "Update to %s", g_al_newer[sel]);
+        int bw = (int)strlen(line) * 8 + 20;
+        button(bx, by, bw, line, 1);
+    }
+    button(x + w - 170, by, 170, g_al_confirm ? "Really uninstall?" : "Uninstall", g_al_confirm);
+}
+
+static void click_apps(int mx, int my) {
+    int x = cx0(), y = cy0(), w = cw();
+    int confirm = g_al_confirm;
+    g_al_confirm = 0;
+    char err[96];
+    if (inside(mx, my, x + w - 110, y + 10, 110, 20)) {
+        if (pkg_run("store", 0, NULL, 1, err, sizeof(err)) < 0) ksnprintf(g_status, sizeof(g_status), "App Store: %s", err);
+        else kstrlcpy(g_status, "Opening the App Store...", sizeof(g_status));
+        return;
+    }
+    int ly = al_list_y(), rows = al_rows();
+    if (inside(mx, my, x, ly, w, rows * APP_ROW_H)) {
+        int i = g_al_top + (my - ly) / APP_ROW_H;
+        if (i < g_nal) kstrlcpy(g_al_sel, g_al[i].name, sizeof(g_al_sel));
+        return;
+    }
+    int sel = apps_sel();
+    if (sel < 0) return;
+    const pkg_info_t* p = &g_al[sel];
+    char title[48];
+    kstrlcpy(title, p->title[0] ? p->title : p->name, sizeof(title));
+    int by = al_info_y() + 58, bx = x;
+    int ids[8], running = apps_running(p->name, ids, 8);
+    if (inside(mx, my, bx, by, 80, 20)) {
+        if (pkg_run(p->name, 0, NULL, 1, err, sizeof(err)) < 0) ksnprintf(g_status, sizeof(g_status), "%s: %s", title, err);
+        else ksnprintf(g_status, sizeof(g_status), "Opening %s...", title);
+        return;
+    }
+    bx += 90;
+    if (running) {
+        if (inside(mx, my, bx, by, 80, 20)) {
+            for (int k = 0; k < running && k < 8; k++) app_kill(ids[k]);
+            ksnprintf(g_status, sizeof(g_status), "%s stopped", title);
+            return;
+        }
+        bx += 90;
+    }
+    if (g_al_newer[sel][0] && !g_al_busy) {
+        char l[48];
+        ksnprintf(l, sizeof(l), "Update to %s", g_al_newer[sel]);
+        if (inside(mx, my, bx, by, (int)strlen(l) * 8 + 20, 20)) {
+            if (g_al_worker < 0) g_al_worker = task_create_stack("apps-update", apps_worker, 256u << 10);
+            if (g_al_worker < 0) { kstrlcpy(g_status, "Could not start the update (too many tasks)", sizeof(g_status)); return; }
+            ksnprintf(g_status, sizeof(g_status), "Updating %s to %s...", title, g_al_newer[sel]);
+            g_al_busy = 1;
+            kstrlcpy(g_al_job, p->name, sizeof(g_al_job));
+            return;
+        }
+    }
+    if (inside(mx, my, x + w - 170, by, 170, 20)) {
+        if (g_al_busy) { kstrlcpy(g_status, "Wait for the update to finish", sizeof(g_status)); return; }
+        if (!confirm) { g_al_confirm = 1; ksnprintf(g_status, sizeof(g_status), "Click again to uninstall %s", title); return; }
+        for (int k = 0; k < running && k < 8; k++) app_kill(ids[k]);
+        char m[96], name[PKG_NAME_MAX];
+        kstrlcpy(name, p->name, sizeof(name));
+        if (repo_remove(name, m, sizeof(m)) == 0) {
+            ksnprintf(g_status, sizeof(g_status), "%s uninstalled%s", title,
+                      fsdisk_is_installed() ? "" : " (until reboot: live session)");
+            g_al_sel[0] = 0;
+        } else kstrlcpy(g_status, m, sizeof(g_status));
+        apps_scan();
+    }
+}
+
+/* Settings > Apps with this app selected (the launcher's Details) */
+void settings_show_app(const char* name) {
+    settings_open_page(PG_APPS);
+    kstrlcpy(g_al_sel, name ? name : "", sizeof(g_al_sel));
+    apps_scan();
+    int i = apps_sel();
+    if (i >= 0 && (i < g_al_top || i >= g_al_top + al_rows())) g_al_top = i - al_rows() / 2;
+}
+
 /* ── window ───────────────────────────────────────────────────────── */
 
 void settings_draw(const fb_info_t* fi) {
@@ -960,7 +1204,8 @@ void settings_draw(const fb_info_t* fi) {
     case PG_NETWORK:  draw_network(); break;
     case PG_TIME:     draw_time(); break;
     case PG_STARTUP:  draw_startup(); break;
-    default:          draw_about(); break;
+    case PG_APPS:     draw_apps(); break;
+    default:         draw_about(); break;
     }
     if (g_status[0]) gfx_draw_text(x + 10, y + H - 18, g_status, C_DIM, C_PANEL);
     gfx_draw_grip(x + W, y + H);
@@ -1113,6 +1358,8 @@ void settings_click(int mx, int my) {
         else return;
         save_speed();
         ksnprintf(g_status, sizeof(g_status), "Pointer speed: %d", mouse_get_speed());
+    } else if (g_page == PG_APPS) {
+        click_apps(mx, my);
     } else if (g_page == PG_STARTUP) {
         click_startup(mx, my);
     } else if (g_page == PG_NETWORK) {
@@ -1189,7 +1436,8 @@ int settings_contains(int mx, int my) { return g_open && inside(mx, my, g_win.x,
 uint32_t settings_signature(void) {
     if (!g_open) return 0;
     /* the clock, uptime and network status change by themselves */
-    if (g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP) {
+    if (g_page == PG_APPS && timer_ms() - g_al_scanned > 2000) apps_scan();     /* installed or removed meanwhile */
+    if (g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
         uint32_t s = timer_ms() / (g_page == PG_STARTUP ? 500 : 1000);
         if (s != g_tick_s) { g_tick_s = s; g_gen++; }
     }

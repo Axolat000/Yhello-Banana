@@ -123,11 +123,8 @@ static void menu_cb(int id, void* arg) {
     if (i < 0 || i >= g_napps) return;
     char msg[160];
     if (id == 1) run_app(i);
-    else if (id == 2) {
-        ksnprintf(msg, sizeof(msg), "%s %s (%s app) - %s", g_apps[i].title, g_apps[i].version, g_apps[i].type,
-                  g_apps[i].description[0] ? g_apps[i].description : "no description");
-        set_status(msg);
-    } else if (id == 3) {
+    else if (id == 2) gui_open_settings_app(g_apps[i].name);        /* Settings > Apps, this one selected */
+    else if (id == 3) {
         if (pkg_remove(g_apps[i].name, msg, sizeof(msg)) == 0) rescan();
         set_status(msg);
     }

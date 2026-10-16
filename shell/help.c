@@ -301,7 +301,11 @@ static const page_t PAGES[] = {
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
-    { "settings", "desktop", "settings", "open Settings", NULL, NULL, NULL, NULL },
+    { "settings", "desktop", "settings [apps [name]]", "open Settings (or its Apps page)",
+      "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
+      "whether it is running or has an update; select one to open it, stop it, update it or uninstall it "
+      "(Uninstall asks for a second click). The Apps launcher's Details opens the same page.",
+      NULL, "settings\nsettings apps\nsettings apps music", "apps, apt" },
     { "wallpaper", "desktop", "wallpaper [list|reset|preset <n>|url <url>|<file> [fill|fit|stretch|center]]", "the wallpaper",
       NULL, NULL, "wallpaper list\nwallpaper ~/Pictures/beach.jpg fill", NULL },
     { "resolution", "desktop", "resolution [WxH|auto]", "the screen's modes, or switch",

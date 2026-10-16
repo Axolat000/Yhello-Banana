@@ -3153,6 +3153,13 @@ int gui_open_settings(void) {
     return 1;
 }
 
+int gui_open_settings_app(const char* name) {
+    if (!gfx_available() || !g_gui_enabled) return 0;
+    settings_show_app(name);
+    do_action(ACT_SETTINGS);
+    return 1;
+}
+
 int gui_open_taskmgr(void) {
     if (!gfx_available() || !g_gui_enabled) return 0;
     do_action(ACT_TASKMGR);

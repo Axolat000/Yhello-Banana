@@ -46,6 +46,7 @@ int gui_appwin_focused(void);
 int gui_open_apps(void);
 int gui_open_taskmgr(void);
 int gui_open_settings(void);   /* the Settings window (0 without the desktop) */
+int gui_open_settings_app(const char* name);   /* Settings > Apps (name selected, or NULL) */
 void gui_raise_files(void);
 int  gui_open_installer(void);       /* the live CD's installer window; 0 if not here */
 void gui_text_changed(void);
