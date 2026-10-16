@@ -59,6 +59,22 @@ void serial_drain(void) {
     }
 }
 
+void serial_panic_write(const char* text) {
+    if (!g_present) return;
+    for (unsigned n=0;text[n] && n<512;n++) {
+        int repeats=text[n]=='\n'?2:1;
+        for(int k=0;k<repeats;k++) {
+            unsigned spins;
+            for(spins=0;spins<100000;spins++) {
+                if(inb(COM1+5)&0x20)break;
+                __asm__ volatile("pause");
+            }
+            if(spins==100000)return;
+            outb(COM1,text[n]=='\n' && k==0?'\r':(uint8_t)text[n]);
+        }
+    }
+}
+
 static void enqueue(char c) {
     uint32_t f = irq_save();
     uint32_t next = (g_tx_head + 1) % TX_SIZE;

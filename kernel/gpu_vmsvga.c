@@ -104,6 +104,16 @@ static void svga_flush(gpu_t* g, int x, int y, int w, int h) {
     fifo_cmd(c, 5);
 }
 
+/* The FIFO's register I/O waits are bounded and never allocate or yield. */
+static void svga_panic_present(void) {
+    if(!g_fifo)return;
+    const fb_info_t* fi=fb_info();
+    uint32_t min=g_fifo[F_MIN], max=g_fifo[F_MAX], next=g_fifo[F_NEXT_CMD], stop=g_fifo[F_STOP];
+    if(min<16 || max>g_fifo_size || min>=max || max-min<24 || ((min|max|next|stop)&3) || next<min || next>=max || stop<min || stop>=max)return;
+    svga_flush(&g_gpu,0,0,(int)fi->width,(int)fi->height);
+    wr(R_SYNC,1); /* ask the host to consume the update without a scheduler */
+}
+
 static const display_mode_t MODES[] = {
     { 800, 600 }, { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 800 }, { 1280, 1024 }, { 1366, 768 },
     { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 },
@@ -245,6 +255,7 @@ int gpu_vmsvga_probe(const pci_dev_t* d) {
     if (program(w, h) < 0 && (w = 1024, h = 768, program(w, h) < 0)) return -1;
     gpu_set_framebuffer(g_fb + rd(R_FB_OFFSET), w, h, (int)rd(R_BYTES_PER_LINE));
     gpu_register(&g_gpu);
+    gpu_register_panic(&g_gpu,svga_panic_present);
     svga_flush(&g_gpu, 0, 0, w, h);
     return 0;
 }

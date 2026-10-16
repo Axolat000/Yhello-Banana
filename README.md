@@ -14,9 +14,17 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Verbose kernel crash screen** - a blue stop-screen header and a dark diagnostic console show the stop code, exception/error details, full-width registers, CPU/task/uptime, control registers and a bounded raw stack snapshot. Page faults explain the attempted access and protection bits. The fatal path draws directly to the framebuffer and sends the full report to COM1, without entering the desktop or allocator. `crashtest` previews it safely; Enter/Esc returns to the OS. `crashtest report` prints a simulated report. Explicit `crashtest panic`, `ud2` and `pagefault` modes halt the OS for testing (save work first).
+
 - **Browser crashes stay in the browser** - the web engine runs in the kernel, so a page that made it crash used to stop all of Banana OS. Now a crash in the browser (or in an app's web view) - a bad memory access, an invalid instruction, a too-deep recursion running off its stack (guard pages under it now) - closes only the page that caused it: the tab says *This page crashed the browser's engine*, the other tabs and the rest of the system go on. `about:crash` crashes the engine on purpose, to see it
 - **Several keys at once (games)** - the keyboard driver keeps every key held down (PS/2, USB, Remote Desktop). Apps ask `banana_key_down('w')`, `banana_key_down(BANANA_KEY_LEFT)`... (API version 14) and web pages get a real `keydown` when a key goes down and `keyup` when it comes up, with `event.code`, so W + D + Space together work
 - **App Store: your own servers** - *Servers* lists the repositories and adds one (its address and signing key, or trusted without a key after a warning) or removes one (API version 15). The App Store is pinned to the taskbar next to Files
+- **Tests inside Banana OS** - run `selftest` for user mode, memory above 4 GiB, app/thread/file limits and concurrent allocation across cores; select a part with `selftest ring3`, `memory`, `limits` or `cores`. Run `fstest /mnt/virtio` (or your drive's mount point) for FAT32/exFAT writes, appends, Unicode names on exFAT, growing folders, deletion and reading everything back after a remount. `fstest -k` keeps its test folder. Both commands have passed in a VM; `selftest` reported nine checks passed. The tests also caught and helped fix a thread-return bug and an SDK allocation-boundary crash.
+- **exFAT** - the format of SD cards over 32 GB (SDXC) and many USB sticks: read and write, Unicode names (through the volume's own up-case table), new files in one run of clusters where there is room (a FAT chain where not), folders that grow, `df` and `mount` show it. Volumes with two FATs (TexFAT) are mounted read-only. The drives' partitions are now searched by one layer for every filesystem (`kernel/volume.c`): the whole device, then every MBR or GPT partition. `tools/test-exfat.sh` checks it end to end - Banana OS writes to an exFAT image in QEMU, then `fsck.exfat` and an exFAT reader of its own check the result on Linux
+- **System calls on every core** (64-bit) - an app thread running on another processor core used to go back to the boot core for every call it made; now the calls that touch only its own things run right where they are made: `malloc` / `free` / `realloc`, `draw_text`, the clock, `thread_id`, `cpu_count`, the modifier keys, `wake`, and `wait` when there is nothing to wait for. The kernel heap, the RAM above 4 GiB, apps' page tables and each app's memory got locks for it; everything else in the kernel still runs on the boot core. Busy threads (OpenGL's `gears`, OpenCL's `cltest`, `threads`) stay on their cores
+- **Higher limits** - 32 apps at once (was 8), 64 threads per app (16), 64 open files per app (16), 32 app windows (6), 32 web views (8) and 256 tasks (48): every task's stack is now allocated when it is created, so a free slot costs only its record
+- **Memory above 4 GiB** (64-bit) - Banana OS used at most 3.5 GiB of RAM; now the RAM above 4 GiB (up to 512 GiB) is mapped at boot and apps' memory comes from it first, so a PC with 16 GiB has room for big apps without crowding the kernel. `free` and Task Manager count it. Try it in QEMU: `MEM=8G tools/dev.sh apps`
+- **Apps are walled off from the kernel** (64-bit) - an app runs in ring 3, in an address space of its own: only its own memory (code, stacks, `malloc`, its windows' pictures) is open to it, so a wild pointer stops the app instead of damaging the kernel or another app. It calls the system through `int 0x80` (the call table it gets holds small stubs, so apps and packages built before work unchanged), every pointer it passes is checked to be its own memory, and the bookkeeping of its memory lives in the kernel, out of its reach. Its threads' system calls run on kernel stacks of their own (guarded), and other processor cores load its page tables too. `tools/dev.sh apps` boots Banana OS in QEMU and runs the examples over the serial console
 - **`<iframe>` in the web browser** - a page can embed another page: the browser loads the frame's `src` (or its inline `srcdoc`) as a document of its own, lays it out and draws it inside the frame's box, clipped to it, with its own styles and JavaScript. Frames nest (a frame inside a frame), and buttons, checkboxes and `onclick` handlers inside a frame work. Each frame is sandboxed - it has no access to the page around it. (Scrolling a frame's overflow and following links inside it are not there yet.)
 - **Remote Desktop (RDP)** - both a server and a client, speaking the Remote Desktop Protocol (MS-RDPBCGR) over its own TLS 1.2 (written from the RFCs, `net/tls12.c`). The **server** (`rdpd start`, port 3389, off by default like `sshd`) lets Windows' *Remote Desktop Connection* (mstsc), the Microsoft Remote Desktop apps and FreeRDP connect to the Banana OS desktop: it mirrors the screen and takes the keyboard and mouse. Log in as `banana` with the `passwd` password; an RSA key and certificate are made on first start and kept in `/etc/rdp/`. The **client** (`rdp host[:port]`, a desktop window) connects out to Windows, xrdp, FreeRDP or another Banana OS: it draws the remote screen (uncompressed, RDP 6.0 planar and interleaved-RLE bitmaps) and forwards the exact keys and the mouse, with **NLA** (CredSSP / NTLMv2) when a password is given. Both are in *Settings > Startup*. See [Remote Desktop](#remote-desktop-rdp)
 - **Amethyst Music** - the app of [Amethyst Music](https://music.office-works.ch/): the server's whole catalogue streamed (songs are kept in `~/.cache/amethyst`, the next one is fetched while the current one plays, so there is no gap), with the covers (WebP), *Home* (recommendations, recently played, most played), *Songs*, *Albums*, *Artists*, *Playlists*, the queue, shuffle / repeat, an equalizer and a visualizer. The first time it asks for the server's address (any Amethyst server; e.g. `https://music.office-works.ch`) and, optionally, an account: log in (or create one) for your recommendations, history and play counts, and to make playlists (right-click a song > *Add to...*). The account box at the bottom of the sidebar changes both; it comes installed
@@ -31,7 +39,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **New in 0.6: apt and the App Store** - packages now come from **repositories**, like Debian's: `apt update`, `apt search`, `apt install <name>` (it installs what the app depends on first), `apt upgrade`, `apt remove`, `apt autoremove`, `apt list --upgradable`, `apt add-repo <url> key=<key>`. The **App Store** (desktop, Apps > *Get apps...*, or `store`) does the same with the mouse: Discover by category, search, an app's page with *Install* / *Open* / *Update* / *Remove*, Updates with *Update all*, Installed. Repositories are **signed** (Ed25519: a list whose signature does not match its key is refused, and every download must match the signed index's SHA-256). The examples that come with Banana OS are a repository of their own (`file:///home/banana/Examples`). See [Packages: apt and the App Store](#packages-apt-and-the-app-store)
 - **New in 0.6: Intel e1000e and igb network cards** - the Intel Ethernet of most PCs: the **I217 / I218 / I219** built into Intel chipsets (laptops and desktops since 2013), 82571-82574 and 82583 (e1000e), and **I210 / I211 / I350 / I354**, 82575 / 82576 / 82580 (igb, many boards and server cards) - next to the classic 8254x. The PHY is woken and auto-negotiation started by the driver. Tested in QEMU (`-nic user,model=e1000e`, `model=igb`): DHCP, ping, HTTP on both kernels
 - **New in 0.6: OHCI USB, USB tablets and touchscreens** - a driver for OHCI, the USB 1.1 controller of AMD / SiS / ALi / NEC chipsets, add-in cards and VirtualBox (its default USB controller): keyboards, mice, hubs, sticks on it. USB pointers are now read through their report descriptor too, so **tablets** - VirtualBox's *USB Tablet* and QEMU's `usb-tablet`, the pointer that simply follows the host's mouse, no capture - and **touchscreens** put the pointer where they say (absolute), and mice that do not speak the boot protocol work
-- **New in 0.6: OpenCL** - apps can run OpenCL 1.2 programs: `#include <CL/cl.h>` and `USE_CL = 1`. The platform *Banana OS OpenCL* has one device, the processor with all its cores: `clBuildProgram` compiles the kernels' OpenCL C **on Banana OS, inside the app** (with TinyCC, into memory), and `clEnqueueNDRangeKernel` shares the work-groups out between every core. Buffers (create, read, write, copy, fill, map), 1D/2D/3D ranges with or without a group size, `__local` arguments, build logs with line numbers, `-D` options, events with profiling, and in OpenCL C the address space qualifiers, the work-item functions, the math built-ins, `min`/`max`/`clamp`/`mad`/`mix`, 32-bit `atomic_*` and `printf`. Not yet: vector types (`float4`), images, `barrier()`. `cltest` (`~/Examples`) runs vector add, Mandelbrot, atomics and math kernels and checks them against the processor
+- **New in 0.6: OpenCL** - apps can run OpenCL 1.2 programs: `#include <CL/cl.h>` and `USE_CL = 1`. The platform *Banana OS OpenCL* has one device, the processor with all its cores: `clBuildProgram` compiles the kernels' OpenCL C **on Banana OS, inside the app** (with TinyCC, into memory), and `clEnqueueNDRangeKernel` shares the work-groups out between every core. Buffers (create, read, write, copy, fill, map), 1D/2D/3D ranges with or without a group size, `__local` arguments, build logs with line numbers, `-D` options, events with profiling, and in OpenCL C the address space qualifiers, the work-item functions, the math built-ins, `min`/`max`/`clamp`/`mad`/`mix`, 32-bit `atomic_*` and `printf`. `barrier()` synchronizes work-items and shares `__local` arrays and pointer arguments within each group. Vector types include `float4`; images and samplers are not implemented. `selftest opencl` installs and runs the matching `cltest` example, including reductions, shared arrays, vectors, Mandelbrot, atomics and math
 - **New in 0.6: OpenGL** - apps can draw 3D with the OpenGL 1.x API: `#include <GL/bgl.h>` and `USE_GL = 1` in the Makefile. Matrices and GLU (`gluPerspective`, `gluLookAt`), immediate mode, vertex arrays, display lists, lighting (8 lights, materials, color material), textures (RGB/RGBA/luminance, nearest / linear, repeat / clamp / mirrored), depth buffer, blending, alpha test, fog, scissor, culling, wireframe, lines and points, `glReadPixels`; constants have their standard values, so GL 1.x code ports as it is. It is Banana OS's own renderer, in software on the processor: the frame is shared out between **all the cores** (each draws every n-th row, so the picture is exactly the one-core picture). **Gears** (`~/Examples/gears.bpk`, or the App Store) shows it - the frame rate is in its title. There is no GPU 3D: AMD / NVIDIA / Intel cards would each need a driver the size of Mesa's
 - **New in 0.6: the Banana OS package server** - `tools/repo/banana-pkgd` runs a repository as a service on Linux: what `apt` and the App Store fetch, web pages listing the packages (search, a page per app with the `apt add-repo` line), and **uploads with tokens** - `banana-repo push https://your.server app.bpk --token ...`, or its `/upload` page (from Banana OS's browser too). Each upload is checked, published and the index signed at once; `install-server.sh` sets it all up (systemd, nginx, HTTPS)
 - **New in 0.6: host your own repository on Linux** - `tools/repo/banana-repo` (Python 3, nothing else) makes one (`init`, `add app.bpk`, `remove`, `list`, `verify`, `key`) and serves it (`serve`); `tools/repo/install-server.sh` sets up a server - nginx (or a systemd service), HTTPS with Let's Encrypt - on Debian, Ubuntu, Fedora or Arch. Apps say their category, what they depend on and their picture in their Makefile (`CATEGORY`, `DEPENDS`, `ICON`); an app's `icon.png` is also its icon on the desktop, the taskbar and the Start menu
@@ -58,7 +66,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
 - **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
 - **Firewall (optional)** - off unless turned on (`firewall on`, Settings > Network): connections from outside refused but for the ports allowed (`firewall allow tcp 22`), pings only if allowed, everything you start works as before; `firewall log` shows what was blocked
-- **IPv6 (optional)** - off unless `ipv6 on`: link-local and SLAAC addresses, neighbor discovery, `ping6` (TCP / UDP stay on IPv4 for now)
+- **IPv6 (optional)** - off by default; `toggle6 [on|off]`, `ipv6 on/off` and Settings > Network control the same switch. Link-local/SLAAC addresses, neighbour discovery, ping, TCP, UDP and AAAA DNS. IPv4 stays independent. `curl -6` and `wget -6` select IPv6; bracket literal addresses, e.g. `http://[::1]:8080/`. Use `selftest ipv6` for local checks; it restores the previous toggle state without changing saved settings.
 - **Intel Macs** - Apple keyboards (Command works as Ctrl), Apple NVMe SSDs (2015-2017 Macs, T2 Macs), the speakers of Macs' HD Audio codecs (GPIO amplifiers), and the Apple SMC's temperatures and fans in `sensors`
 - **Android phones** - `adb` (devices, shell, push, pull, install, logcat, reboot) and `fastboot` (getvar, flash, erase, boot, reboot, oem, flashing unlock) over USB, with the phone's "Allow USB debugging?" key check (RSA-2048, the key in `~/.android`)
 - **Drag and drop everywhere** - files dragged from Files or the desktop onto a terminal type their paths at the prompt, onto Notepad / the Browser open there, onto an app's window go to the app (Banana Code, Photos, Media Player, Music; API 13 `BANANA_EV_DROP`); held over a taskbar button, that window comes up to drop on
@@ -275,6 +283,44 @@ Banana-OS/
 - Ctrl+Alt+Delete quits the GUI immediately, from anywhere
 
 ## Networking
+
+IPv6 is optional and **off by default**. Settings > Network and `toggle6`
+share the same saved switch; `toggle6 on` / `toggle6 off` set it explicitly.
+With no argument, `toggle6` flips it. `ipv6` displays the current addresses,
+router and DNS. Disabling IPv6 drops its queued packets and ends IPv6 TCP
+sessions while IPv4 continues operating.
+
+After rebuilding, test directly inside Banana OS:
+
+```sh
+selftest ipv6                  # no router/Internet needed; restores the toggle
+ipv6                          # confirm its original on/off state
+```
+
+To test a real IPv6 network, enable it and wait for the router's SLAAC prefix:
+
+```sh
+toggle6 on
+ipv6
+nslookup -6 example.com
+ping6 -c 2 example.com
+curl -6 http://example.com/
+selftest ipv6 example.com 80
+```
+
+HTTP/HTTPS clients (including Browser and SDK apps) accept bracketed IPv6
+literals. By default they try IPv4, then IPv6 if enabled; `curl -4` / `-6`
+and `wget -4` / `-6` force a family. Existing server commands still listen on
+IPv4; the TCP layer exposes a separate `tcp_listen6()` API.
+
+Current limits: no IPv6 fragment reassembly, source fragmentation, or path-MTU
+discovery. TCP uses a 1220-byte MSS and UDP allows 1232 data bytes so packets
+fit the 1280-byte IPv6 minimum MTU. AAAA DNS uses an advertised IPv6 resolver
+when available, or the configured IPv4 DNS server. DNS replies truncated for
+TCP fallback are not supported. Local tests exercise packet validation,
+checksums, transport data/close, and toggle restoration; optional host tests
+require an actual IPv6 route.
+
 
 Banana OS brings up the network card by itself at boot and configures it with **DHCP** in the background - by the time you're at the prompt, `ifconfig` usually already shows an address.
 
@@ -601,7 +647,48 @@ clEnqueueNDRangeKernel(q, k, 1, NULL, &n, NULL, 0, NULL, NULL);
 clEnqueueReadBuffer(q, buf, CL_TRUE, 0, n * 4, data, 0, NULL, NULL);
 ```
 
-The one device is the processor (`CL_DEVICE_TYPE_CPU` / `DEFAULT`; asking for a GPU gives `CL_DEVICE_NOT_FOUND`), *Banana OS CPU (N cores)*. Kernels are compiled when the program is built by the TinyCC built into the app (from `ports/tcc`: USE_CL apps are built in the Banana OS source tree), and work-groups run on every core; commands finish before their call returns (in-order queues, events complete at once, with profiling times). OpenCL C here: `__kernel`, `__global`/`__constant`/`__local`/`__private`, `get_global_id` and the other work-item functions, scalar types (`uchar`, `uint`, `size_t`, `half` as storage...), the math functions, `rsqrt`, `native_*`, `mad`, `fma`, `min`, `max`, `clamp`, `mix`, `step`, `smoothstep`, `sign`, `select`, `atomic_*`/`atom_*` on 32-bit ints, `printf`, `-D` options. Not yet: vector types (`float4`...), images and samplers, `barrier()` (work-items of a group do not share `__local` memory: a `__local` argument is scratch space per core). `sdk/lib/cltest/` tests the runtime on Linux (`-DBCL_HOST` with a host libtcc).
+The one device is the processor (`CL_DEVICE_TYPE_CPU` / `DEFAULT`; asking for a GPU gives `CL_DEVICE_NOT_FOUND`), *Banana OS CPU (N cores)*. Kernels are compiled when the program is built by the TinyCC built into the app (from `ports/tcc`: USE_CL apps are built in the Banana OS source tree), and work-groups run on every core; commands finish before their call returns (in-order queues, events complete at once, with profiling times). OpenCL C here: `__kernel`, `__global`/`__constant`/`__local`/`__private`, `get_global_id` and the other work-item functions, scalar types (`uchar`, `uint`, `size_t`, `half` as storage...), the math functions, `rsqrt`, `native_*`, `mad`, `fma`, `min`, `max`, `clamp`, `mix`, `step`, `smoothstep`, `sign`, `select`, `atomic_*`/`atom_*` on 32-bit ints, `printf`, `-D` options. `barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE)` pauses work-items until the group arrives; `__local` pointer arguments and block-scope arrays are shared within the group. `float`, `int` and `uint` vectors support 2, 3, 4, 8 and 16 lanes, constructors, arithmetic, comparison masks, component access, read swizzles and `vloadN`/`vstoreN`. These operations use scalar CPU code. Images and samplers remain unsupported. See [the SDK notes](sdk/README.md#opencl) for the supported subset and limits. Run `selftest opencl` inside Banana OS; `tools/test_opencl.sh` runs the same kernel tests on Linux with the patched compiler.
+
+### Crash-screen diagnostics
+
+After building with `tools/dev.sh run`, run this inside Banana OS:
+
+```sh
+crashtest                 # safe, simulated full-screen preview; Enter/Esc returns
+crashtest report          # simulated text report, also usable over SSH
+```
+
+For the real fatal paths, save your work first. Each command below stops
+Banana OS and requires restarting the VM or computer:
+
+```sh
+crashtest panic           # explicit kernel check failure
+crashtest ud2             # actual invalid-instruction CPU exception
+crashtest pagefault       # actual unmapped-page access (64-bit kernel only)
+```
+
+The screen stays visible until you restart it; there is no automatic reboot
+or disk dump. The full report is sent to serial COM1 (`tools/dev.sh run`
+keeps it in `build/logs/serial-bios.log`, or the corresponding firmware log).
+Keep the stop code, IP, fault address and the matching kernel binary. The
+raw stack words are bounded to the known task stack, and are **not a call
+trace**. `addr2line -e kernel64.bin -f -C <IP>` can identify symbols in that
+binary; source lines require a build with debug information. Use
+`kernel.bin` for the 32-bit kernel.
+
+The preview lets other tasks run and restores the display when closed.
+Actual faults bypass the desktop and allocator, notify other cores to stop,
+and use bounded emergency serial output. Built-in Virtio and VMware graphics
+also attempt a bounded display update without the normal graphics worker.
+If a Virtio command was already in flight, serial remains the fallback. A nested fault falls back to a
+minimal serial/VGA message. App faults and recoverable browser faults keep
+their existing recovery paths. To check the merged browser recovery, open
+`about:crash` in the browser: the page should report a crash while the OS
+continues.
+
+`python3 tools/test_crashscreen.py` exercises the same formatter and bitmap
+renderer on the host, checks full-width addresses and framebuffer boundaries,
+and writes PNG previews to `build/test/crashscreen/`.
 
 ### Hosting a repository (Linux)
 
@@ -808,7 +895,11 @@ include /path/to/banana-sdk/driver/driver.mk
 | `adb devices / shell / push / pull / install / logcat / reboot` | Android phones over USB (USB debugging on) |
 | `fastboot devices / getvar / flash / erase / boot / reboot` | a phone in its bootloader |
 | `firewall [on/off] / allow / deny / ping / log` | the firewall (off by default) |
-| `ipv6 [on\|off]` / `ping6 ADDRESS` | IPv6 (off by default): its addresses, and echo |
+| `toggle6 [on\|off]` / `ipv6 [on\|off]` | IPv6 switch (off by default; saved), or address/router information |
+| `ping6 HOST` / `nslookup -6 HOST` | IPv6 echo / AAAA DNS lookup |
+| `crashtest [preview\|report\|panic\|ud2\|pagefault]` | Safe crash-screen preview/report; the last three modes intentionally halt the OS |
+| `selftest opencl` | Compile and check OpenCL barriers, shared local memory and vectors on the CPU |
+| `selftest ipv6 [HOST [PORT]]` | Local IPv6 TCP/UDP checks; optional network lookup and TCP connection (default port 80) |
 | `sensors` | The processor's temperature (Intel and AMD, real hardware) |
 | `gamepad` | The game controllers plugged in: sticks, triggers, buttons held |
 | `sched` | The scheduler's view: load average, and per task its nice value, weight, switches, wait for the processor, longest run |
@@ -987,7 +1078,8 @@ The boot menu has both entries - **Banana OS 0.5 (64-bit)** and **(32-bit)**; th
 - **UEFI quirk**: UEFI firmware leaves the CPU's local APIC enabled with the legacy PIC input masked (a BIOS sets it to pass-through); Banana OS drives interrupts with the 8259 PIC, so it switches the local APIC off at boot - without that, no timer or device interrupt would arrive.
 - **Several CPU cores and Hyper-Threading**: the 64-bit kernel starts every logical processor the ACPI tables list (up to 64; xAPIC and x2APIC entries), in x2APIC mode when the firmware uses it or locks it (newer Intel platforms) or ids need it. It knows which logical processors are hardware threads of the same physical core (CPUID 0x1F / 0xB, or 1 / 4 / AMD leaves on older processors) and which cores are performance or efficient ones on hybrid Intel processors, and puts app work on a whole idle core first, then on a sibling thread; `lscpu` shows it all. The kernel itself runs on the first core; apps run on all of them - an app's threads compute in parallel (`threads`, `mandel` in ~/Examples), and every system call an app makes on another core is carried out on the first one. Task Manager and `top` show which core each app runs on. The 32-bit kernel uses one core.
 - **32-bit UEFI**: `BOOTIA32.EFI` is the same C built for IA32 firmware (cdecl, `-malign-double` for the specification's structure layout); there the firmware already runs in 32-bit protected mode, so `tramp32.S` only loads a flat GDT and turns paging off.
-- **Not (yet)**: Secure Boot with the keys PCs ship with (Microsoft's) - Banana OS's key must be enrolled, see below; memory above 4 GiB (64-bit Banana OS uses at most 3.5 GiB of RAM), kernel code on more than one core.
+- **Memory above 4 GiB** (64-bit): the kernel heap stays below 3.5 GiB (its buffers are DMA buffers for 32-bit devices); the RAM the firmware lists above 4 GiB is mapped at boot and goes to apps' memory, which takes it first (`kernel/hmem.c`) - up to 512 GiB. `free` and Task Manager count it.
+- **Not (yet)**: Secure Boot with the keys PCs ship with (Microsoft's) - Banana OS's key must be enrolled, see below; kernel code on more than one core.
 
 ## Secure Boot
 
@@ -1009,7 +1101,7 @@ Building: the Makefile signs with `sbsign` when the private key is at `~/.banana
 - **Interrupts**: PIC remapped to vectors 32-47; IRQ0 (1 kHz timer) and the NIC's IRQ are used, keyboard/mouse stay polled
 - **Scheduling**: kernel threads switch where they choose to (app code is also time-sliced by the timer); the next to run is the ready one that has had the least CPU time (counted with the TSC, weighted by its **nice value**, -20 to 19, with Linux's CFS weights: the desktop's task -3, daemons like autosave 6). Busy work gives way after a time slice that shrinks as more tasks compete (16 ms shared, 2-8 ms each) and, after at least 1 ms, as soon as a sleeping task wakes (a key, a timer, a packet): a 5 ms sleep next to busy threads now wakes ~0.6 ms late instead of ~4 ms. The other cores take app code by the least weighted processor time (on any core), for a turn scaled by weight, and the first core takes turns with them. With nothing to run the CPU halts until the next interrupt. **Kernel preemption**: the kernel code that computes for long - picture and zlib decoding (stb_image: PNG, JPEG, GIF, BMP, compressed data) and SVG drawing - is preemptible: a timer interrupt in it switches tasks like one in app code (a Wikipedia page used to hold the processor 734 ms while drawing its SVG logo; now a time slice at most). That code keeps no mutable state of its own, and `kptest <picture> <svg>` checks it: tasks decode at once, preempted thousands of times, every result compared. The rest of the kernel switches where it chooses, as before (its shared structures are never seen half-updated); the desktop's task is never preempted in kernel code; the kernel log names any task that keeps the processor over 50 ms. `nice`, `renice`, Task Manager's *Processes* tab (right-click: High ... Low) change priorities; `sched` shows each task's switches, wait for the processor and longest run, `uptime` and `htop` the load average
 - **Multicore** (64-bit): the other cores are started with INIT/STARTUP IPIs through a real-mode trampoline at 0x8000 and run app code taken from a queue; the boot core's local APIC is on in "virtual wire" mode (the 8259 still delivers the device interrupts), IPIs move tasks between cores
-- **Memory**: physical = virtual (32-bit: paging off; 64-bit: the first 4 GiB identity-mapped), kernel heap from the Multiboot2 memory map, so heap buffers double as DMA buffers
+- **Memory**: physical = virtual (32-bit: paging off; 64-bit: the first 4 GiB identity-mapped), kernel heap from the Multiboot2 memory map, so heap buffers double as DMA buffers. 64-bit apps run in ring 3 on page tables of their own: a copy of that map in which only the app's 2 MiB blocks of memory are open to user mode (`kernel/uspace.c`, `kernel/umem.c`)
 - **Input**:
   - PS/2 keyboard (`0x60` / `0x64`)
   - PS/2 mouse AUX packets
@@ -1018,7 +1110,7 @@ Building: the Makefile signs with `sbsign` when the private key is at `~/.banana
 
 ## To do
 
-- **Isolate every app from the kernel** - today an app that crashes (a bad pointer, a stack overflow) is stopped and the system goes on, but apps run in ring 0 in the kernel's address space, so a buggy app can still write over the kernel's memory and bring it down later. The plan, keeping every existing app working unchanged: each app's memory (code, data, stacks, heap, window pixels) in chunks of its own, its code run on page tables where the kernel is read-only (CR0.WP), the system call gates and interrupt stubs switching tables, and system calls refusing output buffers outside the app's memory. A first version for the 64-bit kernel is on the `app-isolation` branch (a test app writing into the kernel is stopped, the system goes on); still to do: paging for the 32-bit kernel, and testing every app with it
+- **32-bit app isolation** - the 64-bit kernel already runs apps in ring 3 with separate address spaces (build 141). The 32-bit kernel still needs paging and equivalent isolation; its apps currently run in ring 0.
 
 ## 100% Custom Kernel
 

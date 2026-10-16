@@ -1,3 +1,4 @@
+#include "crash.h"
 #include "gui.h"
 #include "serial.h"
 #include "terminal.h"
@@ -985,6 +986,7 @@ static void draw_cursor(int mx, int my) {
  * Clicks, the wheel and what the pointer is over are still the desktop
  * loop's, next time it runs; it finds the pointer already in place. */
 void gui_cursor_tick(void) {
+    if(crash_preview_active() || crash_in_progress())return;
     if (g_gui_busy || !g_gui_enabled || !g_backbuf_active || g_in_lock || g_lock_pending) return;
     if (g_ptr_drawn_x < 0 || g_scr_w <= 0 || g_scr_h <= 0) return;
     int dx, dy;
@@ -2034,6 +2036,8 @@ static void gui_poll_body(void);
  * leaves the pointer alone (gui_cursor_tick); not while it waits in
  * task_yield. A counter: tasks can be in here at the same time. */
 void gui_poll(void) {
+    if(crash_in_progress()) { crash_stop_secondary(); return; }
+    if(crash_preview_active()) { task_sleep_ms(10); return; }
     g_gui_busy++;
     gui_poll_body();
     g_gui_busy--;
@@ -2042,7 +2046,7 @@ void gui_poll(void) {
 static void gui_poll_body(void) {
     /* the lock screen: while it is up, every other caller (the terminal
      * windows' shells poll too) leaves the screen and the keyboard to it */
-    if (g_in_lock) return;
+    if (g_in_lock || crash_preview_active() || crash_in_progress()) return;
     /* (background tasks - the servers, app windows - call this too, but read no keys) */
     if (g_lock_pending && g_gui_enabled && !task_is_background()) {
         g_lock_pending = 0;
@@ -2063,7 +2067,7 @@ static void gui_poll_body(void) {
     g_gui_busy++;
     /* another task may have locked the screen while this one waited here:
      * no frame, no mouse, no keys from this caller now */
-    if (g_in_lock) return;
+    if (g_in_lock || crash_preview_active() || crash_in_progress()) return;
 
     /* Consume the Ctrl+Alt+Delete flag every cycle regardless of GUI
      * state, so a press while the GUI is off can't linger and fire the

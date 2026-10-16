@@ -6,11 +6,12 @@
 /* Where the RAM goes - one set of numbers for `free`, `top`, `htop`,
  * `ram_info` and the Task Manager.
  *
- * Banana OS has no paging allocator: it runs from one stretch of RAM (the
- * largest usable region below 3.5 GB, from the firmware's memory map) - its
- * kernel image at 1 MB, then the heap that everything else comes from (file
- * data, windows, network buffers, apps). "total" is that stretch, "free" is
- * what the heap has left. RAM in other regions is "installed" but unused. */
+ * The kernel runs from one stretch of RAM (the largest usable region below
+ * 3.5 GB, from the firmware's memory map) - its kernel image at 1 MB, then
+ * the heap that everything else comes from (file data, windows, network
+ * buffers). On the 64-bit kernel the RAM above 4 GB is used too, for apps'
+ * memory (kernel/hmem.c). "total" is those, "free" what they have left.
+ * RAM in other regions below 4 GB is "installed" but unused. */
 typedef struct {
     uint32_t installed_kb;   /* usable RAM in the machine, from the memory map */
     uint32_t total_kb;       /* what Banana OS runs in: kernel image + heap */

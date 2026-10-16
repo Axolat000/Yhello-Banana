@@ -735,12 +735,17 @@ static void cmd_top(void) {
      * cooperative task with its own call stack, so this needs to be its
      * own per-invocation smoothing buffer rather than shared state that
      * different windows' refreshes would stomp on. */
-    uint32_t last_cpu[TASK_MAX] = {0};
+    uint32_t* last_cpu = (uint32_t*)kzalloc(TASK_MAX * sizeof(uint32_t));
+    task_info_t* procs = (task_info_t*)kmalloc(TASK_MAX * sizeof(task_info_t));
+    if (!last_cpu || !procs) {          /* (too big for a task's stack: on the heap) */
+        kfree(last_cpu); kfree(procs);
+        terminal_writeln("top: out of memory");
+        return;
+    }
     int my_vt = terminal_vt_get_active();
 
     while (1) {
         const sysinfo_t* si = sysinfo_get();
-        task_info_t procs[TASK_MAX];
         int pcount;
 
         terminal_clear();
@@ -861,6 +866,8 @@ static void cmd_top(void) {
 
             if (c == 'q' || c == 'Q' || c == 3) {
                 terminal_clear();
+                kfree(last_cpu);
+                kfree(procs);
                 return;
             }
 
@@ -947,6 +954,10 @@ static void cmd_help(void) {
         "  usb rescan         look for newly plugged / unplugged USB devices",
         "  mount [-a]         mounted USB sticks / NVMe (FAT32: /mnt/usb, /mnt/nvme)",
         "  umount [path]      unmount (eject) a stick so it can be removed",
+        "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
+        "  crashtest [mode]   crash-screen preview/report; panic/ud2/pagefault halt the OS",
+        "  selftest [part]    check the system: ring3, memory, limits, cores, opencl, ipv6",
+        "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
         "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
         "  <app> [args]       run an installed app by its name",
         "  apps / taskmgr     open Apps / the Task Manager on the desktop",
@@ -1379,9 +1390,9 @@ static const char* const known_cmds[] = {
     "ifconfig", "dhcp", "ping", "nslookup", "host", "netstat", "arp", "curl", "wget",
     "cryptotest", "wallpaper", "lsusb", "usb", "httpd", "sshd", "rdpd", "rdp", "passwd", "files", "browser", "notepad",
     /* shell/syscmds.c */
-    "mount", "umount", "eject", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
+    "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver", (void*)0
+    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */

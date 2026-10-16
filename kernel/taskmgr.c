@@ -2,6 +2,7 @@
 #include "gfx.h"
 #include "kstring.h"
 #include "kheap.h"
+#include "meminfo.h"
 #include "timer.h"
 #include "task.h"
 #include "smp.h"
@@ -20,7 +21,7 @@
 #define BODY_Y   (TABS_Y + TAB_H + 6)
 #define ROW_H    14
 #define HIST     60
-#define MAX_ROWS 40
+#define MAX_ROWS 96
 
 #define C_PANEL  0x001D232Cu
 #define C_TITLE  0x00384562u
@@ -82,9 +83,11 @@ static uint32_t cpu_now(void) {
     return busy > 100 ? 100 : busy;
 }
 
+/* (the kernel heap and, 64-bit, apps' RAM above 4 GiB: meminfo) */
 static uint32_t mem_pct(void) {
-    uint32_t total = kheap_total_bytes();
-    return total ? (uint32_t)((uint64_t)kheap_used_bytes() * 100 / total) : 0;
+    meminfo_t m;
+    meminfo_get(&m);
+    return m.total_kb ? (uint32_t)((uint64_t)m.used_kb * 100 / m.total_kb) : 0;
 }
 
 static void sample(void) {
@@ -100,8 +103,8 @@ static void sample(void) {
 
 /* the Apps tab's rows: open windows, then running apps */
 static void build_rows(void) {
-    gui_win_info_t w[24];
-    int nw = gui_windows(w, 24);
+    static gui_win_info_t w[64];
+    int nw = gui_windows(w, 64);
     g_nrows = 0;
     for (int i = 0; i < nw && g_nrows < MAX_ROWS; i++) {
         row_t* r = &g_rows[g_nrows++];
@@ -110,8 +113,8 @@ static void build_rows(void) {
         kstrlcpy(r->text, w[i].title, sizeof(r->text));
         kstrlcpy(r->info, w[i].minimized ? "window, minimized" : w[i].focused ? "window, active" : "window", sizeof(r->info));
     }
-    app_info_t a[8];
-    int na = app_snapshot(a, 8);
+    static app_info_t a[APP_MAX];
+    int na = app_snapshot(a, APP_MAX);
     for (int i = 0; i < na && g_nrows < MAX_ROWS; i++) {
         row_t* r = &g_rows[g_nrows++];
         r->is_app = 1;
@@ -324,9 +327,11 @@ static void graph(int x, int y, int w, int h, const uint8_t* hist, int n, uint32
     gfx_draw_text(x + 6, y + 5, label, C_TEXT, C_LIST);
 }
 
-static void human(uint32_t bytes, char* out, int cap) {
-    if (bytes >= (1u << 20)) ksnprintf(out, (size_t)cap, "%u.%u MiB", bytes >> 20, ((bytes >> 10) & 1023) * 10 / 1024);
-    else ksnprintf(out, (size_t)cap, "%u KiB", bytes >> 10);
+/* (KiB: more than 4 GiB fits) */
+static void human(uint32_t kb, char* out, int cap) {
+    if (kb >= (1u << 20)) ksnprintf(out, (size_t)cap, "%u.%u GiB", kb >> 20, ((kb >> 10) & 1023) * 10 / 1024);
+    else if (kb >= 1024) ksnprintf(out, (size_t)cap, "%u.%u MiB", kb >> 10, (kb & 1023) * 10 / 1024);
+    else ksnprintf(out, (size_t)cap, "%u KiB", kb);
 }
 
 void taskmgr_draw(const fb_info_t* fi) {
@@ -404,9 +409,11 @@ void taskmgr_draw(const fb_info_t* fi) {
         ksnprintf(lab, sizeof(lab), "Memory %u%%", g_hist_n ? g_mem_hist[g_hist_n - 1] : 0);
         graph(lx + gw + 8, gy, gw, gh, g_mem_hist, g_hist_n, C_MEM, lab);
         int ty = gy + gh + 14;
+        meminfo_t mi;
+        meminfo_get(&mi);
         char a[24], b[24];
-        human(kheap_used_bytes(), a, sizeof(a));
-        human(kheap_total_bytes(), b, sizeof(b));
+        human(mi.used_kb, a, sizeof(a));
+        human(mi.total_kb, b, sizeof(b));
         ksnprintf(line, sizeof(line), "Memory in use:  %s of %s (largest free block %u KiB)", a, b, kheap_largest_free() / 1024);
         gfx_draw_text(lx, ty, line, C_TEXT, C_PANEL);
         uint32_t up = timer_ms() / 1000;

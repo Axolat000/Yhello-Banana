@@ -14,16 +14,29 @@ int url_parse(const char* s, url_t* out) {
     else if (strstr(s, "://")) return 0;             /* ftp:// etc. */
     out->port = out->https ? 443 : 80;
 
-    /* host[:port] up to the first '/', '?' or '#' */
+    /* IPv6 literals must be bracketed: http://[::1]:8080/path. The
+     * parsed host excludes brackets (DNS/TLS), authorities put them back. */
     uint32_t i = 0;
-    while (s[i] && s[i] != '/' && s[i] != ':' && s[i] != '?' && s[i] != '#') {
-        if (i + 1 >= sizeof(out->host)) return 0;
-        out->host[i] = s[i];
-        i++;
+    if (*s == '[') {
+        s++;
+        while (s[i] && s[i] != ']') {
+            if (i + 1 >= sizeof(out->host)) return 0;
+            out->host[i] = s[i]; i++;
+        }
+        if (s[i] != ']') return 0;
+        out->host[i] = 0;
+        ip6_t ip;
+        if (!ip6_parse(out->host, &ip)) return 0;
+        s += i + 1;
+    } else {
+        while (s[i] && s[i] != '/' && s[i] != ':' && s[i] != '?' && s[i] != '#') {
+            if (i + 1 >= sizeof(out->host)) return 0;
+            out->host[i] = s[i]; i++;
+        }
+        out->host[i] = 0;
+        s += i;
     }
-    out->host[i] = '\0';
     if (!out->host[0]) return 0;
-    s += i;
     if (*s == ':') {
         uint32_t port;
         int n = k_parse_u32(s + 1, &port);
@@ -31,6 +44,7 @@ int url_parse(const char* s, url_t* out) {
         out->port = (uint16_t)port;
         s += 1 + n;
     }
+    if (*s && *s != '/' && *s != '?' && *s != '#') return 0;
     /* path: keep the query, drop any #fragment (never sent to servers) */
     uint32_t o = 0;
     if (*s != '/') out->path[o++] = '/';
@@ -54,8 +68,9 @@ static void resolve_location(const url_t* base, const char* loc, char* out, uint
     }
     char origin[300];
     int default_port = (base->https && base->port == 443) || (!base->https && base->port == 80);
-    if (default_port) ksnprintf(origin, sizeof(origin), "%s://%s", base->https ? "https" : "http", base->host);
-    else ksnprintf(origin, sizeof(origin), "%s://%s:%u", base->https ? "https" : "http", base->host, base->port);
+    int v6 = strchr(base->host, ':') != NULL;
+    if (default_port) ksnprintf(origin, sizeof(origin), v6 ? "%s://[%s]" : "%s://%s", base->https ? "https" : "http", base->host);
+    else ksnprintf(origin, sizeof(origin), v6 ? "%s://[%s]:%u" : "%s://%s:%u", base->https ? "https" : "http", base->host, base->port);
 
     if (loc[0] == '/' && loc[1] == '/') {            /* scheme-relative */
         ksnprintf(out, cap, "%s:%s", base->https ? "https" : "http", loc);
@@ -81,7 +96,7 @@ typedef struct {
     /* read buffer, for line-oriented header/chunk parsing */
     uint8_t     buf[4096];
     uint32_t    pos, len;
-    int         eof;
+    int         eof, family;
 } stream_t;
 
 static int s_write(stream_t* s, const void* data, uint32_t len) {
@@ -150,9 +165,11 @@ static void pool_drop(int i) {
     g_pool[i].used = 0;
 }
 
-static stream_t* pool_take(const url_t* u, uint32_t timeout) {
+static stream_t* pool_take(const url_t* u, uint32_t timeout, int family) {
     for (int i = 0; i < POOL_MAX; i++) {
         if (!g_pool[i].used) continue;
+        if (g_pool[i].s->family == 6 && !ipv6_enabled()) { pool_drop(i); continue; }
+        if (family && family != g_pool[i].s->family) continue;
         if ((uint32_t)(timer_ms() - g_pool[i].since) > POOL_IDLE_MS) { pool_drop(i); continue; }
         if (g_pool[i].https == u->https && g_pool[i].port == u->port && strcasecmp(g_pool[i].host, u->host) == 0) {
             stream_t* st = g_pool[i].s;
@@ -270,27 +287,41 @@ static int header_is(const char* line, const char* name, const char** value) {
 /* a new connection (TCP, and TLS for https://) - NULL with *rc and errmsg */
 static stream_t* open_stream(const url_t* u, const http_request_t* req, http_response_t* resp, uint32_t timeout,
                              char* errmsg, uint32_t errlen, int* rcp) {
-    ip4_t ip;
-    info(req, "Resolving %s...", u->host);
-    int rc = dns_resolve(u->host, &ip, timeout);
-    if (rc != NET_OK) {
-        ksnprintf(errmsg, errlen, "could not resolve host %s (%s)", u->host, net_strerror(rc));
-        *rcp = rc;
-        return NULL;
-    }
-    char ips[16];
-    ip4_to_str(ip, ips);
-    info(req, "Connecting to %s (%s):%u...", u->host, ips, u->port);
-
     stream_t* s = (stream_t*)kzalloc(sizeof(stream_t));
     if (!s) { *rcp = NET_ERR_NOMEM; return NULL; }
     s->timeout_ms = timeout;
-    s->tcp = tcp_connect(ip, u->port, timeout, &rc);
+    ip6_t ip6;
+    int literal6 = ip6_parse(u->host, &ip6);
+    int rc = NET_ERR_NOTREADY;
+    char ips[48] = "";
+    for (int attempt = 0; attempt < 2 && !s->tcp; attempt++) {
+        int use6 = req->address_family == 6 || literal6 || attempt == 1;
+        if (attempt && (req->address_family || literal6 || !ipv6_enabled())) break;
+        if (use6 && (req->address_family == 4 || !ipv6_enabled())) break;
+        info(req, "Resolving %s...", u->host);
+        if (use6) {
+            rc = dns_resolve6(u->host, &ip6, timeout);
+            if (rc == NET_OK) {
+                ip6_format(&ip6, ips, sizeof(ips));
+                info(req, "Connecting to [%s]:%u...", ips, u->port);
+                s->tcp = tcp_connect6(&ip6, u->port, timeout, &rc);
+            }
+        } else {
+            ip4_t ip;
+            rc = dns_resolve(u->host, &ip, timeout);
+            if (rc == NET_OK) {
+                ip4_to_str(ip, ips);
+                info(req, "Connecting to %s:%u...", ips, u->port);
+                s->tcp = tcp_connect(ip, u->port, timeout, &rc);
+            }
+        }
+        s->family = use6 ? 6 : 4;
+        if (rc == NET_ERR_INTR) break;
+    }
     if (!s->tcp) {
-        ksnprintf(errmsg, errlen, "failed to connect to %s port %u: %s", u->host, u->port, net_strerror(rc));
-        kfree(s);
-        *rcp = rc;
-        return NULL;
+        ksnprintf(errmsg, errlen, "could not connect to %s:%u: %s%s", u->host, u->port,
+                  net_strerror(rc), (literal6 || req->address_family == 6) && !ipv6_enabled() ? " (IPv6 is off; toggle6 on)" : "");
+        kfree(s); *rcp = rc; return NULL;
     }
     info(req, "Connected to %s (%s) port %u", u->host, ips, u->port);
 
@@ -328,7 +359,7 @@ static int do_request(const url_t* u, const http_request_t* req, http_response_t
     int is_head = strcmp(method, "HEAD") == 0;
     uint32_t timeout = req->timeout_ms ? req->timeout_ms : 20000;
     int rc;
-    stream_t* s = pool_take(u, timeout);
+    stream_t* s = pool_take(u, timeout, req->address_family);
     int reused = s != NULL;
     if (reused) {
         info(req, "Re-using the connection to %s", u->host);
@@ -341,8 +372,9 @@ static int do_request(const url_t* u, const http_request_t* req, http_response_t
     /* request */
     char host_hdr[300];
     int default_port = (u->https && u->port == 443) || (!u->https && u->port == 80);
-    if (default_port) kstrlcpy(host_hdr, u->host, sizeof(host_hdr));
-    else ksnprintf(host_hdr, sizeof(host_hdr), "%s:%u", u->host, u->port);
+    int v6 = strchr(u->host, ':') != NULL;
+    if (default_port) ksnprintf(host_hdr, sizeof(host_hdr), v6 ? "[%s]" : "%s", u->host);
+    else ksnprintf(host_hdr, sizeof(host_hdr), v6 ? "[%s]:%u" : "%s:%u", u->host, u->port);
     uint32_t rqcap = 2048 + (uint32_t)strlen(u->path) + (req->extra_headers ? (uint32_t)strlen(req->extra_headers) : 0);
     char* rq = (char*)kmalloc(rqcap);
     if (!rq) { s_close(s); kfree(s); return NET_ERR_NOMEM; }

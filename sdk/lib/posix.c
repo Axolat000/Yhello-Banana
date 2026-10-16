@@ -68,20 +68,46 @@ int stat(const char* path, struct stat* st) {
 int mkdir(const char* path, mode_t mode) { (void)mode; return __banana->mkdir(path) == 0 ? 0 : -1; }
 
 /* ── aligned memory ───────────────────────────────────────────────── */
-/* malloc gives 16-byte alignment; a larger one takes a bigger block and a
- * header just under the pointer handed out: [size, start, magic] */
-#define ALIGNED_MAGIC ((uintptr_t)0xA119ED5Eu)
+/* Keep a list of aligned allocations instead of probing below every pointer
+ * passed to free/realloc: an ordinary allocation can start at a user mapping
+ * boundary, with kernel-only memory immediately before it. Headers live at
+ * the start of their own raw allocation and are read only through this list.
+ * No allocation, syscall or copy takes place while the list lock is held. */
+typedef struct aligned_block {
+    struct aligned_block* next;
+    void* ptr;
+    size_t size;
+} aligned_block_t;
+
+static aligned_block_t* g_aligned;
+static volatile int g_aligned_lock;
+
+static void aligned_lock(void) {
+    while (__sync_lock_test_and_set(&g_aligned_lock, 1))
+        while (g_aligned_lock) __asm__ volatile("pause");
+}
+
+static void aligned_unlock(void) { __sync_lock_release(&g_aligned_lock); }
 
 int posix_memalign(void** out, size_t align, size_t size) {
-    if (align < sizeof(void*) || (align & (align - 1))) return EINVAL;
-    if (align <= 16) { *out = malloc(size); return *out ? 0 : ENOMEM; }
-    char* raw = malloc(size + align + 3 * sizeof(uintptr_t));
-    if (!raw) return ENOMEM;
-    uintptr_t p = ((uintptr_t)raw + 3 * sizeof(uintptr_t) + align - 1) & ~(uintptr_t)(align - 1);
-    uintptr_t* h = (uintptr_t*)p;
-    h[-3] = size;
-    h[-2] = (uintptr_t)raw;
-    h[-1] = ALIGNED_MAGIC ^ (uintptr_t)raw;
+    if (!out || align < sizeof(void*) || (align & (align - 1))) return EINVAL;
+    if (align <= 16) {
+        void* p = malloc(size);
+        if (!p) return ENOMEM;
+        *out = p;
+        return 0;
+    }
+    size_t extra = sizeof(aligned_block_t) + align - 1;
+    if (extra < align || size > (size_t)-1 - extra) return ENOMEM;
+    aligned_block_t* h = malloc(size + extra);
+    if (!h) return ENOMEM;
+    uintptr_t p = ((uintptr_t)h + sizeof(*h) + align - 1) & ~(uintptr_t)(align - 1);
+    h->ptr = (void*)p;
+    h->size = size;
+    aligned_lock();
+    h->next = g_aligned;
+    g_aligned = h;
+    aligned_unlock();
     *out = (void*)p;
     return 0;
 }
@@ -89,12 +115,20 @@ void* aligned_alloc(size_t align, size_t size) { void* p; return posix_memalign(
 void* memalign(size_t align, size_t size) { return aligned_alloc(align, size); }
 
 /* (libc.c: free and realloc know these blocks) */
-int __aligned_block(void* p, void** raw, size_t* size) {
-    uintptr_t* h = p;
-    if (((uintptr_t)p & 31) || h[-1] != (ALIGNED_MAGIC ^ h[-2])) return 0;
-    if (raw) *raw = (void*)h[-2];
-    if (size) *size = h[-3];
-    return 1;
+int __aligned_block(void* p, void** raw, size_t* size, int remove) {
+    int found = 0;
+    aligned_lock();
+    for (aligned_block_t** pp = &g_aligned; *pp; pp = &(*pp)->next) {
+        aligned_block_t* h = *pp;
+        if (h->ptr != p) continue;
+        if (raw) *raw = h;
+        if (size) *size = h->size;
+        if (remove) *pp = h->next;
+        found = 1;
+        break;
+    }
+    aligned_unlock();
+    return found;
 }
 
 intmax_t strtoimax(const char* s, char** end, int base) { return strtoll(s, end, base); }

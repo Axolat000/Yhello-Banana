@@ -4,8 +4,10 @@
 #include "types.h"
 
 /* main shell + sysmon + the daemons + up to TERM_WIN_MAX (kernel/gui.c)
- * per-window terminal shells + apps and their threads (kernel/app.c). */
-#define TASK_MAX         48
+ * per-window terminal shells + apps and their threads (kernel/app.c).
+ * A task's stack is allocated when it is created, so a free slot costs
+ * only its record. */
+#define TASK_MAX         256
 #define TASK_NAME_MAX    24
 /* 16 KiB stack per created task, matching the boot stack (boot/boot.asm)
  * that task 0 already runs on: created tasks can now run a full shell
@@ -98,6 +100,11 @@ int  task_should_yield(void);
  * the windows it is drawing only between its frames. */
 void task_kpreempt(uintptr_t ip);       /* kernel/idt.c, every hardware interrupt */
 
+/* the calling task runs an app (kernel/app.c, 64-bit): its page tables
+ * and the kernel stack ring 3 enters on, loaded now and at every switch
+ * back to it on any core; (0, 0) when the app is done */
+void task_set_user(uintptr_t cr3, uintptr_t rsp0);
+
 /* Real sleep: marks the calling task SLEEPING and does not resume it
  * until at least `ms` milliseconds have passed (or task_wake()). */
 void task_sleep_ms(uint32_t ms);
@@ -106,6 +113,8 @@ void task_sleep_ms(uint32_t ms);
  * use it to wake whoever is waiting on their device. */
 void task_wake(int pid);
 int  task_current_pid(void);
+/* Read-only panic snapshot; no scheduler/heap locks, no allocations. */
+int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* top);
 
 /* Marks the calling task as a daemon (sshd, httpd, ...): it has no
  * terminal of its own, so it never reads the keyboard and Ctrl+C never

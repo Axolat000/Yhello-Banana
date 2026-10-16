@@ -1,4 +1,7 @@
 #include "syscmds.h"
+#include "fstest.h"
+#include "selftest.h"
+#include "crashtest.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"
@@ -41,7 +44,7 @@ static void cmd_mount(int argc, char** argv) {
     int any = 0;
     char line[160];
     for (int m = 1; m <= FS_MAX_MOUNTS; m++) {
-        if (!fat32_describe(m, line, sizeof(line))) continue;
+        if (!volume_describe(m, line, sizeof(line))) continue;
         terminal_writeln(line);
         any = 1;
     }
@@ -52,10 +55,10 @@ static void cmd_mount(int argc, char** argv) {
         uint32_t mib = (uint32_t)(((uint64_t)bd->sectors * bd->sector_size) >> 20);
         say("%s: %s, %u MiB - %s\n", bd->name, bd->model, mib,
             bd->mount_state == 0 ? "mounting..." : bd->mount_state == 2 ? "unmounted (`mount -a` mounts it again)"
-                                                                     : "no FAT32 volume (see the boot log)");
+                                                                     : "no FAT32 or exFAT volume (see the boot log)");
         any = 1;
     }
-    if (!any) terminal_writeln("no USB stick mounted - plug one in (FAT32), or `usb rescan`");
+    if (!any) terminal_writeln("no USB stick mounted - plug one in (FAT32 or exFAT), or `usb rescan`");
 }
 
 static void cmd_umount(int argc, char** argv) {
@@ -188,6 +191,9 @@ int syscmd_dispatch(const char* line) {
     if (argc == 0) return 0;
     if (strcmp(argv[0], "mount") == 0) { cmd_mount(argc, argv); return 1; }
     if (strcmp(argv[0], "umount") == 0 || strcmp(argv[0], "eject") == 0) { cmd_umount(argc, argv); return 1; }
+    if (strcmp(argv[0], "fstest") == 0) return fstest_cmd(argc, argv);
+    if (strcmp(argv[0], "crashtest") == 0) return crashtest_cmd(argc, argv);
+    if (strcmp(argv[0], "selftest") == 0) return selftest_cmd(argc, argv);
     if (strcmp(argv[0], "apt") == 0 || strcmp(argv[0], "apt-get") == 0) { cmd_apt(argc, argv); return 1; }
     if (strcmp(argv[0], "adb") == 0) { cmd_adb(argc, argv); return 1; }
     if (strcmp(argv[0], "fastboot") == 0) { cmd_fastboot(argc, argv); return 1; }

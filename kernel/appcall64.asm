@@ -40,6 +40,50 @@ app_enter:
     pop rbp
     ret
 
+; int app_enter_user(uintptr_t ip, uintptr_t a0, uintptr_t a1, uintptr_t a2,
+;                    uintptr_t user_sp, uintptr_t* saved_sp);
+;
+; Like app_enter, but the app runs in ring 3 (kernel/app.c): the
+; callee-saved registers are saved here and the stack pointer stored
+; through saved_sp, then iretq starts ip(a0, a1, a2) in user mode on
+; user_sp - where the return address the app's code returns to (a system
+; call that ends it) is already stored. It comes back here only through
+; app_leave(). The task's kernel stack for interrupts and system calls is
+; in the TSS already (task_set_user, kernel/task.c).
+global app_enter_user
+extern g_user_cs
+extern g_user_ss
+
+app_enter_user:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [r9], rsp
+    push qword [rel g_user_ss]
+    push r8                         ; the app's stack
+    push qword 0x202                ; interrupts on, nothing else
+    push qword [rel g_user_cs]
+    push rdi                        ; where it starts
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rdx, rcx
+    xor eax, eax                    ; nothing of the kernel's goes to the app
+    xor ebx, ebx
+    xor ecx, ecx
+    xor ebp, ebp
+    xor r8d, r8d
+    xor r9d, r9d
+    xor r10d, r10d
+    xor r11d, r11d
+    xor r12d, r12d
+    xor r13d, r13d
+    xor r14d, r14d
+    xor r15d, r15d
+    iretq
+
 app_leave:
     mov rsp, rdi
     mov eax, esi
@@ -117,4 +161,3 @@ kjmp_jump:
     mov r15, [rdi + 40]
     mov rsp, [rdi + 48]
     jmp [rdi + 56]
-

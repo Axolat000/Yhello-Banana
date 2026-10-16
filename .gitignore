@@ -1,7 +1,7 @@
 # make dependency files (gcc -MMD)
 *.d
 
-# build outputs of the new directories (existing tracked .o files stay tracked)
+# build outputs
 *.o
 *.o64
 *.o64.d
@@ -26,3 +26,7 @@ banana-sdk.tar.gz
 
 # Python
 __pycache__/
+
+# tools/dev.sh logs
+build/logs/
+build/test/

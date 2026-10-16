@@ -117,7 +117,7 @@ SB_KEY  ?= $(HOME)/.banana-secureboot/banana-sb.key
 SB_CERT  = loader/keys/banana-sb.crt
 define efi_finish
 	python3 tools/efi_relocs.py $(1)
-	objcopy -j .text -j .reloc -j .got -j .data -j .dynamic -j .rela -j .rel -j .dynsym --target $(2) --subsystem=10 $(1) $@.unsigned
+	objcopy -j .text -j .reloc -j .got -j .data -j .dynamic -j .rela -j .rel -j .dynsym -O $(2) --subsystem=10 $(1) $@.unsigned
 	@if grep -q "set banana_medium" $@.unsigned; then echo "$@ holds the medium line: install would break its signature"; exit 1; fi
 	@if [ -f "$(SB_KEY)" ]; then sbsign --key "$(SB_KEY)" --cert $(SB_CERT) --output $@ $@.unsigned; \
 	 else cp $@.unsigned $@; echo "note: no Secure Boot key at $(SB_KEY) - $@ is not signed"; fi
@@ -210,12 +210,12 @@ clean:
 
 
 # ── SDK: example apps (embedded in the kernel: ~/Examples) and the tarball ──
-EXAMPLES     = hello guess paint clock tones mandel threads webview gears cltest
+EXAMPLES     = hello guess paint clock tones mandel threads webview gears cltest systest
 EXAMPLE_BPKS = $(foreach e,$(EXAMPLES),sdk/examples/$(e)/$(e).bpk)
-SDK_DEPS     = $(wildcard sdk/lib/*.c sdk/include/*.h) sdk/banana.mk sdk/tools/bpkg
+SDK_DEPS     = $(wildcard sdk/lib/*.c sdk/lib/*.h sdk/lib/*.py sdk/include/*.h sdk/include/CL/*.h) sdk/banana.mk sdk/tools/bpkg
 
 define EXAMPLE_RULE
-sdk/examples/$(1)/$(1).bpk: $$(wildcard sdk/examples/$(1)/*.c) sdk/examples/$(1)/Makefile $$(SDK_DEPS)
+sdk/examples/$(1)/$(1).bpk: $$(wildcard sdk/examples/$(1)/*.c sdk/examples/$(1)/*.h) sdk/examples/$(1)/Makefile $$(SDK_DEPS)
 	$$(MAKE) -s -C sdk/examples/$(1)
 endef
 $(foreach e,$(EXAMPLES),$(eval $(call EXAMPLE_RULE,$(e))))

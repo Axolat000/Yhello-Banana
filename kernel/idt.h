@@ -1,12 +1,14 @@
 #ifndef IDT_H
 #define IDT_H
 
+#include "types.h"
+
 /* Installs handlers for the 32 CPU exception vectors so a fault produces
  * a readable panic screen instead of an unhandled triple-fault reset,
  * and remaps the 8259 PICs to vectors 32-47 with every IRQ masked. */
 void idt_init(void);
 /* the panic screen for a kernel bug found by a check (not a CPU exception) */
-void kernel_panic(const char* what);
+void kernel_panic(const char* what) __attribute__((noreturn));
 
 /* Registers `handler` for hardware IRQ line `irq` (0-15) and unmasks it.
  * Handlers run with interrupts off and must be short: the EOI is sent by
@@ -24,5 +26,12 @@ void lapic_before_reset(void);
 /* the firmware handed over with the local APIC in x2APIC mode / locked in it */
 int  lapic_boot_x2apic(void);
 int  lapic_x2apic_locked(void);
+
+/* 64-bit: apps run in ring 3 (kernel/app.c). An interrupt or a system call
+ * from there switches to the stack in core cpu's TSS - the running task's
+ * kernel stack for it (kernel/task.c sets it on every switch) */
+void tss_set_rsp0(int cpu, uintptr_t rsp0);
+/* the system call vector: int 0x80 from ring 3 (kernel/isr64.asm) */
+#define SYSCALL_VECTOR 0x80
 
 #endif

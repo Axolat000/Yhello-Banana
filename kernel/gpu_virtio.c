@@ -9,6 +9,7 @@
  * pointer through the cursor queue (a 64x64 resource of its own).
  * After the virtio 1.2 specification, section 5.7. */
 #include "gpu.h"
+#include "crash.h"
 #include "fb.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -149,13 +150,14 @@ static int submit(vq_t* q, void* req, uint32_t rlen, void* resp, uint32_t slen) 
     __asm__ volatile("mfence" ::: "memory");
     *q->notify = q->qi;
     int ok = 0;
-    for (uint32_t i = 0; i < 50000000u; i++) {
+    uint32_t limit=crash_in_progress()?1000000u:50000000u;
+    for (uint32_t i = 0; i < limit; i++) {
         if (q->used[1] != q->last_used) { ok = 1; break; }
         __asm__ volatile("pause");
     }
     if (ok) q->last_used++;
     if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
-    if (!ok) { klog("virtio-gpu: no answer from the device\n"); return -1; }
+    if (!ok) { if(!crash_in_progress())klog("virtio-gpu: no answer from the device\n"); return -1; }
     uint32_t t = ((hdr_t*)resp)->type;
     return t == RESP_OK_NODATA || t == RESP_OK_DISPLAY_INFO ? 0 : -1;
 }
@@ -214,6 +216,15 @@ static void vg_flush_locked(int x, int y, int w, int h) {
     f->r = (rect_t){ (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h };
     f->id = (uint32_t)g_res;
     ctrl(f, sizeof(*f));
+}
+
+static void vg_panic_present(void) {
+    /* Reusing descriptors of an outstanding command would corrupt it.
+     * If the panic interrupted a transaction, leave serial as the fallback. */
+    vq_t* q=&g_cq;
+    if(!g_fbmem || !g_req || !g_resp || !q->desc || !q->avail || !q->used || !q->notify || q->size<2)return;
+    if(q->avail_idx!=q->last_used || q->used[1]!=q->last_used)return;
+    vg_flush_locked(0,0,g_w,g_h);
 }
 
 static const display_mode_t MODES[] = {
@@ -391,6 +402,7 @@ int gpu_virtio_probe(const pci_dev_t* d) {
     g_gpu.info = vg_info;
     gpu_set_framebuffer((uintptr_t)g_fbmem, w, h, w * 4);
     gpu_register(&g_gpu);
+    gpu_register_panic(&g_gpu,vg_panic_present);
     vg_flush_locked(0, 0, w, h);
     return 0;
 }

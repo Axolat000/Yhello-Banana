@@ -25,27 +25,22 @@
 #include "wallpaper.h"
 #include "image.h"
 #include "gamepad.h"
+#include "umem.h"
+#include "uspace.h"
+#include "idt.h"
 
-#define APP_MAX     8
-#define APP_FD_MAX  16
+#define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
 #define APP_GUARD   (16u << 10)       /* unmapped pages under it (64-bit): an overflow faults */
 #define STACK_CANARY 0xB4A4A5C0u      /* at the bottom of the stack: checked on every system call */
 #define APP_KEYQ    32
 #define APP_MAX_IMAGE (64u << 20)
-#define APP_THREADS 16                /* extra threads per app (api->thread_create) */
+#define APP_THREADS 64                /* extra threads per app (api->thread_create): a thread per core on big machines */
+/* 64-bit: the kernel stack of each app thread - its system calls run there
+ * (the app's own stack is in ring 3's reach), with a guard page under it */
+#define APP_KSTACK  (128u << 10)
 
 /* ── per-app state ─────────────────────────────────────────────────── */
-
-/* every allocation carries this header (a multiple of 16 bytes, so the
- * app's pointer keeps the heap's 16-byte alignment) */
-typedef struct ablock {
-    struct ablock* next;
-    struct ablock* prev;
-    uintptr_t      size;
-    uintptr_t      magic;
-} ablock_t;
-#define ABLOCK_MAGIC ((uintptr_t)0xA110CA7Eu)
 
 typedef struct {
     int      used;
@@ -60,7 +55,8 @@ typedef struct {
     int       pid;             /* its task, -1 once it ended */
     int     (*fn)(void*);
     void*     arg;
-    uint8_t*  stack_mem;
+    uint8_t*  stack;           /* APP_STACK bytes (the app's memory), APP_GUARD under them */
+    uint8_t*  kstack;          /* 64-bit: its system calls' stack (kstack_new) */
     uintptr_t saved_sp;        /* app_enter(): where app_leave() returns to */
     int       running;         /* in app code (between app_enter() and its return) */
     int       done;
@@ -73,14 +69,17 @@ typedef struct {
     int       pid;             /* the task it runs in */
     int       own_task;        /* started with app_spawn() */
     char      name[32];
-    uint8_t*  image;           /* the allocation */
+    uspace_t* us;              /* 64-bit: its page tables (kernel/uspace.c) */
+    umem_t*   mem;             /* everything it has: code, stacks, malloc() (kernel/umem.c) */
     uintptr_t base;            /* where the ELF was loaded (crash reports: app+offset) */
     banana_entry_t entry;
-    uint8_t*  stack_mem;       /* the allocation: guard pages, then the stack */
     uint8_t*  guard;           /* APP_GUARD bytes, page-aligned */
     uint8_t*  stack;           /* APP_STACK bytes above the guard */
     int       guarded;
-    ablock_t* blocks;
+    uint8_t*  kstack;          /* 64-bit: the main thread's system calls' stack */
+    banana_api_t* uapi;        /* 64-bit: the call table in its memory (system call stubs) */
+    uintptr_t ret_stub;        /* ... and where its entry (or a thread) returns to */
+    char*     clip;            /* clipboard_get()'s copy, in its memory */
     afd_t     fds[APP_FD_MAX];
     uintptr_t saved_sp;        /* the kernel stack app_enter() left: exit() returns there */
     int       exit_code;
@@ -107,25 +106,36 @@ static app_proc_t g_procs[APP_MAX];
 static banana_api_t g_api;
 
 
+/* which app - and which of its threads - each task runs (by pid): every
+ * system call asks (cur), on any core, so it is a lookup, not a search */
+static int16_t g_pid_app[TASK_MAX];     /* app id + 1; 0: none */
+static int8_t  g_pid_thr[TASK_MAX];     /* thread index + 1; 0: the app's main thread */
+
+static void pid_set(int pid, int app, int thr) {
+    if (pid < 0 || pid >= TASK_MAX) return;
+    g_pid_thr[pid] = (int8_t)(thr + 1);
+    g_pid_app[pid] = (int16_t)(app + 1);
+}
+
+static void pid_clear(int pid, int app) {
+    if (pid < 0 || pid >= TASK_MAX || g_pid_app[pid] != app + 1) return;
+    g_pid_app[pid] = 0;
+    g_pid_thr[pid] = 0;
+}
+
 static app_proc_t* cur(void) {
     int pid = task_current_pid();
-    for (int i = 0; i < APP_MAX; i++) {
-        app_proc_t* p = &g_procs[i];
-        if (!p->used) continue;
-        if (p->pid == pid) return p;
-        for (int t = 0; t < APP_THREADS; t++)
-            if (p->threads[t].used && p->threads[t].pid == pid) return p;
-    }
-    return NULL;
+    if (pid < 0 || pid >= TASK_MAX || !g_pid_app[pid]) return NULL;
+    app_proc_t* p = &g_procs[g_pid_app[pid] - 1];
+    return p->used ? p : NULL;
 }
 
 /* the calling thread of app p, NULL for its main thread */
 static athread_t* cur_thread(app_proc_t* p) {
     int pid = task_current_pid();
-    if (!p || p->pid == pid) return NULL;
-    for (int t = 0; t < APP_THREADS; t++)
-        if (p->threads[t].used && p->threads[t].pid == pid) return &p->threads[t];
-    return NULL;
+    if (!p || pid < 0 || pid >= TASK_MAX || !g_pid_thr[pid] || g_pid_app[pid] != p->id + 1) return NULL;
+    athread_t* t = &p->threads[g_pid_thr[pid] - 1];
+    return t->used && t->pid == pid ? t : NULL;
 }
 
 /* ends the calling app right away (exit(), Ctrl+C, closed twice) */
@@ -206,38 +216,51 @@ static void breathe(app_proc_t* p, int force) {
 static void* a_malloc(unsigned long size) {
     app_proc_t* p = cur();
     if (!p || size > (256ul << 20)) return NULL;
-    ablock_t* b = (ablock_t*)kmalloc(sizeof(ablock_t) + size);
-    if (!b) return NULL;
-    b->size = size;
-    b->magic = ABLOCK_MAGIC;
-    b->prev = NULL;
-    b->next = p->blocks;
-    if (p->blocks) p->blocks->prev = b;
-    p->blocks = b;
-    return b + 1;
+    return umem_alloc(p->mem, size);
 }
 
 static void a_free(void* ptr) {
     app_proc_t* p = cur();
-    if (!p || !ptr) return;
-    ablock_t* b = (ablock_t*)ptr - 1;
-    if (b->magic != ABLOCK_MAGIC) { klog("app %s: free() of a bad pointer\n", p->name); return; }
-    b->magic = 0;
-    if (b->prev) b->prev->next = b->next; else p->blocks = b->next;
-    if (b->next) b->next->prev = b->prev;
-    kfree(b);
+    if (p && ptr) umem_free(p->mem, ptr);
 }
 
 static void* a_realloc(void* ptr, unsigned long size) {
-    if (!ptr) return a_malloc(size);
-    if (!size) { a_free(ptr); return NULL; }
-    ablock_t* b = (ablock_t*)ptr - 1;
-    if (b->magic != ABLOCK_MAGIC) return NULL;
-    void* n = a_malloc(size);
-    if (!n) return NULL;
-    memcpy(n, ptr, b->size < size ? b->size : size);
-    a_free(ptr);
-    return n;
+    app_proc_t* p = cur();
+    if (!p || size > (256ul << 20)) return NULL;
+    return umem_realloc(p->mem, ptr, size);
+}
+
+/* memory of app `owner` (its window pictures: kernel/appwin.c) */
+void* app_mem_alloc(int owner, size_t size) {
+    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used) return NULL;
+    return umem_alloc(g_procs[owner].mem, size);
+}
+
+void app_mem_free(int owner, void* ptr) {
+    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used) return;
+    umem_free(g_procs[owner].mem, ptr);
+}
+
+/* 1 if [ptr, ptr + n) is the calling app's memory (64-bit: what a system
+ * call may touch on its behalf; the 32-bit kernel does not check) */
+static int uok(const void* ptr, size_t n) {
+#ifdef __x86_64__
+    app_proc_t* p = cur();
+    return p && umem_owns(p->mem, ptr, n);
+#else
+    (void)ptr; (void)n;
+    return 1;
+#endif
+}
+
+static int ustr(const char* s) {
+#ifdef __x86_64__
+    app_proc_t* p = cur();
+    return p && umem_owns_str(p->mem, s);
+#else
+    (void)s;
+    return 1;
+#endif
 }
 
 /* ── console ───────────────────────────────────────────────────────── */
@@ -575,7 +598,7 @@ static unsigned int a_random(void) { return random_u32(); }
 static int a_win_open(const char* title, int w, int h) {
     app_proc_t* p = cur();
     if (!p || !gui_is_enabled()) return -1;
-    return appwin_open(p->id, title, w, h);
+    return appwin_open_app(p->id, title, w, h);
 }
 static unsigned int* a_win_pixels(int win) { app_proc_t* p = cur(); return p ? appwin_pixels(win, p->id) : NULL; }
 static void a_win_update(int win) {
@@ -605,7 +628,10 @@ static int  a_web_load(int v, const char* url) { return webview_load(owner_id(),
 static int  a_web_load_html(int v, const char* h, const char* base) { return webview_load_html(owner_id(), v, h, base); }
 static void a_web_resize(int v, int w, int h) { webview_resize(owner_id(), v, w, h); }
 static int  a_web_poll(int v) { return webview_poll(owner_id(), v); }
-static void a_web_draw(int v, unsigned int* px, int stride, int x, int y, int w, int h) { webview_draw(owner_id(), v, px, stride, x, y, w, h); }
+static void a_web_draw(int v, unsigned int* px, int stride, int x, int y, int w, int h) {
+    if (!px || w <= 0 || h <= 0 || stride < w || !uok(px, (size_t)stride * (size_t)h * 4)) return;
+    webview_draw(owner_id(), v, px, stride, x, y, w, h);
+}
 static void a_web_event(int v, const banana_event_t* ev) { webview_event(owner_id(), v, ev); }
 static void a_web_scroll(int v, int dy) { webview_scroll(owner_id(), v, dy); }
 static void a_web_go(int v, int d) { webview_go(owner_id(), v, d); }
@@ -653,6 +679,7 @@ static int a_set_wallpaper(const char* path, int mode, char* err, int ecap) {
 static int clamp_size(int s) { return s < 4 ? 4 : s > 200 ? 200 : s; }
 static int a_font_draw(unsigned int* px, int stride, int w, int h, int x, int y, int font, int size, const char* text, unsigned int color) {
     if (!px || !text || w <= 0 || h <= 0 || stride < w) return x;
+    if (!uok(px, (size_t)stride * (size_t)h * 4)) return x;
     size = clamp_size(size);
     int asc;
     font_metrics(font, size, &asc, NULL, NULL);
@@ -674,7 +701,7 @@ static void a_font_metrics(int font, int size, int* ascent, int* descent, int* l
 
 static void a_draw_text(unsigned int* px, int stride, int w, int h, int x, int y,
                         const char* s, unsigned int fg, unsigned int bg) {
-    if (!px || !s) return;
+    if (!px || !s || w <= 0 || h <= 0 || stride < w || !uok(px, (size_t)stride * (size_t)h * 4)) return;
     for (; *s; s++, x += 8) {
         uint8_t c = (uint8_t)*s;
         if (c >= 128) c = '?';
@@ -755,7 +782,11 @@ static int a_http_request(const char* method, const char* url, const char* body,
 
 /* any request, any answer (version 10) */
 static int a_http_fetch(const banana_http_req_t* rq, banana_http_resp_t* out) {
-    if (!rq || !out || !rq->url) return -1;
+    if (!rq || !out || !uok(rq, sizeof(*rq)) || !uok(out, sizeof(*out))) return -1;
+    /* (what the request points at must be the app's too) */
+    if (!rq->url || !ustr(rq->url) || (rq->method && !ustr(rq->method)) || (rq->headers && !ustr(rq->headers)) ||
+        (rq->content_type && !ustr(rq->content_type)) || (rq->body && !uok(rq->body, rq->body_len ? rq->body_len : 1)))
+        return -1;
     memset(out, 0, sizeof(*out));
     hbody_t b = { 0, 0, 0, 0 };
     http_request_t req;
@@ -829,7 +860,7 @@ static void to_api(banana_pkg_t* o, const repo_pkg_t* p, const pkg_info_t* inst)
 }
 
 static int a_repo_list(banana_pkg_t* out, int max) {
-    if (!out || max <= 0) return 0;
+    if (!out || max <= 0 || !uok(out, (size_t)max * sizeof(banana_pkg_t))) return 0;
     static pkg_info_t inst[64];
     int ni = pkg_list(inst, 64);
     if (ni > 64) ni = 64;
@@ -881,6 +912,7 @@ static int a_repo_sources(banana_repo_source_t* out, int max) {
     static repo_source_t src[16];
     int n = repo_sources(src, 16);
     if (!out || max <= 0) return n;
+    if (!uok(out, (size_t)max * sizeof(banana_repo_source_t))) return -1;
     for (int i = 0; i < n && i < max; i++) {
         memset(&out[i], 0, sizeof(out[i]));
         kstrlcpy(out[i].url, src[i].url, sizeof(out[i].url));
@@ -956,7 +988,8 @@ static int a_key_down(int key) {
 static int a_app_run(const char* name, int argc, char** argv, char* err, int ecap) {
     char e[128];
     if (!err || ecap <= 0) { err = e; ecap = sizeof(e); }
-    if (!name) return -1;
+    if (!name || argc < 0 || argc > 256 || (argc && !uok(argv, (size_t)argc * sizeof(char*)))) return -1;
+    for (int i = 0; i < argc; i++) if (!argv[i] || !ustr(argv[i])) return -1;
     return pkg_run(name, argc, argv, 1, err, ecap) < 0 ? -1 : 0;
 }
 
@@ -973,17 +1006,69 @@ static void a_audio_beep(int hz, int ms) { audio_beep(hz, ms); }
 static int a_audio_busy(void) { return audio_busy(); }
 static void a_clip_set(const char* t, unsigned long n) { if (t) clipboard_set(t, (uint32_t)n); }
 static const char* a_clip_get(unsigned long* n) {
+    app_proc_t* p = cur();
     uint32_t l;
     const char* s = clipboard_get(&l);
-    if (n) *n = l;
-    return s;
+    if (n) *n = s ? l : 0;
+    if (!s || !p) return NULL;
+    /* the app gets its own copy (the kernel's is not its to read), kept until the next call */
+    char* c = (char*)umem_realloc(p->mem, p->clip, (size_t)l + 1);
+    if (!c) return NULL;
+    memcpy(c, s, l);
+    c[l] = 0;
+    p->clip = c;
+    return c;
 }
 
 /* ── threads ───────────────────────────────────────────────────────── */
 
+#ifdef __x86_64__
+int app_enter_user(uintptr_t ip, uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t user_sp, uintptr_t* saved_sp);
+
+/* the kernel stack of an app thread's system calls, a guard page under it:
+ * running past its end faults (the app stops) instead of overwriting the heap */
+static uint8_t* kstack_new(void) {
+    uint8_t* m = (uint8_t*)kmalloc_aligned(APP_KSTACK + 4096, 4096);
+    if (m) paging_guard((uintptr_t)m, 4096, 1);
+    return m;
+}
+
+static void kstack_free(uint8_t* m) {
+    if (!m) return;
+    paging_guard((uintptr_t)m, 4096, 0);
+    kfree(m);
+}
+
+static uintptr_t kstack_top(const uint8_t* m) { return (uintptr_t)m + 4096 + APP_KSTACK; }
+
+/* runs fn(a0, a1, a2) in ring 3 on the app's stack (stack .. stack +
+ * APP_STACK) until it returns or the app ends: its exit code */
+static int enter_user(app_proc_t* p, uintptr_t fn, uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                      uint8_t* stack, uint8_t* kstack, uintptr_t* saved_sp) {
+    /* where fn returns to: a system call that ends the thread (at 8 mod 16,
+     * as after a call) */
+    uintptr_t usp = (uintptr_t)stack + APP_STACK - 8;
+    *(uintptr_t*)usp = p->ret_stub;
+    task_set_user(uspace_cr3(p->us), kstack_top(kstack));
+    int rc = app_enter_user(fn, a0, a1, a2, usp, saved_sp);
+    task_set_user(0, 0);                    /* the kernel's tables: the app's may go now */
+    return rc;
+}
+#else
 static int thread_tramp(void* arg) {
     athread_t* t = (athread_t*)arg;
     return t->fn(t->arg);
+}
+#endif
+
+/* a thread's stacks back to the app / the kernel */
+static void thread_free(app_proc_t* p, athread_t* t) {
+    umem_free_pages(p->mem, t->stack, APP_GUARD);
+#ifdef __x86_64__
+    kstack_free(t->kstack);
+#endif
+    t->stack = NULL;
+    t->kstack = NULL;
 }
 
 static void thread_entry(void) {
@@ -993,7 +1078,11 @@ static void thread_entry(void) {
     if (p->has_term) terminal_vt_set_active(p->vt);
     else task_set_background();
     t->running = 1;
-    t->ret = app_enter(thread_tramp, t, t->stack_mem + APP_STACK, &t->saved_sp);
+#ifdef __x86_64__
+    t->ret = enter_user(p, (uintptr_t)t->fn, (uintptr_t)t->arg, 0, 0, t->stack, t->kstack, &t->saved_sp);
+#else
+    t->ret = app_enter(thread_tramp, t, t->stack + APP_STACK, &t->saved_sp);
+#endif
     t->running = 0;
     /* The task ends now and its slot (and pid) goes to the next task
      * created - another app's thread, a kernel task. The record stays
@@ -1001,20 +1090,25 @@ static void thread_entry(void) {
      * it did, and a new thread of another app was taken for this one
      * (cur() found this app first) and ran this thread's code again on
      * its old stack - both apps crashed, and then the kernel. */
+    pid_clear(t->pid, p->id);
     t->pid = -1;
     t->done = 1;
 }
 
 static int a_thread_create(int (*fn)(void*), void* arg) {
     app_proc_t* p = cur();
-    if (!p || !fn || p->exit_req) return -1;
+    if (!p || !fn || p->exit_req || !uok((const void*)fn, 1)) return -1;
     athread_t* t = NULL;
     int id = -1;
     for (int i = 0; i < APP_THREADS; i++) if (!p->threads[i].used) { t = &p->threads[i]; id = i; break; }
     if (!t) return -1;
     memset(t, 0, sizeof(*t));
-    t->stack_mem = (uint8_t*)kmalloc(APP_STACK + 16);
-    if (!t->stack_mem) return -1;
+    t->stack = (uint8_t*)umem_alloc_pages(p->mem, APP_STACK, APP_GUARD);
+#ifdef __x86_64__
+    t->kstack = kstack_new();
+    if (!t->kstack) { thread_free(p, t); return -1; }
+#endif
+    if (!t->stack) { thread_free(p, t); return -1; }
     t->fn = fn;
     t->arg = arg;
     t->pid = -1;
@@ -1024,7 +1118,7 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
     kstrlcpy(base, p->name, sizeof(base));
     ksnprintf(name, sizeof(name), "%s/t%d", base, id + 1);
     int pid = task_create(name, thread_entry);
-    if (pid < 0) { kfree(t->stack_mem); t->used = 0; return -1; }
+    if (pid < 0) { thread_free(p, t); t->used = 0; return -1; }
     /* (no record of an ended thread may still answer to this pid) */
     for (int i = 0; i < APP_MAX; i++) {
         if (!g_procs[i].used) continue;
@@ -1033,6 +1127,7 @@ static int a_thread_create(int (*fn)(void*), void* arg) {
                 g_procs[i].threads[k].pid = -1;
     }
     t->pid = pid;                           /* it runs once we yield (no preemption in here) */
+    pid_set(pid, p->id, id);
     return id + 1;
 }
 
@@ -1046,7 +1141,7 @@ static int a_thread_join(int id) {
         task_sleep_ms(1);
     }
     int r = t->ret;
-    kfree(t->stack_mem);
+    thread_free(p, t);
     t->used = 0;
     return r;
 }
@@ -1070,7 +1165,7 @@ static int a_cpu_count(void) { return cpu_count(); }
 /* wait / wake: a thread sleeps while *addr == expected, until another one
  * changes it and calls wake (or the timeout passes) - what the SDK builds
  * condition variables and semaphores on */
-#define WAITERS 64
+#define WAITERS 256
 static struct { volatile int* addr; int pid; } g_waiters[WAITERS];
 
 static int waiter_add(volatile int* addr) {
@@ -1112,9 +1207,16 @@ static int a_wake(volatile int* addr, int count) {
  * own code was running (not inside the kernel), switching to another task
  * is safe - so a busy app or thread cannot freeze the desktop, and the
  * threads of an app share the CPU. An app asked to stop is stopped here. */
-void app_preempt(uintptr_t ip) {
+void app_preempt(uintptr_t ip, int from_user) {
     app_proc_t* p = cur();
+#ifdef __x86_64__
+    /* (anything in ring 3 is the app's: its code, and code it made - tcc, OpenCL) */
+    (void)ip;
+    if (!p || !from_user) return;
+#else
+    (void)from_user;
     if (!p || ip < p->code_lo || ip >= p->code_hi) return;
+#endif
     athread_t* t = cur_thread(p);
     if (t ? !t->running : !p->running) return;
     __asm__ volatile("sti");
@@ -1148,33 +1250,291 @@ static void a_exit(int code) {
 }
 
 #ifdef __x86_64__
-/* App code may run on another processor core (kernel/task.h), the kernel
- * only on the boot core: every entry of the table points at a little stub
- * built here - call smp_app_gate (kernel/appcall64.asm), which brings the
- * task back to the boot core if needed, then jump to the function. The
- * few calls that only compute on the app's own memory skip it. */
-extern void smp_app_gate(void);
-#define API_GATES 96
-static uint8_t g_gates[API_GATES][32] __attribute__((aligned(16)));
-static int     g_ngates;
+/* ── system calls (64-bit) ─────────────────────────────────────────────
+ * An app runs in ring 3 and reaches the kernel only through int 0x80:
+ * every function entry of the table it gets is a stub "mov eax, slot;
+ * int 0x80; ret" in its own memory (make_uapi), so apps built for the
+ * table of function pointers work unchanged. Before a call runs, every
+ * pointer it was given is checked to be the app's memory (the kernel
+ * would otherwise read or write anywhere on its behalf); a call that
+ * fails the check stops the app, like a bad memory access would. */
 
-static void* gate(void* fn) {
-    if (g_ngates >= API_GATES) return fn;
-    uint8_t* s = g_gates[g_ngates++];
-    int32_t rel = (int32_t)((intptr_t)smp_app_gate - (intptr_t)(s + 5));
-    uint64_t target = (uint64_t)(uintptr_t)fn;
-    s[0] = 0xE8;                                        /* call smp_app_gate */
-    memcpy(s + 1, &rel, 4);
-    s[5] = 0xFF;                                        /* jmp [rip + 0] */
-    s[6] = 0x25;
-    memset(s + 7, 0, 4);
-    memcpy(s + 11, &target, 8);                         /* the function */
-    return s;
+#define API_SLOTS  (sizeof(banana_api_t) / sizeof(void*))
+#define SYS_RETURN API_SLOTS            /* the entry or a thread's function returned (ret_stub) */
+#define SYS_ARGS   12                   /* the most a call takes (http_request: 11) */
+
+/* What each argument is, one letter per argument:
+ *   i  a number (or a pointer the call checks itself: x)
+ *   s  a string            b / B  a buffer, its size the next argument (int / unsigned long)
+ *   I  int*   L  a pointer or unsigned long out   o  a struct of the slot's osize */
+typedef struct { const char* args; uint16_t osize; } sysspec_t;
+static sysspec_t g_spec[API_SLOTS];
+
+#define SPEC(f, a, o) (g_spec[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (sysspec_t){ a, o })
+
+/* Calls that may run on whichever core the app thread makes them on - they
+ * touch only the app's own state and what has locks of its own (its
+ * memory: kernel/umem.c, the heap) and never wait or switch tasks. Every
+ * other call first takes the thread back to the boot core, where the rest
+ * of the kernel runs. wait has a quick case here and goes home only
+ * when it really has to sleep (LOCAL_WAIT). */
+enum { LOCAL_NO = 0, LOCAL_YES, LOCAL_WAIT };
+static uint8_t g_local[API_SLOTS];
+#define LOCAL(f, how) (g_local[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (how))
+
+static void spec_init(void) {
+    SPEC(exit, "i", 0);
+    SPEC(write, "iBi", 0);
+    SPEC(getchar, "", 0);
+    SPEC(trygetchar, "", 0);
+    SPEC(readline, "bi", 0);
+    SPEC(set_color, "ii", 0);
+    SPEC(clear_screen, "", 0);
+    SPEC(term_size, "II", 0);
+    SPEC(set_cursor, "ii", 0);
+    SPEC(malloc, "i", 0);
+    SPEC(free, "i", 0);                 /* (umem knows its own blocks) */
+    SPEC(realloc, "ii", 0);
+    SPEC(open, "si", 0);
+    SPEC(read, "iBi", 0);
+    SPEC(seek, "iii", 0);
+    SPEC(close, "i", 0);
+    SPEC(remove, "s", 0);
+    SPEC(mkdir, "s", 0);
+    SPEC(rename, "ss", 0);
+    SPEC(stat, "so", sizeof(banana_stat_t));
+    SPEC(readdir, "sio", sizeof(banana_dirent_t));
+    SPEC(getcwd, "bi", 0);
+    SPEC(chdir, "s", 0);
+    SPEC(ticks_ms, "", 0);
+    SPEC(sleep_ms, "i", 0);
+    SPEC(yield, "", 0);
+    SPEC(localtime, "o", sizeof(banana_time_t));
+    SPEC(random, "", 0);
+    SPEC(win_open, "sii", 0);
+    SPEC(win_pixels, "i", 0);
+    SPEC(win_update, "i", 0);
+    SPEC(win_event, "io", sizeof(banana_event_t));
+    SPEC(win_close, "i", 0);
+    SPEC(win_set_title, "is", 0);
+    SPEC(win_size, "iII", 0);
+    SPEC(draw_text, "iiiiiisii", 0);    /* px: checked in it */
+    SPEC(http_get, "sLLbibi", 0);
+    SPEC(audio_play, "Biiii", 0);
+    SPEC(audio_beep, "ii", 0);
+    SPEC(audio_busy, "", 0);
+    SPEC(clipboard_set, "Bi", 0);
+    SPEC(clipboard_get, "L", 0);
+    SPEC(interrupted, "", 0);
+    SPEC(win_set_resizable, "iii", 0);
+    SPEC(thread_create, "ii", 0);       /* fn: checked in it; arg: the app's business */
+    SPEC(thread_join, "i", 0);
+    SPEC(thread_id, "", 0);
+    SPEC(thread_exit, "i", 0);
+    SPEC(cpu_count, "", 0);
+    SPEC(wait, "Iii", 0);
+    SPEC(wake, "ii", 0);                /* (addr is only compared) */
+    SPEC(web_open, "ii", 0);
+    SPEC(web_close, "i", 0);
+    SPEC(web_load, "is", 0);
+    SPEC(web_load_html, "iss", 0);
+    SPEC(web_resize, "iii", 0);
+    SPEC(web_poll, "i", 0);
+    SPEC(web_draw, "iiiiiii", 0);       /* px: checked in it */
+    SPEC(web_event, "io", sizeof(banana_event_t));
+    SPEC(web_scroll, "ii", 0);
+    SPEC(web_go, "ii", 0);
+    SPEC(web_info, "ibibi", 0);
+    SPEC(web_eval, "isbi", 0);
+    SPEC(web_message, "ibi", 0);
+    SPEC(web_post, "is", 0);
+    SPEC(font_draw, "iiiiiiiisi", 0);   /* px: checked in it */
+    SPEC(font_width, "iis", 0);
+    SPEC(font_metrics, "iiIII", 0);
+    SPEC(audio_queued_ms, "", 0);
+    SPEC(audio_stop, "", 0);
+    SPEC(audio_volume, "i", 0);
+    SPEC(win_media_keys, "i", 0);
+    SPEC(http_request, "ssBisLLbibi", 0);
+    SPEC(image_load, "sIIbi", 0);
+    SPEC(set_wallpaper, "sibi", 0);
+    SPEC(http_fetch, "ii", 0);          /* checked in it (the request points at more) */
+    SPEC(key_mods, "", 0);
+    SPEC(win_wheel, "i", 0);
+    SPEC(pkg_install, "sbi", 0);
+    SPEC(app_run, "siibi", 0);          /* argv: checked in it */
+    SPEC(repo_update, "bi", 0);
+    SPEC(repo_list, "ii", 0);           /* out: checked in it */
+    SPEC(repo_install, "sbi", 0);
+    SPEC(repo_remove, "sbi", 0);
+    SPEC(repo_status, "bi", 0);
+    SPEC(repo_icon, "sbi", 0);
+    SPEC(repo_upgrade, "bi", 0);
+    SPEC(gamepad, "io", sizeof(banana_gamepad_t));
+    SPEC(win_dropped, "iibi", 0);
+    SPEC(key_down, "i", 0);
+    SPEC(repo_sources, "ii", 0);        /* out: checked in it */
+    SPEC(repo_add_source, "ssibi", 0);
+    SPEC(repo_remove_source, "sbi", 0);
+
+    LOCAL(ticks_ms, LOCAL_YES);
+    LOCAL(cpu_count, LOCAL_YES);
+    LOCAL(thread_id, LOCAL_YES);
+    LOCAL(key_mods, LOCAL_YES);
+    LOCAL(malloc, LOCAL_YES);
+    LOCAL(free, LOCAL_YES);
+    LOCAL(realloc, LOCAL_YES);
+    LOCAL(draw_text, LOCAL_YES);
+    LOCAL(wake, LOCAL_YES);             /* (task_wake only moves a deadline: any core may) */
+    LOCAL(wait, LOCAL_WAIT);
 }
-#define G(fn) ((__typeof__(&fn))gate((void*)fn))
-#else
-#define G(fn) (fn)
+
+/* the pointers of a call, against the app's memory (NULL is left to the call) */
+static int args_ok(app_proc_t* p, const sysspec_t* sp, const uint64_t* a) {
+    for (int i = 0; sp->args[i]; i++) {
+        const void* ptr = (const void*)(uintptr_t)a[i];
+        if (!ptr) continue;
+        size_t n;
+        switch (sp->args[i]) {
+        case 's': if (!umem_owns_str(p->mem, (const char*)ptr)) return 0; continue;
+        case 'b': n = (int32_t)a[i + 1] > 0 ? (size_t)(int32_t)a[i + 1] : 1; break;
+        case 'B': n = a[i + 1] ? (size_t)a[i + 1] : 1; if (a[i + 1] >> 32) return 0; break;
+        case 'I': n = 4; break;
+        case 'L': n = 8; break;
+        case 'o': n = sp->osize; break;
+        default: continue;
+        }
+        if (!umem_owns(p->mem, ptr, n)) return 0;
+    }
+    return 1;
+}
+
+/* what kernel/isr64.asm saved (the layout of idt.c's registers_t) */
+typedef struct {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no, err_code;
+    uint64_t rip, cs, rflags, rsp, ss;
+} sysframe_t;
+
+typedef uint64_t (*sysfn_t)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                            uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+static void __attribute__((noreturn)) bad_call(app_proc_t* p, uint64_t slot, const char* why) {
+    ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: %s (system call %u) - it was stopped",
+              p->name, why, (uint32_t)slot);
+    leave(p, 139);
+}
+
+/* the arguments of a call: the first six from the registers, the rest
+ * from the app's stack; 0 if they are not what its spec says */
+static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, uint64_t* a) {
+    a[0] = r->rdi; a[1] = r->rsi; a[2] = r->rdx; a[3] = r->rcx; a[4] = r->r8; a[5] = r->r9;
+    for (int i = 6; i < SYS_ARGS; i++) a[i] = 0;
+    uint32_t nargs = (uint32_t)strlen(sp->args);
+    if (nargs > 6) {
+        /* above the return address of the app's call */
+        const uint64_t* st = (const uint64_t*)(uintptr_t)(r->rsp + 8);
+        if (!umem_owns(p->mem, st, (nargs - 6) * 8)) return 0;
+        for (uint32_t i = 6; i < nargs; i++) a[i] = st[i - 6];
+    }
+    return args_ok(p, sp, a);
+}
+
+/* a call on another core, interrupts off: 1 if it was done here, 0 if it
+ * must go to the boot core (where everything is checked again) */
+static int syscall_here(sysframe_t* r) {
+    uint64_t slot = r->rax;
+    if (slot >= API_SLOTS || !g_local[slot] || !g_spec[slot].args) return 0;
+    app_proc_t* p = cur();
+    if (!p || p->exit_req || p->kill_req) return 0;     /* (the boot core ends it) */
+    uint64_t a[SYS_ARGS];
+    if (!gather_args(p, &g_spec[slot], r, a)) return 0;
+    if (g_local[slot] == LOCAL_WAIT) {
+        /* the value changed already: nothing to wait for */
+        if (!a[0] || *(volatile int*)(uintptr_t)a[0] == (int)a[1]) return 0;
+        r->rax = 0;
+        return 1;
+    }
+    sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
+    r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    return 1;
+}
+
+/* kernel/isr64.asm: int 0x80 from an app, on its thread's kernel stack */
+void app_syscall(sysframe_t* r) {
+    /* the kernel runs on the boot core: a call made elsewhere moves there,
+     * unless it may run where it was made (interrupts are still off, as the
+     * gate left them - and stay off for those) */
+    if (cpu_id() != 0) {
+        if ((r->cs & 3) == 3 && syscall_here(r)) return;
+        task_ap_go_home();
+    }
+    __asm__ volatile("sti");
+    app_proc_t* p = cur();
+    uint64_t slot = r->rax;
+    if (!p || (r->cs & 3) != 3) {               /* (only apps get here: a kernel bug otherwise) */
+        r->rax = (uint64_t)-1;
+        __asm__ volatile("cli");
+        return;
+    }
+    if (slot == SYS_RETURN) {                   /* returned: what exit(ret) / thread_exit(ret) do */
+        athread_t* t = cur_thread(p);
+        if (t) leave_thread(p, t, (int)r->rdi);
+        leave(p, (int)r->rdi);
+    }
+    if (slot >= API_SLOTS || !g_spec[slot].args) bad_call(p, slot, "an unknown system call");
+    uint64_t a[SYS_ARGS];
+    if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
+    sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
+    r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    __asm__ volatile("cli");
+}
+
+/* the call table an app gets, in its memory: the system's, every function
+ * a stub; the font and the strings copied; the return stub after them */
+static int make_uapi(app_proc_t* p) {
+    size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
+    size_t stubs = API_SLOTS * 8 + 16;
+    uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
+    if (!m) return -1;
+    banana_api_t* ua = (banana_api_t*)m;
+    memcpy(ua, &g_api, sizeof(g_api));
+    void** slot = (void**)ua;
+    uint8_t* st = m + tab;
+    for (uint32_t k = 0; k < API_SLOTS; k++, st += 8) {
+        st[0] = 0xB8;                                   /* mov eax, k */
+        memcpy(st + 1, &k, 4);
+        st[5] = 0xCD; st[6] = SYSCALL_VECTOR;           /* int 0x80 */
+        st[7] = 0xC3;                                   /* ret */
+        if (g_spec[k].args) slot[k] = st;
+    }
+    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * 8;
+    /* A C function returns its int in eax. Preserve it as the syscall's
+     * first argument BEFORE loading the syscall number into eax. Ordinary
+     * call stubs leave rdi alone; it is not the function's return value. */
+    st[0] = 0x89; st[1] = 0xC7;                         /* mov edi, eax */
+    st[2] = 0xB8;                                      /* mov eax, SYS_RETURN */
+    uint32_t ret_slot = SYS_RETURN;
+    memcpy(st + 3, &ret_slot, 4);
+    st[7] = 0xCD; st[8] = SYSCALL_VECTOR;
+    st[9] = 0x0F; st[10] = 0x0B;                        /* ud2: must not return */
+    uint8_t* font = m + tab + stubs;
+    memcpy(font, font8x8_basic, sizeof(font8x8_basic));
+    ua->font8x8 = font;
+    char* str = (char*)font + sizeof(font8x8_basic);
+    kstrlcpy(str, g_api.arch, 16);
+    ua->arch = str;
+    kstrlcpy(str + 16, g_api.os_version, 16);
+    ua->os_version = str + 16;
+    p->uapi = ua;
+    return 0;
+}
 #endif
+
+/* (64-bit: every entry of the app's table is a system call stub instead -
+ * app_syscall below; G stays for the 32-bit kernel's direct calls) */
+#define G(fn) (fn)
 
 static void api_init(void) {
     if (g_api.magic) return;
@@ -1277,6 +1637,9 @@ static void api_init(void) {
     g_api.repo_sources = G(a_repo_sources);
     g_api.repo_add_source = G(a_repo_add_source);
     g_api.repo_remove_source = G(a_repo_remove_source);
+#ifdef __x86_64__
+    spec_init();
+#endif
 }
 
 /* ── the ELF loader ────────────────────────────────────────────────── */
@@ -1318,7 +1681,8 @@ typedef struct { int32_t tag; uint32_t val; } dyn_t;
 #endif
 
 
-static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana_entry_t* entry, uintptr_t* base_out,
+/* m: the app's memory to load it into (NULL: the kernel's, for a driver) */
+static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_out, banana_entry_t* entry, uintptr_t* base_out,
                     uintptr_t* lo_out, uintptr_t* hi_out, char* err, int ecap) {
     const ehdr_t* eh = (const ehdr_t*)f;
     if (size < sizeof(ehdr_t) || memcmp(eh->ident, "\x7f" "ELF", 4) != 0) { kstrlcpy(err, "not an ELF program", (size_t)ecap); return -1; }
@@ -1342,7 +1706,7 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
     if (hi <= lo || hi - lo > APP_MAX_IMAGE) { kstrlcpy(err, "no loadable code (or too big)", (size_t)ecap); return -1; }
     lo &= ~(uintptr_t)4095;
     uint32_t span = (uint32_t)(hi - lo);
-    uint8_t* raw = (uint8_t*)kmalloc(span + 4096);
+    uint8_t* raw = m ? (uint8_t*)umem_alloc_pages(m, span, 0) : (uint8_t*)kmalloc(span + 4096);
     if (!raw) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
     uint8_t* mem = (uint8_t*)(((uintptr_t)raw + 4095) & ~(uintptr_t)4095);
     memset(mem, 0, span);
@@ -1451,7 +1815,8 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
         if (bad) {
             if (bad == 1) kstrlcpy(err, "damaged relocations (link it with the SDK or tcc)", (size_t)ecap);
             else kstrlcpy(err, why, (size_t)ecap);
-            kfree(raw);
+            if (m) umem_free_pages(m, raw, 0);
+            else kfree(raw);
             return -1;
         }
     }
@@ -1467,17 +1832,19 @@ static int load_elf(const uint8_t* f, uint32_t size, uint8_t** image_out, banana
 int app_load_image(const uint8_t* f, uint32_t size, uint8_t** raw, uintptr_t* entry, char* err, int ecap) {
     banana_entry_t e;
     uintptr_t base, lo, hi;
-    if (load_elf(f, size, raw, &e, &base, &lo, &hi, err, ecap) < 0) return -1;
+    if (load_elf(NULL, f, size, raw, &e, &base, &lo, &hi, err, ecap) < 0) return -1;
     *entry = (uintptr_t)e;
     return 0;
 }
 
 /* ── running ───────────────────────────────────────────────────────── */
 
+#ifndef __x86_64__
 static int trampoline(void* arg) {
     app_proc_t* p = (app_proc_t*)arg;
     return p->entry(&g_api, p->argc, p->argv);
 }
+#endif
 
 /* before an app's memory goes: every thread has to be out of its code */
 static void stop_threads(app_proc_t* p) {
@@ -1489,41 +1856,43 @@ static void stop_threads(app_proc_t* p) {
         task_sleep_ms(2);                   /* a busy one is stopped by the timer (app_preempt) */
     }
     for (int t = 0; t < APP_THREADS; t++) {
-        if (p->threads[t].used) kfree(p->threads[t].stack_mem);
+        if (p->threads[t].used) thread_free(p, &p->threads[t]);
         p->threads[t].used = 0;
     }
 }
 
+/* everything the app had goes back (no task runs on its tables any more) */
+static void discard(app_proc_t* p) {
+#ifdef __x86_64__
+    kstack_free(p->kstack);
+    p->kstack = NULL;
+#endif
+    umem_destroy(p->mem);                  /* its code, stacks, memory, argv */
+    uspace_destroy(p->us);
+    p->mem = NULL;
+    p->us = NULL;
+}
+
 static void release(app_proc_t* p) {
     stop_threads(p);
-    appwin_close_owner(p->id);
+    appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
-    while (p->blocks) {
-        ablock_t* b = p->blocks;
-        extern char _kernel_end[];
-        if (((uintptr_t)b & 15) || (uintptr_t)b < (uintptr_t)_kernel_end || b->magic != ABLOCK_MAGIC) {
-            /* the app wrote over its own memory's bookkeeping: what is left
-             * is not freed (a leak), rather than the kernel crashing on it */
-            klog("app %s: its memory list is damaged - %s\n", p->name, "not freeing the rest");
-            break;
-        }
-        p->blocks = b->next;
-        b->magic = 0;
-        kfree(b);
-    }
-    kfree(p->image);
-    if (p->guarded) paging_guard((uintptr_t)p->guard, APP_GUARD, 0);
-    kfree(p->stack_mem);
-    kfree(p->argv);
+    discard(p);
+    pid_clear(p->pid, p->id);
     p->used = 0;
 }
 
 
 static int run(app_proc_t* p) {
     *(volatile uint32_t*)p->stack = STACK_CANARY;      /* the bottom of the stack: overflow check */
-    p->guarded = paging_guard((uintptr_t)p->guard, APP_GUARD, 1);
     p->running = 1;
+#ifdef __x86_64__
+    p->guarded = 1;                                     /* (its guard pages: umem_alloc_pages) */
+    p->exit_code = enter_user(p, (uintptr_t)p->entry, (uintptr_t)p->uapi, (uintptr_t)p->argc,
+                              (uintptr_t)p->argv, p->stack, p->kstack, &p->saved_sp);
+#else
     p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp);
+#endif
     p->running = 0;
     if (p->crash_msg[0]) {                              /* it crashed (app_fault) */
         klog("app crashed: %s\n", p->crash_msg);
@@ -1562,7 +1931,13 @@ void app_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) {
     const char* w = vector < 20 && what[vector][0] ? what[vector] : "CPU exception";
     uintptr_t base = p->base;
     char line[160];
-    if (vector == 14 && p->guarded && addr >= (uintptr_t)p->guard && addr < (uintptr_t)p->guard + APP_GUARD)
+    int overflow = p->guarded && addr >= (uintptr_t)p->guard && addr < (uintptr_t)p->guard + APP_GUARD;
+    for (int k = 0; k < APP_THREADS; k++) {
+        const athread_t* th = &p->threads[k];
+        if (p->guarded && th->used && th->stack && addr >= (uintptr_t)th->stack - APP_GUARD && addr < (uintptr_t)th->stack)
+            overflow = 1;
+    }
+    if (vector == 14 && overflow)
         ksnprintf(line, sizeof(line), "%s: stack overflow - it used more than %u KiB of stack (big local arrays? malloc them)",
                   p->name, APP_STACK >> 10);
     else if (vector == 14)
@@ -1595,21 +1970,31 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     p->id = id;
     fs_file_t* f = fs_get_file(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
+#ifdef __x86_64__
+    p->us = uspace_create();
+    if (!p->us) { kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+#endif
+    p->mem = umem_create(p->us);
+    if (!p->mem) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+    uint8_t* image;
     fs_pin(fi);
-    int bad = load_elf((const uint8_t*)f->content, f->size, &p->image, &p->entry, &p->base, &p->code_lo, &p->code_hi, err, ecap) != 0;
+    int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, err, ecap) != 0;
     fs_unpin(fi);
-    if (bad) return NULL;
-    p->stack_mem = (uint8_t*)kmalloc(APP_GUARD + APP_STACK + 4096);
-    if (p->stack_mem) {
-        p->guard = (uint8_t*)(((uintptr_t)p->stack_mem + 4095) & ~(uintptr_t)4095);
-        p->stack = p->guard + APP_GUARD;
-    }
-    /* argv: the pointers and the strings in one block */
+    if (bad) { discard(p); return NULL; }
+    /* its stack, guard pages under it (64-bit: they fault) */
+    p->stack = (uint8_t*)umem_alloc_pages(p->mem, APP_STACK, APP_GUARD);
+    p->guard = p->stack ? p->stack - APP_GUARD : NULL;
+    /* argv: the pointers and the strings in one block of its memory */
     uint32_t need = (uint32_t)(argc + 1) * sizeof(char*);
     for (int i = 0; i < argc; i++) need += (uint32_t)strlen(argv[i]) + 1;
-    p->argv = (char**)kmalloc(need);
-    if (!p->stack_mem || !p->argv) {
-        kfree(p->image); kfree(p->stack_mem); kfree(p->argv);
+    p->argv = (char**)umem_alloc(p->mem, need);
+    int ok = p->stack && p->argv;
+#ifdef __x86_64__
+    p->kstack = kstack_new();
+    ok = ok && p->kstack && make_uapi(p) == 0;
+#endif
+    if (!ok) {
+        discard(p);
         kstrlcpy(err, "out of memory", (size_t)ecap);
         return NULL;
     }
@@ -1633,6 +2018,7 @@ int app_exec(const char* path, int argc, char** argv, char* err, int ecap) {
     app_proc_t* p = prepare(path, argc, argv, err, ecap);
     if (!p) return -1;
     p->pid = task_current_pid();
+    pid_set(p->pid, p->id, -1);
     p->vt = terminal_vt_get_active();
     p->has_term = !task_is_background();
     p->last_breath = timer_ms();
@@ -1662,6 +2048,7 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     int pid = task_create(p->name, spawned_entry);
     if (pid < 0) { release(p); kstrlcpy(err, "too many tasks", (size_t)ecap); return -1; }
     p->pid = pid;                      /* the new task runs once we yield */
+    pid_set(pid, p->id, -1);
     return 0;
 }
 
@@ -1677,8 +2064,7 @@ void app_list(void) {
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
         if (!p->used) continue;
-        uint32_t mem = 0;
-        for (ablock_t* b = p->blocks; b; b = b->next) mem += (uint32_t)b->size;
+        uint32_t mem = umem_used(p->mem);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
         terminal_writeln(line);
@@ -1696,10 +2082,9 @@ int app_snapshot(app_info_t* out, int max) {
         kstrlcpy(out[n].name, p->name, sizeof(out[n].name));
         out[n].pid = p->pid;
         out[n].desktop = p->own_task;
-        out[n].mem = 0;
+        out[n].mem = umem_used(p->mem);
         out[n].threads = 1;
         for (int t = 0; t < APP_THREADS; t++) if (p->threads[t].used && !p->threads[t].done) out[n].threads++;
-        for (ablock_t* b = p->blocks; b; b = b->next) out[n].mem += (uint32_t)b->size;
         n++;
     }
     return n;

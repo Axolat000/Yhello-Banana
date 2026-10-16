@@ -48,7 +48,6 @@
 typedef struct task {
     uintptr_t*   sp;                      /* saved stack pointer when not running */
     uintptr_t*   guard;                   /* the bottom of its stack: GUARD_WORDS of GUARD_MAGIC */
-    uintptr_t    stack[TASK_STACK_WORDS] __attribute__((aligned(16))); /* created tasks only */
     uint32_t     pid;
     char         name[TASK_NAME_MAX];
     volatile task_state_t state;
@@ -78,18 +77,22 @@ typedef struct task {
     int          vt;                      /* terminal output target, restored on switch-in */
     int          background;              /* daemon: never reads the keyboard (task_set_background) */
     void*        stack_mem;               /* kmalloc'd stack (task_create_stack), or NULL */
+    uintptr_t    stack_top;               /* bounds for panic diagnostics */
     uintptr_t    kguard;                  /* unmapped pages under that stack (64-bit), or 0 */
     uint32_t     fault_vec, fault_err;    /* a fault on another core, reported on the boot core */
     uintptr_t    fault_ip, fault_addr;
     kjmp_buf_t*  recover;                 /* where a crash in its own code goes (task_set_recover) */
     char         crash[112];              /* what the last one was */
     uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
+    uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
+    uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
 } task_t;
 
 static task_t           g_tasks[TASK_MAX];
 static int              g_count = 0;
 static task_t* volatile g_current = NULL;   /* on the boot core */
 static task_t           g_idle;             /* the boot core's idle loop (see task_offload) */
+static uintptr_t        g_idle_stack[TASK_STACK_WORDS] __attribute__((aligned(16)));
 static task_t*          g_prev;             /* switched away from: finish_switch() */
 static uint64_t         g_min_vr;           /* the smallest vruntime of the runnable tasks */
 static uint64_t         g_tsc_per_ms = 1000000;
@@ -396,6 +399,27 @@ static void guard_check(task_t* t) {
         }
 }
 
+/* the page tables and the ring-3 entry stack of task t, on processor core
+ * cpu (kernel/app.c: apps run on their own, kernel/uspace.c) */
+static void enter_space(const task_t* t, int cpu) {
+#ifdef __x86_64__
+    if (t->rsp0) tss_set_rsp0(cpu, t->rsp0);
+    uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(have));
+    if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
+#else
+    (void)t; (void)cpu;
+#endif
+}
+
+void task_set_user(uintptr_t cr3, uintptr_t rsp0) {
+    task_t* t = g_current;
+    if (!t) return;
+    t->cr3 = cr3;
+    t->rsp0 = rsp0;
+    enter_space(t, 0);
+}
+
 static void switch_to(task_t* cur, task_t* nxt) {
     uint64_t now = rdtsc();
     int invol = g_involuntary;
@@ -424,6 +448,7 @@ static void switch_to(task_t* cur, task_t* nxt) {
     g_prev = cur;
     guard_check(cur);
     fpu_save(cur->fpu);
+    enter_space(nxt, 0);
     task_switch(&cur->sp, nxt->sp);
     after_switch(cur);
 }
@@ -499,6 +524,7 @@ void task_init(const char* main_task_name) {
     t->no_kpreempt = 1;                     /* (see task_kpreempt) */
     t->run_start = rdtsc();
     t->switched_in = t->run_start;
+    t->stack_top = (uintptr_t)stack_bottom + 65536;
     guard_set(t, (uintptr_t*)stack_bottom);  /* the boot stack (boot/boot*.asm) */
 
     set_name(g_idle.name, "idle", TASK_NAME_MAX);
@@ -506,8 +532,9 @@ void task_init(const char* main_task_name) {
     g_idle.weight = 1024;
     g_idle.pinned = 1;
     g_idle.prio = TASK_PRIO_NORMAL;
-    g_idle.sp = fake_frame(&g_idle.stack[TASK_STACK_WORDS], task_trampoline);
-    guard_set(&g_idle, g_idle.stack);
+    g_idle.sp = fake_frame(&g_idle_stack[TASK_STACK_WORDS], task_trampoline);
+    g_idle.stack_top = (uintptr_t)(g_idle_stack + TASK_STACK_WORDS);
+    guard_set(&g_idle, g_idle_stack);
 
     g_count = 1;
     g_current = t;
@@ -558,23 +585,27 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->no_kpreempt = 0;
     t->cpu = 0;
     t->came_home = 0;
+    t->cr3 = 0;
+    t->rsp0 = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
 
-    uintptr_t* sp = &t->stack[TASK_STACK_WORDS];
-    if (stack_bytes > sizeof(t->stack)) {
-        /* the stack's bottom pages are unmapped (64-bit): an overflow faults there -
-         * a task that can recover does (the browser), instead of writing over
-         * whatever the heap has below */
-        uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + KSTACK_GUARD + 4096 + 16);
-        if (!mem) { t->state = TASK_UNUSED; return -1; }
-        t->stack_mem = mem;
+    /* Keep stacks allocated on demand; large kernel tasks also get the
+     * upstream guard pages underneath them (the browser's recovery path). */
+    uint32_t minimum = TASK_STACK_WORDS * sizeof(uintptr_t);
+    if (stack_bytes < minimum) stack_bytes = minimum;
+    uint32_t extra = stack_bytes > minimum ? KSTACK_GUARD + 4096 : 0;
+    uint8_t* mem = (uint8_t*)kmalloc(stack_bytes + extra + 16);
+    if (!mem) { t->state = TASK_UNUSED; return -1; }
+    t->stack_mem = mem;
+    if (extra) {
         uintptr_t g = ((uintptr_t)mem + 4095) & ~(uintptr_t)4095;
         if (paging_guard(g, KSTACK_GUARD, 1)) t->kguard = g;
-        sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes + KSTACK_GUARD + 4096) & ~(uintptr_t)15);
     }
+    uintptr_t* sp = (uintptr_t*)(((uintptr_t)mem + stack_bytes + extra) & ~(uintptr_t)15);
     t->sp = fake_frame(sp, task_trampoline);
+    t->stack_top = (uintptr_t)sp;
     guard_set(t, t->kguard ? (uintptr_t*)(t->kguard + KSTACK_GUARD) :
-                 t->stack_mem ? (uintptr_t*)(((uintptr_t)t->stack_mem + 15) & ~(uintptr_t)15) : t->stack);
+              (uintptr_t*)(((uintptr_t)mem + 15) & ~(uintptr_t)15));
 
     t->state = TASK_READY;
     return (int)t->pid;
@@ -618,7 +649,27 @@ void task_sleep_ms(uint32_t ms) {
     task_yield();
 }
 
+int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* top) {
+    int c = cpu_id();
+    task_t* t = c > 0 && c < SMP_MAX_CPUS ? g_ap[c].task : g_current;
+    *bottom = *top = 0;
+    name[0] = 0;
+    uintptr_t p = (uintptr_t)t, first = (uintptr_t)g_tasks;
+    if (t != &g_idle && (p < first || p >= (uintptr_t)(g_tasks + TASK_MAX) || (p-first)%sizeof(task_t))) return -1;
+    for (int i=0;i<TASK_NAME_MAX-1;i++) { name[i]=t->name[i]; if(!name[i])break; }
+    name[TASK_NAME_MAX-1]=0;
+    *bottom=(uintptr_t)t->guard+GUARD_WORDS*sizeof(uintptr_t);
+    *top=t->stack_top;
+    return (int)t->pid;
+}
+
 int task_current_pid(void) {
+    /* on another core: the app task running there (a system call made there, kernel/app.c) */
+    int c = cpu_id();
+    if (c > 0 && c < SMP_MAX_CPUS) {
+        task_t* t = g_ap[c].task;
+        return t ? (int)t->pid : -1;
+    }
     return g_current ? (int)g_current->pid : 0;
 }
 
@@ -896,11 +947,14 @@ void task_ap_loop(int cpu) {
         t->cpu = cpu;
         a->task = t;
         if (!a->used) { a->first = t; a->used = 1; }   /* sysmon logs it (the kernel is not ours here) */
+        /* its page tables - loaded again even if the same: the boot core
+         * may have changed them (guard pages) since */
 #ifdef __x86_64__
-        /* the boot core may have changed page tables (guard pages) since */
         __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
 #endif
+        enter_space(t, cpu);
         task_switch(&a->idle_sp, t->sp);
+        enter_space(&g_idle, cpu);          /* the kernel's tables again: t's may go away */
         /* t stopped: a system call, its turn ended, or a fault */
         a->task = NULL;
         t->ap_vr += (timer_ms() - a->since) * 1000u * 1024u / t->weight + 1;

@@ -105,8 +105,8 @@ static int df_rows(df_row_t* r, int max) {
     for (int mnt = 1; mnt <= FS_MAX_MOUNTS && n < max; mnt++) {
         const char* point = fs_mount_point(mnt);
         uint64_t tot, fr;
-        if (!point[0] || !fat32_space(mnt, &tot, &fr)) continue;
-        kstrlcpy(r[n].fs, "fat32", sizeof(r[n].fs));
+        if (!point[0] || !volume_space(mnt, &tot, &fr)) continue;
+        kstrlcpy(r[n].fs, volume_fs_name(mnt), sizeof(r[n].fs));
         r[n].size = tot;
         r[n].avail = fr;
         r[n].used = tot > fr ? tot - fr : 0;

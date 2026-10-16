@@ -202,10 +202,10 @@ The C library also has the POSIX pieces ported code expects: `open`,
 `errno` codes. That is enough for FFmpeg: `ports/ffmpeg/build.sh` builds
 it (libavformat, libavcodec, libswscale, libswresample) as static
 libraries for both CPUs, and `apps/mediaplayer` and `apps/music` show how
-an app links them (`LIBS_i686` / `LIBS_x86_64` in its Makefile). Apps run
-in ring 0, where interrupts use the app's stack: code must not keep data
-below the stack pointer (`-mno-red-zone` - the build script patches the
-two FFmpeg assembly files that did).
+an app links them (`LIBS_i686` / `LIBS_x86_64` in its Makefile). On the
+32-bit kernel apps run in ring 0, where interrupts use the app's stack:
+code must not keep data below the stack pointer (`-mno-red-zone` - the
+build script patches the two FFmpeg assembly files that did).
 
 Since API version 8 any HTTP request can be made: `banana_http_post(url,
 form, ...)` (with `banana_url_encode()` for the form's values) and
@@ -238,8 +238,12 @@ examples in `driver/examples`) into `.bpk` packages of type `driver`.
   and apps are built with `-fstack-clash-protection`, so an overflow is caught
   and reported ("stack overflow"); the 32-bit kernel has no paging and only
   catches small overflows. Use `malloc` for big buffers.
-- Apps still run in ring 0 with the kernel and can reach all memory: a stray
-  write through a wild (non-NULL) pointer can damage the system.
+- On the 64-bit kernel apps run in ring 3, in an address space of their own:
+  only the app's own memory is open to it, a wild pointer stops just the app,
+  and every pointer handed to a `__banana` call is checked to be its memory
+  (passing anything else stops the app). Already-built apps work unchanged.
+  On the 32-bit kernel (no paging) apps still run in ring 0 and a stray write
+  can damage the system.
 - **Resizable windows**: call `bwin_resizable(&win, min_w, min_h)` and handle
   `BANANA_EV_RESIZE` - `bwin_event()` has already updated `win.w`, `win.h`
   and `win.px` then; redraw everything (see `clock.c`, `mandel.c`). Users resize
@@ -302,7 +306,41 @@ draw, `bgl_swap(ctx)`; after `BANANA_EV_RESIZE`, `bgl_resize(ctx)` and
 Set `USE_CL = 1` and `#include <CL/cl.h>`: the OpenCL 1.2 host API, the
 kernels compiled when the program is built (TinyCC inside the app - such
 apps build in the Banana OS source tree, which has `ports/tcc`) and run on
-every core. `examples/cltest` is a complete program.
+every core. `examples/cltest` is a complete program. Run `selftest opencl`
+inside Banana OS to install and run the matching built-in tests; the default
+`selftest` includes them too. Linux checks: `tools/test_opencl.sh` and
+`tools/test_opencl.sh i686` (the latter needs 32-bit development libraries).
+
+`barrier(flags)` supports `CLK_LOCAL_MEM_FENCE`, `CLK_GLOBAL_MEM_FENCE` or
+both. Each work-item preserves its private variables while paused; a group
+can use repeated barriers and call barriers from helper functions. Different
+groups run on different CPU workers. Common divergent barriers return
+`CL_INVALID_OPERATION`; every work-item must reach the same barrier on each
+iteration. This cannot diagnose arbitrary infinite loops or every divergent
+helper call.
+
+Local pointer arguments and block-scope `__local T name[N]` arrays are
+shared by the group. Multidimensional arrays work. Use one array per
+declaration, a literal `local`/`__local` qualifier and no initializer. Arrays
+are lowered to pointers, so `sizeof(array)` is not supported for these local
+arrays; use `sizeof(T) * N` instead. Each group has 32 KiB total local memory
+and a program can contain at most 32 local array declarations. Collective
+kernels use a 16 KiB private stack per work-item (including helper calls and
+compiler temporaries). Allocation failures and local-memory exhaustion are
+reported by the enqueue call.
+
+Vectors: `floatN`, `intN`, `uintN` for N = 2, 3, 4, 8, 16, with matching host
+`cl_floatN`, `cl_intN`, `cl_uintN` unions. Three-lane types have four-lane size;
+`vload3`/`vstore3` still read/write packed triples. Constructors such as
+`(float4)(1,2,3,4)` and `(float4)(2)`, arithmetic, scalar splats, comparisons
+(all bits set for true), integer bitwise operations, single-component stores,
+read swizzles (`.wzyx`, `.s0123`, `.lo`, `.hi`, `.even`, `.odd`) and vector
+loads/stores work. Built-ins include vector `sqrt`, `sin`, `cos`, `fabs`,
+`min`, `max`, `clamp`, `mad`, `mix`, `dot`, `length` and `normalize`.
+Other built-ins retain their scalar behavior; multi-component swizzle stores,
+other vector element types, images and samplers are not implemented. This
+is an OpenCL C subset on the CPU, with vector operations lowered to scalar
+lanes rather than GPU or SIMD execution.
 
 ### Packages (API version 11): what the App Store uses
 

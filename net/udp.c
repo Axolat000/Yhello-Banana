@@ -87,3 +87,61 @@ void udp_rx(ip4_t src, ip4_t dst, const uint8_t* d, uint32_t len) {
         }
     }
 }
+
+/* IPv6 has a separate port namespace; its UDP checksum is mandatory. */
+#include "ipv6.h"
+static struct { uint16_t port; udp6_handler_t handler; void* ctx; } g_bind6[UDP_BINDINGS];
+
+int udp6_bind(uint16_t port, udp6_handler_t handler, void* ctx) {
+    if (!port || !handler) return NET_ERR_PROTO;
+    int slot = -1;
+    for (int i = 0; i < UDP_BINDINGS; i++) {
+        if (g_bind6[i].handler && g_bind6[i].port == port) return NET_ERR_PROTO;
+        if (!g_bind6[i].handler && slot < 0) slot = i;
+    }
+    if (slot < 0) return NET_ERR_NOMEM;
+    g_bind6[slot].port = port; g_bind6[slot].handler = handler; g_bind6[slot].ctx = ctx;
+    return NET_OK;
+}
+
+void udp6_unbind(uint16_t port) {
+    for (int i = 0; i < UDP_BINDINGS; i++)
+        if (g_bind6[i].handler && g_bind6[i].port == port) g_bind6[i].handler = NULL;
+}
+
+uint16_t udp6_ephemeral_port(void) {
+    for (int attempt = 0; attempt < 16384; attempt++) {
+        uint16_t port = (uint16_t)(49152 + random_u32() % 16384);
+        int used = 0;
+        for (int i = 0; i < UDP_BINDINGS; i++)
+            if (g_bind6[i].handler && g_bind6[i].port == port) used = 1;
+        if (!used) return port;
+    }
+    return 0;
+}
+
+int udp6_send(const ip6_t* dst, uint16_t sport, uint16_t dport, const void* data, uint32_t len) {
+    if (!sport || !dport || len > IP6_MAX_PAYLOAD - 8 || (len && !data)) return NET_ERR_PROTO;
+    ip6_t src;
+    int rc = ipv6_source(dst, &src);
+    if (rc != NET_OK) return rc;
+    uint8_t d[IP6_MAX_PAYLOAD];
+    wr16(d, sport); wr16(d + 2, dport); wr16(d + 4, (uint16_t)(8 + len)); wr16(d + 6, 0);
+    memcpy(d + 8, data, len);
+    uint16_t sum = ip6_checksum(&src, dst, IP_PROTO_UDP, d, 8 + len);
+    wr16(d + 6, sum ? sum : 0xFFFF);
+    fw_out_udp(sport);
+    return ipv6_send(&src, dst, IP_PROTO_UDP, d, 8 + len);
+}
+
+void udp6_rx(const ip6_t* src, const ip6_t* dst, const uint8_t* d, uint32_t len) {
+    if (!ipv6_enabled() || len < 8) return;
+    uint16_t n = rd16(d + 4);
+    if (n < 8 || n > len || !rd16(d + 2) || !rd16(d + 6) ||
+        ip6_checksum(src, dst, IP_PROTO_UDP, d, n) != 0) return;
+    for (int i = 0; i < UDP_BINDINGS; i++)
+        if (g_bind6[i].handler && g_bind6[i].port == rd16(d + 2)) {
+            g_bind6[i].handler(src, rd16(d), d + 8, n - 8u, g_bind6[i].ctx);
+            return;
+        }
+}

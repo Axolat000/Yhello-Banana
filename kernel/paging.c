@@ -2,6 +2,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "serial.h"
+#include "uspace.h"
 
 #ifdef __x86_64__
 
@@ -11,6 +12,25 @@
 #define P_PCD     0x010ull
 #define P_LARGE   0x080ull
 #define ADDR_MASK 0x000FFFFFFFFFF000ull
+
+/* The kernel's own page tables (boot/boot64.asm). While an app runs, CR3
+ * holds the app's tables instead (kernel/uspace.c): copies of these in which
+ * only its memory is open to it. The kernel changes only its own, and every
+ * change is copied into the apps' (uspace_kernel_changed). */
+static uintptr_t g_kernel_cr3;
+
+uintptr_t paging_kernel_cr3(void) {
+    if (!g_kernel_cr3) __asm__ volatile("mov %%cr3, %0" : "=r"(g_kernel_cr3));
+    return g_kernel_cr3;
+}
+
+/* after a change to the kernel's tables: the apps' copies follow, and this
+ * processor forgets what it cached (whichever tables it runs on) */
+static void kernel_tables_changed(void) {
+    uspace_kernel_changed();
+    uintptr_t cr3;
+    __asm__ volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
+}
 
 /* a zeroed, 4 KiB-aligned page for a new table (heap memory is below
  * 4 GiB and identity-mapped, so its address is also its physical one) */
@@ -22,12 +42,11 @@ static uint64_t* new_table(void) {
     return t;
 }
 
-int mmio_map(uint64_t phys, uint64_t size) {
-    if (phys + size <= (4ull << 30)) return 1;          /* mapped since boot */
+/* identity-maps [phys, phys + size) above 4 GiB with 2 MiB pages of the
+ * given extra flags (cache attributes) */
+static int map_high(uint64_t phys, uint64_t size, uint64_t flags) {
     if (phys + size > (1ull << 46)) return 0;           /* beyond what we support */
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    uint64_t* pml4 = (uint64_t*)(cr3 & ADDR_MASK);
+    uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
     for (uint64_t a = phys & ~0x1FFFFFull; a < phys + size; a += 0x200000ull) {
         if (a < (4ull << 30)) continue;
         uint64_t* e4 = &pml4[(a >> 39) & 511];
@@ -46,11 +65,23 @@ int mmio_map(uint64_t phys, uint64_t size) {
         if (*e3 & P_LARGE) continue;                    /* a 1 GiB page covers it already */
         uint64_t* pd = (uint64_t*)(uintptr_t)(*e3 & ADDR_MASK);
         uint64_t* e2 = &pd[(a >> 21) & 511];
-        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | P_PCD | P_PWT;   /* device memory: uncached */
+        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | flags;
         __asm__ volatile("invlpg (%0)" :: "r"((uintptr_t)a) : "memory");
     }
+    kernel_tables_changed();
+    return 1;
+}
+
+int mmio_map(uint64_t phys, uint64_t size) {
+    if (phys + size <= (4ull << 30)) return 1;          /* mapped since boot */
+    if (!map_high(phys, size, P_PCD | P_PWT)) return 0; /* device memory: uncached */
     klog("paging: mapped device memory at %llx (%llu KiB)\n", phys, size >> 10);
     return 1;
+}
+
+int paging_map_ram(uint64_t phys, uint64_t size) {
+    if (phys < (4ull << 30) || (phys & 0x1FFFFF) || (size & 0x1FFFFF)) return 0;
+    return map_high(phys, size, 0);                     /* RAM: cached */
 }
 
 /* ── write-combining ── */
@@ -75,9 +106,7 @@ void paging_pat_init(void) {
 
 int paging_set_wc(uint64_t phys, uint64_t size) {
     if (!g_pat || !size || !mmio_map(phys, size)) return -1;
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    uint64_t* pml4 = (uint64_t*)(cr3 & ADDR_MASK);
+    uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
     for (uint64_t a = phys & ~0xFFFull; a < phys + size; ) {
         uint64_t e4 = pml4[(a >> 39) & 511];
         if (!(e4 & P_PRESENT)) return -1;
@@ -97,7 +126,7 @@ int paging_set_wc(uint64_t phys, uint64_t size) {
             a += 0x1000ull;
         }
     }
-    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");    /* every TLB entry of it gone */
+    kernel_tables_changed();                                     /* every TLB entry of it gone */
     __asm__ volatile("wbinvd" ::: "memory");
     klog("paging: write-combining at %llx (%llu KiB)\n", phys, size >> 10);
     return 0;
@@ -107,9 +136,7 @@ int paging_set_wc(uint64_t phys, uint64_t size) {
  * page that covers it into 512 small ones (same mapping) the first time */
 static uint64_t* small_pte(uintptr_t addr) {
     if (addr >= (4ull << 30)) return NULL;
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    uint64_t* pml4 = (uint64_t*)(cr3 & ADDR_MASK);
+    uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
     uint64_t* pdpt = (uint64_t*)(uintptr_t)(pml4[0] & ADDR_MASK);
     uint64_t* pd = (uint64_t*)(uintptr_t)(pdpt[(addr >> 30) & 3] & ADDR_MASK);
     uint64_t* e2 = &pd[(addr >> 21) & 511];
@@ -120,7 +147,7 @@ static uint64_t* small_pte(uintptr_t addr) {
         uint64_t flags = *e2 & (P_WRITE | P_PWT | P_PCD);
         for (int i = 0; i < 512; i++) pt[i] = (big + ((uint64_t)i << 12)) | P_PRESENT | flags;
         *e2 = (uint64_t)(uintptr_t)pt | P_PRESENT | P_WRITE;
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");   /* flush */
+        kernel_tables_changed();                        /* flush */
     }
     uint64_t* pt = (uint64_t*)(uintptr_t)(*e2 & ADDR_MASK);
     return &pt[(addr >> 12) & 511];
@@ -143,20 +170,20 @@ int paging_guard(uintptr_t addr, uint32_t size, int guard) {
 static uint64_t g_low_pt[512] __attribute__((aligned(4096)));
 
 void paging_guard_null(void) {
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    uint64_t* pml4 = (uint64_t*)(cr3 & ADDR_MASK);
+    uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
     uint64_t* pdpt = (uint64_t*)(uintptr_t)(pml4[0] & ADDR_MASK);
     uint64_t* pd = (uint64_t*)(uintptr_t)(pdpt[0] & ADDR_MASK);
     if (!(pd[0] & P_LARGE)) return;                     /* already split */
     for (int i = 0; i < 512; i++) g_low_pt[i] = ((uint64_t)i << 12) | P_PRESENT | P_WRITE;
     g_low_pt[0] = 0;                                    /* 0..4095: not present */
     pd[0] = (uint64_t)(uintptr_t)g_low_pt | P_PRESENT | P_WRITE;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");   /* flush the TLB */
+    kernel_tables_changed();                            /* flush the TLB */
 }
 
 #else
 
+uintptr_t paging_kernel_cr3(void) { return 0; }
+int paging_map_ram(uint64_t phys, uint64_t size) { (void)phys; (void)size; return 0; }
 void paging_guard_null(void) {}     /* no paging on the 32-bit kernel */
 
 int paging_guard(uintptr_t addr, uint32_t size, int guard) {

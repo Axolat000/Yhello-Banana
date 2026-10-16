@@ -799,53 +799,19 @@ static int is_fat1x_vbr(const uint8_t* b) {
     return rd16(b + 510) == 0xAA55 && rd16(b + 11) == SEC && rd16(b + 22) != 0;
 }
 
-/* the first sector of the FAT32 volume: the whole device, or a partition */
-static int find_volume(fvol_t* v, uint32_t* base, char* err, int errcap) {
-    uint8_t* b = v->sec;
-    if (dev_read(v, 0, 1, b) != 0) { kstrlcpy(err, "cannot read the stick", (size_t)errcap); return -1; }
-    if (is_fat32_vbr(b)) { *base = 0; return 0; }
-    if (rd16(b + 510) != 0xAA55) { kstrlcpy(err, "no partition table or FAT32 volume", (size_t)errcap); return -1; }
-    uint32_t cand[4];
-    int nc = 0, gpt = 0, fat1x = 0;
-    for (int i = 0; i < 4; i++) {
-        const uint8_t* pe = b + 446 + i * 16;
-        uint8_t type = pe[4];
-        uint32_t lba = rd32(pe + 8);
-        if (type == 0xEE) gpt = 1;
-        else if (type && lba) cand[nc++] = lba;
-    }
-    if (gpt) {
-        if (dev_read(v, 1, 1, b) != 0 || memcmp(b, "EFI PART", 8) != 0) { kstrlcpy(err, "bad GPT", (size_t)errcap); return -1; }
-        uint32_t ent_lba = rd32(b + 72), nent = rd32(b + 80), esz = rd32(b + 84);
-        if (esz < 128 || esz > SEC || nent > 128) nent = 0;
-        nc = 0;
-        for (uint32_t i = 0; i < nent && nc < 4; i++) {
-            uint32_t off = i * esz;
-            if (dev_read(v, ent_lba + off / SEC, 1, b) != 0) break;
-            const uint8_t* ge = b + off % SEC;
-            int empty = 1;
-            for (int k = 0; k < 16; k++) if (ge[k]) empty = 0;
-            if (!empty && rd32(ge + 32)) cand[nc++] = rd32(ge + 32);
-        }
-    }
-    for (int i = 0; i < nc; i++) {
-        if (dev_read(v, cand[i], 1, b) != 0) continue;
-        if (is_fat32_vbr(b)) { *base = cand[i]; return 0; }
-        if (is_fat1x_vbr(b)) fat1x = 1;
-    }
-    kstrlcpy(err, fat1x ? "FAT12/FAT16 volume - only FAT32 is supported" : "no FAT32 partition found",
-             (size_t)errcap);
-    return -1;
-}
-
-int fat32_mount(blockdev_t* bd, const char* path, char* err, int errcap) {
-    err[0] = 0;
+/* kernel/volume.c: the volume starting at sector base, if it is FAT32 */
+static int mount_at(blockdev_t* bd, uint32_t base, const char* where, char* err, int errcap) {
     fvol_t* v = (fvol_t*)kzalloc(sizeof(fvol_t));
     if (!v) { kstrlcpy(err, "out of memory", (size_t)errcap); return -1; }
     v->bd = bd;
-    uint32_t base;
-    if (find_volume(v, &base, err, errcap) != 0) { kfree(v); return -1; }
-    if (dev_read(v, base, 1, v->sec) != 0) { kstrlcpy(err, "cannot read the boot sector", (size_t)errcap); kfree(v); return -1; }
+    if (dev_read(v, base, 1, v->sec) != 0 || !is_fat32_vbr(v->sec)) {
+        /* (a FAT12/16 boot sector starts with a jump, as FAT32's does) */
+        int fat1x = is_fat1x_vbr(v->sec) && (v->sec[0] == 0xEB || v->sec[0] == 0xE9);
+        kfree(v);
+        if (!fat1x) return -2;
+        kstrlcpy(err, "FAT12/FAT16 volume - only FAT32 is supported", (size_t)errcap);
+        return -1;
+    }
     const uint8_t* b = v->sec;
     uint32_t reserved = rd16(b + 14);
     uint32_t total = rd16(b + 19) ? rd16(b + 19) : rd32(b + 32);
@@ -888,15 +854,6 @@ int fat32_mount(blockdev_t* bd, const char* path, char* err, int errcap) {
     v->nodes[0].is_dir = 1;
     v->nodes[0].first = v->root;
 
-    char where[FS_PATH_LEN];
-    if (path) kstrlcpy(where, path, sizeof(where));
-    else {
-        for (int i = 1; i <= FS_MAX_MOUNTS; i++) {
-            if (i == 1) ksnprintf(where, sizeof(where), "/mnt/%s", bd->kind[0] ? bd->kind : "usb");
-            else ksnprintf(where, sizeof(where), "/mnt/%s%d", bd->kind[0] ? bd->kind : "usb", i);
-            if (fs_find_dir(where) < 0) break;
-        }
-    }
     int mnt = fs_mount(where, &g_ops, v, 0);
     if (mnt < 0) {
         ksnprintf(err, (size_t)errcap, "cannot mount at %s", where);
@@ -911,7 +868,7 @@ int fat32_mount(blockdev_t* bd, const char* path, char* err, int errcap) {
     return mnt;
 }
 
-int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
+static int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
     if (mnt <= 0 || mnt > FS_MAX_MOUNTS || !g_vols[mnt]) return 0;
     fvol_t* v = g_vols[mnt];
     if (!v->nfree_ok) {
@@ -938,7 +895,7 @@ int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
     return 1;
 }
 
-int fat32_describe(int mnt, char* out, int cap) {
+static int fat32_describe(int mnt, char* out, int cap) {
     if (mnt <= 0 || mnt > FS_MAX_MOUNTS || !g_vols[mnt]) return 0;
     fvol_t* v = g_vols[mnt];
     uint32_t mib = (uint32_t)(((uint64_t)v->nclusters * v->clus_bytes) >> 20);
@@ -947,3 +904,5 @@ int fat32_describe(int mnt, char* out, int cap) {
               v->bd->name, v->bd->model, mib, v->skipped ? " - partly shown (too many files)" : "");
     return 1;
 }
+
+const volfs_t fat32_volfs = { "FAT32", "fat32", mount_at, fat32_describe, fat32_space };

@@ -1664,7 +1664,7 @@ int browser_fetch_document(const char* url_in, const char* post, uint32_t post_l
  * and the system, go on. */
 static void engine_crashed(void) {
     static kjmp_buf_t again;
-    tab_t* t = NULL;
+    tab_t* volatile t = NULL;
     for (int i = 0; i < g_ntabs; i++) if (g_tabs[i] == (g_work_tab ? g_work_tab : cur_tab())) t = g_tabs[i];
     g_work_tab = NULL;
     g_status_tab = NULL;

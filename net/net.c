@@ -128,6 +128,7 @@ void net_poll(void) {
         if (g_devs[i]->present) g_devs[i]->poll(g_devs[i]);
     if (!g_if.dev) { g_in_poll = 0; return; }
     ip_loopback_drain();
+    ipv6_loopback_drain();
     uint32_t now = timer_ms();
     if ((uint32_t)(now - g_last_timer_ms) >= 10) {
         g_last_timer_ms = now;

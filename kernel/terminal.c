@@ -1,3 +1,4 @@
+#include "crash.h"
 #include "terminal.h"
 #include "utf8.h"
 #include "types.h"
@@ -185,6 +186,7 @@ static void console_cursor(size_t* row, size_t* col) {
 }
 
 void terminal_flush(void) {
+    if(crash_preview_active() || crash_in_progress())return;
     if (!fb_console_on()) return;
     if (splash_active()) return;            /* the boot screen is up: the text waits in the grid */
     size_t cr, cc;

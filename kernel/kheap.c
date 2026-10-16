@@ -1,6 +1,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "smp.h"
+#include "spinlock.h"
 
 /* Every block (free or used) starts with this header; blocks tile the
  * whole heap in address order, so neighbours are found through prev/next
@@ -21,6 +22,9 @@ typedef struct block {
 extern char _kernel_end[];  /* boot/linker.ld */
 
 static block_t* g_head = NULL;
+/* the heap is used on other cores too (apps' system calls there,
+ * kernel/app.c) and from interrupt handlers: held with interrupts off */
+static spinlock_t g_lock = SPINLOCK_INIT;
 static uint32_t g_total = 0;
 static uint32_t g_used = 0;
 
@@ -158,12 +162,64 @@ static int may_reclaim(void) {
 void* kmalloc(size_t size) {
     if (!g_head || size == 0 || size > 0xF0000000u) return NULL;
     uint32_t need = align_up((uint32_t)size, ALIGN);
+    uintptr_t f = spin_lock_irq(&g_lock);
     void* p = find_fit(need);
+    spin_unlock_irq(&g_lock, f);
     if (!p && may_reclaim()) {
+        /* (unlocked: dropping cached files frees heap blocks) */
         g_reclaiming = 1;
         g_reclaim(need + HDR);
         g_reclaiming = 0;
+        f = spin_lock_irq(&g_lock);
         p = find_fit(need);
+        spin_unlock_irq(&g_lock, f);
+    }
+    return p;
+}
+
+/* a free block holding `need` bytes that start at a multiple of `align`:
+ * the part before that start stays a free block of its own */
+static void* find_fit_aligned(uint32_t need, uint32_t align) {
+    for (block_t* b = g_head; b; b = b->next) {
+        if (b->used || b->size < need) continue;
+        uintptr_t s = (uintptr_t)b + HDR, end = s + b->size;
+        uintptr_t a = (s + align - 1) & ~(uintptr_t)(align - 1);
+        /* room for the front block's header and a payload worth keeping */
+        while (a != s && a - s < HDR + MIN_SPLIT) a += align;
+        if (a + need > end) continue;
+        if (a != s) {
+            block_t* n = (block_t*)(a - HDR);
+            n->size = (uint32_t)(end - a);
+            n->used = 0;
+            n->prev = b;
+            n->next = b->next;
+            if (b->next) b->next->prev = n;
+            b->next = n;
+            b->size = (uint32_t)((uintptr_t)n - s);
+            b = n;
+        }
+        split(b, need);
+        b->used = HEAP_MAGIC;
+        g_used += b->size;
+        return (uint8_t*)b + HDR;
+    }
+    return NULL;
+}
+
+void* kmalloc_aligned(size_t size, size_t align) {
+    if (align <= ALIGN) return kmalloc(size);
+    if (!g_head || size == 0 || size > 0xF0000000u || (align & (align - 1))) return NULL;
+    uint32_t need = align_up((uint32_t)size, ALIGN);
+    uintptr_t f = spin_lock_irq(&g_lock);
+    void* p = find_fit_aligned(need, (uint32_t)align);
+    spin_unlock_irq(&g_lock, f);
+    if (!p && may_reclaim()) {
+        g_reclaiming = 1;
+        g_reclaim(need + (uint32_t)align + HDR);
+        g_reclaiming = 0;
+        f = spin_lock_irq(&g_lock);
+        p = find_fit_aligned(need, (uint32_t)align);
+        spin_unlock_irq(&g_lock, f);
     }
     return p;
 }
@@ -181,21 +237,25 @@ static block_t* hdr_of(void* p) {
 
 void kfree(void* ptr) {
     if (!ptr) return;
+    uintptr_t f = spin_lock_irq(&g_lock);
     block_t* b = hdr_of(ptr);
-    if (!b) return; /* double free or garbage pointer: ignore */
-    g_used -= b->size;
-    b->used = 0;
-    merge_next(b);
-    if (b->prev && !b->prev->used) merge_next(b->prev);
+    if (b) {                    /* (else a double free or a garbage pointer: ignored) */
+        g_used -= b->size;
+        b->used = 0;
+        merge_next(b);
+        if (b->prev && !b->prev->used) merge_next(b->prev);
+    }
+    spin_unlock_irq(&g_lock, f);
 }
 
 void* krealloc(void* ptr, size_t size) {
     if (!ptr) return kmalloc(size);
     if (size == 0) { kfree(ptr); return NULL; }
+    uintptr_t f = spin_lock_irq(&g_lock);
     block_t* b = hdr_of(ptr);
-    if (!b) return NULL;
-    uint32_t need = align_up((uint32_t)size, ALIGN);
-    if (need <= b->size) return ptr;
+    if (!b) { spin_unlock_irq(&g_lock, f); return NULL; }
+    uint32_t need = align_up((uint32_t)size, ALIGN), old = b->size;
+    if (need <= b->size) { spin_unlock_irq(&g_lock, f); return ptr; }
 
     /* grow in place by swallowing a free neighbour when possible: keeps
      * repeated appends (downloads, file writes) from copying every time */
@@ -205,12 +265,14 @@ void* krealloc(void* ptr, size_t size) {
         merge_next(b);
         split(b, need);
         g_used += b->size;
+        spin_unlock_irq(&g_lock, f);
         return ptr;
     }
+    spin_unlock_irq(&g_lock, f);
 
     void* np = kmalloc(size);
     if (!np) return NULL;
-    memcpy(np, ptr, b->size);
+    memcpy(np, ptr, old);
     kfree(ptr);
     return np;
 }
@@ -220,7 +282,9 @@ uint32_t kheap_used_bytes(void)  { return g_used; }
 
 uint32_t kheap_largest_free(void) {
     uint32_t best = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
     for (block_t* b = g_head; b; b = b->next)
         if (!b->used && b->size > best) best = b->size;
+    spin_unlock_irq(&g_lock, f);
     return best;
 }

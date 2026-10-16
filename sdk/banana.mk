@@ -75,9 +75,10 @@ CLJIT       = $(BUILD)/cljit
 SRCS       += $(BANANA_SDK)/lib/cl.c $(BANANA_SDK)/lib/cljit.c
 CFLAGS     += -I$(CLJIT)
 .DEFAULT_GOAL := all
-$(CLJIT)/config.h:
+$(CLJIT)/config.h: $(BANANA_SDK)/lib/mkcljit.sh $(BANANA_SDK)/lib/patch-cljit.py $(BANANA_SDK)/lib/clvectors-tcc.h
 	sh $(BANANA_SDK)/lib/mkcljit.sh $(BANANA_TCC) $(CLJIT)
 $(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o $(BUILD)/i686/cljit.o $(BUILD)/x86_64/cljit.o: $(CLJIT)/config.h
+$(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o: $(wildcard $(BANANA_SDK)/lib/cl*.h)
 endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
@@ -122,10 +123,15 @@ $(BUILD)/app-i686: $(LOBJS_i686) $(OBJS_i686)
 $(BUILD)/app-x86_64: $(LOBJS_x86_64) $(OBJS_x86_64)
 	$(LD) $(LDFLAGS_x86_64) $(APP_LDFLAGS) -o $@ $(filter %.o,$^) $(LIBS_x86_64)
 
+# (sq: a value for inside '...' in the shell - an apostrophe in a title or
+# description, "the shell's", ended the quote and broke the build)
+sq = $(subst ','\'',$(1))
+
 $(BUILD)/manifest: $(MAKEFILE_LIST)
 	@mkdir -p $(BUILD)
 	@printf 'name=%s\ntitle=%s\nversion=%s\ntype=%s\ndescription=%s\nauthor=%s\ncategory=%s\ndepends=%s\n' \
-	    '$(APP)' '$(TITLE)' '$(VERSION)' '$(TYPE)' '$(DESCRIPTION)' '$(AUTHOR)' '$(CATEGORY)' '$(DEPENDS)' > $@
+	    '$(call sq,$(APP))' '$(call sq,$(TITLE))' '$(call sq,$(VERSION))' '$(call sq,$(TYPE))' \
+	    '$(call sq,$(DESCRIPTION))' '$(call sq,$(AUTHOR))' '$(call sq,$(CATEGORY))' '$(call sq,$(DEPENDS))' > $@
 
 ICON_FILE = $(if $(ICON),icon.png=$(ICON))
 

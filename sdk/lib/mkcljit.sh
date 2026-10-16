@@ -1,8 +1,8 @@
 #!/bin/sh
 # mkcljit.sh TCC_PORT_DIR OUT_DIR - TinyCC's Banana OS source (ports/tcc,
-# made by its build.sh) copied to OUT_DIR with the one change OpenCL needs:
-# compiling into memory and running it (the kernels), which Banana Code's
-# copy leaves out. sdk/banana.mk runs it for apps with USE_CL = 1.
+# made by its build.sh) copied to OUT_DIR for in-memory compilation and
+# the OpenCL vector extension. Banana Code keeps its own compiler unchanged.
+# sdk/banana.mk runs it for apps with USE_CL = 1.
 set -e
 TCC=$1
 OUT=$2
@@ -28,3 +28,5 @@ cat > "$OUT/sys/mman.h" <<'H'
 static inline int mprotect(void* p, unsigned long n, int mode) { (void)p; (void)n; (void)mode; return 0; }
 #endif
 H
+
+python3 "$(dirname "$0")/patch-cljit.py" "$OUT"

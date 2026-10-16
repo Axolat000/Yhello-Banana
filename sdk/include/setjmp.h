@@ -6,7 +6,7 @@ typedef long jmp_buf[8];
 #else
 typedef long jmp_buf[6];
 #endif
-int  setjmp(jmp_buf env);
+int  setjmp(jmp_buf env) __attribute__((returns_twice));
 void longjmp(jmp_buf env, int val) __attribute__((noreturn));
 #define _setjmp setjmp
 #define _longjmp longjmp

@@ -1,4 +1,5 @@
 #include "idt.h"
+#include "crash.h"
 #include "types.h"
 #include "fb.h"
 #include "serial.h"
@@ -7,8 +8,7 @@
 #include "smp.h"
 #include "task.h"
 #include "timer.h"
-
-#define VGA_MEMORY ((volatile uint16_t*)0xB8000)
+#include "uspace.h"
 
 #ifdef __x86_64__
 /* long mode: 16-byte gates with a 64-bit handler address */
@@ -122,79 +122,61 @@ static const char* const exception_names[32] = {
     "Security Exception", "Reserved",
 };
 
-/* ── Raw, dependency-free panic output ──────────────────────────────────
- * Deliberately does NOT call into terminal.c/gfx.c/fb.c's drawing paths:
- * if one of *those* is what faulted, reusing them here could fault again
- * and turn a diagnosable panic back into a silent triple-fault reset.
- * Writes straight to the legacy VGA text buffer (always safe to write,
- * whether or not it's the active display) and, if a linear framebuffer
- * was detected, pokes raw pixels directly via its already-stored geometry
- * instead of going through the gfx.c/fb.c drawing helpers. */
-
-static void vga_puts(int row, int col, const char* s, uint8_t color) {
-    volatile uint16_t* buf = VGA_MEMORY;
-    for (int i = 0; s[i] && col + i < 80; i++) {
-        buf[row * 80 + col + i] = (uint16_t)(uint8_t)s[i] | ((uint16_t)color << 8);
-    }
-}
-
-static void vga_clear_rows(int rows, uint8_t color) {
-    volatile uint16_t* buf = VGA_MEMORY;
-    for (int r = 0; r < rows; r++)
-        for (int c = 0; c < 80; c++)
-            buf[r * 80 + c] = (uint16_t)' ' | ((uint16_t)color << 8);
-}
-
-static void vga_put_hex(int row, int col, uint32_t val, uint8_t color) {
-    volatile uint16_t* buf = VGA_MEMORY;
-    static const char digits[] = "0123456789ABCDEF";
-    for (int i = 0; i < 8; i++) {
-        uint8_t nibble = (uint8_t)((val >> ((7 - i) * 4)) & 0xFu);
-        buf[row * 80 + col + i] = (uint16_t)(uint8_t)digits[nibble] | ((uint16_t)color << 8);
-    }
-}
-
-static void fb_raw_rect(int x, int y, int w, int h, uint32_t rgb) {
-    if (!fb_available()) return;
-    const fb_info_t* fi = fb_info();
-    if (!fi || !fi->addr || fi->bpp != 32) return;
-
-    int x1 = x + w, y1 = y + h;
-    if (x1 > (int)fi->width)  x1 = (int)fi->width;
-    if (y1 > (int)fi->height) y1 = (int)fi->height;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-
-    for (int yy = y; yy < y1; yy++) {
-        volatile uint32_t* row = (volatile uint32_t*)(fi->addr + (uintptr_t)((uint32_t)yy * fi->pitch));
-        for (int xx = x; xx < x1; xx++) row[xx] = rgb;
-    }
-}
-
-/* Draws the lowest `bits` bits of val as a row of black/white squares
- * (MSB first) so the exception vector is readable with no font rendering. */
-static void fb_raw_binary(int x, int y, uint32_t val, int bits) {
-    for (int i = 0; i < bits; i++) {
-        uint32_t bit = (val >> (bits - 1 - i)) & 1u;
-        uint32_t color = bit ? 0x00FFFFFFu : 0x00000000u;
-        fb_raw_rect(x + i * 40, y, 32, 32, color);
-    }
-}
-
+/* Register capture stays beside the architecture-specific interrupt frame;
+ * the shared renderer never needs to know the ISR assembly layout. */
 void kernel_panic(const char* what) {
-    __asm__ volatile("cli");
-    vga_clear_rows(3, 0x4F);
-    vga_puts(0, 2, "*** BANANA OS PANIC ***", 0x4F);
-    vga_puts(1, 2, what, 0x4F);
-    klog("*** PANIC: %s\n", what);
-    serial_drain();
-    fb_raw_rect(0, 0, 260, 200, 0x00990000u);
-    for (;;) __asm__ volatile("cli; hlt");
+    if(crash_in_progress())crash_abort_nested();
+    static crash_report_t reports[SMP_MAX_CPUS];
+    int cpu=cpu_id();
+    if(cpu<0 || cpu>=SMP_MAX_CPUS)cpu=0;
+    crash_report_t* r=&reports[cpu];
+    memset(r,0,sizeof(*r));
+    r->ip=(uintptr_t)__builtin_return_address(0);
+#ifdef __x86_64__
+    __asm__ volatile("mov %%rsp,%0; mov %%rbp,%1; pushfq; pop %2":"=r"(r->sp),"=r"(r->bp),"=r"(r->flags));
+#else
+    __asm__ volatile("mov %%esp,%0; mov %%ebp,%1; pushfl; pop %2":"=r"(r->sp),"=r"(r->bp),"=r"(r->flags));
+#endif
+    uint16_t cs,ss;
+    __asm__ volatile("mov %%cs,%0; mov %%ss,%1":"=r"(cs),"=r"(ss));
+    r->cs=cs;r->ss=ss;
+    kstrlcpy(r->reason,what?what:"Unspecified kernel check failure",sizeof(r->reason));
+    crash_fatal(r);
+}
+
+static void fatal_exception(registers_t* regs) __attribute__((noreturn));
+static void fatal_exception(registers_t* regs) {
+    crash_report_t r;
+    memset(&r,0,sizeof(r));
+    r.exception=1;r.vector=(uint32_t)regs->int_no;r.error=(uint32_t)regs->err_code;
+    r.ip=(uintptr_t)REG_IP(regs);r.cs=(uintptr_t)regs->cs;
+    kstrlcpy(r.reason,r.vector<32?exception_names[r.vector]:"Unknown CPU exception",sizeof(r.reason));
+#ifdef __x86_64__
+    r.sp=regs->rsp;r.bp=regs->rbp;r.flags=regs->rflags;r.ss=regs->ss;
+    uintptr_t values[]={regs->rax,regs->rbx,regs->rcx,regs->rdx,regs->rsi,regs->rdi,regs->rbp,
+        regs->r8,regs->r9,regs->r10,regs->r11,regs->r12,regs->r13,regs->r14,regs->r15};
+#else
+    /* Ring 0 -> ring 0: the CPU did not push ESP/SS. The pre-interrupt
+     * stack pointer is the byte after EFLAGS, not pushad's saved ESP. */
+    r.sp=(uintptr_t)(regs+1);r.bp=regs->ebp;r.flags=regs->eflags;
+    uint16_t ss;__asm__ volatile("mov %%ss,%0":"=r"(ss));r.ss=ss;
+    uintptr_t values[]={regs->eax,regs->ebx,regs->ecx,regs->edx,regs->esi,regs->edi,regs->ebp};
+#endif
+    memcpy(r.reg,values,sizeof(values));
+    crash_fatal(&r);
 }
 
 void isr_handler(registers_t* regs) {
+    crash_stop_secondary();
     uint32_t n = regs->int_no;
-    const char* name = (n < 32) ? exception_names[n] : "Unknown";
+    if(crash_in_progress())crash_abort_nested();
+
+    /* app memory another core still knew as the kernel's: try it again */
+    if (n == 14 && (regs->cs & 3) == 3) {
+        uintptr_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (uspace_fault_is_stale(cr2, (uint32_t)regs->err_code)) return;
+    }
 
     /* on another core it is app code that faulted: the app is stopped on
      * the boot core (kernel/task.c) - this returns only for a kernel bug */
@@ -202,10 +184,7 @@ void isr_handler(registers_t* regs) {
         uintptr_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         task_ap_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
-        klog("*** PANIC on core %d: %s (vector %u) at ip %llx\n", cpu_id(), name, n,
-             (unsigned long long)REG_IP(regs));
-        serial_drain();
-        for (;;) __asm__ volatile("cli; hlt");
+        fatal_exception(regs);
     }
 
     /* an app that crashed is stopped; only kernel faults are fatal */
@@ -217,33 +196,8 @@ void isr_handler(registers_t* regs) {
         task_recover_fault(n, (uint32_t)regs->err_code, (uintptr_t)REG_IP(regs), cr2);
     }
 
-    vga_clear_rows(6, 0x4F);
-    vga_puts(0, 2, "*** BANANA OS PANIC ***", 0x4F);
-    vga_puts(1, 2, "Exception:", 0x4F);
-    vga_puts(1, 14, name, 0x4F);
-    vga_puts(2, 2, "Vector:", 0x4F);
-    vga_put_hex(2, 10, n, 0x4F);
-    vga_puts(3, 2, "Error code:", 0x4F);
-    vga_put_hex(3, 14, regs->err_code, 0x4F);
-    vga_puts(4, 2, "IP:", 0x4F);
-#ifdef __x86_64__
-    vga_put_hex(4, 7, (uint32_t)(REG_IP(regs) >> 32), 0x4F);
-    vga_put_hex(4, 15, (uint32_t)REG_IP(regs), 0x4F);
-#else
-    vga_put_hex(4, 7, REG_IP(regs), 0x4F);
-#endif
-    vga_puts(5, 2, "CS:", 0x4F);
-    vga_put_hex(5, 6, (uint32_t)regs->cs, 0x4F);
-    klog("*** PANIC: %s (vector %u, error %x) at ip %llx\n", name, n, (uint32_t)regs->err_code,
-         (unsigned long long)REG_IP(regs));
-    serial_drain();                                 /* (interrupts are off: nothing else would send it) */
+    fatal_exception(regs);
 
-    /* Solid red field + binary-encoded vector number (MSB..LSB, left to
-     * right) on the real framebuffer, in case that's what's on screen. */
-    fb_raw_rect(0, 0, 260, 200, 0x00990000u);
-    fb_raw_binary(8, 8, n, 5);
-
-    for (;;) __asm__ volatile("cli; hlt");
 }
 
 /* ── hardware IRQs (8259 PIC) ───────────────────────────────────────
@@ -309,6 +263,7 @@ void irq_install(int irq, void (*handler)(void)) {
 }
 
 void irq_handler(registers_t* regs) {
+    crash_stop_secondary();
     int irq = (int)regs->int_no - 32;
     if (irq < 0 || irq > 15) return;
 
@@ -345,7 +300,7 @@ void irq_handler(registers_t* regs) {
     if (irq >= 8) pic_outb(PIC2_CMD, 0x20);
     pic_outb(PIC1_CMD, 0x20);
     /* app code is safe to switch away from (kernel code is not) */
-    app_preempt((uintptr_t)REG_IP(regs));
+    app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
     task_kpreempt((uintptr_t)REG_IP(regs));     /* (kernel code that may be preempted) */
 }
 
@@ -448,7 +403,17 @@ struct tss64 {
  * knows which one it is (cpu_id(), kernel/smp.h). */
 static struct tss64 g_tss[SMP_MAX_CPUS];
 static uint8_t g_fault_stack[SMP_MAX_CPUS][16384] __attribute__((aligned(16)));
-static uint64_t g_gdt[2 + 2 * SMP_MAX_CPUS];   /* null, 64-bit code (0x08), a TSS (16 bytes) per core */
+/* null, 64-bit code (0x08), a TSS (16 bytes) per core, then ring 3's data
+ * and code (apps: kernel/app.c) */
+#define GDT_USER (2 + 2 * SMP_MAX_CPUS)
+static uint64_t g_gdt[GDT_USER + 2];
+/* the selectors apps run with (kernel/appcall64.asm) */
+uint64_t g_user_ss = (GDT_USER * 8) | 3;
+uint64_t g_user_cs = ((GDT_USER + 1) * 8) | 3;
+
+void tss_set_rsp0(int cpu, uintptr_t rsp0) {
+    if (cpu >= 0 && cpu < SMP_MAX_CPUS) g_tss[cpu].rsp[0] = rsp0;
+}
 
 static void gdt_load_cpu(int cpu) {
     struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gp = { sizeof(g_gdt) - 1, (uint64_t)(uintptr_t)g_gdt };
@@ -473,6 +438,8 @@ static void tss_init(void) {
                            (((limit >> 16) & 0xF) << 48) | (((base >> 24) & 0xFF) << 56);
         g_gdt[3 + 2 * c] = base >> 32;
     }
+    g_gdt[GDT_USER] = 0x00CFF2000000FFFFull;        /* data, ring 3 */
+    g_gdt[GDT_USER + 1] = 0x00AFFA000000FFFFull;    /* 64-bit code, ring 3 */
     gdt_load_cpu(0);
 }
 
@@ -483,17 +450,19 @@ void idt_ap_init(int cpu) {
 }
 
 extern void ipi_stub(void);
+extern void syscall_stub(void);
 extern void stray_stub(void);
 extern void spurious_stub(void);
 extern void lapic_timer_stub(void);
 
 /* local-APIC interrupts: kernel/isr64.asm */
 void ipi_handler(registers_t* regs) {
+    crash_stop_secondary();
     if (regs->int_no == SMP_VEC_TIMER) {
         /* the boot core's local APIC timer, standing in for the PIT (IRQ 0) */
         for (int i = 0; i < IRQ_CHAIN && irq_handlers[0][i]; i++) irq_handlers[0][i]();
         smp_eoi();
-        app_preempt((uintptr_t)REG_IP(regs));
+        app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3);
         task_kpreempt((uintptr_t)REG_IP(regs));
         return;
     }
@@ -508,6 +477,8 @@ void irq_timer_from_lapic(int on) {
     else irq_mask &= (uint16_t)~1u;
     pic_apply_mask();
 }
+#else
+void tss_set_rsp0(int cpu, uintptr_t rsp0) { (void)cpu; (void)rsp0; }   /* (apps stay in ring 0) */
 #endif
 
 void idt_init(void) {
@@ -534,6 +505,7 @@ void idt_init(void) {
     idt_set_gate(SMP_VEC_KICK, (uintptr_t)ipi_stub, code_sel, 0x8E);
     idt_set_gate(SMP_VEC_TIMER, (uintptr_t)lapic_timer_stub, code_sel, 0x8E);
     idt_set_gate(SMP_VEC_SPURIOUS, (uintptr_t)spurious_stub, code_sel, 0x8E);
+    idt_set_gate(SYSCALL_VECTOR, (uintptr_t)syscall_stub, code_sel, 0xEE);   /* callable from ring 3 */
 #endif
 
     __asm__ volatile("lidt %0" : : "m"(idtp));

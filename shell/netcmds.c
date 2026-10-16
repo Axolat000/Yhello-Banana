@@ -336,7 +336,7 @@ static void show_ipv6(void) {
     ip6_t a;
     char t[48];
     int plen = 0;
-    if (!ipv6_enabled()) { printf_line("IPv6: off (ipv6 on turns it on)\n"); return; }
+    if (!ipv6_enabled()) { printf_line("IPv6: off (toggle6 on turns it on)\n"); return; }
     printf_line("IPv6: on\n");
     if (ipv6_link_local(&a)) { ip6_format(&a, t, sizeof(t)); printf_line("        inet6 %s/64  scope link\n", t); }
     if (ipv6_global(&a, &plen)) { ip6_format(&a, t, sizeof(t)); printf_line("        inet6 %s/%d  scope global\n", t, plen); }
@@ -356,6 +356,14 @@ static void cmd_ipv6(int argc, char** argv) {
     show_ipv6();
 }
 
+static void cmd_toggle6(int argc, char** argv) {
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "on") && strcmp(argv[1], "off"))) {
+        terminal_writeln("usage: toggle6 [on|off] (without an argument, toggles IPv6)"); return;
+    }
+    ipv6_enable(argc == 1 ? !ipv6_enabled() : !strcmp(argv[1], "on"));
+    show_ipv6();
+}
+
 static void cmd_ping6(int argc, char** argv) {
     uint32_t count = 4;
     const char* host = NULL;
@@ -367,7 +375,8 @@ static void cmd_ping6(int argc, char** argv) {
     if (!ipv6_enabled()) { err("ping6", "IPv6 is off (ipv6 on)"); return; }
     if (!need_device("ping6")) return;
     ip6_t dst;
-    if (!ip6_parse(host, &dst)) { err("ping6", "not an IPv6 address"); return; }
+    int resolved = dns_resolve6(host, &dst, 10000);
+    if (resolved != NET_OK) { err("ping6", net_strerror(resolved)); return; }
     char t[48];
     ip6_format(&dst, t, sizeof(t));
     printf_line("PING %s 56 data bytes\n", t);
@@ -403,7 +412,15 @@ static void cmd_ping6(int argc, char** argv) {
 /* ── nslookup ───────────────────────────────────────────────────── */
 
 static void cmd_nslookup(int argc, char** argv) {
-    if (argc < 2) { terminal_writeln("usage: nslookup <hostname>"); return; }
+    if (argc == 3 && !strcmp(argv[1], "-6")) {
+        ip6_t ip;
+        int rc = dns_resolve6(argv[2], &ip, 10000);
+        if (rc != NET_OK) { err("nslookup", net_strerror(rc)); return; }
+        char text[48]; ip6_format(&ip, text, sizeof(text));
+        printf_line("Name:    %s\nAAAA:    %s\n", argv[2], text);
+        return;
+    }
+    if (argc != 2) { terminal_writeln("usage: nslookup [-6] <hostname>"); return; }
     if (!need_device(argv[0])) return;
     ip4_t ip;
     int rc = dns_resolve(argv[1], &ip, 10000);
@@ -570,7 +587,7 @@ static void cmd_curl(int argc, char** argv) {
     const char* url = NULL;
     const char* out_path = NULL;
     const char* ua = "curl/8.0 (BananaOS 0.5)";
-    int remote_name = 0, follow = 0, ciphers = TLS_CIPHERS_ALL;
+    int remote_name = 0, follow = 0, ciphers = TLS_CIPHERS_ALL, family = 0;
     const char* data = NULL;               /* -d: a POST body (a form) */
     const char* method = NULL;             /* -X */
 
@@ -580,7 +597,9 @@ static void cmd_curl(int argc, char** argv) {
             /* combined short flags: -sSL, -Lo file, ... */
             for (int j = 1; a[j]; j++) {
                 char f = a[j];
-                if (f == 'L') follow = 1;
+                if (f == '6') family = 6;
+                else if (f == '4') family = 4;
+                else if (f == 'L') follow = 1;
                 else if (f == 'I') c.head = 1;
                 else if (f == 'i') c.include = 1;
                 else if (f == 'v') c.verbose = 1;
@@ -594,11 +613,13 @@ static void cmd_curl(int argc, char** argv) {
                     else method = argv[++i];
                     break;
                 } else {
-                    terminal_writeln("usage: curl [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
+                    terminal_writeln("usage: curl [-4|-6] [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
                     return;
                 }
             }
-        } else if (strcmp(a, "--location") == 0) follow = 1;
+        } else if (strcmp(a, "--ipv6") == 0) family = 6;
+        else if (strcmp(a, "--ipv4") == 0) family = 4;
+        else if (strcmp(a, "--location") == 0) follow = 1;
         else if (strcmp(a, "--head") == 0) c.head = 1;
         else if (strcmp(a, "--insecure") == 0 || strcmp(a, "--silent") == 0) c.silent |= (a[2] == 's');
         else if (strcmp(a, "--output") == 0 && i + 1 < argc) out_path = argv[++i];
@@ -612,12 +633,12 @@ static void cmd_curl(int argc, char** argv) {
             ciphers = (aes && !cc) ? TLS_CIPHERS_AES : (cc && !aes) ? TLS_CIPHERS_CHACHA : TLS_CIPHERS_ALL;
         }
         else if (a[0] == '-') {
-            terminal_writeln("usage: curl [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
+            terminal_writeln("usage: curl [-4|-6] [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
             return;
         } else url = a;
     }
     if (!url) {
-        terminal_writeln("usage: curl [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
+        terminal_writeln("usage: curl [-4|-6] [-L] [-o file | -O] [-I] [-i] [-v] [-s] [-A agent] [-d data] [-X method] <url>");
         terminal_writeln("       e.g. curl http://example.com    curl -L -o page.html https://example.com");
         return;
     }
@@ -637,6 +658,7 @@ static void cmd_curl(int argc, char** argv) {
 
     http_request_t req;
     memset(&req, 0, sizeof(req));
+    req.address_family = family;
     req.method = method ? method : c.head ? "HEAD" : data ? "POST" : "GET";
     if (data) {
         req.body = data;
@@ -768,17 +790,20 @@ static void cmd_wget(int argc, char** argv) {
     memset(&w, 0, sizeof(w));
     w.file_idx = -1;
     const char* url = NULL;
+    int family = 0;
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-O") == 0 || strcmp(argv[i], "--output-document") == 0) && i + 1 < argc)
             w.out_path = argv[++i];
         else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) w.quiet = 1;
+        else if (!strcmp(argv[i], "-6") || !strcmp(argv[i], "--inet6-only")) family = 6;
+        else if (!strcmp(argv[i], "-4") || !strcmp(argv[i], "--inet4-only")) family = 4;
         else if (argv[i][0] == '-') {
-            terminal_writeln("usage: wget [-q] [-O file] <url>");
+            terminal_writeln("usage: wget [-4|-6] [-q] [-O file] <url>");
             return;
         } else url = argv[i];
     }
     if (!url) {
-        terminal_writeln("usage: wget [-q] [-O file] <url>");
+        terminal_writeln("usage: wget [-4|-6] [-q] [-O file] <url>");
         terminal_writeln("       e.g. wget -O ~/Pictures/wall.jpg https://example.com/wall.jpg");
         return;
     }
@@ -808,6 +833,7 @@ static void cmd_wget(int argc, char** argv) {
 
     http_request_t req;
     memset(&req, 0, sizeof(req));
+    req.address_family = family;
     req.method = "GET";
     req.follow_redirects = 1;
     req.max_redirects = 20;
@@ -872,6 +898,7 @@ int netcmd_dispatch(const char* line) {
     const char* c = argv[0];
 
     if (strcmp(c, "ifconfig") == 0)                  { cmd_ifconfig(argc, argv); return 1; }
+    if (strcmp(c, "toggle6") == 0) { cmd_toggle6(argc, argv); return 1; }
     if (strcmp(c, "ipv6") == 0)                      { cmd_ipv6(argc, argv); return 1; }
     if (strcmp(c, "firewall") == 0)                  { cmd_firewall(argc, argv); return 1; }
     if (strcmp(c, "ping6") == 0)                     { cmd_ping6(argc, argv); return 1; }
