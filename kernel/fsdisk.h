@@ -34,6 +34,14 @@ int fsdisk_find_target(ata_disk_t* out);
  * Destroys any prior disk contents. Returns FSDISK_OK on success, or one
  * of the FSDISK_ERR_* codes above on failure. */
 int fsdisk_install(void);
+/* the same onto the disk chosen (several disks: the installer asks which) */
+int fsdisk_install_to(const ata_disk_t* target);
+/* the hard disks one could install on (not CD/DVD drives): how many */
+int fsdisk_targets(ata_disk_t* out, int max);
+/* 1 if d holds a Banana OS install (any layout) */
+int fsdisk_holds_banana(const ata_disk_t* d);
+/* the disks holding Banana OS: how many; *out the first (the one used) */
+int fsdisk_find_installed(ata_disk_t* out);
 
 /* Re-writes the current in-memory filesystem to the disk this session
  * installed to or booted from (leaves the boot image alone). Returns

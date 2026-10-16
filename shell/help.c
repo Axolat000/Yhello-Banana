@@ -135,13 +135,21 @@ static const page_t PAGES[] = {
     { "disks", "disks", "disks", "the drives",
       "Lists the drives: IDE, SATA (AHCI), NVMe and virtio disks and CD/DVD drives, with their size and model.",
       NULL, NULL, "install, mount, df" },
-    { "mount", "disks", "mount [-a]", "mounted volumes",
-      "Lists the mounted volumes (FAT32, exFAT) with their device, size and mount point (/mnt/usb, "
-      "/mnt/nvme, /mnt/virtio...). -a tries again the drives that could not be mounted.",
-      "-a|retry unmounted drives", NULL, "umount, df" },
-    { "umount", "disks", "umount [path]", "unmount a volume",
-      "Unmounts a volume (the only one when no path is given) so the stick can be pulled out. eject does the same.",
-      NULL, "umount /mnt/usb", "mount" },
+    { "lsblk", "disks", "lsblk", "the drives, their partitions and where they are mounted",
+      "Lists every drive - the installed disk, CD drives, extra IDE / SATA / NVMe / virtio disks, USB "
+      "sticks, SD cards - and under each its partitions (MBR primary and logical, or GPT) with their "
+      "size, filesystem, mount point and type. Names like sata1p2 are what mount and umount take.",
+      NULL, "lsblk", "mount, umount, df, disks" },
+    { "mount", "disks", "mount [-a] | mount <drive>[p<N>] [folder]", "mounted volumes, or mount one",
+      "Without arguments, lists the mounted volumes (FAT32, exFAT) with their device, size and mount point "
+      "(/mnt/usb, /mnt/sata, /mnt/nvme2...) and the drives not mounted. Every volume of every extra drive "
+      "is mounted by itself - each partition gets its own folder. mount <drive> mounts a drive's volumes "
+      "again after umount; mount <drive>p<N> [folder] mounts one partition, where you say.",
+      "-a|retry every unmounted drive", "mount\nmount sata1\nmount sata1p2 /mnt/data", "lsblk, umount, df" },
+    { "umount", "disks", "umount [path|drive]", "unmount a volume or a whole drive",
+      "Unmounts the volume mounted at path (the only one when nothing is given), or with a drive's name "
+      "(usb0, sata1) all of its volumes, so it can be pulled out. eject does the same.",
+      NULL, "umount /mnt/usb\numount sata1", "mount, lsblk" },
     { "eject", "disks", "eject [path]", "unmount a volume (same as umount)", NULL, NULL, NULL, "umount" },
     { "fsck", "disks", "fsck [-f] [-y]", "check the filesystem",
       "Checks the filesystem in two passes: the tree in memory (every folder reachable from /, every "

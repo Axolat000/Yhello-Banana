@@ -1194,7 +1194,7 @@ static const char* const known_cmds[] = {
     /* kernel/vmtools.c */
     "vmtools",
     /* shell/help.c */
-    "man", "apropos", (void*)0
+    "man", "apropos", "lsblk", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
@@ -2611,6 +2611,7 @@ void shell_run(void) {
             "filesystem; the disk is not written to unless you run 'install' again.\n\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     fsdisk_start_autosave();      /* changes reach the installed disk by themselves */
+    disk_attach_extra(fsdisk_holds_banana);   /* the other hard disks: their volumes mounted in /mnt */
     if (live)
         terminal_write_color("Running the LIVE CD.\n", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
     else if (fsdisk_is_installed())

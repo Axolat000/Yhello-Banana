@@ -196,7 +196,7 @@ uint32_t fs_evictable_bytes(void);
  * and files are regular entries (so ls, cp, Files, the browser... all
  * work on it), every change is written through to the volume, and file
  * contents are only read when first used. */
-#define FS_MAX_MOUNTS 4
+#define FS_MAX_MOUNTS 16
 
 typedef struct {
     /* fill buf with the file's size bytes */

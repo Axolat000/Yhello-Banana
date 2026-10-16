@@ -1341,11 +1341,54 @@ static int v5_format(const ata_disk_t* d, uint32_t keep_lba, uint32_t keep_sect)
     return FSDISK_OK;
 }
 
+/* ── several disks ──────────────────────────────────────────────────
+ * Banana OS used to want exactly one hard disk: with a second one attached
+ * it found no installed system. Now every disk is looked at: the first
+ * holding a Banana OS install is the system's (its volumes never mounted),
+ * the others are ordinary drives, and install asks which disk to use. */
+
+int fsdisk_holds_banana(const ata_disk_t* d) {
+    if (d->is_atapi || !d->sectors) return 0;
+    v5_mark_t m;
+    layout_t l;
+    fsdisk_super_t sb[2];
+    int have[2];
+    return v5_detect(d, &m) || detect(d, &l, sb, have);
+}
+
+int fsdisk_find_installed(ata_disk_t* out) {
+    ata_disk_t all[DISK_MAX];
+    int n = disk_probe(all, DISK_MAX), found = 0;
+    for (int i = 0; i < n; i++) {
+        if (!fsdisk_holds_banana(&all[i])) continue;
+        if (!found && out) *out = all[i];
+        found++;
+    }
+    if (found > 1) klog("fsdisk: %d disks hold Banana OS - using the first one\n", found);
+    return found;
+}
+
+int fsdisk_targets(ata_disk_t* out, int max) {
+    ata_disk_t all[DISK_MAX];
+    int n = disk_probe(all, DISK_MAX), k = 0;
+    for (int i = 0; i < n && k < max; i++)
+        if (!all[i].is_atapi && all[i].sectors) out[k++] = all[i];
+    return k;
+}
+
 int fsdisk_install(void) {
     ata_disk_t target;
     int tr = fsdisk_find_target(&target);
     if (tr == 0) return FSDISK_ERR_NO_TARGET;
     if (tr < 0)  return FSDISK_ERR_AMBIGUOUS;
+    return fsdisk_install_to(&target);
+}
+
+int fsdisk_install_to(const ata_disk_t* tp) {
+    ata_disk_t target = *tp;
+    if (target.is_atapi || !target.sectors) return FSDISK_ERR_NO_TARGET;
+    /* what was mounted from it goes, and it is never mounted again */
+    blockdev_set_system(disk_blockdev(&target));
 
     img_src_t source;
     if (!find_source(&source)) return FSDISK_ERR_NO_SOURCE;
@@ -1406,7 +1449,8 @@ int fsdisk_sync(void) {
 
 int fsdisk_try_load(void) {
     ata_disk_t target;
-    if (fsdisk_find_target(&target) != 1) return 0; /* none, or ambiguous */
+    if (!fsdisk_find_installed(&target)) return 0;     /* (other disks: ordinary drives) */
+    blockdev_set_system(disk_blockdev(&target));
 
     int r5 = v5_try_load(&target);
     if (r5 < 0) return -1;
@@ -1533,11 +1577,7 @@ int fsdisk_find_install(ata_disk_t* out) {
     if (g_fi_state < 0) {
         g_fi_state = 0;
         ata_disk_t d;
-        layout_t l;
-        fsdisk_super_t sb[2];
-        int have[2];
-        v5_mark_t m;
-        if (fsdisk_find_target(&d) == 1 && (v5_detect(&d, &m) || detect(&d, &l, sb, have))) {
+        if (fsdisk_find_installed(&d)) {
             g_fi_disk = d;
             g_fi_state = 1;
         }
@@ -1553,7 +1593,7 @@ int fsdisk_install_layout(void) {
     fsdisk_super_t sb[2];
     int have[2];
     v5_mark_t m;
-    if (fsdisk_find_target(&d) != 1) return 0;
+    if (!fsdisk_find_installed(&d)) return 0;
     if (v5_detect(&d, &m)) return 5;
     if (!detect(&d, &l, sb, have)) return 0;
     return (int)l.version;
