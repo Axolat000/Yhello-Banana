@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 6.
+ * The Banana OS application interface (ABI), version 16.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 15u
+#define BANANA_API_VERSION 16u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -396,7 +396,27 @@ typedef struct banana_api {
     int   (*repo_add_source)(const char* url, const char* key_hex, int trusted, char* msg, int mcap);
     /* removes the one with this URL: 0, or -1 (msg) */
     int   (*repo_remove_source)(const char* url, char* msg, int mcap);
+
+    /* ── version 16: mapped memory (mmap, <sys/mman.h>) ────────── */
+    /* 64-bit: len bytes of addresses of the app's own (rounded up to 4 KiB
+     * pages) that get memory - zeroed - when first touched, so a big range
+     * can be reserved and used little by little. prot: BANANA_PROT_*;
+     * flags BANANA_MAP_FIXED: at addr exactly, replacing what was mapped
+     * there (otherwise addr is a hint). The address, or NULL. 32-bit:
+     * zeroed memory right away, prot not enforced. */
+    void* (*vm_map)(void* addr, unsigned long len, int prot, int flags);
+    int   (*vm_unmap)(void* addr, unsigned long len);           /* 0, or -1 */
+    /* touching a page against its protection is a bad access: 0, or -1
+     * if some of the range is not mapped */
+    int   (*vm_protect)(void* addr, unsigned long len, int prot);
 } banana_api_t;
+
+/* vm_map / vm_protect (the same values as kernel/uvm.h) */
+#define BANANA_PROT_NONE  0
+#define BANANA_PROT_READ  1
+#define BANANA_PROT_WRITE 2
+#define BANANA_PROT_EXEC  4
+#define BANANA_MAP_FIXED  1
 
 /* the app's entry point (the SDK's crt0 provides it) */
 typedef int (*banana_entry_t)(const banana_api_t* api, int argc, char** argv);

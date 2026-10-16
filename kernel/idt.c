@@ -171,6 +171,14 @@ void isr_handler(registers_t* regs) {
     uint32_t n = regs->int_no;
     if(crash_in_progress())crash_abort_nested();
 
+    /* a page an app mapped, touched for the first time (by it, or by a system
+     * call working for it): it gets its memory and the access goes on */
+    if (n == 14) {
+        uintptr_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (app_vm_fault(cr2, (uint32_t)regs->err_code)) return;
+    }
+
     /* app memory another core still knew as the kernel's: try it again */
     if (n == 14 && (regs->cs & 3) == 3) {
         uintptr_t cr2;

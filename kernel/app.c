@@ -28,6 +28,7 @@
 #include "umem.h"
 #include "uspace.h"
 #include "idt.h"
+#include "uvm.h"
 
 #define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
@@ -241,12 +242,78 @@ void app_mem_free(int owner, void* ptr) {
     umem_free(g_procs[owner].mem, ptr);
 }
 
+#ifdef __x86_64__
+/* 1 if [ptr, ptr + n) is p's: its blocks, or what it mapped (kernel/uvm.h) */
+static int own(app_proc_t* p, const void* ptr, size_t n) {
+    return umem_owns(p->mem, ptr, n) || uvm_owns(p->us, ptr, n);
+}
+
+static int own_str(app_proc_t* p, const char* s) {
+    return umem_owns_str(p->mem, s) || uvm_owns_str(p->us, s);
+}
+#endif
+
+/* ── mmap (version 16) ─────────────────────────────────────────────────
+ * 64-bit: reserved addresses, pages on first touch, protection (uvm.h).
+ * 32-bit: no paging - zeroed app memory, protection ignored. */
+
+static void* a_vm_map(void* addr, unsigned long len, int prot, int flags) {
+    app_proc_t* p = cur();
+    if (!p || !len) return NULL;
+#ifdef __x86_64__
+    return (void*)uvm_map(p->us, p->mem, (uintptr_t)addr, len, prot, flags);
+#else
+    (void)prot;
+    if ((flags & UVM_FIXED) && addr) {                  /* only over memory it has: cleared */
+        if (!umem_owns(p->mem, addr, len)) return NULL;
+        memset(addr, 0, len);
+        return addr;
+    }
+    if (len > (256ul << 20)) return NULL;
+    void* m = umem_alloc_pages(p->mem, (len + 4095) & ~4095ul, 0);
+    if (m) memset(m, 0, (len + 4095) & ~4095ul);
+    return m;
+#endif
+}
+
+static int a_vm_unmap(void* addr, unsigned long len) {
+    app_proc_t* p = cur();
+    if (!p || !addr) return -1;
+#ifdef __x86_64__
+    return uvm_unmap(p->us, p->mem, (uintptr_t)addr, len);
+#else
+    if (!umem_owns(p->mem, addr, len)) return -1;
+    size_t whole = umem_pages_size(p->mem, addr);
+    if (whole && len >= whole) umem_free_pages(p->mem, addr, 0);   /* a whole mapping goes */
+    else memset(addr, 0, len);                          /* (part of one: it stays, cleared) */
+    return 0;
+#endif
+}
+
+static int a_vm_protect(void* addr, unsigned long len, int prot) {
+    app_proc_t* p = cur();
+    if (!p || !addr) return -1;
+#ifdef __x86_64__
+    return uvm_protect(p->us, (uintptr_t)addr, len, prot);
+#else
+    (void)prot;
+    return umem_owns(p->mem, addr, len) ? 0 : -1;
+#endif
+}
+
+/* kernel/idt.c, every page fault (any core, either mode): a page of the
+ * running app's mmap region touched for the first time gets its memory */
+int app_vm_fault(uintptr_t addr, uint32_t err) {
+    app_proc_t* p = cur();
+    return p && p->us && uvm_fault(p->us, p->mem, addr, err);
+}
+
 /* 1 if [ptr, ptr + n) is the calling app's memory (64-bit: what a system
  * call may touch on its behalf; the 32-bit kernel does not check) */
 static int uok(const void* ptr, size_t n) {
 #ifdef __x86_64__
     app_proc_t* p = cur();
-    return p && umem_owns(p->mem, ptr, n);
+    return p && own(p, ptr, n);
 #else
     (void)ptr; (void)n;
     return 1;
@@ -256,7 +323,7 @@ static int uok(const void* ptr, size_t n) {
 static int ustr(const char* s) {
 #ifdef __x86_64__
     app_proc_t* p = cur();
-    return p && umem_owns_str(p->mem, s);
+    return p && own_str(p, s);
 #else
     (void)s;
     return 1;
@@ -1376,6 +1443,9 @@ static void spec_init(void) {
     SPEC(repo_sources, "ii", 0);        /* out: checked in it */
     SPEC(repo_add_source, "ssibi", 0);
     SPEC(repo_remove_source, "sbi", 0);
+    SPEC(vm_map, "iiii", 0);            /* (addresses: checked in uvm) */
+    SPEC(vm_unmap, "ii", 0);
+    SPEC(vm_protect, "iii", 0);
 
     LOCAL(ticks_ms, LOCAL_YES);
     LOCAL(cpu_count, LOCAL_YES);
@@ -1387,6 +1457,9 @@ static void spec_init(void) {
     LOCAL(draw_text, LOCAL_YES);
     LOCAL(wake, LOCAL_YES);             /* (task_wake only moves a deadline: any core may) */
     LOCAL(wait, LOCAL_WAIT);
+    LOCAL(vm_map, LOCAL_YES);           /* (its own tables and memory, under their locks) */
+    LOCAL(vm_unmap, LOCAL_YES);
+    LOCAL(vm_protect, LOCAL_YES);
 }
 
 /* the pointers of a call, against the app's memory (NULL is left to the call) */
@@ -1396,7 +1469,7 @@ static int args_ok(app_proc_t* p, const sysspec_t* sp, const uint64_t* a) {
         if (!ptr) continue;
         size_t n;
         switch (sp->args[i]) {
-        case 's': if (!umem_owns_str(p->mem, (const char*)ptr)) return 0; continue;
+        case 's': if (!own_str(p, (const char*)ptr)) return 0; continue;
         case 'b': n = (int32_t)a[i + 1] > 0 ? (size_t)(int32_t)a[i + 1] : 1; break;
         case 'B': n = a[i + 1] ? (size_t)a[i + 1] : 1; if (a[i + 1] >> 32) return 0; break;
         case 'I': n = 4; break;
@@ -1404,7 +1477,7 @@ static int args_ok(app_proc_t* p, const sysspec_t* sp, const uint64_t* a) {
         case 'o': n = sp->osize; break;
         default: continue;
         }
-        if (!umem_owns(p->mem, ptr, n)) return 0;
+        if (!own(p, ptr, n)) return 0;
     }
     return 1;
 }
@@ -1435,7 +1508,7 @@ static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, 
     if (nargs > 6) {
         /* above the return address of the app's call */
         const uint64_t* st = (const uint64_t*)(uintptr_t)(r->rsp + 8);
-        if (!umem_owns(p->mem, st, (nargs - 6) * 8)) return 0;
+        if (!own(p, st, (nargs - 6) * 8)) return 0;
         for (uint32_t i = 6; i < nargs; i++) a[i] = st[i - 6];
     }
     return args_ok(p, sp, a);
@@ -1637,6 +1710,9 @@ static void api_init(void) {
     g_api.repo_sources = G(a_repo_sources);
     g_api.repo_add_source = G(a_repo_add_source);
     g_api.repo_remove_source = G(a_repo_remove_source);
+    g_api.vm_map = G(a_vm_map);
+    g_api.vm_unmap = G(a_vm_unmap);
+    g_api.vm_protect = G(a_vm_protect);
 #ifdef __x86_64__
     spec_init();
 #endif

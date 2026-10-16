@@ -31,6 +31,10 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
                          float8-16 vectors, refused group sizes
+selftest posix [part]    installs and runs the posixtest example: the POSIX layer for
+                         ported programs - mmap: a 1 GiB reservation, mprotect, holes
+                         mapped again, file mappings, system calls on mapped buffers,
+                         threads faulting pages in on every core
 selftest ipv6 [host [port]]
                          IPv6 off blocks TCP, UDP and resolution; address parsing and
                          formatting; localhost; bracketed HTTP URLs; UDP loopback

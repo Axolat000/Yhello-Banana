@@ -395,6 +395,20 @@ events too. Web pages get the same as `keydown` / `keyup` with `event.code`.
 The C library also has `setjmp` / `longjmp`, `gettimeofday` (`<sys/time.h>`),
 `realpath`, `strtold` and `ldexpl`.
 
+### mmap (API version 16)
+
+`<sys/mman.h>` has `mmap`, `munmap`, `mprotect` (and `madvise`, `msync`,
+`mlock` as no-ops), with Linux's flag values. On the 64-bit system an app
+has 2 TiB of addresses of its own for mappings: `mmap` only reserves them,
+and each 4 KiB page gets memory - zeroed - the first time it is touched, so
+reserving a big range (a garbage-collected heap) costs only what is used.
+`PROT_NONE` and `PROT_READ` are enforced: touching a page against its
+protection is a bad access. `MAP_FIXED` replaces what was mapped there with
+fresh pages. A file mapping is a private copy of the file (`MAP_SHARED`
+writes are not written back). System calls take mapped buffers like any
+other memory. The 32-bit system has no paging: `mmap` hands out zeroed
+memory right away and protection is not enforced. `selftest posix` checks it.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and
