@@ -25,6 +25,7 @@
 #include "syscmds.h"
 #include "moncmds.h"
 #include "fscmds.h"
+#include "help.h"
 #include "../kernel/vmtools.h"
 #include "../kernel/serial.h"
 #include "../kernel/kstring.h"
@@ -878,215 +879,8 @@ static void cmd_top(void) {
     }
 }
 
-static void cmd_help(void) {
-    static const char* all_lines[] = {
-        "Banana OS 0.6 - available commands:",
-        "",
-        "  help               show this message",
-        "  neofetch           system information",
-        "  echo <text>        print text",
-        "  clear              clear screen",
-        "  uname              print system name",
-        "  whoami             print current user",
-        "  hostname           print system hostname",
-        "  date               print current date/time",
-        "  ls [-l] [path]     list directory (absolute or relative path)",
-        "  cd [path]          change directory (no arg / ~ -> home, .. up)",
-        "  pwd                print working directory (full path)",
-        "  mkdir [-p] <dir>   create directory (-p makes parents too)",
-        "  rm [-r] <name>     remove file, or directory with -r",
-        "  touch <file>       create an empty file (or update if it exists)",
-        "  cp <src> <dst>     copy a file",
-        "  mv <src> <dst>     move/rename a file or directory",
-        "  edit <file>        open nano-style text editor",
-        "  cat <file>         print file contents",
-        "  grep [-n] <p> <f>  print lines in a file matching a substring",
-        "  wc <file>          count lines/words/bytes in a file",
-        "  head [-n N] <file> print first N lines (default 10)",
-        "  tail [-n N] <file> print last N lines (default 10)",
-        "  find [path]        recursively list files/dirs under path",
-        "  history            show command history",
-        "  which <cmd>        show whether a command is a shell builtin",
-        "  type <cmd>         like which, but alias-aware (bash-flavored)",
-        "  alias [n[=v]]      list/define a command alias (bash-flavored)",
-        "  unalias <name>     remove an alias",
-        "  export [N=V]       list/set an environment variable",
-        "  unset <name>       remove an environment variable",
-        "  env                list environment variables",
-        "  chsh [sh|bash]     show/set the DEFAULT shell for new sessions",
-        "  autologin [on|off] log in at boot without the password (Settings > Startup)",
-        "  ($VAR expands to env vars; \"!!\" repeats the last command)",
-        "  run <file.sh>      run script file line by line",
-        "  uptime             print current uptime",
-        "  top                live system monitor (press q to quit)",
-        "  htop               colour monitor: per-core meters (q quits, P/N/T sort)",
-        "  free [-h|-m|-k]    RAM: total, used, free",
-        "  df [-h|-k] [-i]    disk space: size, used, free (-i: files and folders)",
-        "  exit               close this GUI terminal window",
-        "  start              alias of startx",
-        "  stop               alias of stopx",
-        "  startx             start GUI desktop",
-        "  stopx              quit GUI desktop",
-        "  keyboardctl [lay]  show/set keyboard layout",
-        "  loadctl [lay]      alias of keyboardctl",
-        "  usbctl             show USB legacy handoff status",
-        "  proc_info [flags]  cpu info (-c -t -n -v -f -m -s -ht)",
-        "  ram_info [flags]   ram info (-t -u -h -f -p -m)",
-        "  gpu_info [flags]   gpu/fb info (-n -r -b -p -m)",
-        "  lsgpu              graphics cards: driver, mode, video memory, features",
-        "  brightness [0-100] a laptop panel's backlight (Intel graphics)",
-        "  resolution [WxH]   the screen's modes, or switch to one",
-        "  drivers            loaded drivers and driver modules (driver load <file>)",
-        "  hw_info [flags]    hardware summary (-c -m -g -u -k -r)",
-        "  shutdown [now|-c]  schedule shutdown (60s), now, or cancel",
-        "  reboot             immediate reboot",
-        "  halt               hard halt (no ACPI)",
-        "  disks              list the IDE and SATA drives",
-        "  install            install to a dedicated IDE or SATA disk (bootable, persistent)",
-        "  sync               re-write filesystem to the installed disk now",
-        "  update             from a newer CD: update the installed system, keeping your files",
-        "  installer          live CD: the graphical installer (desktop running)",
-        "  time <command>     run a command and print how long it took",
-        "",
-        "Networking:",
-        "  ifconfig [if ..]   show / set the network config (saved in /etc/network.conf)",
-        "  ifconfig reset     forget the saved network config (back to DHCP)",
-        "  ifconfig <if> up   make eth0 / usb0 the active interface",
-        "  lsusb              list USB controllers and devices",
-        "  usb rescan         look for newly plugged / unplugged USB devices",
-        "  mount [-a]         mounted USB sticks / NVMe (FAT32: /mnt/usb, /mnt/nvme)",
-        "  umount [path]      unmount (eject) a stick so it can be removed",
-        "  fstest <mount>     test a FAT32 / exFAT drive: write, mount again, check",
-        "  crashtest [mode]   crash-screen preview/report; panic/ud2/pagefault halt the OS",
-        "  selftest [part]    check the system: ring3, memory, limits, cores, opencl, ipv6",
-        "  toggle6 [on|off]   toggle IPv6 (off by default; also in Settings)",
-        "  pkg <cmd>          apps: install <f.bpk>, list, info, remove, run, ps",
-        "  <app> [args]       run an installed app by its name",
-        "  apps / taskmgr     open Apps / the Task Manager on the desktop",
-        "  play <f.wav>       play a sound (play -s stops); lsaudio: the sound card",
-        "  beep [hz] [ms]     a tone;  volume [0-100]: sound volume",
-        "  dhcp               request a new DHCP lease",
-        "  ping [-c N] <host> send ICMP echo requests (Ctrl+C stops)",
-        "  nslookup <host>    resolve a hostname with DNS (alias: host)",
-        "  curl [opt] <url>   HTTP/HTTPS client: -o f -O -L -I -i -v -s",
-        "  wget [-O f] <url>  download a file (follows redirects)",
-        "  netstat            list TCP connections",
-        "  arp                show the ARP cache",
-        "  cryptotest         run the TLS crypto self-tests",
-        "",
-        "Wallpaper:",
-        "  wallpaper          show/set the wallpaper (see: wallpaper help)",
-        "  wallpaper url <u>  download a picture to ~/Pictures and use it",
-        "  files [folder]     open the desktop's file explorer (also: Files icon)",
-        "  browser [url]      open the desktop's web browser (also: Browser icon)",
-        "  notepad [file]     open the desktop's text editor (also: Notepad icon)",
-        "",
-        "Servers:",
-        "  passwd             set the password of banana (the SSH login)",
-        "  sshd start|stop    SSH server (port 22): ssh banana@<this machine>",
-        "  rdpd start|stop    Remote Desktop server (port 3389): mstsc / FreeRDP",
-        "  rdp host[:port]    connect to a Remote Desktop server (a desktop window)",
-        "  httpd start|stop   web server (port 80) for /var/www, runs .php pages",
-        "  httpd expose       make it reachable from the Internet (router UPnP)",
-        "  sshd/rdpd/httpd enable  also start it at every boot (disable: undo)",
-        "",
-        "Shell: cmd > file, cmd >> file, cmd1; cmd2, cmd1 && cmd2",
-        "  Editor: arrows move, ^O/^S save, ^X exit, ^K cut line, ^U paste",
-        "",
-    };
-    /* (installing and updating: only on the live system) */
-    static const char* lines[sizeof(all_lines) / sizeof(all_lines[0])];
-    int line_count = 0;
-    for (int i = 0; i < (int)(sizeof(all_lines) / sizeof(all_lines[0])); i++) {
-        const char* l = all_lines[i];
-        if (!sysinfo_live_boot() && (k_strncmp(l, "  install ", 10) == 0 || k_strncmp(l, "  update ", 9) == 0 || k_strncmp(l, "  installer ", 12) == 0)) continue;
-        lines[line_count++] = l;
-    }
-    if (terminal_is_capturing()) {           /* help > file: no pager */
-        for (int i = 0; i < line_count; i++) terminal_writeln(lines[i]);
-        return;
-    }
-    const int view_rows = 21; /* keep last rows for status/help */
-    int top = 0;
-    int max_top = (line_count > view_rows) ? (line_count - view_rows) : 0;
-    int my_vt = terminal_vt_get_active();
-
-    while (1) {
-        terminal_clear();
-        for (int r = 0; r < view_rows; r++) {
-            int idx = top + r;
-            if (idx >= line_count) {
-                terminal_putchar('\n');
-                continue;
-            }
-            /* headings are unindented, the editor note is grey, and
-             * every indented line is a command */
-            const char* l = lines[idx];
-            if (l[0] && l[0] != ' ') {
-                terminal_write_color(l, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else if (k_strncmp(l, "  Editor:", 9) == 0) {
-                terminal_write_color(l, VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else if (l[0]) {
-                terminal_write_color(l, VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-                terminal_putchar('\n');
-            } else {
-                terminal_writeln(l);
-            }
-        }
-
-        terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
-        terminal_write(" help: up/down or j/k to scroll, q to quit ");
-        for (int i = 42; i < 80; i++) terminal_putchar(' ');
-        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-        terminal_putchar('\n');
-
-        terminal_setcolor(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
-        terminal_write(" lines ");
-        {
-            char b1[16], b2[16];
-            terminal_write(u32_to_str((uint32_t)(top + 1), b1, sizeof(b1)));
-            terminal_write("-");
-            int end_line = top + view_rows;
-            if (end_line > line_count) end_line = line_count;
-            terminal_write(u32_to_str((uint32_t)end_line, b2, sizeof(b2)));
-            terminal_write("/");
-            terminal_write(u32_to_str((uint32_t)line_count, b2, sizeof(b2)));
-        }
-        for (int i = 0; i < 62; i++) terminal_putchar(' ');
-        terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-
-        char c = 0;
-        while (!c) {
-            gui_poll();
-            terminal_vt_set_active(my_vt);
-            if (gui_focused_vt() != my_vt) { task_sleep_ms(10); continue; }
-            c = keyboard_try_getchar();
-            if (!c) task_sleep_ms(10);
-        }
-        if (c == 'q' || c == 'Q' || c == 3) {
-            terminal_putchar('\n'); /* keep visible help text on screen */
-            return;
-        }
-        if (c == 'j' || c == 'J') {
-            if (top < max_top) top++;
-            continue;
-        }
-        if (c == 'k' || c == 'K') {
-            if (top > 0) top--;
-            continue;
-        }
-        if (c == 27) {
-            char c2 = keyboard_getchar();
-            char c3 = keyboard_getchar();
-            if (c2 != '[') continue;
-            if (c3 == 'A' && top > 0) top--;
-            if (c3 == 'B' && top < max_top) top++;
-            continue;
-        }
-    }
-}
+/* help: the pages live in shell/help.c */
+static void cmd_help(const char* args) { help_command(args); }
 
 static void cmd_keyboardctl(const char* args) {
     const char* layout = k_skip_spaces(args);
@@ -1398,7 +1192,9 @@ static const char* const known_cmds[] = {
     /* shell/fscmds.c */
     "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
     /* kernel/vmtools.c */
-    "vmtools", (void*)0
+    "vmtools",
+    /* shell/help.c */
+    "man", "apropos", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
@@ -2474,8 +2270,23 @@ static void dispatch_cmd(const char* raw_line, int persona) {
         return;
     }
 
+    /* <command> --help: its page (shell/help.c) */
+    {
+        int l = k_strlen(line);
+        if (l > 7 && k_strcmp(line + l - 7, " --help") == 0) {
+            char first[32];
+            int n = 0;
+            while (line[n] && line[n] != ' ' && n < (int)sizeof(first) - 1) { first[n] = line[n]; n++; }
+            first[n] = 0;
+            if (help_show_page(first)) return;
+        }
+    }
+
     /* exact matches */
-    if (k_strcmp(line, "help")     == 0) { cmd_help();       return; }
+    if (k_strcmp(line, "help")     == 0) { cmd_help("");     return; }
+    if (k_strncmp(line, "help ", 5) == 0) { cmd_help(line + 5); return; }
+    if (k_strcmp(line, "man") == 0 || k_strncmp(line, "man ", 4) == 0) { help_man(line + 3); return; }
+    if (k_strcmp(line, "apropos") == 0 || k_strncmp(line, "apropos ", 8) == 0) { help_apropos(line + 7); return; }
     if (k_strcmp(line, "clear")    == 0) { terminal_clear(); return; }
     if (k_strcmp(line, "neofetch") == 0) { cmd_neofetch(persona); return; }
     if (k_strcmp(line, "uname")    == 0) { cmd_uname(persona);    return; }
@@ -2692,6 +2503,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     terminal_write_color(shell_kind_name(persona), VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_write_color(": command not found: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_writeln(line);
+    help_suggest(line);
 }
 
 static void run_script_text(const char* content, int persona) {
@@ -2772,6 +2584,7 @@ static void run_init_file(int persona) {
 /* ── entry ──────────────────────────────────────────────────────── */
 void shell_run(void) {
     char buf[SH_LINE_MAX];
+    help_set_known(known_cmds);         /* (help --check, did you mean) */
     /* Which persona a *new* shell instance boots into is decided once,
      * here, from g_default_shell_kind (as set by `chsh`) - see the
      * "shell personas" comment near the top of this file. */
