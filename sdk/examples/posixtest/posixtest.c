@@ -7,6 +7,7 @@
  *   posixtest threads  pthreads, __thread, semaphores, clocks
  *   posixtest sockets  TCP and UDP on the loopback, poll / select, names
  *   posixtest signals  handlers, faults as signals, masks, pthread_kill
+ *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,8 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <ucontext.h>
+#include <dlfcn.h>
+#include <link.h>
 #include <banana.h>
 
 static int g_ok, g_fail;
@@ -764,12 +767,60 @@ static void t_signals(void) {
 #endif
 }
 
+/* ── dlopen ───────────────────────────────────────────────────────── */
+
+/* libdemo calls this back (it is in the app's export table) */
+int posixtest_from_app(int x) { return x + 1; }
+
+static int count_objs(struct dl_phdr_info* i, size_t size, void* data) { (void)i; (void)size; (*(int*)data)++; return 0; }
+
+static void t_dlopen(void) {
+    printf("dlopen: shared libraries\n");
+    const char* bits = sizeof(void*) == 8 ? "64" : "32";
+    char p2[96], p1[32], note[160];
+    snprintf(p2, sizeof(p2), "/apps/posixtest/libdemo2_%s.so", bits);
+    snprintf(p1, sizeof(p1), "libdemo%s.so", bits);
+    void* h2 = dlopen(p2, RTLD_NOW);
+    const char* e = h2 ? "" : dlerror();
+    snprintf(note, sizeof(note), "%s", e ? e : "");
+    check("dlopen a library that needs another (DT_NEEDED)", h2 != NULL, note);
+    if (!h2) return;
+    int (*twice)(int, int) = (int (*)(int, int))dlsym(h2, "demo2_twice_sum");
+    check("dlsym, and a call across the two libraries", twice && twice(3, 4) == 14, "");
+
+    void* h1 = dlopen(p1, RTLD_NOW);                  /* (loaded already: the same one) */
+    int (*ran)(void) = (int (*)(void))dlsym(h1, "demo_ctor_ran");
+    int* counter = (int*)dlsym(h1, "demo_counter");
+    check("its constructor ran, its data is there", h1 && ran && ran() == 1 && counter && *counter == 105, "");
+
+    int (*call_app)(int) = (int (*)(int))dlsym(h1, "demo_call_app");
+    char* (*fmt)(int) = (char* (*)(int))dlsym(h1, "demo_format");
+    char* s = fmt ? fmt(7) : NULL;
+    snprintf(note, sizeof(note), "%s", s ? s : "(none)");
+    check("the library calls the C library and the app", call_app && call_app(5) == 12 && s && !strcmp(s, "value=7 len=3"), note);
+    free(s);
+
+    Dl_info di;
+    int (*add)(int, int) = (int (*)(int, int))dlsym(h1, "demo_add");
+    int ok = add && dladdr((void*)add, &di) && di.dli_sname && !strcmp(di.dli_sname, "demo_add") && strstr(di.dli_fname, p1);
+    int objs = 0;
+    dl_iterate_phdr(count_objs, &objs);
+    snprintf(note, sizeof(note), "%d objects loaded", objs);
+    check("dladdr names the function, dl_iterate_phdr lists them", ok && objs >= 3, note);
+
+    ok = dlsym(RTLD_DEFAULT, "malloc") == (void*)malloc && !dlsym(h1, "no_such_function") && dlerror() &&
+         !dlopen("/no/such/library.so", RTLD_NOW) && dlerror();
+    check("RTLD_DEFAULT finds the C library; missing things fail with dlerror", ok, "");
+    check("dlclose", dlclose(h1) == 0 && dlclose(h2) == 0, "");
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (!only || !strcmp(only, "mmap")) t_mmap();
     if (!only || !strcmp(only, "threads")) t_threads();
     if (!only || !strcmp(only, "sockets")) t_sockets();
     if (!only || !strcmp(only, "signals")) t_signals();
+    if (!only || !strcmp(only, "dlopen")) t_dlopen();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

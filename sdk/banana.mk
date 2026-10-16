@@ -84,7 +84,7 @@ endif
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c \
             $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c \
-            $(BANANA_SDK)/lib/signal.c
+            $(BANANA_SDK)/lib/signal.c $(BANANA_SDK)/lib/dl.c
 LIBC_i686   = $(LIBC_SRCS) $(BANANA_SDK)/lib/divdi3.c
 LIBC_x86_64 = $(LIBC_SRCS)
 
@@ -122,10 +122,21 @@ $(BUILD)/x86_64/sdk_%.o: $(BANANA_SDK)/lib/%.c $(SDK_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_x86_64) $(APP_CFLAGS) $(NOBUILTIN) -c $< -o $@
 
-$(BUILD)/app-i686: $(LOBJS_i686) $(OBJS_i686)
+# the table of the app's own symbols (its objects' and the SDK's), which
+# the shared libraries it opens with dlopen may use (sdk/lib/dl.c)
+$(BUILD)/i686/__exports.c: $(LOBJS_i686) $(OBJS_i686) $(BANANA_SDK)/tools/mkexports
+	$(PYTHON) $(BANANA_SDK)/tools/mkexports $@ $(filter %.o,$^)
+$(BUILD)/x86_64/__exports.c: $(LOBJS_x86_64) $(OBJS_x86_64) $(BANANA_SDK)/tools/mkexports
+	$(PYTHON) $(BANANA_SDK)/tools/mkexports $@ $(filter %.o,$^)
+$(BUILD)/i686/__exports.o: $(BUILD)/i686/__exports.c
+	$(CC) $(CFLAGS_i686) $(APP_CFLAGS) -w -c $< -o $@
+$(BUILD)/x86_64/__exports.o: $(BUILD)/x86_64/__exports.c
+	$(CC) $(CFLAGS_x86_64) $(APP_CFLAGS) -w -c $< -o $@
+
+$(BUILD)/app-i686: $(LOBJS_i686) $(OBJS_i686) $(BUILD)/i686/__exports.o
 	$(LD) $(LDFLAGS_i686) $(APP_LDFLAGS) -o $@ $(filter %.o,$^) $(LIBS_i686)
 
-$(BUILD)/app-x86_64: $(LOBJS_x86_64) $(OBJS_x86_64)
+$(BUILD)/app-x86_64: $(LOBJS_x86_64) $(OBJS_x86_64) $(BUILD)/x86_64/__exports.o
 	$(LD) $(LDFLAGS_x86_64) $(APP_LDFLAGS) -o $@ $(filter %.o,$^) $(LIBS_x86_64)
 
 # (sq: a value for inside '...' in the shell - an apostrophe in a title or

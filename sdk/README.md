@@ -460,6 +460,20 @@ The 32-bit system runs handlers for `raise` only. Not there: `sigwait`,
 `SIGPIPE` (a send to a closed socket fails with `EPIPE`), `alarm`.
 `selftest posix signals` checks it.
 
+### Shared libraries: <dlfcn.h> (all apps)
+
+`dlopen`, `dlsym`, `dlclose`, `dlerror`, `dladdr` and `dl_iterate_phdr`
+(`<link.h>`). Build a library as on Linux, `-fPIC` and `-shared`, for the
+app's CPU (`sdk/examples/posixtest/Makefile` shows how). `dlopen` maps it,
+loads what it needs (`DT_NEEDED`: next to it, in the current folder, `/lib`,
+`/usr/lib`), binds it at once and runs its constructors. A library finds
+symbols in itself, in the libraries opened `RTLD_GLOBAL`, and in the app:
+every app built with the SDK carries a table of its own symbols and the C
+library's (`sdk/tools/mkexports` makes it), so libraries call `malloc`,
+`printf`, `pthread_create`... and the app's own functions. Not there:
+`__thread` variables inside a library, symbol versions, lazy binding.
+`selftest posix dlopen` checks it.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and
