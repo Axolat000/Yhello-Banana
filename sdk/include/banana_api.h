@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 17.
+ * The Banana OS application interface (ABI), version 18.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 17u
+#define BANANA_API_VERSION 18u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -424,6 +424,32 @@ typedef struct banana_api {
     void  (*mem_info)(unsigned long long* total, unsigned long long* avail);
     /* this app's process id (getpid): no two apps since boot share one */
     int   (*app_id)(void);
+
+    /* ── version 18: BSD sockets (<sys/socket.h>), TCP and UDP over IPv4 ── */
+    /* Linux's constants and struct sockaddr_in; a socket is a file
+     * descriptor (read, write, close work on it); errors are negative
+     * errno numbers. Waiting calls let the app be stopped meanwhile. */
+    int   (*sock_open)(int family, int type, int proto);      /* fd */
+    int   (*sock_bind)(int fd, const void* sa, int len);
+    int   (*sock_listen)(int fd, int backlog);
+    int   (*sock_accept)(int fd, void* sa, int* len);          /* a new fd */
+    int   (*sock_connect)(int fd, const void* sa, int len);
+    /* sa NULL: to the connected peer; bytes sent */
+    long  (*sock_send)(int fd, const void* buf, unsigned long len, int flags, const void* sa, int salen);
+    /* bytes received (0: the peer closed); the sender in sa if given */
+    long  (*sock_recv)(int fd, void* buf, unsigned long len, int flags, void* sa, int* salen);
+    int   (*sock_shutdown)(int fd, int how);
+    /* get (set 0) or set (1) an option: val holds *len bytes */
+    int   (*sock_opt)(int fd, int set, int level, int name, void* val, int* len);
+    int   (*sock_name)(int fd, int peer, void* sa, int* len);  /* getsockname / getpeername */
+    /* op 1: non-blocking (arg 1 on, 0 off); 2: non-blocking?; 3: bytes to read */
+    int   (*sock_ctl)(int fd, int op, int arg);
+    /* struct pollfd { int fd; short events, revents; } fds[n]: how many are
+     * ready (sockets, files, the terminal), 0 after timeout_ms (-1: none) */
+    int   (*poll)(void* fds, int n, int timeout_ms);
+    /* a host name's IPv4 address (DNS; dotted ones and localhost too) into
+     * ip[4], network order: 0, or -1 */
+    int   (*resolve)(const char* name, unsigned char* ip);
 } banana_api_t;
 
 /* 1 if the running system's table has the call `field` (newer than the app?) */

@@ -5,6 +5,7 @@
  *   posixtest          every part
  *   posixtest mmap     mmap / munmap / mprotect
  *   posixtest threads  pthreads, __thread, semaphores, clocks
+ *   posixtest sockets  TCP and UDP on the loopback, poll / select, names
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,13 @@
 #include <semaphore.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <poll.h>
 #include <banana.h>
 
 static int g_ok, g_fail;
@@ -386,10 +394,193 @@ static void t_threads(void) {
     check("sysconf, sched_getaffinity, getpid", cpus >= 1 && pages > 1000 && CPU_COUNT(&set) == cpus && getpid() > 0, note);
 }
 
+/* ── sockets ──────────────────────────────────────────────────────── */
+
+#define BULK 100000
+static int g_lfd;
+static volatile int g_echoed;
+
+/* the server: accepts one connection and sends back all it gets */
+static void* echo_server(void* a) {
+    (void)a;
+    struct sockaddr_in peer;
+    socklen_t pl = sizeof(peer);
+    int c = accept(g_lfd, (struct sockaddr*)&peer, &pl);
+    if (c < 0) return (void*)1;
+    if (peer.sin_addr.s_addr != htonl(INADDR_LOOPBACK)) { close(c); return (void*)2; }
+    char buf[4096];
+    for (;;) {
+        ssize_t n = recv(c, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        for (ssize_t o = 0; o < n; ) { ssize_t w = send(c, buf + o, (size_t)(n - o), 0); if (w <= 0) { close(c); return (void*)3; } o += w; }
+        g_echoed += (int)n;
+    }
+    close(c);                                        /* the client sees the end */
+    return NULL;
+}
+
+static void t_sockets(void) {
+    printf("sockets: TCP and UDP on the loopback, poll / select, names\n");
+    char note[96];
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;                                 /* any free port */
+
+    g_lfd = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    int ok = g_lfd >= 0 && setsockopt(g_lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == 0 &&
+             bind(g_lfd, (struct sockaddr*)&sa, sizeof(sa)) == 0 && listen(g_lfd, 8) == 0;
+    socklen_t sl = sizeof(sa);
+    ok = ok && getsockname(g_lfd, (struct sockaddr*)&sa, &sl) == 0 && ntohs(sa.sin_port) != 0;
+    snprintf(note, sizeof(note), "port %u", ntohs(sa.sin_port));
+    check("socket, bind (port 0), listen, getsockname", ok, note);
+    if (!ok) return;
+
+    pthread_t srv;
+    pthread_create(&srv, NULL, echo_server, NULL);
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ok = c >= 0 && connect(c, (struct sockaddr*)&sa, sizeof(sa)) == 0;
+    check("connect to it on 127.0.0.1", ok, "");
+    char* out = malloc(BULK);
+    char* in = malloc(BULK);
+    for (int i = 0; i < BULK; i++) out[i] = (char)(i * 7 + (i >> 9));
+    /* sending and receiving at once (the echo would fill the buffers otherwise) */
+    size_t sent = 0, got = 0;
+    long until = ms_now() + 20000;
+    while ((sent < BULK || got < BULK) && ms_now() < until && ok) {
+        struct pollfd pf = { c, (short)(POLLIN | (sent < BULK ? POLLOUT : 0)), 0 };
+        if (poll(&pf, 1, 1000) < 0) { ok = 0; break; }
+        if ((pf.revents & POLLOUT) && sent < BULK) {
+            ssize_t w = send(c, out + sent, BULK - sent > 8192 ? 8192 : BULK - sent, MSG_DONTWAIT);
+            if (w > 0) sent += (size_t)w;
+            else if (w < 0 && errno != EAGAIN) ok = 0;
+        }
+        if (pf.revents & POLLIN) {
+            ssize_t r = recv(c, in + got, BULK - got, MSG_DONTWAIT);
+            if (r > 0) got += (size_t)r;
+            else if (r == 0 || errno != EAGAIN) ok = 0;
+        }
+    }
+    snprintf(note, sizeof(note), "%lu bytes there and back", (unsigned long)got);
+    check("send / recv / poll: an echo through the loopback", ok && got == BULK && !memcmp(in, out, BULK), note);
+
+    char b[16];
+    ok = write(c, "hello", 5) == 5 && read(c, b, 5) == 5 && !memcmp(b, "hello", 5);
+    check("write() and read() on a socket", ok, "");
+
+    ssize_t r = recv(c, b, sizeof(b), MSG_DONTWAIT);
+    int e = errno;
+    struct pollfd pf = { c, POLLIN, 0 };
+    long t0 = ms_now();
+    int pr = poll(&pf, 1, 120);
+    long took = ms_now() - t0;
+    snprintf(note, sizeof(note), "poll waited %ld ms for 120", took);
+    check("nothing to read: EAGAIN, and poll times out", r == -1 && e == EAGAIN && pr == 0 && took >= 100, note);
+
+    struct timeval tv = { 0, 200000 };
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    t0 = ms_now();
+    r = recv(c, b, sizeof(b), 0);
+    e = errno;
+    took = ms_now() - t0;
+    snprintf(note, sizeof(note), "%ld ms for 200", took);
+    check("SO_RCVTIMEO: a blocking recv gives up", r == -1 && e == EAGAIN && took >= 180 && took < 2000, note);
+
+    fd_set rs;
+    FD_ZERO(&rs);
+    FD_SET(c, &rs);
+    struct timeval zero = { 0, 0 };
+    int sel = select(c + 1, &rs, NULL, NULL, &zero);
+    write(c, "x", 1);
+    banana_sleep(50);
+    FD_ZERO(&rs);
+    FD_SET(c, &rs);
+    struct timeval wait1 = { 1, 0 };
+    int sel2 = select(c + 1, &rs, NULL, NULL, &wait1);
+    int avail = 0;
+    ioctl(c, FIONREAD, &avail);
+    check("select and FIONREAD", sel == 0 && sel2 == 1 && FD_ISSET(c, &rs) && avail == 1 && read(c, b, 1) == 1, "");
+
+    shutdown(c, SHUT_WR);
+    close(c);
+    void* sr = (void*)1;
+    pthread_join(srv, &sr);
+    check("the server saw the end, and closed", sr == NULL, "");
+    close(g_lfd);
+
+    /* a closed port: refused */
+    int c2 = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in nowhere = sa;
+    nowhere.sin_port = htons(1);
+    r = connect(c2, (struct sockaddr*)&nowhere, sizeof(nowhere));
+    e = errno;
+    close(c2);
+    check("connect to a closed port: ECONNREFUSED", r == -1 && e == ECONNREFUSED, "");
+
+    /* UDP: two sockets on the loopback */
+    int u1 = socket(AF_INET, SOCK_DGRAM, 0), u2 = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in a1 = { 0 }, a2;
+    a1.sin_family = AF_INET;
+    a1.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sl = sizeof(a1);
+    ok = u1 >= 0 && u2 >= 0 && bind(u1, (struct sockaddr*)&a1, sizeof(a1)) == 0 && getsockname(u1, (struct sockaddr*)&a1, &sl) == 0;
+    a1.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ok = ok && sendto(u2, "datagram!", 9, 0, (struct sockaddr*)&a1, sizeof(a1)) == 9;
+    socklen_t l2 = sizeof(a2);
+    char d[32] = { 0 };
+    ok = ok && recvfrom(u1, d, sizeof(d), MSG_PEEK, NULL, NULL) == 9 &&
+         recvfrom(u1, d, sizeof(d), 0, (struct sockaddr*)&a2, &l2) == 9 && !memcmp(d, "datagram!", 9);
+    ok = ok && sendto(u1, "back", 4, 0, (struct sockaddr*)&a2, l2) == 4 && recv(u2, d, sizeof(d), 0) == 4 && !memcmp(d, "back", 4);
+    check("UDP: sendto, recvfrom (MSG_PEEK too), a reply", ok, "");
+    close(u1);
+    close(u2);
+
+    /* names and addresses */
+    struct addrinfo hints = { 0 }, *ai = NULL;
+    hints.ai_socktype = SOCK_STREAM;
+    int g = getaddrinfo("localhost", "80", &hints, &ai);
+    ok = g == 0 && ai && ai->ai_family == AF_INET &&
+         ((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+         ((struct sockaddr_in*)ai->ai_addr)->sin_port == htons(80);
+    if (ai) freeaddrinfo(ai);
+    unsigned char v6[16];
+    char s6[64], s4[16];
+    struct in_addr in4;
+    ok = ok && inet_pton(AF_INET6, "fe80::1:2", v6) == 1 && inet_ntop(AF_INET6, v6, s6, sizeof(s6)) && !strcmp(s6, "fe80::1:2") &&
+         inet_pton(AF_INET, "10.0.2.15", &in4) == 1 && !strcmp(inet_ntop(AF_INET, &in4, s4, sizeof(s4)), "10.0.2.15") &&
+         inet_addr("1.2.3.4") == htonl(0x01020304);
+    check("getaddrinfo, inet_pton / inet_ntop (v4 and v6)", ok, "");
+    /* out to the Internet, if there is a way: DNS, then HTTP over TCP */
+    struct addrinfo* ex = NULL;
+    if (getaddrinfo("example.com", "http", &hints, &ex) == 0 && ex) {
+        int w = socket(AF_INET, SOCK_STREAM, 0);
+        char resp[64] = { 0 };
+        const char* req = "HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        ok = w >= 0 && connect(w, ex->ai_addr, ex->ai_addrlen) == 0 && send(w, req, strlen(req), 0) == (ssize_t)strlen(req) &&
+             recv(w, resp, sizeof(resp) - 1, MSG_WAITALL) > 8 && !strncmp(resp, "HTTP/1.", 7);
+        char ipstr[16];
+        inet_ntop(AF_INET, &((struct sockaddr_in*)ex->ai_addr)->sin_addr, ipstr, sizeof(ipstr));
+        snprintf(note, sizeof(note), "example.com is %s: %.12s", ipstr, resp);
+        check("DNS and an HTTP request over TCP to the Internet", ok, note);
+        if (w >= 0) close(w);
+        freeaddrinfo(ex);
+    } else {
+        printf("  skip  the Internet - example.com could not be looked up (no network?)\n");
+    }
+    int s6fd = socket(AF_INET6, SOCK_STREAM, 0);
+    check("IPv6 sockets are refused (Java falls back to IPv4)", s6fd == -1 && errno == EAFNOSUPPORT, "");
+    free(out);
+    free(in);
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (!only || !strcmp(only, "mmap")) t_mmap();
     if (!only || !strcmp(only, "threads")) t_threads();
+    if (!only || !strcmp(only, "sockets")) t_sockets();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

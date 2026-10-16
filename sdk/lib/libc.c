@@ -472,7 +472,12 @@ size_t strftime(char* buf, size_t max, const char* fmt, const struct tm* tm) {
 
 unsigned int sleep(unsigned int s) { __banana->sleep_ms(s * 1000); return 0; }
 int usleep(unsigned long us) { __banana->sleep_ms((unsigned int)((us + 999) / 1000)); return 0; }
-ssize_t read(int fd, void* buf, size_t n) { return __banana->read(fd, buf, n); }
+/* (a socket's errors come as -errno; a file's as -1) */
+ssize_t read(int fd, void* buf, size_t n) {
+    long r = __banana->read(fd, buf, n);
+    if (r < 0) { errno = r < -1 ? (int)-r : EIO; return -1; }
+    return r;
+}
 int close(int fd) { return __banana->close(fd); }
 char* getcwd(char* buf, size_t size) { return __banana->getcwd(buf, (int)size) == 0 ? buf : NULL; }
 int chdir(const char* path) { return __banana->chdir(path); }

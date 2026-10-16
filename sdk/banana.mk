@@ -83,7 +83,7 @@ endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c \
-            $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c
+            $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c
 LIBC_i686   = $(LIBC_SRCS) $(BANANA_SDK)/lib/divdi3.c
 LIBC_x86_64 = $(LIBC_SRCS)
 
@@ -98,7 +98,7 @@ LOBJS_x86_64  = $(patsubst %.c,$(BUILD)/x86_64/sdk_%.o,$(notdir $(LIBC_x86_64)))
 vpath %.c $(sort $(dir $(SRCS)))
 
 # (the objects are made again when an SDK header changes)
-SDK_HEADERS := $(wildcard $(BANANA_SDK)/include/*.h $(BANANA_SDK)/include/sys/*.h)
+SDK_HEADERS := $(wildcard $(BANANA_SDK)/include/*.h $(BANANA_SDK)/include/*/*.h)
 
 .PHONY: all clean bins
 all: $(APP).bpk

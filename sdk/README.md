@@ -426,6 +426,23 @@ thread. Also new: `clock_gettime` / `nanosleep` / `clock_nanosleep`
 `_SC_PAGESIZE`...), `getpid`, `gettid`, `sched_getaffinity`, `gmtime_r`.
 `selftest posix threads` checks them.
 
+### Sockets: <sys/socket.h> (API version 18)
+
+BSD sockets for TCP and UDP over IPv4, the loopback (127.0.0.1) included:
+`socket`, `bind`, `listen`, `accept` / `accept4`, `connect`, `send` / `recv`
+/ `sendto` / `recvfrom` / `sendmsg` / `recvmsg` (`MSG_PEEK`, `MSG_DONTWAIT`,
+`MSG_WAITALL`), `shutdown`, `getsockopt` / `setsockopt` (`SO_RCVTIMEO`,
+`SO_SNDTIMEO`, `SO_ERROR`, `SO_REUSEADDR`, `TCP_NODELAY`...), `getsockname` /
+`getpeername`. A socket is a file descriptor: `read`, `write`, `close`,
+`poll`, `select`, `ioctl(FIONREAD / FIONBIO)` and `fcntl(O_NONBLOCK)` work on
+it. `<netdb.h>` resolves names through the system's DNS (`getaddrinfo`,
+`gethostbyname`, `getnameinfo` with numbers), `<arpa/inet.h>` converts
+addresses (IPv4 and IPv6 text). Not there yet: IPv6 sockets (`AF_INET6`
+gives `EAFNOSUPPORT`, so Java uses IPv4), Unix-domain sockets, `socketpair`,
+half-closing (`shutdown(SHUT_WR)` sends no FIN until `close`). The system
+handles 64 TCP connections and 16 listening ports at once.
+`selftest posix sockets` checks them.
+
 ### Building on Banana OS: TinyCC
 
 Banana Code has TinyCC inside (`ports/tcc/build.sh` fetches a fixed commit and

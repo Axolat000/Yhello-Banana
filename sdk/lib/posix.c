@@ -32,7 +32,19 @@ int open(const char* path, int flags, ...) {
     return fd;
 }
 
-int fcntl(int fd, int cmd, ...) { (void)fd; (void)cmd; return 0; }
+/* (socket.c: a socket's O_NONBLOCK) */
+int __sock_getfl(int fd);
+int __sock_setfl(int fd, int fl);
+
+int fcntl(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    long arg = va_arg(ap, long);
+    va_end(ap);
+    if (cmd == F_GETFL) { int f = fd > 2 ? __sock_getfl(fd) : -1; return O_RDWR | (f > 0 ? f : 0); }
+    if (cmd == F_SETFL) { if (fd > 2) __sock_setfl(fd, (int)arg); return 0; }
+    return 0;
+}
 
 off_t lseek(int fd, off_t off, int whence) {
     long r = __banana->seek(fd, off, whence);

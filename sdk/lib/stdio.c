@@ -56,7 +56,9 @@ void __stdio_flush_all(void) { fflush(NULL); }
 ssize_t write(int fd, const void* buf, size_t n) {
     if (fd == 1) fflush(stdout);
     if (fd == 2) fflush(stderr);
-    return __banana->write(fd, buf, n);
+    long r = __banana->write(fd, buf, n);
+    if (r < 0) { errno = r < -1 ? (int)-r : EIO; return -1; }     /* (a socket's: -errno) */
+    return r;
 }
 
 static int put_bytes(FILE* f, const char* s, size_t n) {

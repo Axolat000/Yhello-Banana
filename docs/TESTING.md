@@ -38,6 +38,10 @@ selftest posix [part]    installs and runs the posixtest example: the POSIX laye
                          mutexes, condition variables, __thread (64-bit), keys, once,
                          150 detached threads, a 4 MiB stack, semaphores, barriers,
                          read-write locks, errno per thread, clocks (posix threads)
+                         sockets: TCP echo of 100 KB and UDP on the loopback, poll,
+                         select, FIONREAD, SO_RCVTIMEO, ECONNREFUSED, getaddrinfo,
+                         inet_pton/ntop, and an HTTP request to example.com if the
+                         network reaches it (posix sockets)
 selftest ipv6 [host [port]]
                          IPv6 off blocks TCP, UDP and resolution; address parsing and
                          formatting; localhost; bracketed HTTP URLs; UDP loopback

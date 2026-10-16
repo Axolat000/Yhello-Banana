@@ -66,4 +66,10 @@ const char* tcp_state_str(tcp_state_t s);
 
 void tcp_dump(void);     /* netstat */
 
+/* for sockets (kernel/usock.c): received bytes copied without taking them;
+ * connections waiting for tcp_accept(); the local port */
+int      tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max);
+int      tcp_pending(const tcp_listener_t* l);
+uint16_t tcp_local_port(const tcp_conn_t* c);
+
 #endif

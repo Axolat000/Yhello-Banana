@@ -31,6 +31,8 @@
 #include "uvm.h"
 #include "meminfo.h"
 #include "hmem.h"
+#include "usock.h"
+#include "../net/net.h"
 
 #define APP_FD_MAX  64
 #define APP_STACK   (1u << 20)        /* 1 MiB */
@@ -50,6 +52,7 @@ typedef struct {
     int      fidx;
     uint32_t pos;
     int      flags;
+    usock_t* sock;            /* a socket (kernel/usock.c), not a file */
 } afd_t;
 
 /* a thread an app started: a task of its own running app code on its own stack */
@@ -481,6 +484,7 @@ static afd_t* get_fd(app_proc_t* p, int fd) {
     if (!p || fd < 3 || fd >= APP_FD_MAX + 3) return NULL;
     afd_t* f = &p->fds[fd - 3];
     if (!f->used) return NULL;
+    if (f->sock) return f;
     fs_file_t* ff = fs_file_info(f->fidx);
     if (!ff || !ff->used) return NULL;         /* deleted meanwhile */
     return f;
@@ -502,6 +506,7 @@ static int a_open(const char* path, int flags) {
         if (p->fds[i].used) continue;
         p->fds[i].used = 1;
         p->fds[i].fidx = idx;
+        p->fds[i].sock = NULL;
         p->fds[i].flags = flags ? flags : BANANA_O_READ;
         p->fds[i].pos = (flags & BANANA_O_APPEND) ? fs_file_info(idx)->size : 0;
         return i + 3;
@@ -521,6 +526,7 @@ static long a_read(int fd, void* buf, unsigned long len) {
     }
     afd_t* f = get_fd(p, fd);
     if (!f) return -1;
+    if (f->sock) return usock_recv(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, NULL);
     /* the part asked for only: a big file on the disk is not read whole */
     int n = fs_read(f->fidx, f->pos, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len);
     if (n < 0) return -1;
@@ -531,6 +537,7 @@ static long a_read(int fd, void* buf, unsigned long len) {
 
 static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len) {
     afd_t* f = get_fd(p, fd);
+    if (f && f->sock) return usock_send(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, 0);
     if (!f || !(f->flags & (BANANA_O_WRITE | BANANA_O_APPEND))) return -1;
     fs_file_t* ff = fs_get_file(f->fidx);
     if (!ff) return -1;
@@ -557,7 +564,7 @@ static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len
 
 static long a_seek(int fd, long off, int whence) {
     afd_t* f = get_fd(cur(), fd);
-    if (!f) return -1;
+    if (!f || f->sock) return -1;
     long base = whence == BANANA_SEEK_CUR ? (long)f->pos : whence == BANANA_SEEK_END ? (long)fs_file_info(f->fidx)->size : 0;
     long np = base + off;
     if (np < 0) return -1;
@@ -572,7 +579,166 @@ static int a_close(int fd) {
         if (p && fd >= 3 && fd < APP_FD_MAX + 3) p->fds[fd - 3].used = 0;
         return -1;
     }
+    if (f->sock) { usock_close(f->sock); f->sock = NULL; }
     f->used = 0;
+    return 0;
+}
+
+/* ── sockets (version 18, kernel/usock.c) ──────────────────────────────
+ * In the app's file descriptors, so read / write / close work on them.
+ * Errors are negative errno numbers. */
+
+#define SOCK_NONBLOCK_F 04000
+#define SOCK_CLOEXEC_F  02000000
+
+/* waiting in a socket call: the app can be stopped, the desktop paints */
+static void sock_breathe(void) { breathe(cur(), 1); }
+
+static usock_t* sock_of(int fd) {
+    afd_t* f = get_fd(cur(), fd);
+    return f ? f->sock : NULL;
+}
+
+/* a descriptor for socket s: its number, or -EMFILE (s closed) */
+static int sock_fd(app_proc_t* p, usock_t* s) {
+    for (int i = 0; i < APP_FD_MAX; i++) {
+        if (p->fds[i].used) continue;
+        memset(&p->fds[i], 0, sizeof(afd_t));
+        p->fds[i].used = 1;
+        p->fds[i].fidx = -1;
+        p->fds[i].flags = BANANA_O_READ | BANANA_O_WRITE;
+        p->fds[i].sock = s;
+        return i + 3;
+    }
+    usock_close(s);
+    return -24;                                         /* EMFILE */
+}
+
+static int a_sock_open(int family, int type, int proto) {
+    app_proc_t* p = cur();
+    (void)proto;
+    if (!p) return -22;
+    usock_set_wait(sock_breathe);
+    int err = 0;
+    usock_t* s = usock_new(family, type & ~(SOCK_NONBLOCK_F | SOCK_CLOEXEC_F), &err);
+    if (!s) return err;
+    if (type & SOCK_NONBLOCK_F) usock_set_nonblock(s, 1);
+    return sock_fd(p, s);
+}
+
+static int a_sock_bind(int fd, const void* sa, int len) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_bind(s, sa, len) : -88;            /* ENOTSOCK */
+}
+
+static int a_sock_listen(int fd, int backlog) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_listen(s, backlog) : -88;
+}
+
+static int a_sock_accept(int fd, void* sa, int* len) {
+    app_proc_t* p = cur();
+    usock_t* s = sock_of(fd);
+    if (!p || !s) return -88;
+    if (len && !uok(len, sizeof(int))) return -14;      /* EFAULT */
+    if (sa && (!len || *len < 0 || !uok(sa, (size_t)*len))) return -14;
+    int err = 0;
+    usock_t* n = usock_accept(s, sa, len, &err);
+    return n ? sock_fd(p, n) : err;
+}
+
+static int a_sock_connect(int fd, const void* sa, int len) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_connect(s, sa, len) : -88;
+}
+
+static long a_sock_send(int fd, const void* buf, unsigned long len, int flags, const void* sa, int salen) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (sa && (salen < 0 || !uok(sa, (size_t)salen))) return -14;
+    return usock_send(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
+}
+
+static long a_sock_recv(int fd, void* buf, unsigned long len, int flags, void* sa, int* salen) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (salen && !uok(salen, sizeof(int))) return -14;
+    if (sa && (!salen || *salen < 0 || !uok(sa, (size_t)*salen))) return -14;
+    return usock_recv(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
+}
+
+static int a_sock_shutdown(int fd, int how) {
+    usock_t* s = sock_of(fd);
+    return s ? usock_shutdown(s, how) : -88;
+}
+
+static int a_sock_opt(int fd, int set, int level, int name, void* val, int* len) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (!len || !uok(len, sizeof(int)) || *len < 0 || (val && !uok(val, (size_t)*len))) return -14;
+    return usock_opt(s, set, level, name, val, len);
+}
+
+static int a_sock_name(int fd, int peer, void* sa, int* len) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (!len || !uok(len, sizeof(int)) || *len < 0 || (sa && !uok(sa, (size_t)*len))) return -14;
+    return usock_name(s, peer, sa, len);
+}
+
+/* op 1: non-blocking on (arg 1) / off; 2: is it?; 3: bytes waiting (FIONREAD) */
+static int a_sock_ctl(int fd, int op, int arg) {
+    usock_t* s = sock_of(fd);
+    if (!s) return -88;
+    if (op == 1) { usock_set_nonblock(s, arg); return 0; }
+    if (op == 2) return usock_nonblock(s);
+    if (op == 3) return usock_nread(s);
+    return -22;
+}
+
+/* poll(): struct pollfd { int fd; short events, revents; } x n; how many
+ * are ready, 0 after timeout_ms (-1: no limit) */
+typedef struct { int fd; short events, revents; } apollfd_t;
+#define APOLLIN   0x1
+#define APOLLOUT  0x4
+#define APOLLNVAL 0x20
+
+static int a_poll(void* fds, int n, int timeout_ms) {
+    app_proc_t* p = cur();
+    if (!p || n < 0 || n > 4096 || (n && !uok(fds, (size_t)n * sizeof(apollfd_t)))) return -22;
+    apollfd_t* pf = (apollfd_t*)fds;
+    uint32_t start = timer_ms();
+    for (;;) {
+        int ready = 0;
+        for (int i = 0; i < n; i++) {
+            int fd = pf[i].fd, ev = pf[i].events, r = 0;
+            if (fd < 0) { pf[i].revents = 0; continue; }
+            if (fd == 0) r = p->kq_head != p->kq_tail ? APOLLIN : 0;
+            else if (fd <= 2) r = APOLLOUT;
+            else {
+                afd_t* f = get_fd(p, fd);
+                if (!f) r = APOLLNVAL;
+                else if (f->sock) r = usock_poll(f->sock, ev);
+                else r = (APOLLIN | APOLLOUT) & ev;     /* (a file is always ready) */
+            }
+            pf[i].revents = (short)r;
+            if (r) ready++;
+        }
+        if (ready || !timeout_ms) return ready;
+        if (timeout_ms > 0 && timer_ms() - start >= (uint32_t)timeout_ms) return 0;
+        net_wait(10);
+        breathe(p, 1);
+    }
+}
+
+/* a host name (or a dotted address, or localhost): its IPv4 address in
+ * ip[4] (network order); 0, or -1 if it could not be found */
+static int a_resolve(const char* name, unsigned char* ip) {
+    if (!name || !ip || !uok(ip, 4)) return -1;
+    ip4_t a = 0;
+    if (dns_resolve(name, &a, 5000) != NET_OK) return -1;   /* (dotted and localhost too) */
+    ip[0] = (unsigned char)(a >> 24); ip[1] = (unsigned char)(a >> 16);
+    ip[2] = (unsigned char)(a >> 8);  ip[3] = (unsigned char)a;
     return 0;
 }
 
@@ -1522,6 +1688,19 @@ static void spec_init(void) {
     SPEC(tls_set, "i", 0);              /* (only loaded into FS: the app's own business) */
     SPEC(mem_info, "LL", 0);
     SPEC(app_id, "", 0);
+    SPEC(sock_open, "iii", 0);
+    SPEC(sock_bind, "ibi", 0);
+    SPEC(sock_listen, "ii", 0);
+    SPEC(sock_accept, "iii", 0);          /* sa, len: checked in it */
+    SPEC(sock_connect, "ibi", 0);
+    SPEC(sock_send, "iBiiii", 0);         /* sa: checked in it */
+    SPEC(sock_recv, "iBiiii", 0);         /* sa, salen: checked in it */
+    SPEC(sock_shutdown, "ii", 0);
+    SPEC(sock_opt, "iiiiii", 0);          /* val, len: checked in it */
+    SPEC(sock_name, "iiii", 0);           /* sa, len: checked in it */
+    SPEC(sock_ctl, "iii", 0);
+    SPEC(poll, "iii", 0);                 /* fds: checked in it */
+    SPEC(resolve, "si", 0);               /* ip: checked in it */
 
     LOCAL(ticks_ms, LOCAL_YES);
     LOCAL(cpu_count, LOCAL_YES);
@@ -1795,6 +1974,19 @@ static void api_init(void) {
     g_api.tls_set = G(a_tls_set);
     g_api.mem_info = G(a_mem_info);
     g_api.app_id = G(a_app_id);
+    g_api.sock_open = G(a_sock_open);
+    g_api.sock_bind = G(a_sock_bind);
+    g_api.sock_listen = G(a_sock_listen);
+    g_api.sock_accept = G(a_sock_accept);
+    g_api.sock_connect = G(a_sock_connect);
+    g_api.sock_send = G(a_sock_send);
+    g_api.sock_recv = G(a_sock_recv);
+    g_api.sock_shutdown = G(a_sock_shutdown);
+    g_api.sock_opt = G(a_sock_opt);
+    g_api.sock_name = G(a_sock_name);
+    g_api.sock_ctl = G(a_sock_ctl);
+    g_api.poll = G(a_poll);
+    g_api.resolve = G(a_resolve);
 #ifdef __x86_64__
     spec_init();
 #endif
@@ -2033,6 +2225,8 @@ static void discard(app_proc_t* p) {
 
 static void release(app_proc_t* p) {
     stop_threads(p);
+    for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
+        if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);
