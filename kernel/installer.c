@@ -11,6 +11,7 @@
 #include "disk.h"
 #include "blockdev.h"
 #include "volume.h"
+#include "builtin_apps.h"
 #include "kstring.h"
 #include "keyboard.h"
 #include "settings.h"
@@ -34,7 +35,7 @@
 #define C_OK     0x0080E080u
 #define C_FIELD  0x00141920u
 
-enum { P_WELCOME, P_SETUP, P_CONFIRM, P_WORKING, P_DONE };
+enum { P_WELCOME, P_SETUP, P_APPS, P_CONFIRM, P_WORKING, P_DONE };
 enum { M_INSTALL, M_UPDATE };
 
 static const char* const LAYOUTS[] = { "EN (Default)", "fr_CH", "FR", "DE", "de_CH", "BEPO" };
@@ -65,6 +66,7 @@ static int  g_layout;
 static char g_pw[2][64];
 static int  g_focus = -1;             /* password field being typed in */
 static int  g_desktop = 1, g_login = 1, g_httpd = 0, g_sshd = 0;
+static int  g_profile = PROFILE_FULL;      /* the apps installed (kernel/builtin_apps.h) */
 
 /* the work (installer task) */
 static volatile int g_running, g_result;
@@ -184,6 +186,8 @@ static void installer_task(void) {
         cfg_set(CFG_SERVICES, "sshd", g_sshd ? "yes" : 0, RC_CONF_HEADER);
         cfg_set(CFG_SERVICES, "sshd_port", g_sshd ? "22" : 0, RC_CONF_HEADER);
         memset(g_pw, 0, sizeof(g_pw));
+        g_phase = "Choosing the apps...";
+        builtin_profile_apply(g_profile);     /* (what it leaves out: in the App Store) */
         g_phase = "Copying Banana OS onto the disk...";
         rc = fsdisk_install_to(&g_disk);
     }
@@ -304,6 +308,32 @@ static void draw_setup(void) {
     button(btn_r() - 100, btn_y(), 100, "Next", 1, 1);
 }
 
+/* the apps page: which built-in apps go on the disk */
+#define APPS_ROW 66
+static const char* const PROFILE_LINES[PROFILE_COUNT][2] = {
+    { "Every app: App Store, Media Player, Music, Photos,", "Amethyst Music, Banana Code and the example apps." },
+    { "The everyday apps: App Store, Media Player, Music, Photos.", "Amethyst Music, Banana Code, the examples: in the App Store." },
+    { "The App Store only - the lightest system.", "Every other app can be installed from the App Store." },
+};
+static int apps_y(void) { return cy0() + 56; }
+
+static void draw_apps(void) {
+    int x = cx0(), y = cy0();
+    label(x, y, "Apps", C_HEAD);
+    label(x, y + 20, "Which of the apps that come with Banana OS go on the disk?", C_DIM);
+    for (int p = 0; p < PROFILE_COUNT; p++) {
+        int ry = apps_y() + p * APPS_ROW;
+        if (p == g_profile) bevel(x - 6, ry - 6, cw() + 12, APPS_ROW - 8, 0x0026303Eu, 0x00303B4Cu, 0x001A2029u);
+        radio(x, ry, p == g_profile, builtin_profile_name(p));
+        if (p == PROFILE_FULL) label(x + 24 + 9 * 8, ry + 3, "(recommended)", C_DIM);
+        label(x + 24, ry + 22, PROFILE_LINES[p][0], C_TEXT);
+        label(x + 24, ry + 38, PROFILE_LINES[p][1], C_DIM);
+    }
+    label(x, apps_y() + PROFILE_COUNT * APPS_ROW + 4, "What is left out stays installable: App Store > Discover.", C_DIM);
+    button(g_win.x + 20, btn_y(), 100, "Back", 0, 1);
+    button(btn_r() - 100, btn_y(), 100, "Next", 1, 1);
+}
+
 static void draw_confirm(void) {
     int x = cx0(), y = cy0();
     char line[128];
@@ -323,12 +353,16 @@ static void draw_confirm(void) {
                   (g_login && g_pw[0][0]) ? ", login screen" : "",
                   g_httpd ? ", web server" : "", g_sshd ? ", SSH server" : "");
         label(x, y + 92, line, C_TEXT);
-        label(x, y + 126, "Everything on this disk will be erased.", C_ERR);
+        ksnprintf(line, sizeof(line), "Apps: %s", builtin_profile_name(g_profile));
+        label(x, y + 110, line, C_TEXT);
+        label(x, y + 144, "Everything on this disk will be erased.", C_ERR);
         if (g_sel >= 0 && g_list_warn[g_sel]) {
             ksnprintf(line, sizeof(line), "On it now: %s", g_list_note[g_sel]);
-            label(x, y + 144, line, C_WARN);
+            label(x, y + 162, line, C_WARN);
         }
-        if (g_nlist > 1) label(x, y + 166, "The other disks are not touched.", C_DIM);
+        if (g_nlist > 1) label(x, y + 184, "The other disks are not touched.", C_DIM);
+        if (g_profile != PROFILE_FULL)
+            label(x, y + 206, "The apps left out are removed from this live session too.", C_DIM);
     }
     button(g_win.x + 20, btn_y(), 100, "Back", 0, 1);
     button(btn_r() - 120, btn_y(), 120, g_mode == M_UPDATE ? "Update" : "Install", 1, 1);
@@ -381,6 +415,7 @@ void installer_draw(const fb_info_t* fi) {
     switch (g_page) {
     case P_WELCOME: draw_welcome(); break;
     case P_SETUP:   draw_setup(); break;
+    case P_APPS:    draw_apps(); break;
     case P_CONFIRM: draw_confirm(); break;
     case P_WORKING: draw_working(); break;
     default:        draw_done(); break;
@@ -451,11 +486,17 @@ void installer_click(int mx, int my) {
         if (inside(mx, my, x, bt + 66, cw(), 22)) { g_httpd = !g_httpd; return; }
         if (inside(mx, my, x, bt + 90, cw(), 22)) { g_sshd = !g_sshd; return; }
         if (inside(mx, my, bl, by, 100, 22)) { g_page = P_WELCOME; return; }
-        if (inside(mx, my, br - 100, by, 100, 22) && setup_ok()) g_page = P_CONFIRM;
+        if (inside(mx, my, br - 100, by, 100, 22) && setup_ok()) g_page = P_APPS;
         return;
     }
+    case P_APPS:
+        for (int p = 0; p < PROFILE_COUNT; p++)
+            if (inside(mx, my, x - 6, apps_y() - 6 + p * APPS_ROW, cw() + 12, APPS_ROW - 8)) { g_profile = p; return; }
+        if (inside(mx, my, bl, by, 100, 22)) { g_page = P_SETUP; return; }
+        if (inside(mx, my, br - 100, by, 100, 22)) g_page = P_CONFIRM;
+        return;
     case P_CONFIRM:
-        if (inside(mx, my, bl, by, 100, 22)) { g_page = g_mode == M_UPDATE ? P_WELCOME : P_SETUP; return; }
+        if (inside(mx, my, bl, by, 100, 22)) { g_page = g_mode == M_UPDATE ? P_WELCOME : P_APPS; return; }
         if (inside(mx, my, br - 120, by, 120, 22)) start_work();
         return;
     case P_DONE:

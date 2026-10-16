@@ -1,10 +1,36 @@
 #ifndef BUILTIN_APPS_H
 #define BUILTIN_APPS_H
 
+#include "types.h"
+
 /* The apps that come with Banana OS (Media Player, Music, Amethyst Music: apps/), built
  * into the kernel. At boot each is installed into /apps - or upgraded when
  * this kernel has a newer version; one that was removed stays removed
- * until a new version comes. */
+ * until a new version comes, and one an install profile left out stays out
+ * until it is installed again by hand. */
 void builtin_apps_install(void);
+
+/* ── the App Store's "builtin:" source (kernel/repo.c) ─────────────────
+ * The built-in apps and the SDK's examples are packages of a source that
+ * needs no network: `repo builtin: trusted` in /etc/pkg/sources.list. So an
+ * app removed (or left out by the minimal and standard install profiles)
+ * can always be installed again from the App Store or with apt. */
+int         builtin_package_count(void);
+const char* builtin_package_file(int i);              /* "mediaplayer.bpk", "paint.bpk" */
+/* the package with that file name, in a fresh buffer (kfree): 0, or -1 */
+int         builtin_package(const char* file, char** data, uint32_t* len);
+uint32_t    builtin_packages_stamp(void);                  /* changes with this kernel's packages */
+
+/* ── install profiles (the installer, `install --minimal`) ──────────── */
+#define PROFILE_FULL     0     /* every built-in app and the examples */
+#define PROFILE_STANDARD 1     /* the everyday apps: App Store, Media Player, Music, Photos */
+#define PROFILE_MINIMAL  2     /* the App Store only: the rest can be installed from it */
+#define PROFILE_COUNT    3
+const char* builtin_profile_name(int profile);        /* "Full", "Standard", "Minimal" */
+const char* builtin_profile_apps(int profile);        /* what it installs, in a line */
+/* removes from this system what the profile leaves out (apps and ~/Examples):
+ * they stay out at the next boots, and installable from the App Store;
+ * how many apps were removed */
+int         builtin_profile_apply(int profile);
 
 #endif

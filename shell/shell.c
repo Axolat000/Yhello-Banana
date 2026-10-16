@@ -1741,6 +1741,25 @@ static int pick_target(const char* cmd, const char* args, int n) {
 }
 
 static void cmd_install(const char* args) {
+    /* --full (the default), --standard, --minimal: the apps it puts on the disk */
+    int profile = PROFILE_FULL;
+    char num[16] = "";
+    for (const char* p = k_skip_spaces(args); *p; p = k_skip_spaces(p)) {
+        char w[24];
+        int n = 0;
+        while (p[n] && p[n] != ' ' && n < (int)sizeof(w) - 1) { w[n] = p[n]; n++; }
+        w[n] = 0;
+        while (p[n] && p[n] != ' ') n++;
+        p += n;
+        if (!k_strcmp(w, "--full")) profile = PROFILE_FULL;
+        else if (!k_strcmp(w, "--standard")) profile = PROFILE_STANDARD;
+        else if (!k_strcmp(w, "--minimal")) profile = PROFILE_MINIMAL;
+        else if (w[0] == '-') {
+            terminal_writeln("usage: install [number] [--full | --standard | --minimal]");
+            return;
+        } else k_strcpy_n(num, w, sizeof(num));
+    }
+    args = num;
     ata_disk_t all[DISK_MAX];
     int found = list_targets(all, DISK_MAX);
 
@@ -1764,13 +1783,22 @@ static void cmd_install(const char* args) {
     terminal_write(target.model[0] ? target.model : "the disk above");
     terminal_write_color(
         " and make it directly bootable (copying the boot CD or USB stick onto it, then\n"
-        "writing the current filesystem). This can take a little while. Continue? [y/N] ",
+        "writing the current filesystem). This can take a little while.\n",
         VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    char ap[160];
+    ksnprintf(ap, sizeof(ap), "Apps: %s - %s\n", builtin_profile_name(profile), builtin_profile_apps(profile));
+    terminal_write(ap);
+    terminal_write_color("Continue? [y/N] ", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
     if (!prompt_yes_no()) {
         terminal_writeln("install: cancelled.");
         return;
     }
 
+    if (profile != PROFILE_FULL) {
+        int r = builtin_profile_apply(profile);
+        ksnprintf(ap, sizeof(ap), "install: %d app%s left out (App Store > Discover installs them)", r, r == 1 ? "" : "s");
+        terminal_writeln(ap);
+    }
     terminal_writeln("install: copying boot image and filesystem, please wait...");
     int rc = fsdisk_install_to(&target);
     switch (rc) {

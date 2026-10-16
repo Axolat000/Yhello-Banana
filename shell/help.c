@@ -169,13 +169,17 @@ static const page_t PAGES[] = {
       "and reads everything back from the drive itself, every byte. Works on real sticks and SD cards. One "
       "ok / FAIL line a check, then the number failed. All the tests: docs/TESTING.md.",
       "-k|keep the test folder afterwards", "fstest /mnt/usb\nfstest -k /mnt/virtio", "mount, lsblk, selftest" },
-    { "install", "disks", "install [number]", "install Banana OS on a disk (live CD)",
+    { "install", "disks", "install [number] [--full|--standard|--minimal]", "install Banana OS on a disk (live CD)",
       "Copies Banana OS from the CD or USB stick onto a hard disk and writes the current files to it: the "
       "disk then boots by itself, with files saved. Everything on that disk is erased; the other disks are "
       "left alone. In three steps: the disks are listed with a number and, with several, it asks which one "
-      "(or give it: install 2); then the warning, answered y or n; then the install. Only on the live "
-      "system. On the desktop, Install Banana OS is the graphical way.", NULL,
-      "install\ninstall 2", "installer, update, lsblk" },
+      "(or give it: install 2); then the warning (with the apps it puts on), answered y or n; then the "
+      "install. The apps left out by --standard or --minimal stay installable from the App Store (and apt). "
+      "Only on the live system. On the desktop, Install Banana OS is the graphical way.",
+      "--full|every app and the examples (the default)\n"
+      "--standard|App Store, Media Player, Music, Photos\n"
+      "--minimal|the App Store only",
+      "install\ninstall 2\ninstall --minimal", "installer, update, lsblk, apt" },
     { "installer", "disks", "installer", "the graphical installer (live CD)", NULL, NULL, NULL, "install" },
     { "update", "disks", "update [number]", "update an installed system from a newer CD",
       "Writes this CD's system over the installed one; your files, settings and password are kept. With "
