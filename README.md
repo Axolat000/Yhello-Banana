@@ -941,7 +941,7 @@ include /path/to/banana-sdk/driver/driver.mk
 | `autologin [on\|off]` | Log in without the password at boot (also in Settings > Startup) |
 | `reboot` | Immediate reboot |
 | `halt` | Hard CPU halt |
-| `install [number]` | Install Banana OS onto the IDE, SATA, NVMe or virtio disk you choose (with several, `install 2`: the others are left alone) - bootable, with a persistent filesystem (live CD/USB only: `install` and `update` do not exist on an installed system) |
+| `install [number]` | Install Banana OS onto the IDE, SATA, NVMe or virtio disk you choose: it lists the disks and, with several, asks *Which disk?* (or `install 2`), then asks to confirm (`y`), then installs - the others are left alone. `update [number]` works the same way. Bootable, with a persistent filesystem (live CD/USB only: `install` and `update` do not exist on an installed system) |
 | `disks` | List the IDE, SATA (AHCI) and NVMe disks and CD/DVD drives |
 | `sync` | Re-write the filesystem to the installed disk on demand |
 | **Storage** | |

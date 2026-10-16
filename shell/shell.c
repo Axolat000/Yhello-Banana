@@ -1642,6 +1642,39 @@ static int prompt_yes_no(void) {
     }
 }
 
+/* a number from 1 to max, typed and Enter; 0 if cancelled (Enter alone,
+ * Esc, Ctrl+C) - a number out of range is asked again */
+static int prompt_number(int max) {
+    int my_vt = terminal_vt_get_active();
+    char buf[8];
+    int n = 0;
+    for (;;) {
+        gui_poll();
+        terminal_vt_set_active(my_vt);
+        if (gui_focused_vt() != my_vt) { task_sleep_ms(10); continue; }
+        char c = keyboard_try_getchar();
+        if (!c) { task_sleep_ms(10); continue; }
+        if (c == 3 || c == 27) { terminal_putchar('\n'); return 0; }
+        if (c == '\b' || c == 127) {
+            if (n) { n--; terminal_cursor_left(); terminal_putchar(' '); terminal_cursor_left(); }
+            continue;
+        }
+        if (c == '\n' || c == '\r') {
+            terminal_putchar('\n');
+            if (!n) return 0;
+            buf[n] = 0;
+            uint32_t v;
+            if (k_parse_u32(buf, &v) && v >= 1 && (int)v <= max) return (int)v;
+            char again[48];
+            ksnprintf(again, sizeof(again), "No disk %s - a number from 1 to %d: ", buf, max);
+            terminal_write_color(again, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+            n = 0;
+            continue;
+        }
+        if (c >= '0' && c <= '9' && n < (int)sizeof(buf) - 1) { buf[n++] = c; terminal_putchar(c); }
+    }
+}
+
 static void print_disk_line(const ata_disk_t* d) {
     char b[16], where[32];
     disk_describe(d, where, sizeof(where));
@@ -1680,7 +1713,8 @@ static int list_targets(ata_disk_t* out, int max) {
     return n;
 }
 
-/* the disk the number in args names (1-based), or the only one; -1 (and why) */
+/* the disk the number in args names (1-based), the only one, or the one
+ * asked for when there are several; -1 (and why) */
 static int pick_target(const char* cmd, const char* args, int n) {
     args = k_skip_spaces(args);
     uint32_t v;
@@ -1693,11 +1727,17 @@ static int pick_target(const char* cmd, const char* args, int n) {
         return (int)v - 1;
     }
     if (n == 1) return 0;
-    terminal_write_color(cmd, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-    terminal_write_color(": there are several disks - choose one by its number: ", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
-    terminal_write(cmd);
-    terminal_writeln(" <number>   (the others are left alone)");
-    return -1;
+    /* several: ask which one (a number and Enter; Enter alone, Esc or Ctrl+C cancels) */
+    char prompt[64];
+    ksnprintf(prompt, sizeof(prompt), "Which disk? [1-%d, Enter cancels] ", n);
+    terminal_write_color(prompt, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    int k = prompt_number(n);
+    if (k < 1) {
+        terminal_write(cmd);
+        terminal_writeln(": cancelled.");
+        return -1;
+    }
+    return k - 1;
 }
 
 static void cmd_install(const char* args) {
