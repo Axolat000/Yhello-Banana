@@ -34,6 +34,8 @@ selftest opencl          installs and runs the cltest example: build errors in t
                          float8-16 vectors, refused group sizes
 selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
                          highlight, countdown, clipping, color, stride and fallback checks
+selftest ram             firmware RAM reporting: complete maps before/after legacy counts,
+                         8/24/64 GiB totals, reserved holes, malformed input and live totals
 selftest mouse           deterministic relative-movement, ownership and release-state checks
 selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
                          click to capture, look around, Escape releases, Q exits
@@ -231,3 +233,18 @@ the arrow keys and started the kernel with Enter. The 32-bit UEFI loader was
 compiled, linked and checked for relocations and valid PE conversion; it was not
 run under 32-bit UEFI firmware. Rebuild with `tools/dev.sh run` to see the menu;
 `tools/dev.sh run uefi` selects the UEFI path.
+
+### RAM reporting
+
+`python3 tools/test_bootmem.py --sanitize` (or `--32`) runs the same 16
+memory-map regression checks as `selftest ram`. The in-OS command also checks
+that the detected total covers the RAM managed by the allocators. Rebuild and
+boot with `MEM=8G tools/dev.sh run`, then run `selftest ram` and `neofetch`;
+Settings > About reads the same total. These are usable firmware RAM totals:
+reserved memory and the PCI hole are excluded. A 32-bit kernel can report RAM
+above 4 GiB even though it cannot allocate from it.
+
+Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
+64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
+BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
+maps; those larger guest sizes were not run on this host.

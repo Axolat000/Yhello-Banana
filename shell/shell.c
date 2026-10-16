@@ -433,7 +433,7 @@ static void cmd_neofetch(int persona) {
     terminal_writeln(si->cpu_vendor[0] ? si->cpu_vendor : "Unknown");
     terminal_write_color("  MEMORY:   ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     if (si->mem_kb > 0) {
-        char* ms = u32_to_str((si->mem_kb / 1024u) + 1u, mbuf, sizeof(mbuf));
+        char* ms = u32_to_str(si->mem_kb / 1024u, mbuf, sizeof(mbuf));
         terminal_write(ms);
         terminal_writeln(" MB");
     } else {

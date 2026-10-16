@@ -12,7 +12,7 @@ typedef struct {
     uint32_t cpu_model;
     uint32_t cpu_stepping;
     uint32_t cpu_has_ht;        /* 1 if Hyper-Threading flag set */
-    uint32_t mem_kb;            /* total memory in KiB from multiboot */
+    uint32_t mem_kb;            /* usable firmware RAM in KiB, including above 4 GiB */
     int      uefi;              /* booted through UEFI firmware (else BIOS) */
     char     cmdline[128];      /* from GRUB ("root=cd0") */
     uint32_t biosdev;           /* BIOS boot drive (0x80.. = hard disk), if has_biosdev */

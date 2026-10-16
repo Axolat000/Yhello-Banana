@@ -361,7 +361,7 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
       "ring3, memory, limits, cores, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
@@ -372,6 +372,7 @@ static const page_t PAGES[] = {
       "opencl|the cltest example: barriers, local memory, vectors...\n"
       "browser|offline Tailwind, React, Vue, Alpine, Astro, grid and WebP checks\n"
       "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"
+      "ram|firmware RAM totals, above-4-GiB maps and live accounting\n"
       "mouse [demo]|relative mouse capture tests; demo opens a look-around window\n"
       "browser swm|live checks against https://swm.mxtpasontop.fr/\n"
       "posix [PART]|mmap, threads, sockets, signals and dlopen (the posixtest example)\n"

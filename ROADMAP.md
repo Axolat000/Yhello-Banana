@@ -10,6 +10,10 @@ passed all nine checks with RAM above 4 GiB and four CPU cores. Run
 `fstest <mount point>` for FAT32/exFAT; `-k` keeps the test files afterwards.
 New features should include a test command that runs inside Banana OS.
 
+RAM reporting (build 169): Settings and neofetch prefer the complete firmware
+memory map over the legacy count below the PCI hole. `selftest ram` checks
+above-4-GiB totals, reserved regions, tag ordering and live accounting.
+
 ## 1. Foundations
 
 | Feature | Status | Notes |
