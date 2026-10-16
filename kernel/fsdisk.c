@@ -1662,10 +1662,17 @@ static int migrate_to_v4(const ata_disk_t* d) {
 }
 
 int fsdisk_update(void) {
+    ata_disk_t d;
+    if (!fsdisk_find_install(&d)) return FSDISK_ERR_NO_INSTALL;
+    return fsdisk_update_on(&d);
+}
+
+int fsdisk_update_on(const ata_disk_t* dp) {
     ata_disk_t dst;
     img_src_t src;
     uint32_t iso_bytes;
-    if (!fsdisk_find_install(&dst)) return FSDISK_ERR_NO_INSTALL;
+    dst = *dp;
+    if (!fsdisk_holds_banana(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
     if (iso_bytes > V4_BASE_LBA * FSDISK_SECTOR) return FSDISK_ERR_ISO_TOO_BIG;
     int rc = migrate_to_v4(&dst);

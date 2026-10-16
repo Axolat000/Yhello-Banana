@@ -1,5 +1,6 @@
 /* "Install Banana OS": the live CD's installer window. It finds the hard
- * disk, asks for the keyboard layout, a password and what starts at boot,
+ * disk (the one chosen, when there are several), asks for the keyboard
+ * layout, a password and what starts at boot,
  * then installs (fsdisk_install) - or, when the disk already holds Banana
  * OS, updates it and keeps its files (fsdisk_update). The work runs in its
  * own task, so the window shows the progress. Only on the live CD. */
@@ -8,6 +9,8 @@
 #include "winframe.h"
 #include "fsdisk.h"
 #include "disk.h"
+#include "blockdev.h"
+#include "volume.h"
 #include "kstring.h"
 #include "keyboard.h"
 #include "settings.h"
@@ -38,13 +41,21 @@ static const char* const LAYOUTS[] = { "EN (Default)", "fr_CH", "FR", "DE", "de_
 #define NLAYOUTS 6
 
 static int        g_open;
-static win_geom_t g_win = { .x = 130, .y = 40, .w = 560, .h = 440, .min_w = 520, .min_h = 420 };
+static win_geom_t g_win = { .x = 130, .y = 30, .w = 580, .h = 480, .min_w = 540, .min_h = 460 };
 static uint32_t   g_gen, g_tick;
 static int        g_page, g_mode;
 static char       g_status[112];
 
-/* the disk */
-static int        g_disks;            /* hard disks found (exactly one is needed) */
+/* the disks: every hard disk, one of them chosen */
+#define MAX_LIST 6
+static int        g_nlist;
+static ata_disk_t g_list[MAX_LIST];
+static int        g_list_banana[MAX_LIST];
+static char       g_list_desc[MAX_LIST][96];
+static char       g_list_note[MAX_LIST][80];
+static int        g_list_warn[MAX_LIST];     /* the note is a warning (data on it) */
+static int        g_sel = -1;                /* the disk chosen */
+static int        g_disks;                   /* 1 once a disk is chosen (the pages below test it) */
 static ata_disk_t g_disk;
 static int        g_has_install;
 static char       g_disk_desc[96];
@@ -97,24 +108,61 @@ static int btn_r(void) { return g_win.x + g_win.w - 20; }
 
 /* ── the disk ── */
 
-static void look_for_disk(void) {
-    ata_disk_t d;
-    int r = fsdisk_find_target(&d);
-    g_disks = r == 1 ? 1 : r < 0 ? 2 : 0;
+static int big_enough(const ata_disk_t* d) { return d->sectors / 2048u >= 160u; }
+
+/* what is on a disk now, for its note: "2 partitions: FAT32 (LBA), Linux" */
+static void disk_note(int i) {
+    const ata_disk_t* d = &g_list[i];
+    g_list_warn[i] = 0;
+    if (g_list_banana[i]) { kstrlcpy(g_list_note[i], "Banana OS is installed on it", sizeof(g_list_note[i])); return; }
+    if (!big_enough(d)) { kstrlcpy(g_list_note[i], "too small (Banana OS needs 160 MB)", sizeof(g_list_note[i])); return; }
+    blockdev_t* bd = disk_blockdev(d);
+    vol_part_t parts[8];
+    int np = bd ? volume_partitions(bd, parts, 8, NULL) : 0;
+    if (!np) { kstrlcpy(g_list_note[i], "empty, or no partitions Banana OS knows", sizeof(g_list_note[i])); return; }
+    int n = ksnprintf(g_list_note[i], sizeof(g_list_note[i]), "%d partition%s: ", np, np == 1 ? "" : "s");
+    for (int k = 0; k < np && n < (int)sizeof(g_list_note[i]) - 4; k++)
+        n += ksnprintf(g_list_note[i] + n, sizeof(g_list_note[i]) - (size_t)n, "%s%s", k ? ", " : "", parts[k].type);
+    g_list_warn[i] = 1;
+}
+
+/* the disk chosen: what the next pages work on */
+static void choose(int i) {
+    g_sel = i;
+    g_disks = 0;
     g_has_install = 0;
     g_disk_desc[0] = 0;
-    if (g_disks == 1) {
-        g_disk = d;
-        char where[48];
-        disk_describe(&d, where, sizeof(where));
-        ksnprintf(g_disk_desc, sizeof(g_disk_desc), "%s - %s (%u MB)", where,
-                  d.model[0] ? d.model : "hard disk", (uint32_t)(d.sectors / 2048u));
-        g_has_install = fsdisk_find_install(0);
-    }
+    if (i < 0 || i >= g_nlist) return;
+    g_disks = 1;
+    g_disk = g_list[i];
+    kstrlcpy(g_disk_desc, g_list_desc[i], sizeof(g_disk_desc));
+    g_has_install = g_list_banana[i];
     g_mode = g_has_install ? M_UPDATE : M_INSTALL;
 }
 
-static int disk_big_enough(void) { return g_disks == 1 && g_disk.sectors / 2048u >= 160u; }
+static void look_for_disk(void) {
+    ata_disk_t all[DISK_MAX];
+    int n = fsdisk_targets(all, DISK_MAX);
+    g_nlist = n < MAX_LIST ? n : MAX_LIST;
+    int pick = -1, empty = -1, big = -1;
+    for (int i = 0; i < g_nlist; i++) {
+        const ata_disk_t* d = &all[i];
+        g_list[i] = *d;
+        char where[48];
+        disk_describe(d, where, sizeof(where));
+        ksnprintf(g_list_desc[i], sizeof(g_list_desc[i]), "%s - %s (%u MB)", where,
+                  d->model[0] ? d->model : "hard disk", (uint32_t)(d->sectors / 2048u));
+        g_list_banana[i] = fsdisk_holds_banana(d);
+        disk_note(i);
+        /* the default: an install to update, else an empty disk, else any big enough */
+        if (g_list_banana[i] && pick < 0) pick = i;
+        if (big_enough(d) && !g_list_warn[i] && empty < 0) empty = i;
+        if (big_enough(d) && big < 0) big = i;
+    }
+    choose(pick >= 0 ? pick : empty >= 0 ? empty : big);
+}
+
+static int disk_big_enough(void) { return g_disks == 1 && big_enough(&g_disk); }
 
 /* ── the work ── */
 
@@ -122,7 +170,7 @@ static void installer_task(void) {
     int rc;
     if (g_mode == M_UPDATE) {
         g_phase = "Updating the system on the disk...";
-        rc = fsdisk_update();
+        rc = fsdisk_update_on(&g_disk);
     } else {
         /* the choices go into this (live) system first: install writes it to the disk */
         g_phase = "Saving your settings...";
@@ -137,7 +185,7 @@ static void installer_task(void) {
         cfg_set(CFG_SERVICES, "sshd_port", g_sshd ? "22" : 0, RC_CONF_HEADER);
         memset(g_pw, 0, sizeof(g_pw));
         g_phase = "Copying Banana OS onto the disk...";
-        rc = fsdisk_install();
+        rc = fsdisk_install_to(&g_disk);
     }
     g_result = rc;
     g_running = 0;
@@ -160,7 +208,7 @@ static const char* result_text(int rc) {
     switch (rc) {
     case FSDISK_OK:              return 0;
     case FSDISK_ERR_NO_TARGET:   return "No hard disk was found.";
-    case FSDISK_ERR_AMBIGUOUS:   return "More than one hard disk: detach the others and try again.";
+    case FSDISK_ERR_AMBIGUOUS:   return "Choose the disk to install on first.";
     case FSDISK_ERR_NO_SOURCE:   return "No Banana OS CD or USB stick found to copy the system from.";
     case FSDISK_ERR_TOO_SMALL:   return "The disk is too small (256 MB or more is best).";
     case FSDISK_ERR_ISO_TOO_BIG: return "This CD's system does not fit the disk's boot area.";
@@ -172,28 +220,41 @@ static const char* result_text(int rc) {
 
 /* ── pages ── */
 
+/* the disk rows of the first page: their y, and their height */
+#define ROW_H 36
+static int list_y(void) { return cy0() + 100; }
+
 static void draw_welcome(void) {
     int x = cx0(), y = cy0();
     gfx_draw_text_scaled(x, y, 2, "Install Banana OS", C_HEAD, C_PANEL);
     label(x, y + 30, "Puts Banana OS on this computer's hard disk, so it starts", C_DIM);
     label(x, y + 46, "without the CD and keeps your files and settings.", C_DIM);
-    label(x, y + 80, "Disk", C_HEAD);
-    if (g_disks == 0) {
+    label(x, y + 78, g_nlist > 1 ? "Choose the disk to install on" : "Disk", C_HEAD);
+    if (g_nlist == 0) {
         label(x, y + 100, "No hard disk was found.", C_ERR);
         label(x, y + 118, "Add a virtual hard disk (256 MB or more) to the VM, then look again.", C_DIM);
-    } else if (g_disks > 1) {
-        label(x, y + 100, "More than one hard disk was found.", C_ERR);
-        label(x, y + 118, "Leave only the one to install on, then look again.", C_DIM);
     } else {
-        label(x, y + 100, g_disk_desc, C_TEXT);
-        if (!disk_big_enough())
-            label(x, y + 118, "This disk is too small: Banana OS needs at least 160 MB.", C_ERR);
-        else if (g_has_install) {
-            label(x, y + 124, "Banana OS is already installed on this disk.", C_WARN);
-            label(x, y + 142, "Update it with this CD and keep its files, settings and password,", C_DIM);
-            label(x, y + 158, "or erase the disk and install from scratch.", C_DIM);
+        /* one row a disk: a radio button, what it is, what is on it */
+        int ly = list_y();
+        for (int i = 0; i < g_nlist; i++, ly += ROW_H) {
+            if (i == g_sel) bevel(x - 6, ly - 4, cw() + 12, ROW_H - 2, 0x0026303Eu, 0x00303B4Cu, 0x001A2029u);
+            radio(x, ly, i == g_sel, g_list_desc[i]);
+            uint32_t c = g_list_banana[i] ? C_WARN : !big_enough(&g_list[i]) ? C_ERR : g_list_warn[i] ? C_WARN : C_DIM;
+            label(x + 24, ly + 18, g_list_note[i], c);
+        }
+        ly += 6;
+        if (g_sel < 0) {
+            label(x, ly, "Click the disk Banana OS goes on.", C_DIM);
+        } else if (!disk_big_enough()) {
+            label(x, ly, "This disk is too small: Banana OS needs at least 160 MB.", C_ERR);
+        } else if (g_has_install) {
+            label(x, ly, "Update it with this CD and keep its files, settings and password,", C_DIM);
+            label(x, ly + 16, "or erase the disk and install from scratch.", C_DIM);
         } else {
-            label(x, y + 124, "The disk will be erased and Banana OS installed on it.", C_DIM);
+            label(x, ly, g_list_warn[g_sel] ? "This disk will be ERASED - everything on it is lost."
+                                            : "The disk will be erased and Banana OS installed on it.",
+                  g_list_warn[g_sel] ? C_WARN : C_DIM);
+            if (g_nlist > 1) label(x, ly + 16, "The other disks are left as they are.", C_DIM);
         }
     }
     int by = btn_y(), br = btn_r();
@@ -263,6 +324,11 @@ static void draw_confirm(void) {
                   g_httpd ? ", web server" : "", g_sshd ? ", SSH server" : "");
         label(x, y + 92, line, C_TEXT);
         label(x, y + 126, "Everything on this disk will be erased.", C_ERR);
+        if (g_sel >= 0 && g_list_warn[g_sel]) {
+            ksnprintf(line, sizeof(line), "On it now: %s", g_list_note[g_sel]);
+            label(x, y + 144, line, C_WARN);
+        }
+        if (g_nlist > 1) label(x, y + 166, "The other disks are not touched.", C_DIM);
     }
     button(g_win.x + 20, btn_y(), 100, "Back", 0, 1);
     button(btn_r() - 120, btn_y(), 120, g_mode == M_UPDATE ? "Update" : "Install", 1, 1);
@@ -358,6 +424,8 @@ void installer_click(int mx, int my) {
     switch (g_page) {
     case P_WELCOME:
         if (inside(mx, my, bl, by, 110, 22)) { look_for_disk(); return; }
+        for (int i = 0; i < g_nlist; i++)
+            if (inside(mx, my, x - 6, list_y() - 4 + i * ROW_H, cw() + 12, ROW_H - 2)) { choose(i); return; }
         if (g_disks == 1 && disk_big_enough() && g_has_install) {
             if (inside(mx, my, br - 170, by, 170, 22)) { g_mode = M_UPDATE; g_page = P_CONFIRM; return; }
             if (inside(mx, my, br - 350, by, 170, 22)) { g_mode = M_INSTALL; g_page = P_SETUP; return; }

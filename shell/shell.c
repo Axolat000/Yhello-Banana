@@ -1666,32 +1666,56 @@ static void cmd_disks(void) {
     terminal_write(ahci_status());
 }
 
-static void cmd_install(void) {
-    ata_disk_t all[DISK_MAX];
-    int nd = disk_probe(all, DISK_MAX);
-
-    int found = 0;
-    ata_disk_t target;
-    for (int i = 0; i < nd; i++) {
-        print_disk_line(&all[i]);
-        if (!all[i].is_atapi) { found++; target = all[i]; }
+/* the hard disks, numbered for `install N` / `update N`; how many */
+static int list_targets(ata_disk_t* out, int max) {
+    int n = fsdisk_targets(out, max);
+    for (int i = 0; i < n; i++) {
+        char b[8];
+        terminal_write_color("  [", VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+        terminal_write_color(u32_to_str((uint32_t)i + 1u, b, sizeof(b)), VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+        terminal_write_color("]", VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
+        if (fsdisk_holds_banana(&out[i])) terminal_write_color(" (Banana OS)", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+        print_disk_line(&out[i]);
     }
+    return n;
+}
+
+/* the disk the number in args names (1-based), or the only one; -1 (and why) */
+static int pick_target(const char* cmd, const char* args, int n) {
+    args = k_skip_spaces(args);
+    uint32_t v;
+    if (*args) {
+        if (!k_parse_u32(args, &v) || v < 1 || (int)v > n) {
+            terminal_write_color(cmd, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_write_color(": no such disk number - see the list above\n", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            return -1;
+        }
+        return (int)v - 1;
+    }
+    if (n == 1) return 0;
+    terminal_write_color(cmd, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    terminal_write_color(": there are several disks - choose one by its number: ", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+    terminal_write(cmd);
+    terminal_writeln(" <number>   (the others are left alone)");
+    return -1;
+}
+
+static void cmd_install(const char* args) {
+    ata_disk_t all[DISK_MAX];
+    int found = list_targets(all, DISK_MAX);
 
     if (found == 0) {
         terminal_write_color(
-            "install: no ATA hard disk found. Attach a second (blank) IDE/ATA disk\n"
+            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe or virtio disk\n"
             "to the VM - besides the boot CD - then try again.\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
-    if (found > 1) {
-        terminal_write_color(
-            "install: multiple hard disks found - detach extras so exactly one\n"
-            "is attached, then try again.\n", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
-        return;
-    }
+    int k = pick_target("install", args, found);
+    if (k < 0) return;
+    ata_disk_t target = all[k];
 
-    if (fsdisk_find_install(NULL))
+    if (fsdisk_holds_banana(&target))
         terminal_write_color(
             "This disk already has Banana OS on it, with your files. To get the new version\n"
             "and KEEP them, answer N and run 'update' instead.\n",
@@ -1708,7 +1732,7 @@ static void cmd_install(void) {
     }
 
     terminal_writeln("install: copying boot image and filesystem, please wait...");
-    int rc = fsdisk_install();
+    int rc = fsdisk_install_to(&target);
     switch (rc) {
         case FSDISK_OK:
             terminal_write_color(
@@ -1747,17 +1771,26 @@ static void cmd_install(void) {
 
 /* `update`: from a (newer) Banana OS CD, rewrites the installed disk's
  * system and leaves its files and settings alone */
-static void cmd_update(void) {
-    ata_disk_t d;
-    if (!fsdisk_find_install(&d)) {
+static void cmd_update(const char* args) {
+    ata_disk_t all[DISK_MAX], inst[DISK_MAX];
+    int n = fsdisk_targets(all, DISK_MAX), ni = 0;
+    for (int i = 0; i < n; i++) if (fsdisk_holds_banana(&all[i])) inst[ni++] = all[i];
+    if (!ni) {
         terminal_write_color("update: no disk with Banana OS installed was found (use 'install').\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
-    print_disk_line(&d);
+    for (int i = 0; i < ni; i++) {
+        char b[8];
+        if (ni > 1) { terminal_write("  ["); terminal_write(u32_to_str((uint32_t)i + 1u, b, sizeof(b))); terminal_write("]"); }
+        print_disk_line(&inst[i]);
+    }
+    int k = pick_target("update", args, ni);
+    if (k < 0) return;
+    ata_disk_t d = inst[k];
     terminal_writeln("update: comparing the installed system with this CD / USB stick...");
     terminal_flush();
-    int same = fsdisk_compare_boot();
+    int same = k == 0 ? fsdisk_compare_boot() : 0;    /* (the comparison reads the first install) */
     if (same == FSDISK_ERR_NO_SOURCE) {
         terminal_write_color("update: no Banana OS CD or USB stick found - plug in the one with the new version.\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -1785,7 +1818,7 @@ static void cmd_update(void) {
     }
     terminal_writeln("update: writing the new system, please wait (do not switch off)...");
     terminal_flush();
-    int rc = fsdisk_update();
+    int rc = fsdisk_update_on(&d);
     if (rc == FSDISK_OK) {
         terminal_write_color(
             "update: done. Remove the CD (or boot from the disk) and restart to use the new version.\n",
@@ -2381,9 +2414,9 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (k_strcmp(line, "chsh")     == 0) { cmd_chsh("", persona); return; }
 
     if (k_strcmp(line, "disks")    == 0) { cmd_disks();       return; }
-    if (k_strcmp(line, "install")  == 0) { cmd_install();     return; }
+    if (k_strcmp(line, "install")  == 0 || k_strncmp(line, "install ", 8) == 0) { cmd_install(line + 7); return; }
     if (k_strcmp(line, "sync")     == 0) { cmd_sync();        return; }
-    if (k_strcmp(line, "update")   == 0) { cmd_update();      return; }
+    if (k_strcmp(line, "update")   == 0 || k_strncmp(line, "update ", 7) == 0) { cmd_update(line + 6); return; }
     if (k_strcmp(line, "nice") == 0 || k_strncmp(line, "nice ", 5) == 0) {
         /* nice [-n N | -N] command: the command runs with its nice value
          * raised by N (default 10: a smaller share of the processor;

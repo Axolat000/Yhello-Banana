@@ -165,13 +165,16 @@ static const page_t PAGES[] = {
     { "fstest", "disks", "fstest [-k] <mount point>", "test a FAT32 or exFAT drive",
       "Writes, appends, makes folders that grow, deletes, unmounts, mounts again and reads everything back "
       "on the volume. -k keeps the test folder.", "-k|keep the test files", "fstest /mnt/virtio", "mount" },
-    { "install", "disks", "install", "install Banana OS on a disk (live CD)",
+    { "install", "disks", "install [number]", "install Banana OS on a disk (live CD)",
       "Copies Banana OS from the CD or USB stick onto a hard disk and writes the current files to it: the "
-      "disk then boots by itself, with files saved. Everything on that disk is erased. Only on the live "
-      "system. On the desktop, Install Banana OS is the graphical way.", NULL, NULL, "installer, update, disks" },
+      "disk then boots by itself, with files saved. Everything on that disk is erased; the other disks are "
+      "left alone. The disks are listed with a number: with several, say which one (install 2). Only on "
+      "the live system. On the desktop, Install Banana OS is the graphical way.", NULL,
+      "install\ninstall 2", "installer, update, lsblk" },
     { "installer", "disks", "installer", "the graphical installer (live CD)", NULL, NULL, NULL, "install" },
-    { "update", "disks", "update", "update an installed system from a newer CD",
-      "Writes this CD's system over the installed one; your files, settings and password are kept. Only on the live system.",
+    { "update", "disks", "update [number]", "update an installed system from a newer CD",
+      "Writes this CD's system over the installed one; your files, settings and password are kept. With "
+      "several disks holding Banana OS, say which one by its number. Only on the live system.",
       NULL, NULL, "install" },
     /* ── system ── */
     { "uname", "system", "uname", "the system's name", NULL, NULL, NULL, "neofetch" },
