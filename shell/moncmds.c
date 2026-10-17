@@ -70,7 +70,11 @@ static void cmd_free(int argc, char** argv) {
     zswap_stats(&z);
     amount((uint64_t)z.pages * 4096u, shift, t, sizeof(t));
     amount(z.bytes, shift, u, sizeof(u));
-    ksnprintf(line, sizeof(line), "Swap:   %12s compressed in %s of RAM%s", t, u, zswap_enabled() ? "" : " (off)");
+    char d[16], dt[16];
+    amount((uint64_t)z.disk_pages * 4096u, shift, d, sizeof(d));
+    amount(zswap_disk_bytes(), shift, dt, sizeof(dt));
+    if (zswap_disk_bytes()) ksnprintf(line, sizeof(line), "Swap:   %12s compressed in %s of RAM, %s on the disk (of %s)%s", t, u, d, dt, zswap_enabled() ? "" : " (off)");
+    else ksnprintf(line, sizeof(line), "Swap:   %12s compressed in %s of RAM%s", t, u, zswap_enabled() ? "" : " (off)");
     terminal_writeln(line);
     /* what the numbers mean, when the machine has RAM Banana OS leaves alone */
     char inst[16], tot[16], big[16];
@@ -92,8 +96,13 @@ static void cmd_swap(int argc, char** argv) {
         uint32_t n = zswap_compress_now();
         ksnprintf(line, sizeof(line), "swap: %u pages of app memory compressed (%u KiB)", n, n * 4u);
         terminal_writeln(line);
+    } else if (argc > 1 && !strcmp(argv[1], "disk")) {
+        if (!zswap_disk_bytes()) { terminal_writeln("swap: no swap area (an installed system has one on its disk)"); return; }
+        uint32_t n = zswap_writeback(0xFFFFFFFFu);
+        ksnprintf(line, sizeof(line), "swap: %u compressed pages written to the disk", n);
+        terminal_writeln(line);
     } else if (argc > 1) {
-        terminal_writeln("usage: swap [on | off | now]   (no argument: what is compressed)");
+        terminal_writeln("usage: swap [on | off | now | disk]   (no argument: what is compressed, what is on the disk)");
         return;
     }
     zswap_stats_t z;
@@ -108,7 +117,15 @@ static void cmd_swap(int argc, char** argv) {
                            (unsigned long long)z.pages_out, (unsigned long long)z.pages_in);
     else ksnprintf(line, sizeof(line), "  since boot %llu pages compressed, %llu brought back", (unsigned long long)z.pages_out, (unsigned long long)z.pages_in);
     terminal_writeln(line);
-    terminal_writeln("  (apps' pages not used lately are compressed when RAM runs low, brought back when touched)");
+    if (zswap_disk_bytes()) {
+        human(z.disk_used, a, sizeof(a));
+        human(zswap_disk_bytes(), b, sizeof(b));
+        ksnprintf(line, sizeof(line), "Swap area on the disk: %s used of %s; since boot %llu pages written, %llu read back", a, b,
+                  (unsigned long long)z.disk_out, (unsigned long long)z.disk_in);
+    } else ksnprintf(line, sizeof(line), "Swap area on the disk: none (the live CD: an installed system has one)");
+    terminal_writeln(line);
+    terminal_writeln("  (apps' pages not used lately are compressed when RAM runs low, brought back when touched;");
+    terminal_writeln("   the oldest compressed ones go to the disk when that is not enough)");
 }
 
 /* ── df: where the disk space is ──────────────────────────────────── */

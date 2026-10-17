@@ -439,7 +439,10 @@ void taskmgr_draw(const fb_info_t* fi) {
         char za[24], zb[24];
         human(zs.pages * 4u, za, sizeof(za));
         human((uint32_t)(zs.bytes / 1024u), zb, sizeof(zb));
-        ksnprintf(line, sizeof(line), "Compressed:     %s of app memory in %s (swap in RAM%s)", za, zb, zswap_enabled() ? "" : ", off");
+        char zc[24];
+        human(zs.disk_pages * 4u, zc, sizeof(zc));
+        if (zswap_disk_bytes()) ksnprintf(line, sizeof(line), "Swap:           %s compressed in %s, %s on the disk%s", za, zb, zc, zswap_enabled() ? "" : " (off)");
+        else ksnprintf(line, sizeof(line), "Swap:           %s compressed in %s (in RAM%s)", za, zb, zswap_enabled() ? "" : ", off");
         gfx_draw_text(lx, ty + 64, line, C_TEXT, C_PANEL);
         netif_t* nif = net_if();
         char ip[16] = "-";

@@ -316,7 +316,7 @@ static int clip_find(const char* s) {
 /* ── compressed memory: swap in RAM (kernel/zswap.c) ───────────────── */
 
 #ifdef __x86_64__
-static volatile uint32_t g_sw_pages, g_sw_done;
+static volatile uint32_t g_sw_pages, g_sw_done, g_sw_disk;
 static volatile uint64_t g_sw_before, g_sw_after;
 
 static uint64_t ram_used(void) { return (uint64_t)kheap_used_bytes() + hmem_used_bytes(); }
@@ -327,6 +327,7 @@ static void swap_helper(void) {
     g_sw_before = ram_used();
     g_sw_pages = zswap_compress_now();
     g_sw_after = ram_used();
+    g_sw_disk = zswap_disk_bytes() ? zswap_writeback(0xFFFFFFFFu) : 0;   /* (installed: on to the disk) */
     g_sw_done = 1;
 }
 #endif
@@ -352,6 +353,12 @@ static void t_swap(void) {
     ksnprintf(note, sizeof(note), "%u pages brought back", (uint32_t)(b.pages_in - a.pages_in));
     report("touched again: decompressed, every byte right", rc == 0 && b.pages_in - a.pages_in >= 6000, note);
     report("nothing left compressed once it unmapped", b.pages == a.pages, "");
+    if (!zswap_disk_bytes()) skip("the swap area on the disk", "none on the live CD (an installed system has one)");
+    else {
+        ksnprintf(note, sizeof(note), "%u pages written, %u read back", g_sw_disk, (uint32_t)(b.disk_in - a.disk_in));
+        report("compressed pages to the disk and back, every byte right", rc == 0 && g_sw_disk >= 3000 && b.disk_in - a.disk_in >= 3000, note);
+        report("nothing left on the disk once it unmapped", b.disk_pages == a.disk_pages && b.disk_used == a.disk_used, "");
+    }
 #endif
 }
 

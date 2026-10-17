@@ -177,7 +177,15 @@ void isr_handler(registers_t* regs) {
     if (n == 14) {
         uintptr_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-        if (app_vm_fault(cr2, (uint32_t)regs->err_code)) return;
+#ifdef __x86_64__
+        int ints_on = (regs->rflags & 0x200) != 0;
+#else
+        int ints_on = (regs->eflags & 0x200) != 0;
+#endif
+        if (app_vm_fault(cr2, (uint32_t)regs->err_code, (regs->cs & 3) == 3, ints_on)) return;
+        /* (it may have waited - for the disk, for memory - while other faults came:
+         * CR2 is this fault's again for what follows) */
+        __asm__ volatile("mov %0, %%cr2" :: "r"(cr2));
     }
 
     /* app memory another core still knew as the kernel's: try it again */
@@ -516,7 +524,10 @@ void idt_init(void) {
     tss_init();
     idt[8].ist = 1;                        /* double fault */
     idt[12].ist = 1;                       /* stack fault */
-    idt[14].ist = 1;                       /* page fault */
+    /* (not the page fault: it runs on the stack it happened on - the thread's
+     * own kernel stack for app code - so it may wait for the disk: a page
+     * in the swap area, kernel/zswap.c. A kernel stack overflowing into its
+     * guard page still ends in a double fault, on the fault stack.) */
 #endif
     for (int i = 0; i < 16; i++) {
         idt_set_gate((uint8_t)(32 + i), (uintptr_t)irq_stubs[i], code_sel, 0x8E);

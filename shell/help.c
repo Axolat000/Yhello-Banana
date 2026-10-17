@@ -218,13 +218,16 @@ static const page_t PAGES[] = {
       "T by time; q quits.", NULL, NULL, "top, sched" },
     { "free", "system", "free [-h|-k|-m|-g]", "memory: total, used, free",
       "The RAM: total, used, free, and the file data kept in RAM that could be given back.", NULL, "free -h", "ram_info, df, swap" },
-    { "swap", "system", "swap [on | off | now]", "compressed memory: what is in it",
+    { "swap", "system", "swap [on | off | now | disk]", "swap: compressed memory and the swap area on the disk",
       "When RAM runs low, the pages of apps' memory that were not used lately (their mmap memory: a Java "
       "heap...) are compressed in RAM and their memory given back to the system; a page is decompressed "
-      "the moment it is touched again. Pages of zeros take no room. swap shows how much is compressed and "
-      "how small it got; on / off turns it on or off (on by default); now compresses every page not in "
-      "use right now (to see what it gives).",
-      "on|compress when RAM runs low (the default)\noff|compress nothing more\nnow|compress what can be, now", "swap\nswap now", "free" },
+      "the moment it is touched again. Pages of zeros take no room. On an installed system, when that is "
+      "not enough (or much is compressed), the oldest compressed pages go to a swap area on the disk - "
+      "taken at boot from the top of its free space, as big as the RAM (4 GB at most) - and are read back "
+      "when touched. swap shows what is compressed and on the disk; on / off turns it on or off (on by "
+      "default); now compresses every page not in use right now; disk writes the compressed pages out.",
+      "on|swap when RAM runs low (the default)\noff|nothing more compressed or written\nnow|compress what can be, now\n"
+      "disk|write the compressed pages to the swap area now", "swap\nswap now", "free" },
     { "sched", "system", "sched", "the scheduler's view of the tasks", NULL, NULL, NULL, "nice, renice" },
     { "nice", "system", "nice [-n N] <command>", "run a command at another priority",
       "Runs command with its nice value raised by N (10 by default; negative gets more processor time). "

@@ -727,6 +727,7 @@ typedef struct {
 typedef struct { uint32_t lba, sectors; } v5_ext_t;
 
 static int       g_v5;                     /* the installed disk is layout 5 */
+static uint32_t  g_swap_lba, g_swap_sect;   /* the swap area (end of this file) */
 static v5_mark_t g_mark;
 static v5_rec_t* g_rec;                    /* by file index (grows with the file table) */
 static int       g_nrecs;
@@ -1647,7 +1648,7 @@ void fsdisk_space(uint64_t* used_bytes, uint64_t* capacity_bytes) {
         uint64_t used = (uint64_t)g_body_sect * FSDISK_SECTOR;
         for (int i = 0; i < g_nrecs; i++) if (g_rec[i].valid) used += (uint64_t)g_rec[i].sectors * FSDISK_SECTOR;
         *used_bytes = used;
-        *capacity_bytes = (uint64_t)(g_mark.data_end - g_mark.data_lba) * FSDISK_SECTOR;
+        *capacity_bytes = (uint64_t)(g_mark.data_end - g_mark.data_lba - g_swap_sect) * FSDISK_SECTOR;   /* (the swap area: not for files) */
         return;
     }
     *used_bytes = fs_snapshot_size();
@@ -2038,4 +2039,47 @@ int fsdisk_check(int full, void (*out)(const char* line)) {
     }
     g_busy = 0;
     return problems;
+}
+
+/* ── the swap area (kernel/zswap.c) ───────────────────────────────────
+ * A run of the files' area kept for swapped pages: at the top of the free
+ * space, taken at each boot and never saved (what it held means nothing
+ * after a restart) - an older Banana OS sees free space there. */
+
+int fsdisk_swap_area(uint32_t want, uint32_t min, uint32_t* lba, uint32_t* sectors) {
+    if (!g_v5 || !g_have_target || g_swap_sect) return -1;
+    want &= ~(V5_BLOCK_SECT - 1u);
+    min &= ~(V5_BLOCK_SECT - 1u);
+    /* the largest free run, its top part (files grow from the bottom) */
+    uint32_t best_lo = 0, best_len = 0, cur = g_mark.data_lba;
+    for (int i = 0; i <= g_next; i++) {
+        uint32_t next = i < g_next ? g_ext[i].lba : g_mark.data_end;
+        if (next > g_mark.data_end) next = g_mark.data_end;
+        if (next > cur && next - cur > best_len) { best_lo = cur; best_len = next - cur; }
+        if (i < g_next) {
+            uint32_t end = (g_ext[i].lba + g_ext[i].sectors + V5_BLOCK_SECT - 1u) & ~(V5_BLOCK_SECT - 1u);
+            if (end > cur) cur = end;
+        }
+    }
+    /* at most half of it: the files keep room to grow */
+    uint32_t n = best_len / 2u;
+    if (n > want) n = want;
+    n &= ~(V5_BLOCK_SECT - 1u);
+    if (n < min || n == 0) return -1;
+    uint32_t at = (best_lo + best_len - n) & ~(V5_BLOCK_SECT - 1u);
+    if (ext_add(at, n) != 0) return -1;
+    g_swap_lba = at;
+    g_swap_sect = n;
+    *lba = at;
+    *sectors = n;
+    klog("fsdisk: swap area of %u MB at sector %u\n", n / 2048u, at);
+    return 0;
+}
+
+int fsdisk_swap_io(int write, uint32_t lba, uint32_t n, void* buf) {
+    if (!g_swap_sect || lba < g_swap_lba || lba + n > g_swap_lba + g_swap_sect) return -1;
+    dlock();
+    int rc = write ? disk_write(&g_target, lba, n, buf) : disk_read(&g_target, lba, n, buf);
+    dunlock();
+    return rc;
 }

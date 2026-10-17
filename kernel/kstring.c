@@ -238,7 +238,7 @@ int kvsnprintf(char* buf, size_t n, const char* fmt, __builtin_va_list ap) {
             break;
         }
         case 'p': {
-            uint32_t v = (uint32_t)(uintptr_t)__builtin_va_arg(ap, void*);
+            uint64_t v = (uint64_t)(uintptr_t)__builtin_va_arg(ap, void*);   /* (all of it: app memory lies past 4 GiB) */
             ob_putc(&o, '0'); ob_putc(&o, 'x');
             ob_num(&o, v, 16, 0, 0, 8, 1, 0);
             break;

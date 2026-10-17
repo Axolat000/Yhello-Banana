@@ -12,6 +12,10 @@
  */
 
 void*    upage_alloc(void);          /* a page (not zeroed), or NULL */
+/* the same, from the last few pages too - those apps' pages never get:
+ * kept for compressing them (kernel/zswap.c: its entries), so memory can
+ * always be made */
+void*    upage_alloc_reserve(void);
 void     upage_free(void* p);
 uint64_t upage_used_bytes(void);     /* pages handed out */
 uint64_t upage_held_bytes(void);     /* chunks taken for them */

@@ -2731,6 +2731,7 @@ void shell_run(void) {
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     fsdisk_start_autosave();      /* changes reach the installed disk by themselves */
     zswap_start();                /* memory low: apps' idle pages compressed (kernel/zswap.c) */
+    if (fsdisk_is_installed()) zswap_disk_init();   /* and a swap area on the disk for what does not fit */
     disk_attach_extra(fsdisk_holds_banana);   /* the other hard disks: their volumes mounted in /mnt */
     if (live)
         terminal_write_color("Running the LIVE CD.\n", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);

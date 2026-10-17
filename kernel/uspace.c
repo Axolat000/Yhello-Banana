@@ -170,7 +170,7 @@ void uspace_destroy(uspace_t* us) {
                     else if (pt[k] & P_ZSW) {
                         uint32_t idx = (uint32_t)((pt[k] & ADDR_MASK) >> 12);
                         zent_t* z = zswap_ent(idx);
-                        if (z && z->state == ZS_STORED) zswap_free(idx);
+                        if (z && z->state != ZS_PENDING && z->state != ZS_FREE) zswap_release(idx);
                     }
                 }
                 kfree(pt);
@@ -397,6 +397,7 @@ static uint64_t vm_find(uspace_t* us, uint64_t len, uint64_t hint) {
 /* the other cores forget us's old translations: until they did, the pages
  * just taken out of its tables are not given to anyone (kernel/smp.c) */
 static void shootdown(uspace_t* us) {
+    if (is_current(us)) reload_cr3();                   /* (this core too: a fault reclaiming runs on the app's tables) */
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0" : "=r"(fl));
     int may_yield = cpu_id() == 0 && (fl & 0x200);      /* (mmap / munmap also run on other cores) */
@@ -428,8 +429,8 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
                 if (z && z->state == ZS_PENDING) {
                     pg[n++] = (void*)z->frame;               /* (the compressor lets it go) */
                     z->state = ZS_CANCELLED;
-                } else if (z && z->state == ZS_STORED) {
-                    zswap_free(idx);
+                } else if (z && z->state != ZS_FREE && z->state != ZS_CANCELLED) {
+                    zswap_release(idx);                       /* (in RAM, on the disk, or in between) */
                     us->vm_zpages--;
                 }
                 *pte = 0;
@@ -533,13 +534,14 @@ int uvm_owns_str(uspace_t* us, const char* s) {
     }
 }
 
-int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) {
+int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk) {
     if (!us || !m || !in_region(addr, 1)) return 0;
     uintptr_t f = spin_lock_irq(&us->vm_lock);
     int ok = 0, i = vma_at(us, addr);
     int prot = i >= 0 ? us->vma[i].prot : 0;
     if (prot && (!(err & 2) || (prot & UVM_WRITE))) {
         uint64_t* pte = vm_pte(us, addr & ~4095ull, 1, NULL);
+        if (!pte && on_disk) ok = 3;                       /* (no memory for its page table: make some) */
         if (pte && (*pte & P_PRESENT)) {
             invlpg(addr);                                  /* another thread put it there first */
             ok = 1;
@@ -552,14 +554,19 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) {
                 z->state = ZS_CANCELLED;
                 us->vm_pages++;
                 ok = 1;
-            } else if (z && z->state == ZS_STORED) {
+            } else if (z && z->state != ZS_FREE && z->state != ZS_CANCELLED) {
                 void* pg = upage_alloc();
-                if (pg && zswap_take(idx, (uint8_t*)pg) == 0) {
+                int r = pg ? zswap_take(idx, (uint8_t*)pg) : -1;
+                if (r == 0) {
                     *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
                     us->vm_pages++;
                     us->vm_zpages--;
                     ok = 1;
-                } else if (pg) upage_free(pg);
+                } else {
+                    if (pg) upage_free(pg);
+                    if (r == 2 && on_disk) { *on_disk = idx; ok = 2; }    /* (on the disk: read it in first) */
+                    else if (!pg && on_disk) ok = 3;                       /* (no memory: make some first) */
+                }
             }
         } else if (pte && !(*pte & P_KEPT)) {
             void* pg = upage_alloc();                     /* (kernel/upage.c: given back when unmapped) */
@@ -568,7 +575,7 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) {
                 *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
                 us->vm_pages++;
                 ok = 1;
-            }
+            } else if (on_disk) ok = 3;
         }
     }
     spin_unlock_irq(&us->vm_lock, f);
@@ -595,7 +602,7 @@ int uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) {
     for (uint64_t pg = a & ~4095ull; pg < (uint64_t)a + n; pg += 4096) {
         uint64_t e = walk(us, pg);
         if ((e & need) != need && in_region(pg, 1)) {
-            uvm_fault(us, m, (uintptr_t)pg, 2);         /* (a mapped page not touched yet) */
+            uvm_fault(us, m, (uintptr_t)pg, 2, NULL);   /* (a mapped page not touched yet) */
             e = walk(us, pg);
         }
         if ((e & need) != need) return 0;
@@ -660,6 +667,13 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
                 }
                 int keep = zero || data;
                 int give = 0;
+                /* no heap left for the copy: straight to the swap area, where there is one
+                 * (the boot core, interrupts on: the disk may be waited for) */
+                uint32_t slot = 0, slen = len ? len : 4096u;
+                uintptr_t fl;
+                __asm__ volatile("pushf; pop %0" : "=r"(fl));
+                if (!keep && cpu_id() == 0 && (fl & 0x200))
+                    slot = zswap_disk_put(len ? buf : (const uint8_t*)b[k].frame, slen);
                 f = spin_lock_irq(&us->vm_lock);
                 uint64_t nx;
                 uint64_t* pte = vm_pte(us, b[k].va, 0, &nx);
@@ -671,8 +685,14 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
                         us->vm_zpages++;
                         give = 1;
                         done++;
+                    } else if (slot) {
+                        zswap_store_disk(b[k].idx, slot, slen);
+                        slot = 0;
+                        us->vm_zpages++;
+                        give = 1;
+                        done++;
                     } else {
-                        /* does not compress: it stays */
+                        /* no room for it anywhere: it stays */
                         int i = vma_at(us, b[k].va);
                         *pte = (uint64_t)b[k].frame | prot_bits(i >= 0 ? us->vma[i].prot : UVM_READ | UVM_WRITE);
                         us->vm_pages++;
@@ -683,6 +703,7 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
                 }
                 spin_unlock_irq(&us->vm_lock, f);
                 kfree(data);
+                if (slot) zswap_slot_free(slot, slen);          /* (written, but the page was touched meanwhile) */
                 if (give) upage_free((void*)b[k].frame);
             }
             if (full) return done;
@@ -695,10 +716,15 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
     return done;
 }
 
+/* its work space: not from the heap - it runs when the heap is short */
+static uint8_t      g_po_buf[4096 + 64];
+static uint16_t     g_po_ht[4096];
+static volatile int g_po_busy;
+
 uint32_t uvm_page_out_all(int force, uint32_t max) {
-    uint8_t* buf = (uint8_t*)kmalloc(4096 + 64);
-    uint16_t* ht = (uint16_t*)kmalloc(4096 * sizeof(uint16_t));
-    if (!buf || !ht) { kfree(buf); kfree(ht); return 0; }
+    if (__sync_lock_test_and_set(&g_po_busy, 1)) return 0;      /* (another one is at it: wait for it) */
+    uint8_t* buf = g_po_buf;
+    uint16_t* ht = g_po_ht;
     static uint32_t rr;                                   /* (a different app first each time) */
     uint32_t done = 0;
     int n = 0;
@@ -717,8 +743,7 @@ uint32_t uvm_page_out_all(int force, uint32_t max) {
         __atomic_sub_fetch(&us->zbusy, 1, __ATOMIC_RELEASE);
     }
     rr++;
-    kfree(buf);
-    kfree(ht);
+    __sync_lock_release(&g_po_busy);
     return done;
 }
 
@@ -736,7 +761,7 @@ int       uspace_fault_is_stale(uintptr_t addr, uint32_t err) { (void)addr; (voi
 /* (no mmap region: kernel/app.c maps app memory directly) */
 int       uvm_owns(uspace_t* us, const void* p, uint64_t n) { (void)us; (void)p; (void)n; return 0; }
 int       uvm_owns_str(uspace_t* us, const char* s) { (void)us; (void)s; return 0; }
-int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) { (void)us; (void)m; (void)addr; (void)err; return 0; }
+int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk) { (void)us; (void)m; (void)addr; (void)err; (void)on_disk; return 0; }
 uint64_t  uvm_resident(uspace_t* us) { (void)us; return 0; }
 uint32_t  uvm_page_out_all(int force, uint32_t max) { (void)force; (void)max; return 0; }
 uint64_t  uvm_compressed(uspace_t* us) { (void)us; return 0; }

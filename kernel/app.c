@@ -18,6 +18,7 @@
 #include "../net/http.h"
 #include "../sdk/include/banana_api.h"
 #include "smp.h"
+#include "zswap.h"
 #include "webview.h"
 #include "font.h"
 #include "pkg.h"
@@ -31,6 +32,7 @@
 #include "uvm.h"
 #include "meminfo.h"
 #include "hmem.h"
+#include "upage.h"
 #include "usock.h"
 #include "../net/net.h"
 
@@ -342,9 +344,50 @@ static int a_vm_protect(void* addr, unsigned long len, int prot) {
 
 /* kernel/idt.c, every page fault (any core, either mode): a page of the
  * running app's mmap region touched for the first time gets its memory */
-int app_vm_fault(uintptr_t addr, uint32_t err) {
+int app_vm_fault(uintptr_t addr, uint32_t err, int from_user, int ints_on) {
     app_proc_t* p = cur();
-    return p && p->us && uvm_fault(p->us, p->mem, addr, err);
+    if (!p || !p->us) return 0;
+    /* (it gives up - out of memory - only once 400 rounds in a row freed nothing) */
+    for (int idle = 0; idle < 400; ) {
+        uint32_t idx = 0;
+        int r = uvm_fault(p->us, p->mem, addr, err, &idx);
+        if (r != 2 && r != 3) return r == 1;
+#ifdef __x86_64__
+        /* the page is in the swap area on the disk (kernel/zswap.c): read in -
+         * where the fault may wait (app code, or the kernel with interrupts
+         * on), on the boot core, which drives the disks */
+        if (!from_user && !ints_on) return 0;
+        if (cpu_id() != 0) {
+            if (!from_user) return 0;
+            task_ap_go_home();
+        }
+        __asm__ volatile("sti");
+        /* 2: the page is on the disk; 3: no memory for it - some is made (compressed,
+         * written out) or, if none can be yet, a moment waited */
+        int rc = r == 2 ? zswap_disk_in(idx) : (int)zswap_reclaim();
+        if (r == 2 && rc == -2) rc = (int)zswap_reclaim() ? 0 : -2;   /* (no memory to read it into) */
+        idle = (r == 2 ? rc == 0 : rc > 0) ? 0 : idle + 1;
+        __asm__ volatile("cli");
+        if (r == 2 && rc == -1) { klog("vm fault: disk read of %u failed\n", idx); return 0; }
+#else
+        (void)from_user; (void)ints_on;
+        return 0;
+#endif
+    }
+#ifdef __x86_64__
+    {
+        zswap_stats_t z;
+        zswap_stats(&z);
+        klog("app: out of memory - no page for %p (heap %u KiB free, high %llu KiB free, pool %llu/%llu KiB, "
+             "%u compressed in %llu KiB, %u on the disk in %llu KiB, %u entries)\n", (void*)addr,
+             (uint32_t)((kheap_total_bytes() - kheap_used_bytes()) >> 10),
+             (unsigned long long)((hmem_total_bytes() - hmem_used_bytes()) >> 10),
+             (unsigned long long)(upage_used_bytes() >> 10), (unsigned long long)(upage_held_bytes() >> 10),
+             (uint32_t)z.pages, (unsigned long long)(z.bytes >> 10), z.disk_pages,
+             (unsigned long long)(z.disk_used >> 10), z.entries);
+    }
+#endif
+    return 0;
 }
 
 /* 1 if [ptr, ptr + n) is the calling app's memory (64-bit: what a system
@@ -2079,6 +2122,9 @@ static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, 
     return args_ok(p, sp, a);
 }
 
+#define API_SLOT(f) (__builtin_offsetof(banana_api_t, f) / sizeof(void*))
+static int in_uvm(uint64_t v) { return v >= UVM_BASE && v - UVM_BASE < UVM_SIZE; }
+
 /* a call on another core, interrupts off: 1 if it was done here, 0 if it
  * must go to the boot core (where everything is checked again) */
 static int syscall_here(sysframe_t* r) {
@@ -2087,7 +2133,17 @@ static int syscall_here(sysframe_t* r) {
     app_proc_t* p = cur();
     if (!p || p->exit_req || p->kill_req) return 0;     /* (the boot core ends it) */
     uint64_t a[SYS_ARGS];
+    /* app memory in its mmap region may be in the swap area on the disk: a
+     * call that would read it goes to the boot core, where a fault may wait
+     * (interrupts are off here) - the vm_* calls only take its addresses.
+     * Checked before the arguments are (that reads strings, the stack) */
+    int vm = slot == API_SLOT(vm_map) || slot == API_SLOT(vm_unmap) || slot == API_SLOT(vm_protect);
+    if (strlen(g_spec[slot].args) > 6 && in_uvm(r->rsp)) return 0;
+    uint64_t reg[6] = { r->rdi, r->rsi, r->rdx, r->rcx, r->r8, r->r9 };
+    uint32_t nargs = (uint32_t)strlen(g_spec[slot].args);
+    if (!vm) for (uint32_t i = 0; i < nargs && i < 6; i++) if (in_uvm(reg[i])) return 0;   /* (the others hold what was there) */
     if (!gather_args(p, &g_spec[slot], r, a)) return 0;
+    if (!vm) for (uint32_t i = 6; i < nargs && i < SYS_ARGS; i++) if (in_uvm(a[i])) return 0;
     if (g_local[slot] == LOCAL_WAIT) {
         /* the value changed already: nothing to wait for */
         if (!a[0] || *(volatile int*)(uintptr_t)a[0] == (int)a[1]) return 0;

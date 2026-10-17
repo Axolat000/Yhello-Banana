@@ -105,5 +105,10 @@ typedef struct {
     uint32_t image_bytes, written_bytes;
 } fsdisk_timing_t;
 void fsdisk_timing(fsdisk_timing_t* out);
+/* the swap area (kernel/zswap.c): up to want sectors (at least min) at the
+ * top of the installed disk's free space, not saved - 0 and where, or -1;
+ * and its sectors read (0) or written (1) */
+int  fsdisk_swap_area(uint32_t want, uint32_t min, uint32_t* lba, uint32_t* sectors);
+int  fsdisk_swap_io(int write, uint32_t lba, uint32_t n, void* buf);
 
 #endif

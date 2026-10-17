@@ -40,8 +40,11 @@ int       uvm_protect(uspace_t* us, uintptr_t addr, uint64_t len, int prot);
 int       uvm_owns(uspace_t* us, const void* p, uint64_t n);
 int       uvm_owns_str(uspace_t* us, const char* s);
 /* a page fault at addr (err: the CPU's error code): 1 if a page was put
- * there (or it was a stale translation) and the access can go on */
-int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err);
+ * there (or it was a stale translation) and the access can go on; 2 if the
+ * page is in the swap area on the disk (*on_disk: its kernel/zswap.c entry,
+ * to read in where the fault may wait - then this again); 3 if there was no
+ * memory for the page (on_disk given: make some, then this again); 0 otherwise */
+int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk);
 /* bytes of memory its mapped pages use now */
 uint64_t  uvm_resident(uspace_t* us);
 /* bytes of its pages compressed away now (kernel/zswap.c) */
