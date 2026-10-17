@@ -1,4 +1,4 @@
-/* java - the Java launcher for Banana OS (OpenJDK 17, Zero).
+/* java - the Java launcher for Banana OS (OpenJDK 17: the server VM, or Zero).
  *
  *   java [options] <main class> [args...]
  *   java [options] -jar <file.jar> [args...]

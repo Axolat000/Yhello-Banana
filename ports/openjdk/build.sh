@@ -1,5 +1,7 @@
 #!/bin/sh
-# Builds OpenJDK 17 (the Zero interpreter, 64-bit) for Banana OS:
+# Builds OpenJDK 17 (64-bit) for Banana OS: VARIANT=server (the default:
+# HotSpot's template interpreter and its C1 / C2 JIT compilers) or VARIANT=zero
+# (the portable C++ interpreter, no JIT):
 #     ports/openjdk/build.sh [output dir]      (default: ports/openjdk/build)
 # Out: <output>/jdk - a JDK image with the modules Minecraft needs (MODULES below; copy it to /jdk, or a
 # disk's jdk folder: the java app finds /jdk, /mnt/usb/jdk, /mnt/virtio/jdk,
@@ -26,7 +28,9 @@ BOOT_SHA=3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e
 DL=$HERE/src
 SRC=${JDK_SRC:-$DL/jdk17u-jdk-$VER-ga}       # (JDK_SRC, BOOT_JDK: ones already there)
 BOOT=${BOOT_JDK:-$DL/jdk-$VER+1}
-REFB=$SRC/build/linux-x86_64-zero-release
+VARIANT=${VARIANT:-server}
+CONF=linux-x86_64-$VARIANT-release
+REFB=$SRC/build/$CONF
 JOBS=${JOBS:-$(nproc)}
 mkdir -p "$DL" "$OUT"
 
@@ -45,18 +49,21 @@ if [ ! -d "$BOOT" ]; then
 fi
 
 # ── the reference Linux build (its command lines and its classes) ─────
+# (server: no ZGC / Shenandoah (memory mapped several times), JFR, JVMCI, CDS)
+FEATURES=
+[ "$VARIANT" = server ] && FEATURES="--with-jvm-features=-zgc,-shenandoahgc,-jfr,-jvmci,-cds,-dtrace --disable-cds-archive"
 if [ ! -f "$REFB/images/jdk/lib/modules" ]; then
-    (cd "$SRC" && sh configure --with-boot-jdk="$BOOT" --with-jvm-variants=zero --enable-headless-only \
+    (cd "$SRC" && sh configure --with-boot-jdk="$BOOT" --with-jvm-variants=$VARIANT --enable-headless-only \
         --with-debug-level=release --disable-warnings-as-errors --with-native-debug-symbols=none \
-        --with-jobs="$JOBS" --with-version-opt=banana --with-conf-name=linux-x86_64-zero-release)
-    make -C "$SRC" CONF=linux-x86_64-zero-release images
+        --with-jobs="$JOBS" --with-version-opt=banana --with-conf-name=$CONF $FEATURES)
+    make -C "$SRC" CONF=$CONF images
 fi
 
 # ── HotSpot and java.base's native code, for Banana OS ────────────────
 W=$OUT/work
 N=$REFB/support/native/java.base
 mkdir -p "$W" "$OUT/lib/server"
-JOBS=$JOBS python3 "$HERE/rebuild.py" "$REFB/hotspot/variant-zero/libjvm/objs" "$W/hotspot"
+JOBS=$JOBS python3 "$HERE/rebuild.py" "$REFB/hotspot/variant-$VARIANT/libjvm/objs" "$W/hotspot-$VARIANT"
 for l in libfdlibm libjava libnio libnet libjimage libverify libzip; do
     extra=
     [ $l = libzip ] && extra=-I$SRC/src/java.base/share/native/libzip/zlib
@@ -78,8 +85,8 @@ LIBGCC=$(gcc -print-libgcc-file-name)
 L=$OUT/lib
 # libjvm: crtbeginS/crtendS give it its own __dso_handle (C++ statics' destructors)
 g++ -shared -nostdlib -Wl,-soname,libjvm.so \
-    -Wl,--version-script="$REFB/hotspot/variant-zero/libjvm/mapfile" -o "$L/server/libjvm.so" \
-    "$(gcc -print-file-name=crtbeginS.o)" "$W"/hotspot/objs/*.o /usr/lib/x86_64-linux-gnu/libffi.a "$LIBGCC" \
+    -Wl,--version-script="$REFB/hotspot/variant-$VARIANT/libjvm/mapfile" -o "$L/server/libjvm.so" \
+    "$(gcc -print-file-name=crtbeginS.o)" "$W"/hotspot-$VARIANT/objs/*.o /usr/lib/x86_64-linux-gnu/libffi.a "$LIBGCC" \
     "$(gcc -print-file-name=crtendS.o)"
 so() {   # so NAME objects/libraries...
     n=$1; shift

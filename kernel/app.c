@@ -1944,7 +1944,7 @@ static int sig_deliver(app_proc_t* p, sysframe_t* r, int sig, int code, uintptr_
     g[G_RDX] = (long long)r->rdx; g[G_RAX] = (long long)r->rax; g[G_RCX] = (long long)r->rcx; g[G_RSP] = (long long)r->rsp;
     g[G_RIP] = (long long)r->rip; g[G_EFL] = (long long)r->rflags; g[G_CSGSFS] = (long long)r->cs;
     g[G_ERR] = (long long)r->err_code; g[G_TRAPNO] = trapno; g[G_CR2] = (long long)addr;
-    b->uc.uc_mcontext.fpregs = b->uc.fpregs_mem;
+    b->uc.uc_mcontext.fpregs = (void*)b->uc.fpregs_mem;
     b->uc.uc_sigmask[0] = st->blocked;
     b->uc.uc_stack.ss_sp = (void*)st->alt_sp;
     b->uc.uc_stack.ss_size = st->alt_size;

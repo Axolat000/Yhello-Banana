@@ -12,7 +12,7 @@ extern "C" {
 typedef long long greg_t;
 #define NGREG 23
 typedef greg_t gregset_t[NGREG];
-typedef void* fpregset_t;
+typedef struct _libc_fpstate* fpregset_t;
 typedef banana_mcontext_t mcontext_t;
 typedef banana_ucontext_t ucontext_t;
 

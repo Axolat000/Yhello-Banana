@@ -499,10 +499,22 @@ typedef struct {
 
 typedef struct { void* ss_sp; int ss_flags; unsigned long ss_size; } banana_stack_t;
 
+/* the x87 / SSE registers as FXSAVE stores them (Linux's struct _libc_fpstate) */
+struct _libc_fpxreg { unsigned short significand[4], exponent, __glibc_reserved1[3]; };
+struct _libc_xmmreg { unsigned int element[4]; };
+struct _libc_fpstate {
+    unsigned short cwd, swd, ftw, fop;
+    unsigned long long rip, rdp;
+    unsigned int mxcsr, mxcr_mask;
+    struct _libc_fpxreg _st[8];
+    struct _libc_xmmreg _xmm[16];
+    unsigned int __glibc_reserved1[24];
+};
+
 /* the registers, Linux's order for x86_64 (REG_R8 = 0 ... REG_RIP = 16) */
 typedef struct {
     long long gregs[23];
-    void*     fpregs;                  /* -> fpregs_mem (FXSAVE format) */
+    struct _libc_fpstate* fpregs;      /* -> fpregs_mem (FXSAVE format) */
     unsigned long long __reserved[8];
 } banana_mcontext_t;
 
