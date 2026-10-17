@@ -2131,6 +2131,11 @@ static int  kb_modal_key(int code);
 static int  g_sw_open, g_sw_sel;              /* Alt+Tab: the switcher */
 static int  g_tv_open, g_tv_sel;              /* Win+Tab: task view */
 static int  g_bar_kb, g_bar_sel = -1;         /* Win+T: the taskbar has the keys */
+static int  g_cb_open, g_cb_sel, g_cb_top;       /* Win+V: the clipboard history */
+static int  cb_key(int code);
+static void cb_toggle(void);
+static void cb_click(const fb_info_t* fi, int mx, int my);
+static int  cb_wheel(const fb_info_t* fi, int mx, int my, int dz);
 static int  tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
@@ -2582,11 +2587,12 @@ static void gui_poll_body(void) {
                             char c3 = keyboard_try_getchar();
                             if (c3 >= '0' && c3 <= '9') keyboard_try_getchar();
                             code = c3 == 'A' ? KB_UP : c3 == 'B' ? KB_DOWN : c3 == 'C' ? KB_RIGHT : c3 == 'D' ? KB_LEFT :
-                                   c3 == 'H' ? KB_HOME : c3 == 'F' ? KB_END : 0;
+                                   c3 == 'H' ? KB_HOME : c3 == 'F' ? KB_END : c3 == 'P' ? KB_DEL : 0;
                         } else code = KB_ESC;
                     } else if (c == '\n') code = KB_ENTER;
                     else if (c == '\t') code = (keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB;
                     else if (c == ' ') code = KB_SPACE;
+                    else if (g_cb_open && c > ' ' && c < 127) code = c;
                     if (code) kb_modal_key(code);
                     g_force_redraw = 1;
                     continue;
@@ -2645,7 +2651,8 @@ static void gui_poll_body(void) {
             }
         }
         gui_fkeys(fi);
-        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_tv_open && !g_sw_open && !g_bar_kb);
+        { static uint32_t cbg; if (g_cb_open && clipboard_hist_generation() != cbg) { cbg = clipboard_hist_generation(); g_force_redraw = 1; } }
+        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !g_tv_open && !g_sw_open && !g_bar_kb);
 
         if (!g_backbuf_active) {
             size_desktop(fi);
@@ -2682,7 +2689,9 @@ static void gui_poll_body(void) {
         mx = g_cur_mx;
         my = g_cur_my;
         if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
-        if (ms.dz && g_menu_open && startmenu_contains(fi, mx, my)) {
+        if (ms.dz && g_cb_open && cb_wheel(fi, mx, my, ms.dz)) {
+            g_force_redraw = 1;
+        } else if (ms.dz && g_menu_open && startmenu_contains(fi, mx, my)) {
             startmenu_wheel(ms.dz);
         } else if (ms.dz) {
             /* the wheel scrolls the window under the mouse */
@@ -2706,6 +2715,7 @@ static void gui_poll_body(void) {
         int rclick = right && !prev_right;
         prev_right = right;
         if(captured) { click=rclick=0;left=0; }
+        if ((click || rclick) && g_cb_open) { if (click) cb_click(fi, mx, my); else g_cb_open = 0; g_force_redraw = 1; click = rclick = 0; }
         /* task view / switcher / taskbar focus: a click picks a window or leaves */
         if ((click || rclick) && (g_tv_open || g_sw_open || g_bar_kb)) {
             if (click && g_tv_open) { int i = tv_card_at(fi, mx, my); if (i >= 0) tv_activate(i); }
@@ -3223,7 +3233,7 @@ int gui_handle_arrow(char esc_code) {
     if (gfx_available() && g_gui_enabled && !g_menu_open) {
         if (kb_modal()) {
             int code = esc_code == 'A' ? KB_UP : esc_code == 'B' ? KB_DOWN : esc_code == 'C' ? KB_RIGHT : esc_code == 'D' ? KB_LEFT :
-                       esc_code == 'H' ? KB_HOME : esc_code == 'F' ? KB_END : 0;
+                       esc_code == 'H' ? KB_HOME : esc_code == 'F' ? KB_END : esc_code == 'P' ? KB_DEL : 0;
             if (code) kb_modal_key(code);
             g_force_redraw = 1;
             return 1;
@@ -3249,6 +3259,7 @@ int gui_handle_key(char c) {
     if (gfx_available() && !g_gui_enabled) return 0;
     if (gfx_available() && kb_modal() && !g_menu_open && c != 20) {
         int code = c == '\n' ? KB_ENTER : c == 27 ? KB_ESC : c == '\t' ? ((keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB) : c == ' ' ? KB_SPACE : 0;
+        if (!code && g_cb_open && c > ' ' && c < 127) code = c;
         if (code) kb_modal_key(code);
         g_force_redraw = 1;
         return 1;
@@ -3308,7 +3319,8 @@ int gui_handle_key(char c) {
  * arrows go through its icons, Enter opens); Win+T - the taskbar (arrows,
  * Enter); Win+E Files, Win+I Settings, Win+L lock, Win+R a terminal,
  * Win+M everything down, Win+1..9 the taskbar's windows, Win+Down / Up
- * minimize / bring back; the Menu key (Shift+F10) - a right-click menu. */
+ * minimize / bring back; Win+V the clipboard history; the Menu key
+ * (Shift+F10) - a right-click menu. */
 
 /* the windows in the order they were used, the front one first */
 static int g_mru[TB_MAX], g_nmru;
@@ -3332,7 +3344,7 @@ static void tv_card(const fb_info_t* fi, int i, int* x, int* y, int* w, int* h);
 static int tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
-static int kb_modal(void) { return g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
+static int kb_modal(void) { return g_cb_open || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
 
 static void list_windows(void) {
     sync_taskbar();
@@ -3383,6 +3395,7 @@ static void tv_activate(int sel) {
 
 static int kb_modal_key(int code) {
     if (ctxmenu_is_open()) return ctxmenu_key(code);
+    if (g_cb_open) return cb_key(code);
     if (g_sw_open) {
         if (code == KB_ESC) g_sw_open = 0;
         else if (code == KB_ENTER) { tv_activate(g_sw_sel); g_sw_open = 0; }
@@ -3479,6 +3492,7 @@ static int kb_global(int k) {
         else if (g_desk_sel < 0 && g_ndesk) g_desk_sel = 0;
         break;
     }
+    case 'v': cb_toggle(); break;
     case 'm': for (int j = 0; j < g_ntb; j++) win_minimize(g_tb[j]); g_front_app = -1; break;
     case 'e': do_action(ACT_FILES); break;
     case 'i': do_action(ACT_SETTINGS); break;
@@ -3535,6 +3549,192 @@ static void kb_card(int x, int y, int w, int h, int handle, int sel, int big) {
     if (win_minimized(handle)) gfx_draw_text(x + (w - 9 * 8) / 2, y + h - 10, "minimized", 0x009AA6B6u, bg);
 }
 
+/* ══ Win+V: the clipboard history ════════════════════════════════════
+ * A panel above the taskbar, at the right: what was copied, the newest
+ * first. Enter (or a click) puts the entry on the clipboard and pastes it
+ * into the window in front (Ctrl+V); Delete removes it, P pins it (pinned
+ * entries stay through "Clear all" and restarts). */
+
+#define CB_ROW_H   40
+#define CB_HEAD_H  34
+#define CB_FOOT_H  22
+#define CB_BG      0x001B212Bu
+#define CB_ROW     0x00262D38u
+#define CB_ROW_SEL 0x00405478u
+
+static void cb_geom(const fb_info_t* fi, int* px, int* py, int* pw, int* ph, int* rows) {
+    int W = (int)fi->width, H = (int)fi->height;
+    int w = W - 24 < 380 ? W - 24 : 380;
+    int max_rows = (H - BAR_H - 24 - CB_HEAD_H - CB_FOOT_H) / CB_ROW_H;
+    if (max_rows > 8) max_rows = 8;
+    if (max_rows < 1) max_rows = 1;
+    int n = clipboard_hist_count();
+    int r = n < max_rows ? n : max_rows;
+    *rows = r;
+    *pw = w;
+    *ph = CB_HEAD_H + (r ? r * CB_ROW_H : 52) + CB_FOOT_H;
+    *px = W - w - 12;
+    *py = H - BAR_H - *ph - 10;
+}
+
+static void cb_clamp(int rows) {
+    int n = clipboard_hist_count();
+    if (g_cb_sel >= n) g_cb_sel = n - 1;
+    if (g_cb_sel < 0) g_cb_sel = 0;
+    if (g_cb_sel < g_cb_top) g_cb_top = g_cb_sel;
+    if (rows > 0 && g_cb_sel >= g_cb_top + rows) g_cb_top = g_cb_sel - rows + 1;
+    if (g_cb_top > n - rows) g_cb_top = n - rows;
+    if (g_cb_top < 0) g_cb_top = 0;
+}
+
+static void cb_toggle(void) {
+    if (g_cb_open) { g_cb_open = 0; return; }
+    clipboard_hist_load();
+    g_cb_open = 1;
+    g_cb_sel = g_cb_top = 0;
+    g_tv_open = g_sw_open = g_bar_kb = 0;
+}
+
+/* entry i onto the clipboard, and into the window in front */
+static void cb_paste(int i) {
+    g_cb_open = 0;
+    if (clipboard_hist_use(i) == 0) keyboard_inject("\x16");     /* Ctrl+V */
+}
+
+/* up to two lines of an entry, its line breaks and tabs as spaces */
+static void cb_preview(const char* s, int cols, char lines[2][96]) {
+    lines[0][0] = lines[1][0] = 0;
+    if (cols > 95) cols = 95;
+    int l = 0, n = 0, more = 0;
+    for (const char* p = s; *p; p++) {
+        char c = *p == '\n' || *p == '\r' || *p == '\t' ? ' ' : *p;
+        if (c == ' ' && (n == 0 || lines[l][n - 1] == ' ')) continue;     /* (runs of spaces as one) */
+        int clen = (unsigned char)c < 0x80 ? 1 : (unsigned char)c >= 0xF0 ? 4 : (unsigned char)c >= 0xE0 ? 3 : 2;
+        int used = u8_cols(lines[l], n);
+        if (used >= cols) {
+            if (l == 1) { more = 1; break; }
+            l = 1;
+            n = 0;
+            if (c == ' ') continue;                          /* (the second line starts with a word) */
+        }
+        if (n + clen >= 95) { more = 1; break; }
+        for (int k = 0; k < clen && p[k]; k++) lines[l][n++] = p[k];
+        p += clen - 1;
+        lines[l][n] = 0;
+    }
+    if (more) {
+        char* t = lines[l];
+        int m = (int)strlen(t);
+        while (m > 0 && u8_cols(t, m) > cols - 3) { m--; while (m > 0 && ((unsigned char)t[m] & 0xC0) == 0x80) m--; }
+        t[m] = 0;
+        kstrlcat(t, "...", 96);
+    }
+}
+
+/* a push pin, filled when pinned */
+static void cb_draw_pin(int x, int y, int on, uint32_t bg) {
+    uint32_t c = on ? 0x00FFD34Eu : 0x007A8699u;
+    gfx_fill_rect(x + 2, y, 8, 2, c);
+    gfx_fill_rect(x + 3, y + 2, 6, 5, on ? c : bg);
+    gfx_fill_rect(x + 3, y + 2, 1, 5, c);
+    gfx_fill_rect(x + 8, y + 2, 1, 5, c);
+    gfx_fill_rect(x, y + 7, 12, 2, c);
+    gfx_fill_rect(x + 5, y + 9, 2, 5, c);
+}
+
+static void cb_draw(const fb_info_t* fi) {
+    int px, py, pw, ph, rows;
+    cb_geom(fi, &px, &py, &pw, &ph, &rows);
+    cb_clamp(rows);
+    draw_bevel_box(px, py, pw, ph, CB_BG, 0x00505E74u, 0x000C0F14u);
+    gfx_draw_text(px + 14, py + 13, "Clipboard", 0x00FFFFFFu, CB_BG);
+    int n = clipboard_hist_count();
+    int bw = 10 * 8, bx = px + pw - bw - 12;
+    draw_bevel_box(bx, py + 7, bw, 20, n ? 0x00303740u : 0x00262B33u, 0x00535D6Eu, 0x0015191Fu);
+    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, "Clear all", n ? 0x00E8EEF6u : 0x00687384u, n ? 0x00303740u : 0x00262B33u);
+    int y = py + CB_HEAD_H;
+    if (!n) {
+        gfx_draw_text(px + 14, y + 10, "Nothing copied yet.", 0x00E8EEF6u, CB_BG);
+        gfx_draw_text(px + 14, y + 28, "Copy text (Ctrl+C) to see it here.", 0x009AA6B6u, CB_BG);
+    }
+    char* buf = (char*)kmalloc(400);
+    for (int r = 0; r < rows && buf; r++, y += CB_ROW_H) {
+        int i = g_cb_top + r, pinned = 0;
+        uint32_t len = 0;
+        if (clipboard_hist_peek(i, buf, 400, &len, &pinned) < 0) break;
+        int sel = i == g_cb_sel;
+        uint32_t bg = sel ? CB_ROW_SEL : CB_ROW;
+        draw_bevel_box(px + 8, y + 2, pw - 16, CB_ROW_H - 4, bg, sel ? 0x0090B8F0u : 0x00384252u, 0x0010151Du);
+        char lines[2][96];
+        cb_preview(buf, (pw - 16 - 52) / 8, lines);
+        if (!lines[0][0]) kstrlcpy(lines[0], "(spaces only)", sizeof(lines[0]));
+        gfx_draw_text(px + 16, y + 9, lines[0], 0x00E8EEF6u, bg);
+        if (lines[1][0]) gfx_draw_text(px + 16, y + 23, lines[1], 0x00C2CCD8u, bg);
+        cb_draw_pin(px + pw - 46, y + 12, pinned, bg);
+        gfx_draw_text(px + pw - 24, y + 15, "x", 0x00C2CCD8u, bg);
+    }
+    kfree(buf);
+    if (n > rows) {
+        char m[32];
+        ksnprintf(m, sizeof(m), "%d-%d of %d", g_cb_top + 1, g_cb_top + rows, n);
+        gfx_draw_text(px + pw - 12 - (int)strlen(m) * 8, py + ph - 15, m, 0x009AA6B6u, CB_BG);
+    }
+    gfx_draw_text(px + 14, py + ph - 15, "Enter: paste  Del: delete  P: pin", 0x009AA6B6u, CB_BG);
+}
+
+static int cb_key(int code) {
+    int n = clipboard_hist_count();
+    if (code == KB_ESC) g_cb_open = 0;
+    else if (code == KB_UP) g_cb_sel--;
+    else if (code == KB_DOWN || code == KB_TAB) g_cb_sel++;
+    else if (code == KB_BACKTAB) g_cb_sel--;
+    else if (code == KB_HOME) g_cb_sel = 0;
+    else if (code == KB_END) g_cb_sel = n - 1;
+    else if (code == KB_PGUP) g_cb_sel -= 8;
+    else if (code == KB_PGDN) g_cb_sel += 8;
+    else if ((code == KB_ENTER || code == KB_SPACE) && n) cb_paste(g_cb_sel);
+    else if (code == KB_DEL && n) clipboard_hist_delete(g_cb_sel);
+    else if ((code == 'p' || code == 'P') && n) {
+        int pinned = 0;
+        clipboard_hist_peek(g_cb_sel, NULL, 0, NULL, &pinned);
+        clipboard_hist_pin(g_cb_sel, !pinned);
+    }
+    if (g_cb_sel >= clipboard_hist_count()) g_cb_sel = clipboard_hist_count() - 1;
+    if (g_cb_sel < 0) g_cb_sel = 0;
+    return 1;
+}
+
+/* a click: an entry pastes, its pin pins, its x deletes; outside, the panel closes */
+static void cb_click(const fb_info_t* fi, int mx, int my) {
+    int px, py, pw, ph, rows;
+    cb_geom(fi, &px, &py, &pw, &ph, &rows);
+    if (mx < px || mx >= px + pw || my < py || my >= py + ph) { g_cb_open = 0; return; }
+    int bw = 10 * 8, bx = px + pw - bw - 12;
+    if (my >= py + 7 && my < py + 27 && mx >= bx && mx < bx + bw) { clipboard_hist_clear(); g_cb_sel = g_cb_top = 0; return; }
+    int r = (my - py - CB_HEAD_H) / CB_ROW_H;
+    if (my < py + CB_HEAD_H || r < 0 || r >= rows) return;
+    int i = g_cb_top + r;
+    g_cb_sel = i;
+    if (mx >= px + pw - 52 && mx < px + pw - 30) {
+        int pinned = 0;
+        if (clipboard_hist_peek(i, NULL, 0, NULL, &pinned) == 0) clipboard_hist_pin(i, !pinned);
+    } else if (mx >= px + pw - 30) {
+        clipboard_hist_delete(i);
+    } else {
+        cb_paste(i);
+    }
+}
+
+/* the mouse wheel over the panel scrolls it */
+static int cb_wheel(const fb_info_t* fi, int mx, int my, int dz) {
+    int px, py, pw, ph, rows;
+    cb_geom(fi, &px, &py, &pw, &ph, &rows);
+    if (mx < px || mx >= px + pw || my < py || my >= py + ph) return 0;
+    g_cb_sel += dz > 0 ? 1 : -1;
+    cb_clamp(rows);
+    return 1;
+}
+
 static void kb_draw_overlays(const fb_info_t* fi) {
     int W = (int)fi->width, H = (int)fi->height;
     if (g_sw_open && g_nlist) {
@@ -3568,6 +3768,7 @@ static void kb_draw_overlays(const fb_info_t* fi) {
             kb_card(x, y, cw, ch, g_list[i], i == g_tv_sel, 1);
         }
     }
+    if (g_cb_open) cb_draw(fi);
     if (g_bar_kb && g_bar_sel >= 0 && g_bar_sel < g_ntb) {
         int bw = tb_btn_w(fi), x = TB_X + g_bar_sel * bw, y = H - BAR_H + 1;
         gfx_fill_rect(x - 1, y, bw - 2, 2, 0x00FFD34Eu);

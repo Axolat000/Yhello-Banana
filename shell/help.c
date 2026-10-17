@@ -121,6 +121,11 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
+    { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
+      "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
+      "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "
+      "the pinned entries stay.", "-p|print the clipboard\n-l|the history, the newest first\n-c|clear the history (not the pinned ones)",
+      "clip hello world\nclip -l", "startx" },
     /* ── text ── */
     { "cat", "text", "cat <file>", "print a file",
       "Prints a text file. Binary files are refused (they would fill the screen with noise).", NULL,
@@ -305,7 +310,8 @@ static const page_t PAGES[] = {
       "Win+Left / Right / Up / Down snap, maximize, restore; right-click a title bar for the window menu (always on "
       "top, move to another desktop); Alt+drag moves a window from anywhere. Four virtual desktops: the switcher on "
       "the taskbar, Win+Ctrl+Left / Right, Win+Ctrl+Shift+Left / Right takes the front window along. Alt+Tab, Win+Tab "
-      "(task view), Win+D (the desktop), Alt+F4.",
+      "(task view), Win+D (the desktop), Win+V (the clipboard history: the last 25 texts copied - Enter pastes one, "
+      "Delete removes it, P pins it to keep it), Alt+F4.",
       NULL, NULL, "stopx" },
     { "stopx", "desktop", "stopx", "leave the desktop (stop is the same)", NULL, NULL, NULL, "startx" },
     { "start", "desktop", "start", "the same as startx", NULL, NULL, NULL, "startx" },

@@ -7,6 +7,7 @@
 #include "../kernel/fsdisk.h"
 #include "../kernel/rtc.h"
 #include "../kernel/zip.h"
+#include "../kernel/clipboard.h"
 
 static void err(const char* cmd, const char* what, const char* path) {
     char b[FS_PATH_LEN + 64];
@@ -370,6 +371,51 @@ static void cmd_unzip(int argc, char** argv) {
     terminal_putchar('\n');
 }
 
+/* ── clip: the clipboard from the shell (Windows has the same name) ───── */
+
+static void cmd_clip(int argc, char** argv, const char* line) {
+    if (argc < 2) {
+        terminal_writeln("usage: clip TEXT (copy it) | clip -p (print the clipboard) | clip -l (the history, Win+V) | clip -c (clear it)");
+        return;
+    }
+    if (!strcmp(argv[1], "-p")) {
+        uint32_t n;
+        const char* s = clipboard_get(&n);
+        terminal_write(s);
+        if (n && s[n - 1] != '\n') terminal_putchar('\n');
+        return;
+    }
+    if (!strcmp(argv[1], "-l")) {
+        char b[72], l[96];
+        int n = clipboard_hist_count();
+        if (!n) terminal_writeln("clip: the history is empty");
+        for (int i = 0; i < n; i++) {
+            uint32_t len = 0;
+            int pinned = 0;
+            if (clipboard_hist_peek(i, b, sizeof(b), &len, &pinned) < 0) break;
+            for (char* c = b; *c; c++) if (*c == '\n' || *c == '\t' || *c == '\r') *c = ' ';
+            ksnprintf(l, sizeof(l), "%2d %c %s%s", i + 1, pinned ? '*' : ' ', b, len >= sizeof(b) ? "..." : "");
+            terminal_writeln(l);
+        }
+        return;
+    }
+    if (!strcmp(argv[1], "-c")) {
+        char m[64];
+        ksnprintf(m, sizeof(m), "clip: %d entries cleared (pinned ones stay)", clipboard_hist_clear());
+        terminal_writeln(m);
+        return;
+    }
+    /* the rest of the line as it was typed (quotes around all of it dropped) */
+    const char* t = line;
+    while (*t == ' ') t++;
+    t += 4;
+    while (*t == ' ') t++;
+    int n = (int)strlen(t);
+    while (n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\n')) n--;
+    if (n >= 2 && (t[0] == '"' || t[0] == '\'') && t[n - 1] == t[0]) { t++; n -= 2; }
+    clipboard_set(t, (uint32_t)n);
+}
+
 int fscmd_dispatch(const char* line) {
     char* buf = (char*)kmalloc(1024);
     if (!buf) return 0;
@@ -386,6 +432,7 @@ int fscmd_dispatch(const char* line) {
     else if (strcmp(argv[0], "fsck") == 0 || strcmp(argv[0], "e2fsck") == 0) cmd_fsck(argc, argv);
     else if (strcmp(argv[0], "zip") == 0) cmd_zip(argc, argv);
     else if (strcmp(argv[0], "unzip") == 0) cmd_unzip(argc, argv);
+    else if (strcmp(argv[0], "clip") == 0) cmd_clip(argc, argv, line);
     else done = 0;
     kfree(buf);
     return done;

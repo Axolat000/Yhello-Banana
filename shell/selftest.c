@@ -18,6 +18,7 @@
 #include "../kernel/hmem.h"
 #include "../kernel/smp.h"
 #include "../kernel/zip.h"
+#include "../kernel/clipboard.h"
 #include "../kernel/deflate.h"
 
 /*
@@ -294,10 +295,55 @@ static void t_zip(void) {
     fs_delete("/tmp/zt", 1);
 }
 
+/* ── the clipboard history (Win+V) ──────────────────────────────────── */
+
+/* the entry holding s: its index, or -1 */
+static int clip_find(const char* s) {
+    char b[64];
+    for (int i = 0; i < clipboard_hist_count(); i++)
+        if (clipboard_hist_peek(i, b, sizeof(b), NULL, NULL) == 0 && !strcmp(b, s)) return i;
+    return -1;
+}
+
+static void t_clip(void) {
+    section("clipboard history (Win+V)");
+    /* (the user's own entries and clipboard are left as they were) */
+    uint32_t keep_len = 0;
+    const char* cur = clipboard_get(&keep_len);
+    char* keep = (char*)kmalloc(keep_len + 1);
+    if (keep) memcpy(keep, cur, keep_len);
+    static const char* const T[3] = { "selftest clip one", "selftest clip two", "selftest clip three" };
+    int before = clipboard_hist_count();
+    for (int i = 0; i < 3; i++) clipboard_set(T[i], (uint32_t)strlen(T[i]));
+    report("copies go to the top, the newest first", clip_find(T[2]) == 0 && clip_find(T[1]) == 1 && clip_find(T[0]) == 2, "");
+    int n = clipboard_hist_count();
+    clipboard_set(T[0], (uint32_t)strlen(T[0]));
+    report("copying one again moves it up (no double)", clip_find(T[0]) == 0 && clipboard_hist_count() == n, "");
+    char note[64];
+    ksnprintf(note, sizeof(note), "%d entries before, %d now (25 at most)", before, clipboard_hist_count());
+    report("the history keeps them", clipboard_hist_count() >= 3 && clipboard_hist_count() <= CLIP_HIST_MAX, note);
+    int p = 0, i1 = clip_find(T[1]);
+    clipboard_hist_pin(i1, 1);
+    clipboard_hist_peek(clip_find(T[1]), NULL, 0, NULL, &p);
+    int saved = fs_find_file("/etc/clipboard-pinned") >= 0;
+    clipboard_hist_pin(clip_find(T[1]), 0);
+    report("an entry can be pinned (and is saved)", p == 1 && saved, "");
+    uint32_t len = 0;
+    clipboard_hist_use(clip_find(T[2]));
+    const char* c = clipboard_get(&len);
+    report("choosing one makes it the clipboard", len == strlen(T[2]) && !memcmp(c, T[2], len) && clip_find(T[2]) == 0, "");
+    for (int i = 0; i < 3; i++) clipboard_hist_delete(clip_find(T[i]));
+    report("entries can be deleted", clip_find(T[0]) < 0 && clip_find(T[1]) < 0 && clip_find(T[2]) < 0, "");
+    if (keep) {
+        clipboard_set(keep, keep_len);                   /* the user's clipboard back */
+        kfree(keep);
+    }
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -325,11 +371,14 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
                      only && !strcmp(only, "ram") ? "selftest: checking RAM reporting" :
                      only && !strcmp(only, "zip") ? "selftest: checking ZIP archives" :
+                     only && !strcmp(only, "clipboard") ? "selftest: checking the clipboard history" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
     } else if (only && !strcmp(only, "zip")) {
         t_zip();
+    } else if (only && !strcmp(only, "clipboard")) {
+        t_clip();
     } else if(only && !strcmp(only,"boot")) {
         section("graphical boot menu rendering");bootmenu_tests_run(report);
     } else if(only && !strcmp(only,"mouse")) {
@@ -363,6 +412,7 @@ int selftest_cmd(int argc, char** argv) {
             t_ram();
             t_posix(NULL);
             t_zip();
+            t_clip();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }
