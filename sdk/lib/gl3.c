@@ -50,7 +50,7 @@ static int load(void) {
     if (g_lib) return 0;
     const char* env = getenv("BGL3_LIBRARY");
     static const char* const where[] = {
-        "libOSMesa.so", "/lib/libOSMesa.so", "/usr/lib/libOSMesa.so",
+        "libOSMesa.so", "/lib/libOSMesa.so", "/usr/lib/libOSMesa.so", "/usr/java/lib/libOSMesa.so",
         "/mnt/usb/lib/libOSMesa.so", "/mnt/virtio/lib/libOSMesa.so", "/mnt/sata/lib/libOSMesa.so", NULL,
     };
     void* lib = env ? dlopen(env, RTLD_NOW | RTLD_GLOBAL) : NULL;
@@ -63,7 +63,7 @@ static int load(void) {
         if (e && !strstr(e, "No such file")) snprintf(why, sizeof(why), "%s", e);   /* (found, but it did not load) */
     }
     if (!lib) {
-        snprintf(g_err, sizeof(g_err), "OpenGL 3.3: %s", why[0] ? why : "libOSMesa.so not found (/lib, /usr/lib, /mnt/*/lib)");
+        snprintf(g_err, sizeof(g_err), "OpenGL 3.3: %s", why[0] ? why : "libOSMesa.so not found (/lib, /usr/lib, /usr/java/lib, /mnt/*/lib)");
         return -1;
     }
     *(void**)&os_create = dlsym(lib, "OSMesaCreateContextAttribs");

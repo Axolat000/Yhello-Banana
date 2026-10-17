@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (the softpipe driver,
 # drawing on the processor; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
-# load from /lib, /usr/lib or /mnt/<disk>/lib.
+# load from /lib, /usr/lib, /usr/java/lib (the java package) or /mnt/<disk>/lib.
 #     ports/mesa/build.sh [output dir]      (default: ports/mesa/build)
 # Out: <output>/libOSMesa.so, gl3test.bpk, and gl3disk.img - a FAT32 disk
 # with lib/libOSMesa.so and gl3test.bpk for QEMU (-drive file=...,if=virtio).

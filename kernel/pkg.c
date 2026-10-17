@@ -6,6 +6,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "explorer.h"
+#include "zip.h"
 
 #define ENT_SIZE   64u
 #define ENT_NAME   56u
@@ -123,6 +124,27 @@ static void app_dir(const char* name, char* out, int cap) {
     ksnprintf(out, (size_t)cap, "%s/%s", PKG_DIR, name);
 }
 
+/* "unpack=<file>:<folder>" in a manifest: a ZIP in the package that is
+ * unpacked into a folder of the system's (OpenJDK: hundreds of files in
+ * folders, more than a package holds). The folder belongs to the package:
+ * replaced on an upgrade, deleted with it - so only a folder of its own
+ * under /usr. 1 (file, dest), 0 (none), -1 (not allowed) */
+static int unpack_spec(const char* mf, uint32_t len, char* file, int fcap, char* dest, int dcap) {
+    char v[FS_PATH_LEN];
+    mf_get(mf, len, "unpack", v, sizeof(v));
+    if (!v[0]) return 0;
+    char* c = strchr(v, ':');
+    if (!c) return -1;
+    *c = 0;
+    kstrlcpy(file, v, (size_t)fcap);
+    kstrlcpy(dest, c + 1, (size_t)dcap);
+    int n = (int)strlen(dest);
+    while (n > 1 && dest[n - 1] == '/') dest[--n] = 0;
+    if (!file[0] || strchr(file, '/') || !strcmp(file, "manifest")) return -1;
+    if (strncmp(dest, "/usr/", 5) != 0 || !dest[5] || strstr(dest, "..") || strstr(dest, "//")) return -1;
+    return 1;
+}
+
 int pkg_install(const char* bpk_path, char* msg, int mcap) {
     int fi = fs_find_file(bpk_path);
     if (fi < 0) { kstrlcpy(msg, "no such file", (size_t)mcap); return -1; }
@@ -147,12 +169,24 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
         kfree(d);
         return -1;
     }
-    char dir[FS_PATH_LEN], path[FS_PATH_LEN];
+    char dir[FS_PATH_LEN], path[FS_PATH_LEN], ufile[ENT_NAME], udest[FS_PATH_LEN];
+    uint32_t count = rd32(d + 4), ml = 0;
+    const uint8_t* mf = find_entry(d, count, "manifest", &ml);
+    int unpack = unpack_spec((const char*)mf, ml, ufile, sizeof(ufile), udest, sizeof(udest));
+    if (unpack < 0) {
+        kstrlcpy(msg, "bad unpack= in the manifest (a file of the package : a folder under /usr)", (size_t)mcap);
+        kfree(d);
+        return -1;
+    }
+    if (unpack && !find_entry(d, count, ufile, &ml)) {
+        ksnprintf(msg, (size_t)mcap, "the package has no %s to unpack", ufile);
+        kfree(d);
+        return -1;
+    }
     app_dir(info.name, dir, sizeof(dir));
     int upgrade = fs_find_dir(dir) >= 0;
     if (upgrade) fs_delete(dir, 1);
     if (fs_mkdir_p(dir) < 0) { kstrlcpy(msg, "cannot create the app folder in /apps", (size_t)mcap); kfree(d); return -1; }
-    uint32_t count = rd32(d + 4);
     for (uint32_t i = 0; i < count; i++) {
         const uint8_t* e = d + 8 + i * ENT_SIZE;
         ksnprintf(path, sizeof(path), "%s/%s", dir, (const char*)e);
@@ -171,6 +205,23 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
         }
     }
     kfree(d);
+    char unpacked[96] = "";
+    if (unpack) {
+        /* the ZIP into its folder (a fresh one: an upgrade leaves no old
+         * files behind), then dropped from /apps - its files are there now */
+        ksnprintf(path, sizeof(path), "%s/%s", dir, ufile);
+        if (fs_find_dir(udest) >= 0) fs_delete(udest, 1);
+        zip_stats_t st;
+        char zerr[128];
+        if (zip_extract(path, udest, ZIP_OVERWRITE, NULL, NULL, &st, zerr, sizeof(zerr)) < 0 || st.failed) {
+            ksnprintf(msg, (size_t)mcap, "cannot unpack %s into %s: %s", ufile, udest, zerr[0] ? zerr : "filesystem full?");
+            fs_delete(udest, 1);
+            fs_delete(dir, 1);
+            return -1;
+        }
+        fs_delete(path, 0);
+        ksnprintf(unpacked, sizeof(unpacked), " - %d files in %s", st.files, udest);
+    }
     if (!strcmp(info.type, "driver")) {             /* a driver: loaded right away (and at every boot) */
         char err[96];
         if (driver_load_package(info.name, err, sizeof(err)) == 0)
@@ -179,8 +230,8 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
             ksnprintf(msg, (size_t)mcap, "%s driver %s %s - %s", upgrade ? "upgraded" : "installed", info.title, info.version, err);
         return 0;
     }
-    ksnprintf(msg, (size_t)mcap, "%s %s %s (%s app) - %s", upgrade ? "upgraded" : "installed", info.title,
-              info.version[0] ? info.version : "", info.type,
+    ksnprintf(msg, (size_t)mcap, "%s %s %s (%s app)%s - %s", upgrade ? "upgraded" : "installed", info.title,
+              info.version[0] ? info.version : "", info.type, unpacked,
               strcmp(info.type, "gui") == 0 ? "open it from Apps on the desktop" : "type its name to run it");
     return 0;
 }
@@ -233,8 +284,14 @@ int pkg_list_drivers(pkg_info_t* out, int max) { return list_kind(out, max, 1); 
 int pkg_remove(const char* name, char* msg, int mcap) {
     pkg_info_t info;
     if (pkg_get(name, &info) != 0) { ksnprintf(msg, (size_t)mcap, "%s is not installed", name); return -1; }
-    char dir[FS_PATH_LEN];
+    char dir[FS_PATH_LEN], path[FS_PATH_LEN], ufile[ENT_NAME], udest[FS_PATH_LEN];
     app_dir(name, dir, sizeof(dir));
+    /* and the folder it unpacked (unpack=) */
+    ksnprintf(path, sizeof(path), "%s/manifest", dir);
+    int fi = fs_find_file(path);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (f && unpack_spec(f->content, f->size, ufile, sizeof(ufile), udest, sizeof(udest)) > 0 && fs_find_dir(udest) >= 0)
+        fs_delete(udest, 1);
     fs_delete(dir, 1);
     ksnprintf(msg, (size_t)mcap, "removed %s", info.title);
     return 0;

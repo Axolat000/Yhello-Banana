@@ -7,7 +7,7 @@
  * Loads the JVM (JAVA_HOME/lib/server/libjvm.so, a shared library opened
  * with the SDK's dlopen), creates it on a thread with a big stack and runs
  * the main class. JAVA_HOME: the environment variable, else the first of
- * /jdk, /mnt/jdk, /home/banana/jdk that has the JVM. Options: -cp /
+ * /usr/java/jdk (the java package), /jdk, /mnt/jdk, /home/banana/jdk that has the JVM. Options: -cp /
  * -classpath / --class-path, -D..., -X... (to the JVM), -verbose:..., -ea. */
 #include <dlfcn.h>
 #include <pthread.h>
@@ -114,10 +114,10 @@ done:
 
 int main(int argc, char** argv) {
     g_home = getenv("JAVA_HOME");
-    static const char* const homes[] = { "/jdk", "/mnt/jdk", "/home/banana/jdk", "/mnt/usb/jdk", "/mnt/virtio/jdk", "/mnt/sata/jdk", NULL };
+    static const char* const homes[] = { "/usr/java/jdk", "/jdk", "/mnt/jdk", "/home/banana/jdk", "/mnt/usb/jdk", "/mnt/virtio/jdk", "/mnt/sata/jdk", NULL };
     for (int i = 0; (!g_home || !has_jvm(g_home)) && homes[i]; i++) if (has_jvm(homes[i])) g_home = homes[i];
     if (!g_home || !has_jvm(g_home)) {
-        fprintf(stderr, "java: no JDK found (JAVA_HOME, /jdk, /mnt/jdk or /home/banana/jdk with lib/server/libjvm.so)\n");
+        fprintf(stderr, "java: no JDK found (JAVA_HOME, /usr/java/jdk, /jdk, /mnt/jdk or /home/banana/jdk with lib/server/libjvm.so)\n");
         return 1;
     }
     static char cp[1024] = "-Djava.class.path=.";

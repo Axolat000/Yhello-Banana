@@ -100,6 +100,18 @@ def check(path):
     kind = mf.get("type", "console")
     if kind not in ("console", "gui", "driver"):
         die(f"{path}: type must be console, gui or driver")
+    unpack = mf.get("unpack", "").strip()
+    if unpack:
+        # a ZIP of the package, unpacked into a folder of its own under /usr (kernel/pkg.c)
+        zf, _, dest = unpack.partition(":")
+        dest = dest.rstrip("/")
+        if not zf or "/" in zf or zf == "manifest" or not dest.startswith("/usr/") or len(dest) <= 5 \
+                or ".." in dest or "//" in dest:
+            die(f"{path}: bad unpack '{unpack}' (a file of the package : a folder under /usr)")
+        if zf not in files:
+            die(f"{path}: unpack names {zf}, which the package does not hold")
+        if files[zf][:4] != b"PK\x03\x04":
+            die(f"{path}: {zf} (unpack) is not a ZIP archive")
     names = ("driver-i686", "driver-x86_64") if kind == "driver" else ("app-i686", "app-x86_64")
     progs = [p for p in names if p in files]
     if not progs:

@@ -13,6 +13,8 @@
 #     CATEGORY    = Games                 # optional: the App Store's shelf
 #     DEPENDS     = libfoo (>= 1.0)       # optional: packages apt installs first
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
+#     UNPACK      = java.zip:/usr/java    # optional: a DATA zip pkg install unpacks into a
+#                                         # folder of the app's own under /usr (removed with it)
 #     USE_GL      = 1                     # optional: OpenGL 1.x (#include <GL/bgl.h>)
 #     USE_GL3     = 1                     # optional: OpenGL 3.3 core (#include <GL/gl3.h>, 64-bit)
 #     USE_CL      = 1                     # optional: OpenCL (#include <CL/cl.h>)
@@ -38,6 +40,7 @@ DATA        ?=
 CATEGORY    ?=
 DEPENDS     ?=
 ICON        ?=
+UNPACK      ?=
 USE_GL      ?= 0
 USE_GL3     ?= 0
 USE_CL      ?= 0
@@ -156,6 +159,7 @@ $(BUILD)/manifest: $(MAKEFILE_LIST)
 	@printf 'name=%s\ntitle=%s\nversion=%s\ntype=%s\ndescription=%s\nauthor=%s\ncategory=%s\ndepends=%s\n' \
 	    '$(call sq,$(APP))' '$(call sq,$(TITLE))' '$(call sq,$(VERSION))' '$(call sq,$(TYPE))' \
 	    '$(call sq,$(DESCRIPTION))' '$(call sq,$(AUTHOR))' '$(call sq,$(CATEGORY))' '$(call sq,$(DEPENDS))' > $@
+	@$(if $(UNPACK),printf 'unpack=%s\n' '$(call sq,$(UNPACK))' >> $@,true)
 
 ICON_FILE = $(if $(ICON),icon.png=$(ICON))
 

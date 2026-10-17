@@ -153,6 +153,26 @@ void __stack_chk_fail(void) {
     abort();
 }
 
+/* and with -D_FORTIFY_SOURCE (Ubuntu's default: its libffi.a, linked into
+ * OpenJDK's libjvm.so): glibc's checked copies, dst_len being the size of
+ * the destination the compiler could see */
+static void chk_fail(const char* what) {
+    fprintf(stderr, "%s: buffer overflow detected\n", what);
+    abort();
+}
+void* __memcpy_chk(void* dst, const void* src, size_t n, size_t dst_len) {
+    if (n > dst_len) chk_fail("memcpy");
+    return memcpy(dst, src, n);
+}
+void* __memmove_chk(void* dst, const void* src, size_t n, size_t dst_len) {
+    if (n > dst_len) chk_fail("memmove");
+    return memmove(dst, src, n);
+}
+void* __memset_chk(void* dst, int c, size_t n, size_t dst_len) {
+    if (n > dst_len) chk_fail("memset");
+    return memset(dst, c, n);
+}
+
 /* the virtual tables of std::type_info's subclasses, which every class
  * with virtual functions points at (RTTI): typeid and dynamic_cast are
  * not supported, so they only need to exist */

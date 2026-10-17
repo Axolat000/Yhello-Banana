@@ -61,9 +61,9 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: Banana_OS.iso
 
-  # Java for Banana OS (64-bit): Banana_OS-Java.zip, to unpack on a USB stick -
-  # jdk/ (ports/openjdk), lib/libOSMesa.so (ports/mesa: OpenGL 3.3), lwjgl/
-  # (ports/lwjgl) and java.bpk. Not in the ISO: Banana OS finds them on /mnt/usb.
+  # Java for Banana OS (64-bit): java.bpk (ports/openjdk/package.sh) - the java
+  # app, and /usr/java, which `pkg install java.bpk` unpacks: jdk/ (ports/openjdk),
+  # lib/libOSMesa.so (ports/mesa: OpenGL 3.3) and lwjgl/ (ports/lwjgl)
   java:
     runs-on: ubuntu-latest
     timeout-minutes: 300
@@ -116,35 +116,21 @@ jobs:
           sh ports/mesa/build.sh
           JAVA_BIN=$PWD/ports/openjdk/src/jdk-17.0.20.1+1/bin sh ports/lwjgl/build.sh
 
-      - name: Pack Banana_OS-Java.zip
+      - name: Pack java.bpk
         if: steps.bundle.outputs.cache-hit != 'true'
         run: |
-          P=java-bundle/pkg
-          rm -rf java-bundle && mkdir -p $P/lib
-          cp -r ports/openjdk/build/jdk $P/
-          cp ports/openjdk/launcher/java.bpk $P/
-          cp ports/mesa/build/libOSMesa.so $P/lib/
-          cp -r ports/lwjgl/build/lwjgl $P/
-          printf '%s\r\n' \
-            'Java for Banana OS (64-bit) - build ${{ github.run_number }}' \
-            '' \
-            'Unpack this zip to the top of a FAT32 USB stick and plug it in:' \
-            '  /mnt/usb/jdk           OpenJDK 17 (the java app and the Minecraft launcher find it)' \
-            '  /mnt/usb/lib           libOSMesa.so - OpenGL 3.3 for apps' \
-            '  /mnt/usb/lwjgl         LWJGL 3 for Banana OS' \
-            '  /mnt/usb/java.bpk      the java app: pkg install /mnt/usb/java.bpk' \
-            > $P/README.txt
-          (cd $P && zip -qr ../Banana_OS-Java.zip .)
-          ls -la java-bundle/Banana_OS-Java.zip
+          sh ports/openjdk/package.sh "$PWD/java-bundle"
+          rm -rf java-bundle/usr-java java-bundle/java.zip
+          ls -la java-bundle/java.bpk
           # the reference builds' objects are not replayed: smaller caches
           find ports/openjdk/src -path '*/build/*' -name '*.o' -delete
           find ports/mesa/build/ref -name '*.o' -delete
 
-      - name: Upload Banana_OS-Java.zip
+      - name: Upload java.bpk
         uses: actions/upload-artifact@v4
         with:
           name: java-bundle
-          path: java-bundle/Banana_OS-Java.zip
+          path: java-bundle/java.bpk
           retention-days: 3
 
   # next to the ISO, in the same pre-release (once both are built)
@@ -152,7 +138,7 @@ jobs:
     needs: [ build, java ]
     runs-on: ubuntu-latest
     steps:
-      - name: Download Banana_OS-Java.zip
+      - name: Download java.bpk
         uses: actions/download-artifact@v4
         with:
           name: java-bundle
@@ -164,4 +150,4 @@ jobs:
           name: Banana OS build ${{ github.run_number }}
           prerelease: true
           target_commitish: ${{ github.sha }}
-          files: Banana_OS-Java.zip
+          files: java.bpk
