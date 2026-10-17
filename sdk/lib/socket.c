@@ -360,6 +360,14 @@ const char* inet_ntop(int family, const void* a, char* out, socklen_t len) {
 
 static int lookup(const char* name, struct in_addr* out) {
     if (inet_aton(name, out)) return 0;
+    /* what /etc/hosts says on Linux: localhost, and this machine's own name
+     * (Java's InetAddress.getLocalHost(): log4j asks for it at every start) */
+    char self[64];
+    if (!strcasecmp(name, "localhost") || !strcasecmp(name, "localhost.localdomain") ||
+        (gethostname(self, sizeof(self)) == 0 && !strcasecmp(name, self))) {
+        out->s_addr = htonl(INADDR_LOOPBACK);
+        return 0;
+    }
     unsigned char ip[4];
     if (!has_sock() || __banana->resolve(name, ip) != 0) return -1;
     memcpy(&out->s_addr, ip, 4);

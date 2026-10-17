@@ -557,13 +557,19 @@ static void t_sockets(void) {
          ((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
          ((struct sockaddr_in*)ai->ai_addr)->sin_port == htons(80);
     if (ai) freeaddrinfo(ai);
+    /* this machine's own name (Java's InetAddress.getLocalHost) */
+    char self[64];
+    ai = NULL;
+    ok = ok && gethostname(self, sizeof(self)) == 0 && getaddrinfo(self, NULL, &hints, &ai) == 0 && ai &&
+         ((struct sockaddr_in*)ai->ai_addr)->sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    if (ai) freeaddrinfo(ai);
     unsigned char v6[16];
     char s6[64], s4[16];
     struct in_addr in4;
     ok = ok && inet_pton(AF_INET6, "fe80::1:2", v6) == 1 && inet_ntop(AF_INET6, v6, s6, sizeof(s6)) && !strcmp(s6, "fe80::1:2") &&
          inet_pton(AF_INET, "10.0.2.15", &in4) == 1 && !strcmp(inet_ntop(AF_INET, &in4, s4, sizeof(s4)), "10.0.2.15") &&
          inet_addr("1.2.3.4") == htonl(0x01020304);
-    check("getaddrinfo, inet_pton / inet_ntop (v4 and v6)", ok, "");
+    check("getaddrinfo (localhost, this host's name), inet_pton / inet_ntop (v4 and v6)", ok, "");
     /* out to the Internet, if there is a way: DNS, then HTTP over TCP */
     struct addrinfo* ex = NULL;
     if (getaddrinfo("example.com", "http", &hints, &ex) == 0 && ex) {

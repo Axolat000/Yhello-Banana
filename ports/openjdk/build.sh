@@ -111,8 +111,12 @@ fi
 # java.base; jdk.unsupported (sun.misc.Unsafe: LWJGL); and for Minecraft:
 # java.logging, java.management (its MXBeans), java.naming + jdk.naming.dns
 # (server address lookups), java.desktop (javax.sound.sampled.AudioFormat
-# for its sounds - pure Java: AWT itself, which needs native code, is not built)
+# for its sounds - pure Java: AWT itself, which needs native code, is not built),
+# jdk.zipfs (it opens its own jar as a file system: 1.16+), java.scripting
+# (log4j 2.8's ScriptManager: 1.13-1.17) and java.sql (gson 2.8's dates).
+# Checked with Minecraft 1.13 to 1.20.4 on a desktop JDK jlinked with these.
 MODULES=java.base,jdk.unsupported,java.logging,java.management,java.naming,jdk.naming.dns,java.desktop
+MODULES=$MODULES,jdk.zipfs,java.scripting,java.sql
 rm -rf "$OUT/jdk"
 "$REFB/images/jdk/bin/jlink" --add-modules $MODULES --strip-debug --no-header-files --no-man-pages --output "$OUT/jdk"
 rm -rf "$OUT/jdk/bin" "$OUT/jdk/lib/jexec" "$OUT/jdk/lib/jspawnhelper"
