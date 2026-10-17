@@ -488,7 +488,7 @@ void ipi_handler(registers_t* regs) {
         return;
     }
     smp_eoi();
-    if (regs->int_no == SMP_VEC_KICK) task_ipi();
+    if (regs->int_no == SMP_VEC_KICK) { smp_tlb_service(); task_ipi(); }
 }
 
 /* kernel/smp.c: the timer's handlers (IRQ 0) run from the local APIC

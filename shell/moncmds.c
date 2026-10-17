@@ -7,6 +7,7 @@
 #include "../kernel/fsdisk.h"
 #include "../kernel/fat32.h"
 #include "../kernel/meminfo.h"
+#include "../kernel/zswap.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/sensors.h"
 #include "../kernel/applesmc.h"
@@ -64,8 +65,12 @@ static void cmd_free(int argc, char** argv) {
                          VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     ksnprintf(line, sizeof(line), "Mem:    %12s%12s%12s%12s%12s", t, u, f, fi, a);
     terminal_writeln(line);
-    amount(0, shift, t, sizeof(t));
-    ksnprintf(line, sizeof(line), "Swap:   %12s%12s%12s", t, t, t);
+    /* the swap: app memory compressed in RAM (kernel/zswap.c) */
+    zswap_stats_t z;
+    zswap_stats(&z);
+    amount((uint64_t)z.pages * 4096u, shift, t, sizeof(t));
+    amount(z.bytes, shift, u, sizeof(u));
+    ksnprintf(line, sizeof(line), "Swap:   %12s compressed in %s of RAM%s", t, u, zswap_enabled() ? "" : " (off)");
     terminal_writeln(line);
     /* what the numbers mean, when the machine has RAM Banana OS leaves alone */
     char inst[16], tot[16], big[16];
@@ -75,6 +80,35 @@ static void cmd_free(int argc, char** argv) {
     ksnprintf(line, sizeof(line), "Installed: %s - Banana OS runs in %s of it (largest free block %s)", inst, tot, big);
     terminal_write_color(line, VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
     terminal_putchar('\n');
+}
+
+/* ── swap: compressed memory (kernel/zswap.c) ───────────────────── */
+
+static void cmd_swap(int argc, char** argv) {
+    char line[160], a[16], b[16];
+    if (argc > 1 && !strcmp(argv[1], "on")) zswap_enable(1);
+    else if (argc > 1 && !strcmp(argv[1], "off")) zswap_enable(0);
+    else if (argc > 1 && !strcmp(argv[1], "now")) {
+        uint32_t n = zswap_compress_now();
+        ksnprintf(line, sizeof(line), "swap: %u pages of app memory compressed (%u KiB)", n, n * 4u);
+        terminal_writeln(line);
+    } else if (argc > 1) {
+        terminal_writeln("usage: swap [on | off | now]   (no argument: what is compressed)");
+        return;
+    }
+    zswap_stats_t z;
+    zswap_stats(&z);
+    human((uint64_t)z.pages * 4096u, a, sizeof(a));
+    human(z.bytes, b, sizeof(b));
+    ksnprintf(line, sizeof(line), "Compressed memory: %s - %s of app memory (%u pages, %u of them zeros) in %s of RAM",
+              zswap_enabled() ? "on" : "off", a, z.pages, z.zero_pages, b);
+    terminal_writeln(line);
+    uint64_t ratio10 = z.bytes ? (uint64_t)z.pages * 40960u / z.bytes : 0;
+    if (z.bytes) ksnprintf(line, sizeof(line), "  %u.%ux smaller; since boot %llu pages compressed, %llu brought back", (uint32_t)(ratio10 / 10), (uint32_t)(ratio10 % 10),
+                           (unsigned long long)z.pages_out, (unsigned long long)z.pages_in);
+    else ksnprintf(line, sizeof(line), "  since boot %llu pages compressed, %llu brought back", (unsigned long long)z.pages_out, (unsigned long long)z.pages_in);
+    terminal_writeln(line);
+    terminal_writeln("  (apps' pages not used lately are compressed when RAM runs low, brought back when touched)");
 }
 
 /* ── df: where the disk space is ──────────────────────────────────── */
@@ -527,6 +561,7 @@ int moncmd_dispatch(const char* line) {
     int argc = shell_split_args(buf, argv, 16);
     if (argc == 0) return 0;
     if (strcmp(argv[0], "free") == 0) { cmd_free(argc, argv); return 1; }
+    if (strcmp(argv[0], "swap") == 0) { cmd_swap(argc, argv); return 1; }
     if (strcmp(argv[0], "df") == 0) { cmd_df(argc, argv); return 1; }
     if (strcmp(argv[0], "htop") == 0) { cmd_htop(); return 1; }
     if (strcmp(argv[0], "sched") == 0) { cmd_sched(); return 1; }

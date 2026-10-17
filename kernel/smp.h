@@ -28,6 +28,12 @@ void smp_send_ipi(int cpu, int vector);
 void smp_panic_stop_others(void);
 /* end of a local-APIC interrupt (IPIs) */
 void smp_eoi(void);
+/* TLB shootdown (kernel/zswap.c): the page tables each core runs on (set
+ * before it loads them), and every other core on cr3 told to reload them -
+ * 0 once they all did, -1 if one did not within timeout_ms */
+extern volatile uintptr_t smp_cur_cr3[SMP_MAX_CPUS];
+int  smp_tlb_shootdown(uintptr_t cr3, uint32_t timeout_ms);
+void smp_tlb_service(void);              /* (the KICK interrupt: kernel/idt.c) */
 /* the cores found in the ACPI tables (including ones not started) */
 int  smp_cores_found(void);
 

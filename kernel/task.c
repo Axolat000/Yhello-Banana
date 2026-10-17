@@ -406,6 +406,7 @@ static void enter_space(const task_t* t, int cpu) {
 #ifdef __x86_64__
     if (t->rsp0) tss_set_rsp0(cpu, t->rsp0);
     uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
+    if (cpu >= 0 && cpu < SMP_MAX_CPUS) smp_cur_cr3[cpu] = want;   /* (before it is loaded: TLB shootdowns, kernel/smp.c) */
     __asm__ volatile("mov %%cr3, %0" : "=r"(have));
     if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
     /* its thread pointer (an app thread's TLS; the kernel does not use FS) */

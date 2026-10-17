@@ -17,6 +17,7 @@
 #include "../kernel/types.h"
 #include "../kernel/ata.h"
 #include "../kernel/fsdisk.h"
+#include "../kernel/zswap.h"
 #include "../kernel/disk.h"
 #include "../kernel/ahci.h"
 #include "../kernel/clipboard.h"
@@ -1189,7 +1190,7 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
+    "free", "swap", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
     "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
     /* kernel/vmtools.c */
@@ -2729,6 +2730,7 @@ void shell_run(void) {
             "filesystem; the disk is not written to unless you run 'install' again.\n\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     fsdisk_start_autosave();      /* changes reach the installed disk by themselves */
+    zswap_start();                /* memory low: apps' idle pages compressed (kernel/zswap.c) */
     disk_attach_extra(fsdisk_holds_banana);   /* the other hard disks: their volumes mounted in /mnt */
     if (live)
         terminal_write_color("Running the LIVE CD.\n", VGA_COLOR_YELLOW, VGA_COLOR_BLACK);

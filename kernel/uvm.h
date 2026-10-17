@@ -44,6 +44,12 @@ int       uvm_owns_str(uspace_t* us, const char* s);
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err);
 /* bytes of memory its mapped pages use now */
 uint64_t  uvm_resident(uspace_t* us);
+/* bytes of its pages compressed away now (kernel/zswap.c) */
+uint64_t  uvm_compressed(uspace_t* us);
+/* compression (kernel/zswap.c): up to max pages of every app's mmap region
+ * compressed and given back - those not used since the last pass, or all
+ * of them (force); how many */
+uint32_t  uvm_page_out_all(int force, uint32_t max);
 /* 1 if the app may write every byte of [a, a + n) right now - its pages
  * present and writable in its tables (mapped ones are faulted in first):
  * what the kernel checks before it writes there from a fault handler,

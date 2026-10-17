@@ -5,6 +5,10 @@
 #include "kstring.h"
 #include "spinlock.h"
 #include "serial.h"
+#include "upage.h"
+#include "zswap.h"
+#include "smp.h"
+#include "task.h"
 
 #ifdef __x86_64__
 
@@ -12,7 +16,9 @@
 #define P_WRITE   0x002ull
 #define P_USER    0x004ull
 #define P_LARGE   0x080ull
+#define P_ACCESSED 0x020ull
 #define P_KEPT    0x200ull              /* (a free bit) a mapped page made inaccessible: PROT_NONE */
+#define P_ZSW     0x400ull              /* (a free bit) not present: compressed, the entry number in the address bits (kernel/zswap.c) */
 #define ADDR_MASK 0x000FFFFFFFFFF000ull
 #define GIBS      512                   /* 1 GiB slots of PML4[0]: the first 512 GiB */
 #define UVM_PML4  ((int)(UVM_BASE >> 39))
@@ -38,6 +44,8 @@ struct uspace {
     uvma_t*        vma;
     int            nvma, vcap;
     uint64_t       vm_pages;
+    uint64_t       vm_zpages;           /* of its pages, compressed away (kernel/zswap.c) */
+    volatile int   zbusy;               /* the compressor is working on it: not freed yet */
     spinlock_t     vm_lock;             /* its threads fault pages in on any core */
 };
 
@@ -136,6 +144,7 @@ void uspace_destroy(uspace_t* us) {
     for (uspace_t** pp = &g_all; *pp; pp = &(*pp)->next)
         if (*pp == us) { *pp = us->next; break; }
     spin_unlock_irq(&g_lock, f);
+    while (us->zbusy) task_yield();                /* (the compressor finishes with it first) */
     for (int k = 0; k < GIBS; k++) {
         uslot_t* sl = us->slot[k];
         if (!sl) continue;
@@ -144,15 +153,28 @@ void uspace_destroy(uspace_t* us) {
         kfree(sl->pd);
         kfree(sl);
     }
-    /* the mmap region's tables (its pages are the app's memory: umem frees them) */
+    /* the mmap region: its pages (back to the pool: kernel/upage.c), what was
+     * compressed of it, its tables. (Nothing runs on it any more: no core
+     * has its translations.) */
     for (int s = 0; s < UVM_SLOTS; s++) {
         uint64_t* pdpt = us->vm_pdpt[s];
         if (!pdpt) continue;
         for (int i = 0; i < 512; i++) {
             if (!(pdpt[i] & P_PRESENT)) continue;
             uint64_t* pd = (uint64_t*)(uintptr_t)(pdpt[i] & ADDR_MASK);
-            for (int j = 0; j < 512; j++)
-                if (pd[j] & P_PRESENT) kfree((void*)(uintptr_t)(pd[j] & ADDR_MASK));
+            for (int j = 0; j < 512; j++) {
+                if (!(pd[j] & P_PRESENT)) continue;
+                uint64_t* pt = (uint64_t*)(uintptr_t)(pd[j] & ADDR_MASK);
+                for (int k = 0; k < 512; k++) {
+                    if (pt[k] & (P_PRESENT | P_KEPT)) upage_free((void*)(uintptr_t)(pt[k] & ADDR_MASK));
+                    else if (pt[k] & P_ZSW) {
+                        uint32_t idx = (uint32_t)((pt[k] & ADDR_MASK) >> 12);
+                        zent_t* z = zswap_ent(idx);
+                        if (z && z->state == ZS_STORED) zswap_free(idx);
+                    }
+                }
+                kfree(pt);
+            }
             kfree(pd);
         }
         kfree(pdpt);
@@ -372,47 +394,94 @@ static uint64_t vm_find(uspace_t* us, uint64_t len, uint64_t hint) {
     return in_region(a, len) ? a : 0;
 }
 
-/* the pages of [s, e) back to the app's memory, their entries cleared */
-static void vm_release(uspace_t* us, umem_t* m, uint64_t s, uint64_t e) {
-    int cur = is_current(us);
+/* the other cores forget us's old translations: until they did, the pages
+ * just taken out of its tables are not given to anyone (kernel/smp.c) */
+static void shootdown(uspace_t* us) {
+    uintptr_t fl;
+    __asm__ volatile("pushf; pop %0" : "=r"(fl));
+    int may_yield = cpu_id() == 0 && (fl & 0x200);      /* (mmap / munmap also run on other cores) */
+    while (smp_tlb_shootdown((uintptr_t)us->pml4, 200) != 0)
+        if (may_yield) task_yield();
+}
+
+/* the pages of [s, e) back to the system, their entries cleared - a piece
+ * at a time: the lock is not held while the other cores forget them (the
+ * range is out of the ranges already: nothing faults pages back in) */
+#define REL_BATCH 256
+static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
+    void* pg[REL_BATCH];
     for (uint64_t a = s; a < e; ) {
-        uint64_t next = a + 4096;
-        uint64_t* pte = vm_pte(us, a, 0, &next);
-        if (pte && (*pte & (P_PRESENT | P_KEPT))) {
-            umem_free_pages(m, (void*)(uintptr_t)(*pte & ADDR_MASK), 0);
-            us->vm_pages--;
-            *pte = 0;
-            if (cur) invlpg(a);
+        int n = 0;
+        uintptr_t f = spin_lock_irq(&us->vm_lock);
+        int cur = is_current(us);
+        while (a < e && n < REL_BATCH) {
+            uint64_t next = a + 4096;
+            uint64_t* pte = vm_pte(us, a, 0, &next);
+            if (pte && (*pte & (P_PRESENT | P_KEPT))) {
+                pg[n++] = (void*)(uintptr_t)(*pte & ADDR_MASK);
+                us->vm_pages--;
+                *pte = 0;
+                if (cur) invlpg(a);
+            } else if (pte && (*pte & P_ZSW)) {
+                uint32_t idx = (uint32_t)((*pte & ADDR_MASK) >> 12);
+                zent_t* z = zswap_ent(idx);
+                if (z && z->state == ZS_PENDING) {
+                    pg[n++] = (void*)z->frame;               /* (the compressor lets it go) */
+                    z->state = ZS_CANCELLED;
+                } else if (z && z->state == ZS_STORED) {
+                    zswap_free(idx);
+                    us->vm_zpages--;
+                }
+                *pte = 0;
+            }
+            a = next;
         }
-        a = next;
+        spin_unlock_irq(&us->vm_lock, f);
+        if (!n) continue;
+        shootdown(us);
+        for (int k = 0; k < n; k++) upage_free(pg[k]);
     }
 }
 
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags) {
-    if (!us || !m || !len || len > UVM_SIZE) return 0;
+    (void)m;
+    if (!us || !len || len > UVM_SIZE) return 0;
     len = (len + 4095) & ~4095ull;
     prot &= UVM_READ | UVM_WRITE | UVM_EXEC;
-    uintptr_t f = spin_lock_irq(&us->vm_lock);
     uint64_t a = 0;
     if (flags & UVM_FIXED) {
-        if (!(addr & 4095) && in_region(addr, len) && vma_cut(us, addr, addr + len) == 0) {
-            vm_release(us, m, addr, addr + len);          /* (what was there is gone: fresh pages) */
-            a = addr;
+        if (!(addr & 4095) && in_region(addr, len)) {
+            uintptr_t f = spin_lock_irq(&us->vm_lock);
+            int ok = vma_cut(us, addr, addr + len) == 0;
+            spin_unlock_irq(&us->vm_lock, f);
+            if (ok) {
+                vm_release(us, addr, addr + len);          /* (what was there is gone: fresh pages) */
+                a = addr;
+            }
         }
-    } else a = vm_find(us, len, addr);
+        if (a) {
+            uintptr_t f = spin_lock_irq(&us->vm_lock);
+            if (vma_add(us, a, a + len, prot)) a = 0;
+            spin_unlock_irq(&us->vm_lock, f);
+        }
+        return (uintptr_t)a;
+    }
+    uintptr_t f = spin_lock_irq(&us->vm_lock);
+    a = vm_find(us, len, addr);
     if (a && vma_add(us, a, a + len, prot)) a = 0;
     spin_unlock_irq(&us->vm_lock, f);
     return (uintptr_t)a;
 }
 
 int uvm_unmap(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len) {
+    (void)m;
     if (!us || (addr & 4095) || !len) return -1;
     len = (len + 4095) & ~4095ull;
     if (!in_region(addr, len)) return -1;
     uintptr_t f = spin_lock_irq(&us->vm_lock);
     int rc = vma_cut(us, addr, addr + len);
-    if (rc == 0) vm_release(us, m, addr, addr + len);
     spin_unlock_irq(&us->vm_lock, f);
+    if (rc == 0) vm_release(us, addr, addr + len);
     return rc;
 }
 
@@ -437,6 +506,7 @@ int uvm_protect(uspace_t* us, uintptr_t addr, uint64_t len, int prot) {
         rc = 0;
     }
     spin_unlock_irq(&us->vm_lock, f);
+    if (rc == 0) shootdown(us);                         /* (less allowed: no core may keep the old rights) */
     return rc;
 }
 
@@ -473,8 +543,26 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) {
         if (pte && (*pte & P_PRESENT)) {
             invlpg(addr);                                  /* another thread put it there first */
             ok = 1;
+        } else if (pte && (*pte & P_ZSW)) {
+            /* compressed (kernel/zswap.c): back in - or, still being compressed, simply put back */
+            uint32_t idx = (uint32_t)((*pte & ADDR_MASK) >> 12);
+            zent_t* z = zswap_ent(idx);
+            if (z && z->state == ZS_PENDING) {
+                *pte = (uint64_t)z->frame | prot_bits(prot);
+                z->state = ZS_CANCELLED;
+                us->vm_pages++;
+                ok = 1;
+            } else if (z && z->state == ZS_STORED) {
+                void* pg = upage_alloc();
+                if (pg && zswap_take(idx, (uint8_t*)pg) == 0) {
+                    *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
+                    us->vm_pages++;
+                    us->vm_zpages--;
+                    ok = 1;
+                } else if (pg) upage_free(pg);
+            }
         } else if (pte && !(*pte & P_KEPT)) {
-            void* pg = umem_alloc_pages(m, 4096, 0);
+            void* pg = upage_alloc();                     /* (kernel/upage.c: given back when unmapped) */
             if (pg) {
                 memset(pg, 0, 4096);
                 *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
@@ -515,6 +603,127 @@ int uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) {
     return 1;
 }
 
+/* ── compressing pages away (kernel/zswap.c) ───────────────────────────
+ * A batch of pages is taken out of the app's tables (PENDING entries that
+ * still hold them), the other cores forget them, each is compressed and
+ * its page given back - unless it was touched meanwhile (the fault put it
+ * back: the entry was CANCELLED) or does not compress (put back). */
+
+#define OUT_BATCH 64
+#define OUT_MAX   3584u                          /* bytes: a page that does not get below this stays */
+
+typedef struct { uint64_t va; uint32_t idx; uintptr_t frame; } outpg_t;
+
+static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, uint16_t* ht) {
+    uint32_t done = 0;
+    int cleared = 0;
+    outpg_t b[OUT_BATCH];
+    for (int s = 0; s < UVM_SLOTS && done < max; s++) {
+        if (!us->vm_pdpt[s]) continue;
+        uint64_t a = UVM_BASE + ((uint64_t)s << 39), end = a + (1ull << 39);
+        while (a < end && done < max) {
+            int n = 0, full = 0, seen = 0;
+            uintptr_t f = spin_lock_irq(&us->vm_lock);
+            while (a < end && n < OUT_BATCH && done + (uint32_t)n < max && seen++ < 1024) {   /* (the lock: not long) */
+                uint64_t next = a + 4096;
+                uint64_t* pte = vm_pte(us, a, 0, &next);
+                if (pte && (*pte & P_PRESENT) && (*pte & P_USER)) {
+                    if (!force && (*pte & P_ACCESSED)) {
+                        *pte &= ~P_ACCESSED;              /* used lately: its turn comes if it stays unused */
+                        cleared = 1;
+                    } else {
+                        uintptr_t frame = (uintptr_t)(*pte & ADDR_MASK);
+                        uint32_t idx = zswap_new(frame);
+                        if (!idx) { full = 1; break; }
+                        b[n++] = (outpg_t){ a, idx, frame };
+                        *pte = ((uint64_t)idx << 12) | P_ZSW;
+                        us->vm_pages--;
+                    }
+                }
+                a = next;
+            }
+            spin_unlock_irq(&us->vm_lock, f);
+            if (n) shootdown(us);
+            for (int k = 0; k < n; k++) {
+                int zero = 0;
+                uint32_t len = zswap_pack((const uint8_t*)b[k].frame, buf, OUT_MAX, &zero, ht);
+                uint8_t* data = NULL;
+                if (len) {
+                    data = (uint8_t*)kmalloc(len);
+                    if (data) memcpy(data, buf, len);
+                    else len = 0;
+                } else if (!zero) {
+                    /* does not compress: a copy as it is (4096 bytes) - no smaller, but its
+                     * page leaves the chunk, which can go back once all its pages did */
+                    data = (uint8_t*)kmalloc(4096);
+                    if (data) { memcpy(data, (const void*)b[k].frame, 4096); len = 4096; }
+                }
+                int keep = zero || data;
+                int give = 0;
+                f = spin_lock_irq(&us->vm_lock);
+                uint64_t nx;
+                uint64_t* pte = vm_pte(us, b[k].va, 0, &nx);
+                zent_t* z = zswap_ent(b[k].idx);
+                if (z && z->state == ZS_PENDING && pte && *pte == (((uint64_t)b[k].idx << 12) | P_ZSW)) {
+                    if (keep) {
+                        zswap_store(b[k].idx, data, len);
+                        data = NULL;
+                        us->vm_zpages++;
+                        give = 1;
+                        done++;
+                    } else {
+                        /* does not compress: it stays */
+                        int i = vma_at(us, b[k].va);
+                        *pte = (uint64_t)b[k].frame | prot_bits(i >= 0 ? us->vma[i].prot : UVM_READ | UVM_WRITE);
+                        us->vm_pages++;
+                        zswap_free(b[k].idx);
+                    }
+                } else {
+                    zswap_free(b[k].idx);                 /* (touched, or unmapped: not ours any more) */
+                }
+                spin_unlock_irq(&us->vm_lock, f);
+                kfree(data);
+                if (give) upage_free((void*)b[k].frame);
+            }
+            if (full) return done;
+            uintptr_t fl;
+            __asm__ volatile("pushf; pop %0" : "=r"(fl));
+            if (cpu_id() == 0 && (fl & 0x200)) task_yield();      /* (the others run between batches) */
+        }
+    }
+    if (cleared) shootdown(us);                           /* (the next touch sets the accessed bit again) */
+    return done;
+}
+
+uint32_t uvm_page_out_all(int force, uint32_t max) {
+    uint8_t* buf = (uint8_t*)kmalloc(4096 + 64);
+    uint16_t* ht = (uint16_t*)kmalloc(4096 * sizeof(uint16_t));
+    if (!buf || !ht) { kfree(buf); kfree(ht); return 0; }
+    static uint32_t rr;                                   /* (a different app first each time) */
+    uint32_t done = 0;
+    int n = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    for (uspace_t* u = g_all; u; u = u->next) n++;
+    spin_unlock_irq(&g_lock, f);
+    for (int k = 0; k < n && done < max; k++) {
+        uspace_t* us = NULL;
+        f = spin_lock_irq(&g_lock);
+        int i = 0, want = (int)((rr + (uint32_t)k) % (uint32_t)n);
+        for (uspace_t* u = g_all; u; u = u->next, i++) if (i == want) { us = u; break; }
+        if (us) us->zbusy++;
+        spin_unlock_irq(&g_lock, f);
+        if (!us) continue;
+        done += page_out(us, force, max - done, buf, ht);
+        __atomic_sub_fetch(&us->zbusy, 1, __ATOMIC_RELEASE);
+    }
+    rr++;
+    kfree(buf);
+    kfree(ht);
+    return done;
+}
+
+uint64_t uvm_compressed(uspace_t* us) { return us ? us->vm_zpages * 4096 : 0; }
+
 #else
 
 uspace_t* uspace_create(void) { return NULL; }
@@ -529,6 +738,8 @@ int       uvm_owns(uspace_t* us, const void* p, uint64_t n) { (void)us; (void)p;
 int       uvm_owns_str(uspace_t* us, const char* s) { (void)us; (void)s; return 0; }
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err) { (void)us; (void)m; (void)addr; (void)err; return 0; }
 uint64_t  uvm_resident(uspace_t* us) { (void)us; return 0; }
+uint32_t  uvm_page_out_all(int force, uint32_t max) { (void)force; (void)max; return 0; }
+uint64_t  uvm_compressed(uspace_t* us) { (void)us; return 0; }
 int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) { (void)us; (void)m; (void)a; (void)n; return 1; }
 
 #endif

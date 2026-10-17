@@ -634,3 +634,45 @@ void smp_init(void) {
 }
 
 #endif
+
+/* ── TLB shootdown ─────────────────────────────────────────────────────
+ * A page taken away from an app (kernel/zswap.c) must be forgotten by the
+ * other cores' TLBs before its memory is used again: each core notes the
+ * page tables it runs on (before it loads them), and those running on the
+ * app's get a KICK asking them to reload CR3 - acknowledged by a counter. */
+volatile uintptr_t smp_cur_cr3[SMP_MAX_CPUS];
+static volatile uint32_t g_tlb_req[SMP_MAX_CPUS], g_tlb_done[SMP_MAX_CPUS];
+
+void smp_tlb_service(void) {
+    int c = cpu_id();
+    if (c < 0 || c >= SMP_MAX_CPUS || g_tlb_done[c] == g_tlb_req[c]) return;
+    uint32_t want = g_tlb_req[c];
+#ifdef __x86_64__
+    __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+#endif
+    __atomic_store_n(&g_tlb_done[c], want, __ATOMIC_RELEASE);
+}
+
+int smp_tlb_shootdown(uintptr_t cr3, uint32_t timeout_ms) {
+    int self = cpu_id(), n = cpu_count(), rc = 0;
+    uint32_t want[SMP_MAX_CPUS];
+    int asked[SMP_MAX_CPUS];
+    __sync_synchronize();                         /* (the page tables' change is out first) */
+    for (int c = 0; c < n && c < SMP_MAX_CPUS; c++) {
+        asked[c] = 0;
+        if (c == self || smp_cur_cr3[c] != cr3) continue;
+        want[c] = __atomic_add_fetch(&g_tlb_req[c], 1, __ATOMIC_ACQ_REL);
+        asked[c] = 1;
+        smp_send_ipi(c, SMP_VEC_KICK);
+    }
+    uint32_t t0 = timer_ms();
+    for (int c = 0; c < n && c < SMP_MAX_CPUS; c++) {
+        if (!asked[c]) continue;
+        while ((int32_t)(__atomic_load_n(&g_tlb_done[c], __ATOMIC_ACQUIRE) - want[c]) < 0) {
+            if (timer_ms() - t0 > timeout_ms) { rc = -1; break; }
+            smp_tlb_service();                    /* (two cores asking each other: both go on) */
+            __asm__ volatile("pause");
+        }
+    }
+    return rc;
+}

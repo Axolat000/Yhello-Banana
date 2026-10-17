@@ -20,6 +20,7 @@
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
 #include "../kernel/builtin_apps.h"
+#include "../kernel/zswap.h"
 #include "../kernel/deflate.h"
 
 /*
@@ -312,6 +313,48 @@ static int clip_find(const char* s) {
     return -1;
 }
 
+/* ── compressed memory: swap in RAM (kernel/zswap.c) ───────────────── */
+
+#ifdef __x86_64__
+static volatile uint32_t g_sw_pages, g_sw_done;
+static volatile uint64_t g_sw_before, g_sw_after;
+
+static uint64_t ram_used(void) { return (uint64_t)kheap_used_bytes() + hmem_used_bytes(); }
+
+/* while systest waits: its pages compressed, and how much RAM that gave back */
+static void swap_helper(void) {
+    task_sleep_ms(2500);
+    g_sw_before = ram_used();
+    g_sw_pages = zswap_compress_now();
+    g_sw_after = ram_used();
+    g_sw_done = 1;
+}
+#endif
+
+static void t_swap(void) {
+    section("compressed memory: swap in RAM (build 182)");
+#ifndef __x86_64__
+    skip("compressed memory", "the 64-bit kernel's apps only (their mmap memory)");
+#else
+    zswap_stats_t a, b;
+    zswap_stats(&a);
+    g_sw_done = 0;
+    task_create("swaptest", swap_helper);
+    int rc = run("swap", "32", "5000");
+    while (!g_sw_done) task_sleep_ms(50);
+    zswap_stats(&b);
+    char note[128];
+    ksnprintf(note, sizeof(note), "%u pages of 8192 compressed", g_sw_pages);
+    report("an app's idle pages compressed", g_sw_pages >= 6000, note);
+    uint64_t back = g_sw_before > g_sw_after ? g_sw_before - g_sw_after : 0;
+    ksnprintf(note, sizeof(note), "%u KiB of RAM given back", (uint32_t)(back >> 10));
+    report("their RAM goes back to the system", back >= (16u << 20), note);
+    ksnprintf(note, sizeof(note), "%u pages brought back", (uint32_t)(b.pages_in - a.pages_in));
+    report("touched again: decompressed, every byte right", rc == 0 && b.pages_in - a.pages_in >= 6000, note);
+    report("nothing left compressed once it unmapped", b.pages == a.pages, "");
+#endif
+}
+
 static void t_clip(void) {
     section("clipboard history (Win+V)");
     /* (the user's own entries and clipboard are left as they were) */
@@ -349,8 +392,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -379,6 +422,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "ram") ? "selftest: checking RAM reporting" :
                      only && !strcmp(only, "zip") ? "selftest: checking ZIP archives" :
                      only && !strcmp(only, "clipboard") ? "selftest: checking the clipboard history" :
+                     only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
@@ -386,6 +430,8 @@ int selftest_cmd(int argc, char** argv) {
         t_zip();
     } else if (only && !strcmp(only, "clipboard")) {
         t_clip();
+    } else if (only && !strcmp(only, "swap")) {
+        if (install() == 0) t_swap();
     } else if(only && !strcmp(only,"boot")) {
         section("graphical boot menu rendering");bootmenu_tests_run(report);
     } else if(only && !strcmp(only,"mouse")) {
@@ -420,6 +466,7 @@ int selftest_cmd(int argc, char** argv) {
             t_posix(NULL);
             t_zip();
             t_clip();
+            t_swap();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

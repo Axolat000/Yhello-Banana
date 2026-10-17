@@ -10,11 +10,15 @@
  *   systest cores          a thread per core calling malloc / free and a lock
  *                          over and over; exit code 100 + the cores it saw
  *   systest idle MS        waits MS milliseconds (for many apps at once)
+ *   systest swap N MS      maps N MiB, fills every page (zeros, text, noise),
+ *                          waits MS ms (selftest compresses it meanwhile:
+ *                          kernel/zswap.c) and checks every byte again
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <banana.h>
+#include <sys/mman.h>
 
 static unsigned xs(unsigned* x) {
     *x ^= *x << 13; *x ^= *x >> 17; *x ^= *x << 5;
@@ -227,6 +231,37 @@ static int t_cores(void) {
     return 100 + cores;
 }
 
+/* page i of the swap test: zeros (1 in 4), text (compresses), or noise (1 in 8: does not) */
+static void swap_page(unsigned char* p, unsigned i) {
+    if (i % 4 == 0) { memset(p, 0, 4096); return; }
+    if (i % 8 == 3) {
+        unsigned x = i * 2654435761u + 1;
+        for (int k = 0; k < 4096; k++) p[k] = (unsigned char)xs(&x);
+        return;
+    }
+    int n = 0;
+    while (n < 4096) n += snprintf((char*)p + n, 4096 - n, "page %u of the swap test, line %d. ", i, n / 40);
+}
+
+static int t_swap(int mib, int wait) {
+    size_t len = (size_t)mib << 20;
+    unsigned char* m = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED) { printf("swap: mmap of %d MiB failed\n", mib); return 1; }
+    unsigned pages = (unsigned)(len / 4096);
+    for (unsigned i = 0; i < pages; i++) swap_page(m + (size_t)i * 4096, i);
+    printf("swap: %u pages written, waiting %d ms\n", pages, wait);
+    banana_sleep((unsigned)wait);
+    static unsigned char want[4096];
+    unsigned bad = 0;
+    for (unsigned i = 0; i < pages; i++) {
+        swap_page(want, i);
+        if (memcmp(m + (size_t)i * 4096, want, 4096)) bad++;
+    }
+    munmap(m, len);
+    printf("swap: %u pages read back, %u wrong\n", pages, bad);
+    return bad ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
@@ -236,7 +271,8 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "files")) return t_files(a > 0 ? a : 8);
     if (!strcmp(m, "cores")) return t_cores();
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS\n"
+    if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
+    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }

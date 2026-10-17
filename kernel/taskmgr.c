@@ -3,6 +3,7 @@
 #include "kstring.h"
 #include "kheap.h"
 #include "meminfo.h"
+#include "zswap.h"
 #include "timer.h"
 #include "task.h"
 #include "smp.h"
@@ -433,15 +434,22 @@ void taskmgr_draw(const fb_info_t* fi) {
         ksnprintf(line, sizeof(line), "Files:          %u files, %u folders (%u KiB in RAM, %u KiB of it cached)", fs_used_files(), fs_used_dirs(),
                   fs_ram_used_bytes() / 1024, mi.cached_kb);
         gfx_draw_text(lx, ty + 48, line, C_TEXT, C_PANEL);
+        zswap_stats_t zs;
+        zswap_stats(&zs);
+        char za[24], zb[24];
+        human(zs.pages * 4u, za, sizeof(za));
+        human((uint32_t)(zs.bytes / 1024u), zb, sizeof(zb));
+        ksnprintf(line, sizeof(line), "Compressed:     %s of app memory in %s (swap in RAM%s)", za, zb, zswap_enabled() ? "" : ", off");
+        gfx_draw_text(lx, ty + 64, line, C_TEXT, C_PANEL);
         netif_t* nif = net_if();
         char ip[16] = "-";
         if (nif->dev && nif->configured) ip4_to_str(nif->ip, ip);
         ksnprintf(line, sizeof(line), "Network:        %s %s", nif->dev ? nif->dev->ifname : "none", ip);
-        gfx_draw_text(lx, ty + 64, line, C_TEXT, C_PANEL);
-        ksnprintf(line, sizeof(line), "Sound:          %s", audio_device_name());
         gfx_draw_text(lx, ty + 80, line, C_TEXT, C_PANEL);
-        ksnprintf(line, sizeof(line), "Kernel:         %s", BANANA_ARCH_DESC);
+        ksnprintf(line, sizeof(line), "Sound:          %s", audio_device_name());
         gfx_draw_text(lx, ty + 96, line, C_TEXT, C_PANEL);
+        ksnprintf(line, sizeof(line), "Kernel:         %s", BANANA_ARCH_DESC);
+        gfx_draw_text(lx, ty + 112, line, C_TEXT, C_PANEL);
         if (cpu_count() > 1 && smp_threads_per_core() > 1)
             ksnprintf(line, sizeof(line), "Processor:      %d cores, %d threads (the kernel on 0, apps on all)", smp_phys_cores(), cpu_count());
         else if (cpu_count() > 1)
@@ -453,7 +461,7 @@ void taskmgr_draw(const fb_info_t* fi) {
             size_t l = strlen(line);
             ksnprintf(line + l, sizeof(line) - l, ", %d C", temp);
         }
-        gfx_draw_text(lx, ty + 112, line, temp != SENSOR_NONE && sensors_cpu_tjmax() && temp >= sensors_cpu_tjmax() - 10 ? 0x00F0A060u : C_TEXT, C_PANEL);
+        gfx_draw_text(lx, ty + 128, line, temp != SENSOR_NONE && sensors_cpu_tjmax() && temp >= sensors_cpu_tjmax() - 10 ? 0x00F0A060u : C_TEXT, C_PANEL);
     }
 
     gfx_fill_rect(x + 3, y + H - 18, W - 6, 15, 0x00161B22u);
