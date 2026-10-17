@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds OpenJDK 17 (the Zero interpreter, 64-bit) for Banana OS:
 #     ports/openjdk/build.sh [output dir]      (default: ports/openjdk/build)
-# Out: <output>/jdk - a JDK image with java.base and jdk.unsupported (copy it to /jdk, or a
+# Out: <output>/jdk - a JDK image with the modules Minecraft needs (MODULES below; copy it to /jdk, or a
 # disk's jdk folder: the java app finds /jdk, /mnt/usb/jdk, /mnt/virtio/jdk,
 # /mnt/sata/jdk, or JAVA_HOME) - and <output>/jdkdisk.img, a FAT32 disk with
 # jdk/, java.bpk and the test classes (Hello, NetTest) for QEMU
@@ -91,12 +91,27 @@ so libnio "$W"/libnio/objs/*.o -ljava -lnet
 so libjimage "$W"/libjimage/objs/*.o -ljvm
 so libverify "$W"/libverify/objs/*.o -ljvm
 so libzip "$W"/libzip/objs/*.o "$W"/zlib/*.o -ljvm -ljava
+# java.management's (the JVM's threads, memory and GC for java.lang.management):
+# kept out of the image if it does not build yet - only those classes fail then
+echo "== libmanagement"
+if JOBS=$JOBS python3 "$HERE/rebuild.py" "$REFB/support/native/java.management/libmanagement" "$W/libmanagement"; then
+    so libmanagement "$W"/libmanagement/objs/*.o -ljvm -ljava
+else
+    echo "warning: libmanagement did not build (logs: $W/libmanagement/logs) - left out"
+fi
 
-# ── the image: java.base and jdk.unsupported (sun.misc.Unsafe: LWJGL) ─
+# ── the image ─────────────────────────────────────────────────────────
+# java.base; jdk.unsupported (sun.misc.Unsafe: LWJGL); and for Minecraft:
+# java.logging, java.management (its MXBeans), java.naming + jdk.naming.dns
+# (server address lookups), java.desktop (javax.sound.sampled.AudioFormat
+# for its sounds - pure Java: AWT itself, which needs native code, is not built)
+MODULES=java.base,jdk.unsupported,java.logging,java.management,java.naming,jdk.naming.dns,java.desktop
 rm -rf "$OUT/jdk"
-"$REFB/images/jdk/bin/jlink" --add-modules java.base,jdk.unsupported --strip-debug --no-header-files --no-man-pages --output "$OUT/jdk"
-rm -rf "$OUT/jdk/bin" "$OUT/jdk/lib/jexec" "$OUT/jdk/lib/jspawnhelper" "$OUT/jdk/lib/libjli.so" \
-       "$OUT/jdk/lib/libjsig.so" "$OUT/jdk/lib/server/libjsig.so"
+"$REFB/images/jdk/bin/jlink" --add-modules $MODULES --strip-debug --no-header-files --no-man-pages --output "$OUT/jdk"
+rm -rf "$OUT/jdk/bin" "$OUT/jdk/lib/jexec" "$OUT/jdk/lib/jspawnhelper"
+# the Linux builds of the native libraries are of no use here (libawt...):
+# only the ones built above for Banana OS go in
+find "$OUT/jdk/lib" -name '*.so' -delete
 cp "$L"/*.so "$OUT/jdk/lib/"
 cp "$L/server/libjvm.so" "$OUT/jdk/lib/server/"
 
