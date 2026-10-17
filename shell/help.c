@@ -344,7 +344,7 @@ static const page_t PAGES[] = {
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
-    { "settings", "desktop", "settings [apps [name] | time]", "open Settings (or its Apps or Date & time page)",
+    { "settings", "desktop", "settings [apps [name] | time | keyboard]", "open Settings (or its Apps, Date & time or Keyboard page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
       "whether it is running or has an update; select one to open it, stop it, update it or uninstall it "
       "(Uninstall asks for a second click). The Apps launcher's Details opens the same page.",
@@ -362,7 +362,7 @@ static const page_t PAGES[] = {
     { "gpu_info", "hardware", "gpu_info [-n -r -b -p -m]", "the framebuffer", NULL, NULL, NULL, "lsgpu" },
     { "brightness", "hardware", "brightness [0-100]", "a laptop panel's backlight (Intel graphics)", NULL, NULL, NULL, NULL },
     { "keyboardctl", "hardware", "keyboardctl [layout]", "the keyboard layout",
-      "Shows or sets it: EN (Default), fr_CH, FR, DE, de_CH, BEPO. loadctl is the same.", NULL, "keyboardctl fr_CH", NULL },
+      "Shows or sets it: EN (Default) - the US keyboard -, UK, US-Intl (US international: dead accents), FR (AZERTY), BE (Belgian AZERTY), fr_CH, de_CH (Swiss), DE (QWERTZ), ES, IT, PT, BEPO. Every key is read by its position, with AltGr (the right Alt key, or Ctrl+Alt) and the dead accents (^ then e: ê). Settings > Keyboard does the same; the layout is kept for the next start. loadctl is the same.", NULL, "keyboardctl FR\nkeyboardctl UK", NULL },
     { "loadctl", "hardware", "loadctl [layout]", "the same as keyboardctl", NULL, NULL, NULL, "keyboardctl" },
     { "sensors", "hardware", "sensors", "the processor's temperature (real hardware)", NULL, NULL, NULL, NULL },
     { "gamepad", "hardware", "gamepad", "game controllers: sticks, triggers, buttons", NULL, NULL, NULL, NULL },

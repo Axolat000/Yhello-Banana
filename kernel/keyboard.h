@@ -11,6 +11,11 @@ void keyboard_readline(char* buf, int maxlen);
 const char* keyboard_layout_name(void);
 const char* keyboard_layouts_help(void);
 int keyboard_set_layout(const char* name);
+/* the layouts there are (kernel/kblayouts.c): the i-th one's name (as
+ * keyboard_set_layout takes it) and *label ("French (AZERTY)"), or NULL */
+int keyboard_layout_count(void);
+const char* keyboard_layout_at(int i, const char** label);
+int keyboard_test_type(const char* name, const uint8_t* codes, int n, char* out, int cap);   /* (selftest) */
 int keyboard_caps_lock(void);    /* 1 while Caps Lock is on */
 
 /* One-shot: 1 exactly once per Ctrl+Alt+Delete press, then clears. */

@@ -23,6 +23,7 @@
 #include "../kernel/zswap.h"
 #include "../kernel/deflate.h"
 #include "../kernel/tz.h"
+#include "../kernel/keyboard.h"
 #include "../kernel/rtc.h"
 #include "datecmd.h"
 
@@ -335,6 +336,53 @@ static void swap_helper(void) {
 }
 #endif
 
+/* each layout typed key by key: letters, Shift, AltGr, the dead accents */
+#define KS 0x2A                     /* Shift down / up */
+#define KSU 0xAA
+#define KG 0xE0, 0x38               /* AltGr down / up */
+#define KGU 0xE0, 0xB8
+#define KEND 0xFF
+static void t_keyboard(void) {
+    section("keyboard layouts");
+    static const struct { const char* layout; uint8_t k[24]; const char* want; } C[] = {
+        { "EN (Default)", { 0x10, 0x11, 0x1A, KS, 0x03, KSU, KEND }, "qw[@" },
+        { "FR", { 0x10, 0x11, 0x02, 0x03, 0x0B, 0x32, 0x33, 0x34, 0x35, 0x28, KEND }, "az&\xC3\xA9\xC3\xA0,;:!\xC3\xB9" },
+        { "FR", { KS, 0x02, 0x03, 0x0A, 0x0B, KSU, KG, 0x0B, 0x12, 0x06, KGU, KEND }, "1290@\xE2\x82\xAC[" },
+        { "FR", { 0x1A, 0x12, KS, 0x1A, KSU, 0x17, 0x1A, 0x39, KEND }, "\xC3\xAA\xC3\xAF^" },
+        { "BE", { 0x07, 0x09, 0x35, KG, 0x03, KGU, 0x10, KEND }, "\xC2\xA7!=@a" },
+        { "DE", { 0x15, 0x2C, 0x0C, 0x27, 0x28, 0x1A, KS, 0x04, KSU, KG, 0x10, KGU, KEND }, "zy\xC3\x9F\xC3\xB6\xC3\xA4\xC3\xBC\xC2\xA7@" },
+        { "DE", { 0x0D, 0x12, KS, 0x0D, KSU, 0x1E, KEND }, "\xC3\xA9\xC3\xA0" },
+        { "UK", { KS, 0x03, 0x04, 0x28, KSU, 0x2B, 0x56, KEND }, "\"\xC2\xA3@#\\" },
+        { "US-Intl", { 0x28, 0x12, 0x28, 0x39, 0x28, 0x2E, KS, 0x07, KSU, 0x18, KEND }, "\xC3\xA9'\xC3\xA7\xC3\xB4" },
+        { "ES", { 0x27, 0x28, 0x1E, 0x0D, KS, 0x0D, KSU, KEND }, "\xC3\xB1\xC3\xA1\xC2\xA1\xC2\xBF" },
+        { "IT", { 0x1A, KS, 0x1A, KSU, KG, 0x27, KGU, 0x2B, KEND }, "\xC3\xA8\xC3\xA9@\xC3\xB9" },
+        { "PT", { 0x27, 0x2B, 0x1E, 0x0D, KEND }, "\xC3\xA7\xC3\xA3\xC2\xAB" },
+        { "fr_CH", { 0x15, 0x1A, KS, 0x1A, KSU, KG, 0x03, KGU, KEND }, "z\xC3\xA8\xC3\xBC@" },
+        { "de_CH", { 0x1A, 0x27, 0x28, KEND }, "\xC3\xBC\xC3\xB6\xC3\xA4" },
+        { "BEPO", { 0x10, 0x11, 0x12, 0x13, 0x1E, 0x1F, 0x20, 0x21, KG, 0x1E, KGU, KEND }, "b\xC3\xA9poauie\xC3\xA6" },
+        { "FR", { 0x1D, 0x10, 0x9D, KEND }, "\x01" },                    /* Ctrl+A: by the letter on the key */
+    };
+    int n = (int)(sizeof(C) / sizeof(C[0])), bad = 0;
+    char note[160] = "";
+    for (int i = 0; i < n; i++) {
+        int len = 0;
+        while (len < 24 && C[i].k[len] != KEND) len++;
+        char got[64];
+        int rc = keyboard_test_type(C[i].layout, C[i].k, len, got, sizeof(got));
+        if ((rc != 0 || strcmp(got, C[i].want)) && !bad++)
+            ksnprintf(note, sizeof(note), "%s: got \"%s\", want \"%s\"", C[i].layout, rc ? "(no such layout)" : got, C[i].want);
+    }
+    if (!bad) ksnprintf(note, sizeof(note), "%d sequences on %d layouts", n, keyboard_layout_count());
+    report("every layout types what its keys show", bad == 0, note);
+    int all = keyboard_layout_count() >= 12;
+    for (int i = 0; i < keyboard_layout_count(); i++) {
+        const char* name = keyboard_layout_at(i, NULL);
+        char got[8];
+        if (keyboard_test_type(name, (const uint8_t[]){ 0x39 }, 1, got, sizeof(got)) != 0 || strcmp(got, " ")) all = 0;
+    }
+    report("each layout can be chosen by its name", all, keyboard_layouts_help());
+}
+
 /* the time zones' rules on known dates, local <-> UTC, the clock set by hand */
 static void t_time(void) {
     section("time zones and the clock");
@@ -459,8 +507,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -491,6 +539,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "clipboard") ? "selftest: checking the clipboard history" :
                      only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
+                     only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
@@ -498,6 +547,8 @@ int selftest_cmd(int argc, char** argv) {
         t_zip();
     } else if (only && !strcmp(only, "clipboard")) {
         t_clip();
+    } else if (only && !strcmp(only, "keyboard")) {
+        t_keyboard();
     } else if (only && !strcmp(only, "time")) {
         t_time();
     } else if (only && !strcmp(only, "swap")) {
@@ -538,6 +589,7 @@ int selftest_cmd(int argc, char** argv) {
             t_clip();
             t_swap();
             t_time();
+            t_keyboard();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

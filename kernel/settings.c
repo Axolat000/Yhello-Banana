@@ -59,8 +59,7 @@ void shell_power(int reboot);
 enum { PG_DISPLAY = 0, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
 static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
 
-static const char* const LAYOUTS[] = { "EN (Default)", "fr_CH", "FR", "DE", "de_CH", "BEPO" };
-#define NLAYOUTS ((int)(sizeof(LAYOUTS) / sizeof(LAYOUTS[0])))
+#define KB_ROW 22                           /* Keyboard: a row of the layout list */
 
 static int        g_open;
 static kbnav_t    g_nav;              /* keyboard focus: what the page drew */
@@ -486,14 +485,17 @@ static void draw_keyboard(void) {
     label(x, y, "Keyboard layout", C_HEAD);
     label(x, y + 18, "Choose how the keys of your keyboard are read:", C_DIM);
     const char* cur = keyboard_layout_name();
-    for (int i = 0; i < NLAYOUTS; i++) {
-        int ry = y + 44 + i * ITEM_H;
-        int on = cur && strcmp(cur, LAYOUTS[i]) == 0;
-        kbnav_add(&g_nav, x, ry - 2, 200, 18);
+    for (int i = 0; i < keyboard_layout_count(); i++) {
+        int ry = y + 44 + i * KB_ROW;
+        const char* what = NULL;
+        const char* name = keyboard_layout_at(i, &what);
+        int on = cur && strcmp(cur, name) == 0;
+        kbnav_add(&g_nav, x, ry - 2, 280, 18);
         bevel(x, ry, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
         if (on) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
-        label(x + 24, ry + 3, LAYOUTS[i], on ? C_HEAD : C_TEXT);
+        label(x + 24, ry + 3, what, on ? C_HEAD : C_TEXT);
     }
+    label(x, y + 52 + keyboard_layout_count() * KB_ROW, "AltGr: the right Alt key (or Ctrl+Alt).", C_DIM);
 }
 
 /* Screen, on any PC: the sizes the firmware offers, set by the boot loader
@@ -1437,12 +1439,14 @@ void settings_click(int mx, int my) {
                 return;
             }
     } else if (g_page == PG_KEYBOARD) {
-        for (int i = 0; i < NLAYOUTS; i++) {
-            int ry = y + 44 + i * ITEM_H;
-            if (inside(mx, my, x, ry - 4, cw(), ITEM_H - 2)) {
-                if (keyboard_set_layout(LAYOUTS[i]) == 0) {
-                    save_setting("keyboard", LAYOUTS[i]);
-                    ksnprintf(g_status, sizeof(g_status), "Keyboard layout: %s", LAYOUTS[i]);
+        for (int i = 0; i < keyboard_layout_count(); i++) {
+            int ry = y + 44 + i * KB_ROW;
+            if (inside(mx, my, x, ry - 3, cw(), KB_ROW)) {
+                const char* what = NULL;
+                const char* name = keyboard_layout_at(i, &what);
+                if (keyboard_set_layout(name) == 0) {
+                    save_setting("keyboard", name);
+                    ksnprintf(g_status, sizeof(g_status), "Keyboard layout: %s", what);
                 }
                 return;
             }

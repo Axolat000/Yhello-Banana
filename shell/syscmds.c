@@ -344,10 +344,12 @@ int syscmd_dispatch(const char* line) {
     }
     if (strcmp(argv[0], "settings") == 0) {
         int apps = argc > 1 && strcmp(argv[1], "apps") == 0;           /* `settings apps [name]` */
-        int time = argc > 1 && strcmp(argv[1], "time") == 0;           /* `settings time`: Date & time */
-        if (argc > 1 && !apps && !time) { terminal_writeln("usage: settings [apps [name] | time]"); return 1; }
+        /* `settings time` / `settings keyboard`: that page */
+        int page = argc > 1 && !strcmp(argv[1], "time") ? SETTINGS_PAGE_TIME :
+                   argc > 1 && !strcmp(argv[1], "keyboard") ? SETTINGS_PAGE_KEYBOARD : -1;
+        if (argc > 1 && !apps && page < 0) { terminal_writeln("usage: settings [apps [name] | time | keyboard]"); return 1; }
         if (!(apps ? gui_open_settings_app(argc > 2 ? argv[2] : NULL) : gui_open_settings())) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
-        else if (time) settings_open_page(SETTINGS_PAGE_TIME);
+        else if (page >= 0) settings_open_page(page);
         return 1;
     }
     if (strcmp(argv[0], "taskmgr") == 0) {

@@ -40,26 +40,10 @@ static const char sc_shift[128] = {
  0,'*', 0,' ', 0,
 };
 
-typedef enum {
-    KB_LAYOUT_EN_DEFAULT = 0,
-    KB_LAYOUT_FR_CH,
-    KB_LAYOUT_FR,
-    KB_LAYOUT_DE,
-    KB_LAYOUT_DE_CH,
-    KB_LAYOUT_BEPO,
-    KB_LAYOUT_COUNT
-} kb_layout_t;
+#include "kblayouts.h"
+#include "kstring.h"
 
-static kb_layout_t g_layout = KB_LAYOUT_EN_DEFAULT;
-
-static const char* kbd_layout_names[KB_LAYOUT_COUNT] = {
-    "EN (Default)",
-    "fr_CH",
-    "FR",
-    "DE",
-    "de_CH",
-    "BEPO",
-};
+static int g_layout;             /* kb_layouts[]: 0 the US keyboard */
 
 static int ch_tolower(int c) {
     if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
@@ -73,83 +57,6 @@ static int strieq(const char* a, const char* b) {
         b++;
     }
     return *a == '\0' && *b == '\0';
-}
-
-static char map_layout_char(char c, int shifted) {
-    if (g_layout == KB_LAYOUT_EN_DEFAULT) return c;
-
-    /* QWERTZ families */
-    if (g_layout == KB_LAYOUT_DE) {
-        if (c == 'y') return 'z';
-        if (c == 'Y') return 'Z';
-        if (c == 'z') return 'y';
-        if (c == 'Z') return 'Y';
-        return c;
-    }
-
-    /* FR AZERTY (core alpha layout + common punctuation moves) */
-    if (g_layout == KB_LAYOUT_FR) {
-        if (c == 'q') return 'a';
-        if (c == 'Q') return 'A';
-        if (c == 'w') return 'z';
-        if (c == 'W') return 'Z';
-        if (c == 'a') return 'q';
-        if (c == 'A') return 'Q';
-        if (c == 'z') return 'w';
-        if (c == 'Z') return 'W';
-        if (c == ';') return 'm';
-        if (c == ':') return 'M';
-        if (c == 'm') return shifted ? '?' : ',';
-        if (c == ',') return ';';
-        if (c == '<') return '.';
-        if (c == '.') return ':';
-        if (c == '>') return '/';
-        if (c == '/') return '!';
-        return c;
-    }
-
-    /* BEPO (letter-focused remap on US physical keys) */
-    if (g_layout == KB_LAYOUT_BEPO) {
-        if (c == 'q') return 'b';
-        if (c == 'Q') return 'B';
-        if (c == 'w') return 'e';
-        if (c == 'W') return 'E';
-        if (c == 'e') return 'p';
-        if (c == 'E') return 'P';
-        if (c == 'r') return 'o';
-        if (c == 'R') return 'O';
-        if (c == 'y') return 'v';
-        if (c == 'Y') return 'V';
-        if (c == 'u') return 'd';
-        if (c == 'U') return 'D';
-        if (c == 'i') return 'l';
-        if (c == 'I') return 'L';
-        if (c == 'o') return 'j';
-        if (c == 'O') return 'J';
-        if (c == 'p') return 'z';
-        if (c == 'P') return 'Z';
-        if (c == 's') return 'u';
-        if (c == 'S') return 'U';
-        if (c == 'd') return 'i';
-        if (c == 'D') return 'I';
-        if (c == 'f') return 'e';
-        if (c == 'F') return 'E';
-        if (c == 'g') return 'c';
-        if (c == 'G') return 'C';
-        if (c == 'h') return 't';
-        if (c == 'H') return 'T';
-        if (c == 'j') return 's';
-        if (c == 'J') return 'S';
-        if (c == 'k') return 'r';
-        if (c == 'K') return 'R';
-        if (c == 'l') return 'n';
-        if (c == 'L') return 'N';
-        if (c == 'z') return 'y';
-        if (c == 'Z') return 'Y';
-        return c;
-    }
-
-    return c;
 }
 
 static inline uint8_t inb(uint16_t port) {
@@ -404,68 +311,9 @@ static char set2_map_char(uint8_t sc, int shifted) {
     }
 }
 
-/* ── Swiss keyboards (fr_CH, de_CH): the whole layout by key position ──
- * QWERTZ letters, the Swiss number row, AltGr (right Alt, or Ctrl+Alt)
- * and the dead accents ´ ^ ` ~ ¨. Characters past ASCII are sent as
- * UTF-8, so é arrives as two bytes. Both layouts share the keys; de_CH
- * only swaps the accented letters (ü/è, ö/é, ä/à). */
-
-#define DEAD(c) (0x10000u | (c))
-#define IS_DEAD(v) ((v) & 0x10000u)
-
-typedef struct { uint8_t sc; uint32_t n, s, ag; } swiss_key_t;
-
-static const swiss_key_t SWISS_KEYS[] = {
-    { 0x29, 0x00A7, 0x00B0, 0 },              /* § ° */
-    { 0x02, '1', '+', 0x00A6 },               /* ¦ */
-    { 0x03, '2', '"', '@' },
-    { 0x04, '3', '*', '#' },
-    { 0x05, '4', 0x00E7, 0x00B0 },            /* ç ° */
-    { 0x06, '5', '%', 0x00A7 },               /* § */
-    { 0x07, '6', '&', 0x00AC },               /* ¬ */
-    { 0x08, '7', '/', '|' },
-    { 0x09, '8', '(', 0x00A2 },               /* ¢ */
-    { 0x0A, '9', ')', 0 },
-    { 0x0B, '0', '=', 0 },
-    { 0x0C, '\'', '?', DEAD(0x00B4) },        /* dead ´ */
-    { 0x0D, DEAD('^'), DEAD('`'), DEAD('~') },
-    { 0x10, 'q', 'Q', 0 }, { 0x11, 'w', 'W', 0 }, { 0x12, 'e', 'E', 0x20AC },   /* € */
-    { 0x13, 'r', 'R', 0 }, { 0x14, 't', 'T', 0 }, { 0x15, 'z', 'Z', 0 },
-    { 0x16, 'u', 'U', 0 }, { 0x17, 'i', 'I', 0 }, { 0x18, 'o', 'O', 0 },
-    { 0x19, 'p', 'P', 0 },
-    { 0x1A, 0x00E8, 0x00FC, '[' },            /* è ü */
-    { 0x1B, DEAD(0x00A8), '!', ']' },         /* dead ¨ */
-    { 0x1E, 'a', 'A', 0 }, { 0x1F, 's', 'S', 0 }, { 0x20, 'd', 'D', 0 },
-    { 0x21, 'f', 'F', 0 }, { 0x22, 'g', 'G', 0 }, { 0x23, 'h', 'H', 0 },
-    { 0x24, 'j', 'J', 0 }, { 0x25, 'k', 'K', 0 }, { 0x26, 'l', 'L', 0 },
-    { 0x27, 0x00E9, 0x00F6, 0 },              /* é ö */
-    { 0x28, 0x00E0, 0x00E4, '{' },            /* à ä */
-    { 0x2B, '$', 0x00A3, '}' },               /* £ */
-    { 0x56, '<', '>', '\\' },
-    { 0x2C, 'y', 'Y', 0 }, { 0x2D, 'x', 'X', 0 }, { 0x2E, 'c', 'C', 0 },
-    { 0x2F, 'v', 'V', 0 }, { 0x30, 'b', 'B', 0 }, { 0x31, 'n', 'N', 0 },
-    { 0x32, 'm', 'M', 0 },
-    { 0x33, ',', ';', 0 },
-    { 0x34, '.', ':', 0 },
-    { 0x35, '-', '_', 0 },
-};
-#define SWISS_NKEYS ((int)(sizeof(SWISS_KEYS) / sizeof(SWISS_KEYS[0])))
-
-/* accent + letter -> the accented letter */
-static const struct { uint16_t dead; char base; uint16_t out; } COMPOSE[] = {
-    { '^', 'a', 0xE2 }, { '^', 'e', 0xEA }, { '^', 'i', 0xEE }, { '^', 'o', 0xF4 }, { '^', 'u', 0xFB },
-    { '^', 'A', 0xC2 }, { '^', 'E', 0xCA }, { '^', 'I', 0xCE }, { '^', 'O', 0xD4 }, { '^', 'U', 0xDB },
-    { 0xA8, 'a', 0xE4 }, { 0xA8, 'e', 0xEB }, { 0xA8, 'i', 0xEF }, { 0xA8, 'o', 0xF6 }, { 0xA8, 'u', 0xFC },
-    { 0xA8, 'y', 0xFF }, { 0xA8, 'A', 0xC4 }, { 0xA8, 'E', 0xCB }, { 0xA8, 'I', 0xCF }, { 0xA8, 'O', 0xD6 },
-    { 0xA8, 'U', 0xDC },
-    { '`', 'a', 0xE0 }, { '`', 'e', 0xE8 }, { '`', 'i', 0xEC }, { '`', 'o', 0xF2 }, { '`', 'u', 0xF9 },
-    { '`', 'A', 0xC0 }, { '`', 'E', 0xC8 }, { '`', 'I', 0xCC }, { '`', 'O', 0xD2 }, { '`', 'U', 0xD9 },
-    { 0xB4, 'a', 0xE1 }, { 0xB4, 'e', 0xE9 }, { 0xB4, 'i', 0xED }, { 0xB4, 'o', 0xF3 }, { 0xB4, 'u', 0xFA },
-    { 0xB4, 'y', 0xFD }, { 0xB4, 'A', 0xC1 }, { 0xB4, 'E', 0xC9 }, { 0xB4, 'I', 0xCD }, { 0xB4, 'O', 0xD3 },
-    { 0xB4, 'U', 0xDA }, { 0xB4, 'Y', 0xDD },
-    { '~', 'a', 0xE3 }, { '~', 'o', 0xF5 }, { '~', 'n', 0xF1 },
-    { '~', 'A', 0xC3 }, { '~', 'O', 0xD5 }, { '~', 'N', 0xD1 },
-};
+/* ── the layouts (kernel/kblayouts.c): every key by its position ──
+ * AltGr (right Alt, or Ctrl+Alt), Shift+AltGr and the dead accents.
+ * Characters past ASCII are sent as UTF-8, so é arrives as two bytes. */
 
 static uint32_t g_dead;          /* a pending dead accent, or 0 */
 
@@ -473,7 +321,7 @@ static uint32_t g_dead;          /* a pending dead accent, or 0 */
 static char g_rest[12];
 static int  g_rest_n;
 
-static int is_swiss(void) { return g_layout == KB_LAYOUT_FR_CH || g_layout == KB_LAYOUT_DE_CH; }
+static int has_table(void) { return kb_layouts[g_layout].keys != 0; }
 
 /* the first byte of what cps[] encodes goes to *out, the others wait in g_rest */
 static int emit_cps(const uint32_t* cps, int n, char* out) {
@@ -492,10 +340,12 @@ static void flush_rest(void) {
     g_rest_n = 0;
 }
 
-/* a key on a Swiss keyboard (set-1 scancode); -1 when the shared tables decide */
-static int swiss_key(uint8_t sc, char* out) {
-    const swiss_key_t* k = 0;
-    for (int i = 0; i < SWISS_NKEYS; i++) if (SWISS_KEYS[i].sc == sc) { k = &SWISS_KEYS[i]; break; }
+/* a key on the layout's table (set-1 scancode); -1 when the shared US
+ * tables decide (Enter, Tab, the keypad...) */
+static int layout_key(uint8_t sc, char* out) {
+    const kb_layout_desc_t* L = &kb_layouts[g_layout];
+    const kb_key_t* k = 0;
+    for (int i = 0; i < L->nkeys; i++) if (L->keys[i].sc == sc) { k = &L->keys[i]; break; }
     int altgr = altgr_held || (ctrl_held && alt_held);
     if (!k) {
         /* Enter, Backspace, Tab, Esc, the keypad...: a pending accent just goes */
@@ -505,17 +355,9 @@ static int swiss_key(uint8_t sc, char* out) {
 
     uint32_t v;
     if (!k) v = ' ';                                  /* the space bar */
-    else if (altgr) v = k->ag;
+    else if (altgr) v = shift_held && k->sag ? k->sag : k->ag;
     else v = shift_held ? k->s : k->n;
     if (!v) return 0;
-
-    if (g_layout == KB_LAYOUT_DE_CH && !altgr) {
-        switch (v) {                                  /* the umlaut keys, the other way round */
-        case 0xE8: v = 0xFC; break; case 0xFC: v = 0xE8; break;
-        case 0xE9: v = 0xF6; break; case 0xF6: v = 0xE9; break;
-        case 0xE0: v = 0xE4; break; case 0xE4: v = 0xE0; break;
-        }
-    }
 
     if (caps_lock && !altgr && !IS_DEAD(v)) v = caps_flip(v);
 
@@ -544,11 +386,8 @@ static int swiss_key(uint8_t sc, char* out) {
         uint32_t acc = g_dead;
         g_dead = 0;
         if (v == ' ') return emit_cps(&acc, 1, out);
-        for (int i = 0; i < (int)(sizeof(COMPOSE) / sizeof(COMPOSE[0])); i++)
-            if (COMPOSE[i].dead == acc && (uint32_t)(unsigned char)COMPOSE[i].base == v) {
-                uint32_t cp = COMPOSE[i].out;
-                return emit_cps(&cp, 1, out);
-            }
+        uint32_t cp = kb_compose(acc, v);
+        if (cp) return emit_cps(&cp, 1, out);
         uint32_t two[2] = { acc, v };                 /* no such letter: both */
         return emit_cps(two, 2, out);
     }
@@ -622,15 +461,14 @@ static int translate_scancode_set2(uint8_t sc, char* out) {
         if (g1 && global_key(g1)) return 0;
     }
 
-    if (is_swiss()) {
+    if (has_table()) {
         uint8_t s1 = set2_to_set1(sc);
-        int r = s1 ? swiss_key(s1, out) : (g_dead = 0, -1);
+        int r = s1 ? layout_key(s1, out) : (g_dead = 0, -1);
         if (r >= 0) return r;
     }
 
     char c = set2_map_char(sc, shift_held);
     if (!c) return 0;
-    c = map_layout_char(c, shift_held);
     if (caps_lock) c = (char)caps_flip((unsigned char)c);
 
     if (ctrl_held) {
@@ -653,15 +491,14 @@ static int translate_scancode(uint8_t sc, char* out) {
     if (sc == 0x47 || sc == 0x4F || sc == 0x49 || sc == 0x51) return 0;
     if (sc >= 128) return 0;
 
-    if (is_swiss()) {
-        int r = swiss_key(sc, out);
+    if (has_table()) {
+        int r = layout_key(sc, out);
         if (r >= 0) return r;
     }
 
     char c = shift_held ? sc_shift[sc] : sc_normal[sc];
     if (!c && !shift_held) c = sc_normal[sc];
     if (!c) return 0;
-    c = map_layout_char(c, shift_held);
     if (caps_lock) c = (char)caps_flip((unsigned char)c);
 
     /* Ctrl+letter → codes 1-26 */
@@ -839,27 +676,35 @@ static int process_scancode_byte(uint8_t sc, char* out) {
 int keyboard_caps_lock(void) { return caps_lock; }
 
 const char* keyboard_layout_name(void) {
-    return kbd_layout_names[(int)g_layout];
+    return kb_layouts[g_layout].name;
 }
 
 const char* keyboard_layouts_help(void) {
-    return "EN (Default), fr_CH, FR, DE, de_CH, BEPO";
+    static char s[256];
+    if (!s[0])
+        for (int i = 0; i < kb_layout_count; i++) {
+            if (i) kstrlcat(s, ", ", sizeof(s));
+            kstrlcat(s, kb_layouts[i].name, sizeof(s));
+        }
+    return s;
+}
+
+int keyboard_layout_count(void) { return kb_layout_count; }
+const char* keyboard_layout_at(int i, const char** label) {
+    if (i < 0 || i >= kb_layout_count) return 0;
+    if (label) *label = kb_layouts[i].label;
+    return kb_layouts[i].name;
 }
 
 int keyboard_set_layout(const char* name) {
     if (!name || !*name) return -1;
-
-    if (strieq(name, "EN") || strieq(name, "EN (Default)") || strieq(name, "default")) {
-        g_layout = KB_LAYOUT_EN_DEFAULT;
-        return 0;
-    }
-    g_dead = 0;
-    if (strieq(name, "fr_CH")) { g_layout = KB_LAYOUT_FR_CH; return 0; }
-    if (strieq(name, "FR"))    { g_layout = KB_LAYOUT_FR;    return 0; }
-    if (strieq(name, "DE"))    { g_layout = KB_LAYOUT_DE;    return 0; }
-    if (strieq(name, "de_CH")) { g_layout = KB_LAYOUT_DE_CH; return 0; }
-    if (strieq(name, "BEPO"))  { g_layout = KB_LAYOUT_BEPO;  return 0; }
-
+    if (strieq(name, "EN") || strieq(name, "US") || strieq(name, "default")) name = kb_layouts[0].name;
+    for (int i = 0; i < kb_layout_count; i++)
+        if (strieq(name, kb_layouts[i].name)) {
+            g_dead = 0;
+            g_layout = i;
+            return 0;
+        }
     return -1;
 }
 
@@ -1068,4 +913,33 @@ void keyboard_unget(char c) {
     if (prev == q_tail) return;                 /* full */
     q_head = prev;
     q_buf[q_head] = c;
+}
+
+/* (selftest) the text typing set-1 codes gives on layout `name` - Shift is
+ * 0x2A / 0xAA, AltGr 0xE0 0x38 / 0xE0 0xB8 - as UTF-8 in out; the layout,
+ * the modifiers and the keys waiting are put back. 0, or -1 (no such layout) */
+int keyboard_test_type(const char* name, const uint8_t* codes, int n, char* out, int cap) {
+    int was = g_layout;
+    static char keep[QUEUE_SIZE];
+    int kn = 0;
+    while (!q_empty() && kn < QUEUE_SIZE) keep[kn++] = q_pop();
+    int sh = shift_held, ct = ctrl_held, al = alt_held, ag = altgr_held, cl = caps_lock;
+    shift_held = ctrl_held = alt_held = altgr_held = caps_lock = 0;
+    g_dead = 0;
+    int rc = keyboard_set_layout(name), len = 0;
+    if (rc == 0)
+        for (int i = 0; i < n; i++) {
+            keyboard_feed_set1(codes[i]);
+            while (!q_empty()) {
+                char c = q_pop();
+                if (len < cap - 1) out[len++] = c;
+            }
+        }
+    if (cap > 0) out[len] = 0;
+    g_layout = was;
+    g_dead = 0;
+    shift_held = sh; ctrl_held = ct; alt_held = al; altgr_held = ag; caps_lock = cl;
+    for (int i = 0; i < (int)sizeof(g_held); i++) g_held[i] = 0;   /* (no key let go in the test: none held) */
+    for (int i = 0; i < kn; i++) q_push(keep[i]);
+    return rc;
 }
