@@ -213,7 +213,38 @@ typedef struct {
     int (*rename)(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name);
     /* the mount goes away: forget the volume */
     void (*unmount)(void* ctx);
+    /* ── optional (the installed disk's ext4 has them; FAT leaves them NULL) ──
+     * remove / rename by the folder and the name, as Unix filesystems do */
+    int (*remove_at)(void* ctx, uint32_t parent, const char* name, uint32_t node, int is_dir);
+    int (*rename_at)(void* ctx, uint32_t parent, const char* name, uint32_t node, int is_dir,
+                     uint32_t new_parent, const char* new_name);
+    /* a part of a file: read (the bytes read, -1), written (0, -1; the file
+     * grows as needed), the file cut or grown to size (0, -1) */
+    int (*read_at)(void* ctx, uint32_t node, uint32_t off, void* buf, uint32_t len);
+    int (*write_at)(void* ctx, uint32_t node, uint32_t off, const void* data, uint32_t len);
+    int (*truncate)(void* ctx, uint32_t node, uint32_t size);
+    /* mode (permission bits), owner, group, the modification date (local
+     * time); ~0u: as it is */
+    int (*setattr)(void* ctx, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime);
+    /* a symbolic link named name in parent, to target: *node */
+    int (*symlink)(void* ctx, uint32_t parent, const char* name, const char* target, uint32_t* node);
 } fs_mount_ops_t;
+
+/* The installed disk as the tree's own backing (kernel/fsdisk.c, ext4):
+ * every entry not on a mount is written through to it as it changes, and
+ * files are read from it by the part - RAM holds only what is in use. The
+ * root folder is the volume's root_node. (ops NULL: none - the live CD.) */
+void fs_set_system_backend(const fs_mount_ops_t* ops, void* ctx, uint32_t root_node);
+int  fs_has_system_backend(void);
+
+/* writes len bytes at off into file idx (it grows as needed, a gap reads as
+ * zeros), without reading the rest of it in: 0, or -1 */
+int  fs_write_at(int idx, uint32_t off, const void* data, uint32_t len);
+/* the file cut to (or grown to, with zeros) size bytes: 0, or -1 */
+int  fs_truncate(int idx, uint32_t size);
+/* loading the tree from the ext4 disk, or copying it there: the inode of
+ * folder (is_dir) or file idx */
+void fs_set_node(int is_dir, int idx, uint32_t node);
 
 /* mounts at path (made with mkdir -p; it must be empty): the mount id
  * (> 0), or -1. The volume's root folder has the handle root_node. */

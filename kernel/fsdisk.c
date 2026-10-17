@@ -1425,6 +1425,427 @@ static int v5_format(const ata_disk_t* d, uint32_t keep_lba, uint32_t keep_sect)
     return FSDISK_OK;
 }
 
+/* ── layout 6: ext4 ─────────────────────────────────────────────────
+ * The installed disk's files in an ext4 filesystem (kernel/ext4.c) from
+ * the end of the boot area to 1 MB before the disk's end - the same place
+ * layout 5 used. Every change goes to it as it is made (a block cache in
+ * between, written within a second): RAM is a cache, not a copy to save.
+ * Linux mounts it (an offset of 128 MiB on the disk) and its e2fsck
+ * checks it. Layout-5 disks become ext4 in place at boot (e4_migrate):
+ * their files' data stays where it is, the inodes point at it. */
+
+#include "ext4.h"
+#include "tz.h"
+#include "settings.h"
+
+static int       g_e4;                   /* the installed disk is ext4 */
+static ext4_dev_t g_e4dev;
+static uint32_t  g_e4_base;              /* the filesystem's first sector on the disk */
+static uint32_t  g_swap_ino;
+static volatile int g_frozen;
+static uint32_t     g_frozen_at;
+
+static int e4_read(void* ctx, uint32_t s, uint32_t n, void* buf) {
+    (void)ctx;
+    dlock();
+    int rc = disk_read(&g_target, g_e4_base + s, n, buf);
+    dunlock();
+    return rc;
+}
+
+static int e4_write(void* ctx, uint32_t s, uint32_t n, const void* buf) {
+    (void)ctx;
+    /* frozen for a hypervisor's backup: the write waits (10 minutes at most) */
+    while (g_frozen && timer_ms() - g_frozen_at < 600000u) task_sleep_ms(50);
+    dlock();
+    int rc = disk_write(&g_target, g_e4_base + s, n, buf);
+    dunlock();
+    return rc;
+}
+
+static int e4_flush_dev(void* ctx) {
+    (void)ctx;
+    return locked_flush(&g_target);
+}
+
+/* the filesystem's place on disk d */
+static void e4_geometry(const ata_disk_t* d, ext4_dev_t* dev, uint32_t* base) {
+    *base = V4_BASE_LBA;
+    uint32_t end = (d->sectors - V4_TAIL_SECTORS) & ~(V5_BLOCK_SECT - 1u);
+    memset(dev, 0, sizeof(*dev));
+    dev->read = e4_read;
+    dev->write = e4_write;
+    dev->flush = e4_flush_dev;
+    dev->sectors = end > *base ? end - *base : 0;
+}
+
+/* an ext4 Banana OS disk: its superblock, named BANANA_OS */
+static int e4_detect(const ata_disk_t* d) {
+    if (d->sectors <= V4_BASE_LBA + V4_TAIL_SECTORS + 2048u) return 0;
+    uint8_t sec[FSDISK_SECTOR];
+    if (disk_read(d, V4_BASE_LBA + 2u, 1, sec) != 0) return 0;          /* byte 1024: the superblock */
+    return sec[0x38] == 0x53 && sec[0x39] == 0xEF && !memcmp(sec + 0x78, "BANANA_OS", 9);
+}
+
+/* ── the tree's backing: fs.c's changes, written through ── */
+
+static uint32_t to_utc(uint32_t local) { return local ? tz_to_utc(local) : 0; }
+static uint32_t to_local(uint32_t utc) { return utc ? tz_to_local(utc) : 0; }
+
+static int op4_read(void* c, uint32_t node, uint8_t* buf, uint32_t size) {
+    (void)c;
+    return ext4_read(node, 0, buf, size) == (long)size ? 0 : -1;
+}
+static int op4_write(void* c, uint32_t node, const void* data, uint32_t len) {
+    (void)c;
+    /* over what is there (no blocks freed and given out again), then cut */
+    if (len && ext4_write(node, 0, data, len) != 0) return -1;
+    return ext4_truncate(node, len);
+}
+static int op4_append(void* c, uint32_t node, uint32_t old, const void* data, uint32_t len) {
+    (void)c;
+    return ext4_write(node, old, data, len);
+}
+static int op4_create(void* c, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
+    (void)c;
+    ext4_stat_t st;
+    uint32_t uid = 0, gid = 0;
+    if (ext4_stat(parent, &st) == 0) { uid = st.uid; gid = st.gid; }  /* (owned like its folder, as fs.c has it) */
+    *node = is_dir ? ext4_mkdir(parent, name, 0755, uid, gid) : ext4_create(parent, name, 0644, uid, gid);
+    return *node ? 0 : -1;
+}
+static int op4_remove(void* c, uint32_t node, int is_dir) { (void)c; (void)node; (void)is_dir; return -1; }
+static int op4_rename(void* c, uint32_t node, int is_dir, uint32_t np, const char* nn) {
+    (void)c; (void)node; (void)is_dir; (void)np; (void)nn;
+    return -1;
+}
+static void op4_unmount(void* c) { (void)c; }
+static int op4_remove_at(void* c, uint32_t parent, const char* name, uint32_t node, int is_dir) {
+    (void)c; (void)node;
+    return is_dir ? ext4_rmdir(parent, name) : ext4_unlink(parent, name);
+}
+static int op4_rename_at(void* c, uint32_t parent, const char* name, uint32_t node, int is_dir, uint32_t np, const char* nn) {
+    (void)c; (void)node; (void)is_dir;
+    return ext4_rename(parent, name, np, nn);
+}
+static int op4_read_at(void* c, uint32_t node, uint32_t off, void* buf, uint32_t len) {
+    (void)c;
+    return (int)ext4_read(node, off, buf, len);
+}
+static int op4_write_at(void* c, uint32_t node, uint32_t off, const void* data, uint32_t len) {
+    (void)c;
+    return ext4_write(node, off, data, len);
+}
+static int op4_truncate(void* c, uint32_t node, uint32_t size) { (void)c; return ext4_truncate(node, size); }
+static int op4_setattr(void* c, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime) {
+    (void)c; (void)is_dir;
+    return ext4_setattr(node, perms, uid, gid, ~0u, mtime == ~0u ? ~0u : to_utc(mtime), ~0u);
+}
+static int op4_symlink(void* c, uint32_t parent, const char* name, const char* target, uint32_t* node) {
+    (void)c;
+    ext4_stat_t st;
+    uint32_t uid = 0, gid = 0;
+    if (ext4_stat(parent, &st) == 0) { uid = st.uid; gid = st.gid; }
+    *node = ext4_symlink(parent, name, target, uid, gid);
+    return *node ? 0 : -1;
+}
+
+static const fs_mount_ops_t g_e4ops = {
+    op4_read, op4_write, op4_append, op4_create, op4_remove, op4_rename, op4_unmount,
+    op4_remove_at, op4_rename_at, op4_read_at, op4_write_at, op4_truncate, op4_setattr, op4_symlink,
+};
+
+/* ── loading the tree ── */
+
+typedef struct { char name[256]; uint32_t ino, type; } e4ent_t;
+typedef struct { e4ent_t* e; int n, cap; } e4list_t;
+
+static int e4_collect(void* arg, const char* name, uint32_t ino, uint32_t type) {
+    e4list_t* l = (e4list_t*)arg;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 32;
+        e4ent_t* e = (e4ent_t*)krealloc(l->e, (size_t)cap * sizeof(e4ent_t));
+        if (!e) return 1;
+        l->e = e;
+        l->cap = cap;
+    }
+    kstrlcpy(l->e[l->n].name, name, sizeof(l->e[0].name));
+    l->e[l->n].ino = ino;
+    l->e[l->n].type = type;
+    l->n++;
+    return 0;
+}
+
+static void e4_meta(int is_dir, int idx, const ext4_stat_t* st) {
+    fs_set_meta(is_dir, idx, st->mode, st->uid, st->gid, to_local(st->atime));
+    fs_set_times(is_dir, idx, to_local(st->mtime), to_local(st->ctime));
+}
+
+/* folder ino (fs.c folder idx): its entries into the tree, its folders after */
+static void e4_walk(uint32_t ino, int idx, int depth, int* home) {
+    e4list_t l = { 0, 0, 0 };
+    if (depth > 64 || ext4_readdir(ino, e4_collect, &l) != 0) { kfree(l.e); return; }
+    for (int i = 0; i < l.n; i++) {
+        e4ent_t* e = &l.e[i];
+        ext4_stat_t st;
+        if (ext4_stat(e->ino, &st) != 0) continue;
+        uint32_t t = st.mode & EXT4_S_IFMT;
+        if (!idx && !strcmp(e->name, "swapfile")) { g_swap_ino = e->ino; continue; }   /* (the swap area: not a file to show) */
+        if (t == EXT4_S_IFDIR) {
+            int d = fs_mount_add_dir(0, idx, e->name, e->ino);
+            if (d < 0) continue;
+            e4_meta(1, d, &st);
+            if (depth == 1 && !strcmp(e->name, "banana")) {
+                const fs_dir_t* p = fs_get_dir(idx);
+                if (p && !strcmp(p->name, "home")) *home = d;
+            }
+            e4_walk(e->ino, d, depth + 1, home);
+        } else if ((t == EXT4_S_IFREG || t == EXT4_S_IFLNK) && st.size <= FS_MAX_FILE_SIZE) {
+            int f = fs_mount_add_file(0, idx, e->name, e->ino, (uint32_t)st.size);
+            if (f < 0) continue;
+            e4_meta(0, f, &st);
+        }
+    }
+    kfree(l.e);
+}
+
+/* the time zone (and whether the clock keeps UTC) from the settings file,
+ * before the dates are read - the tree that holds them is not loaded yet */
+static void e4_peek_zone(void) {
+    uint32_t etc = ext4_lookup(EXT4_ROOT_INO, "etc", 0), f = etc ? ext4_lookup(etc, "settings.conf", 0) : 0;
+    if (!f) return;
+    char buf[2048];
+    long n = ext4_read(f, 0, buf, sizeof(buf) - 1);
+    if (n <= 0) return;
+    buf[n] = 0;
+    for (char* line = buf; line && *line; ) {
+        char* nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        if (!strncmp(line, "timezone=", 9)) { int z = tz_find(line + 9); if (z >= 0) tz_use(z); }
+        line = nl ? nl + 1 : 0;
+    }
+}
+
+static int e4_attach(void) {
+    fs_restore_begin();
+    fs_set_system_backend(&g_e4ops, 0, EXT4_ROOT_INO);
+    ext4_stat_t st;
+    if (ext4_stat(EXT4_ROOT_INO, &st) == 0) e4_meta(1, 0, &st);
+    e4_peek_zone();
+    int home = 0;
+    g_swap_ino = 0;
+    e4_walk(EXT4_ROOT_INO, 0, 0, &home);
+    fs_restore_end(home);
+    g_e4 = 1;
+    g_v5 = 0;
+    return 1;
+}
+
+/* 1 the disk's ext4 was loaded, 0 not ext4, -1 ext4 that would not mount */
+static int e4_try_load(const ata_disk_t* d) {
+    if (!e4_detect(d)) return 0;
+    g_target = *d;
+    e4_geometry(d, &g_e4dev, &g_e4_base);
+    if (ext4_mount(&g_e4dev) != 0) { klog("fsdisk: the ext4 filesystem could not be mounted\n"); return -1; }
+    return e4_attach();
+}
+
+/* ── copying the tree onto a new filesystem (install) ── */
+
+#define COPY_CHUNK (256u * 1024u)
+
+static int e4_copy_dir(int idx, uint32_t ino, uint8_t* buf) {
+    int rc = 0;
+    const fs_dir_t* dd = fs_get_dir(idx);
+    if (!dd) return -1;
+    for (int f = dd->kid_file; f >= 0 && rc == 0; ) {
+        fs_file_t* ff = fs_file_info(f);
+        int next = ff->sib;
+        if (ff->used && !ff->mnt) {
+            uint32_t mode = fs_file_mode(f), node;
+            if ((mode & FS_S_IFMT) == FS_S_IFLNK) {
+                char t[FS_PATH_LEN];
+                int n = fs_read(f, 0, t, sizeof(t) - 1);
+                t[n > 0 ? n : 0] = 0;
+                node = ext4_symlink(ino, ff->name, t, ff->uid, ff->gid);
+            } else {
+                node = ext4_create(ino, ff->name, mode & 07777u, ff->uid, ff->gid);
+                for (uint32_t off = 0; node && off < ff->size && rc == 0; ) {
+                    uint32_t n = ff->size - off < COPY_CHUNK ? ff->size - off : COPY_CHUNK;
+                    if (fs_read(f, off, buf, n) != (int)n || ext4_write(node, off, buf, n) != 0) rc = FSDISK_ERR_IO;
+                    off += n;
+                    task_yield();
+                }
+            }
+            if (!node) rc = FSDISK_ERR_FULL;
+            else {
+                ext4_setattr(node, ~0u, ~0u, ~0u, to_utc(ff->atime), to_utc(ff->mtime), to_utc(ff->ctime));
+                fs_set_node(0, f, node);
+            }
+        }
+        f = next;
+    }
+    for (int d = dd->kid_dir; d >= 0 && rc == 0; ) {
+        const fs_dir_t* sd = fs_get_dir(d);
+        int next = sd->sib;
+        if (!sd->mnt) {
+            uint32_t node = ext4_mkdir(ino, sd->name, fs_dir_mode(d) & 07777u, sd->uid, sd->gid);
+            if (!node) rc = FSDISK_ERR_FULL;
+            else {
+                fs_set_node(1, d, node);
+                rc = e4_copy_dir(d, node, buf);
+                ext4_setattr(node, ~0u, ~0u, ~0u, to_utc(sd->atime), to_utc(sd->mtime), to_utc(sd->ctime));
+            }
+        }
+        d = next;
+    }
+    return rc;
+}
+
+/* an empty ext4 on d, the tree copied onto it, the tree written through to it from then on */
+static int e4_format(const ata_disk_t* d) {
+    g_target = *d;
+    e4_geometry(d, &g_e4dev, &g_e4_base);
+    ext4_set_hidden(1);                                    /* (not a Banana OS disk until it is whole) */
+    if (ext4_mkfs(&g_e4dev, "BANANA_OS", 0, 0) != 0) return FSDISK_ERR_TOO_SMALL;
+    uint8_t* buf = (uint8_t*)kmalloc(COPY_CHUNK);
+    if (!buf) return FSDISK_ERR_IO;
+    const fs_dir_t* root = fs_get_dir(0);
+    if (root) ext4_setattr(EXT4_ROOT_INO, fs_dir_mode(0) & 07777u, root->uid, root->gid, ~0u, ~0u, ~0u);
+    fs_set_node(1, 0, EXT4_ROOT_INO);
+    int rc = e4_copy_dir(0, EXT4_ROOT_INO, buf);
+    kfree(buf);
+    if (rc == FSDISK_OK && ext4_activate() != 0) rc = FSDISK_ERR_IO;
+    if (rc != FSDISK_OK) return rc;
+    fs_set_system_backend(&g_e4ops, 0, EXT4_ROOT_INO);
+    g_e4 = 1;
+    g_v5 = 0;
+    return FSDISK_OK;
+}
+
+/* ── a layout-5 disk becomes ext4, its files' data where it is ── */
+
+static int e4_migrate(const ata_disk_t* d) {
+    ext4_dev_t dev;
+    uint32_t base;
+    e4_geometry(d, &dev, &base);
+    if (base + dev.sectors != g_mark.meta_lba || g_mark.data_lba != base + V5_BLOCK_SECT) return FSDISK_ERR_TOO_SMALL;
+    uint32_t fixed = ext4_fixed_blocks(dev.sectors);
+    uint32_t fixed_end = base + fixed * V5_BLOCK_SECT;
+    /* 1. what lies where ext4 must have its superblock and descriptors moves out */
+    if (ext_add(g_mark.data_lba, fixed_end - g_mark.data_lba) != 0) return FSDISK_ERR_IO;
+    int moved = 0;
+    for (int i = 0; i < g_nrecs; i++) {
+        v5_rec_t* r = &g_rec[i];
+        if (!r->valid || !r->sectors || r->lba >= fixed_end) continue;
+        uint8_t* data = (uint8_t*)kmalloc(r->size ? r->size : 1);
+        if (!data) return FSDISK_ERR_IO;
+        v5_rec_t old = *r;
+        if (v5_read_file(i, data, r->size) != 0) { kfree(data); return FSDISK_ERR_IO; }
+        int rc = v5_write_file(d, r, data);
+        kfree(data);
+        if (rc != FSDISK_OK) return rc;
+        ext_remove(old.lba, old.sectors);
+        moved++;
+    }
+    /* the metadata pointing at the new places (its body: outside too) */
+    if (moved || (g_body_lba && g_body_lba < fixed_end)) {
+        int rc = v5_sync(d);
+        if (rc != FSDISK_OK) return rc;
+    }
+    /* 2. ext4 around the files' extents (and the old metadata body: kept until the end) */
+    int nkeep = 0;
+    uint32_t (*keep)[2] = (uint32_t (*)[2])kmalloc((size_t)(g_nrecs + 2) * sizeof(*keep));
+    if (!keep) return FSDISK_ERR_IO;
+    for (int i = 0; i < g_nrecs; i++) {
+        if (!g_rec[i].valid || !g_rec[i].sectors) continue;
+        keep[nkeep][0] = (g_rec[i].lba - base) / V5_BLOCK_SECT;
+        keep[nkeep][1] = g_rec[i].sectors / V5_BLOCK_SECT;
+        nkeep++;
+    }
+    uint32_t body_blk = 0, body_n = 0;
+    if (g_body_lba && g_body_sect) {
+        body_blk = (g_body_lba - base) / V5_BLOCK_SECT;
+        body_n = (g_body_sect + V5_BLOCK_SECT - 1u) / V5_BLOCK_SECT;
+        keep[nkeep][0] = body_blk;
+        keep[nkeep][1] = body_n;
+        nkeep++;
+    }
+    /* (sorted, as mkfs wants them: by block) */
+    for (int gap = nkeep / 2; gap > 0; gap /= 2)
+        for (int i = gap; i < nkeep; i++) {
+            uint32_t a = keep[i][0], b = keep[i][1];
+            int j = i;
+            while (j >= gap && keep[j - gap][0] > a) { keep[j][0] = keep[j - gap][0]; keep[j][1] = keep[j - gap][1]; j -= gap; }
+            keep[j][0] = a;
+            keep[j][1] = b;
+        }
+    g_target = *d;
+    g_e4dev = dev;
+    g_e4_base = base;
+    ext4_set_hidden(1);
+    int rc = ext4_mkfs(&g_e4dev, "BANANA_OS", (const uint32_t (*)[2])keep, nkeep);
+    kfree(keep);
+    if (rc != 0) return FSDISK_ERR_TOO_SMALL;
+    /* 3. the folders and files, the files' inodes pointing at their extents */
+    fs_set_node(1, 0, EXT4_ROOT_INO);
+    const fs_dir_t* root = fs_get_dir(0);
+    if (root) ext4_setattr(EXT4_ROOT_INO, fs_dir_mode(0) & 07777u, root->uid, root->gid, ~0u, ~0u, ~0u);
+    rc = FSDISK_OK;
+    int ndirs = fs_dir_slots(), nfiles = fs_file_slots();
+    /* folders in an order where each parent comes first */
+    for (int pass = 0, left = 1; left && pass < 256 && rc == FSDISK_OK; pass++) {
+        left = 0;
+        for (int i = 1; i < ndirs && rc == FSDISK_OK; i++) {
+            const fs_dir_t* dd = fs_get_dir(i);
+            if (!dd || dd->mnt || dd->node) continue;
+            const fs_dir_t* p = fs_get_dir(dd->parent_dir);
+            if (!p || (dd->parent_dir && !p->node)) { left = 1; continue; }
+            uint32_t pino = dd->parent_dir ? p->node : EXT4_ROOT_INO;
+            uint32_t node = ext4_mkdir(pino, dd->name, fs_dir_mode(i) & 07777u, dd->uid, dd->gid);
+            if (!node) { rc = FSDISK_ERR_FULL; break; }
+            fs_set_node(1, i, node);
+        }
+    }
+    for (int i = 0; i < nfiles && rc == FSDISK_OK; i++) {
+        fs_file_t* f = fs_file_info(i);
+        if (!f || !f->used || f->mnt) continue;
+        const fs_dir_t* p = fs_get_dir(f->parent_dir);
+        uint32_t pino = f->parent_dir ? (p ? p->node : 0) : EXT4_ROOT_INO;
+        if (!pino) continue;
+        uint32_t mode = fs_file_mode(i), node;
+        v5_rec_t* r = i < g_nrecs ? &g_rec[i] : 0;
+        if ((mode & FS_S_IFMT) == FS_S_IFLNK) {
+            char t[FS_PATH_LEN];
+            int n = fs_read(i, 0, t, sizeof(t) - 1);
+            t[n > 0 ? n : 0] = 0;
+            node = ext4_symlink(pino, f->name, t, f->uid, f->gid);
+            if (node && r && r->valid && r->sectors)              /* (its old extent: free) */
+                ext4_free_run((r->lba - base) / V5_BLOCK_SECT, r->sectors / V5_BLOCK_SECT);
+        } else {
+            node = ext4_create(pino, f->name, mode & 07777u, f->uid, f->gid);
+            if (node && r && r->valid && r->sectors &&
+                ext4_adopt(node, r->size, (r->lba - base) / V5_BLOCK_SECT, r->sectors / V5_BLOCK_SECT) != 0)
+                rc = FSDISK_ERR_IO;
+        }
+        if (!node) { rc = FSDISK_ERR_FULL; break; }
+        ext4_setattr(node, ~0u, ~0u, ~0u, to_utc(f->atime), to_utc(f->mtime), to_utc(f->ctime));
+        fs_set_node(0, i, node);
+    }
+    for (int i = 1; i < ndirs && rc == FSDISK_OK; i++) {
+        const fs_dir_t* dd = fs_get_dir(i);
+        if (dd && !dd->mnt && dd->node)
+            ext4_setattr(dd->node, ~0u, ~0u, ~0u, to_utc(dd->atime), to_utc(dd->mtime), to_utc(dd->ctime));
+    }
+    if (rc != FSDISK_OK) return rc;                        /* (still layout 5: its superblock has no magic) */
+    /* 4. it is ext4 from here on; the old metadata body's blocks go back */
+    if (ext4_activate() != 0) return FSDISK_ERR_IO;
+    if (body_n) ext4_free_run(body_blk, body_n);
+    ext4_flush();
+    /* the tree as ext4 has it now (nodes, sizes, dates) */
+    return e4_attach() == 1 ? FSDISK_OK : FSDISK_ERR_IO;
+}
+
 /* ── several disks ──────────────────────────────────────────────────
  * Banana OS used to want exactly one hard disk: with a second one attached
  * it found no installed system. Now every disk is looked at: the first
@@ -1437,7 +1858,7 @@ int fsdisk_holds_banana(const ata_disk_t* d) {
     layout_t l;
     fsdisk_super_t sb[2];
     int have[2];
-    return v5_detect(d, &m) || detect(d, &l, sb, have);
+    return e4_detect(d) || v5_detect(d, &m) || detect(d, &l, sb, have);
 }
 
 int fsdisk_find_installed(ata_disk_t* out) {
@@ -1499,7 +1920,7 @@ int fsdisk_install_to(const ata_disk_t* tp) {
     wipe_header(&target, V4_BASE_LBA);
     if (l.nslots == 2) wipe_header(&target, slot_lba_of(&l, 1));
     uint32_t t_files = timer_ms();
-    int rc = v5_format(&target, 0, 0);
+    int rc = e4_format(&target);
     g_tm.files_ms = timer_ms() - t_files;
     if (rc == FSDISK_OK) htab_save(&target, iso_bytes);     /* (the next update: only what changed) */
     g_tm.total_ms = timer_ms() - t_start;
@@ -1516,9 +1937,6 @@ int fsdisk_install_to(const ata_disk_t* tp) {
 /* a hypervisor backing the disk up (the guest agent's fsfreeze): everything
  * is written now, then nothing until thawed - the disk stays as the backup
  * reads it */
-static volatile int g_frozen;
-static uint32_t     g_frozen_at;
-
 int fsdisk_freeze(int on) {
     if (!on) { g_frozen = 0; return FSDISK_OK; }
     if (g_frozen) return FSDISK_OK;
@@ -1535,10 +1953,19 @@ int fsdisk_sync(void) {
     if (g_frozen) return FSDISK_OK;           /* (frozen for a backup: written once thawed) */
     while (g_busy) task_sleep_ms(10);        /* the autosave task and `sync` take turns */
     g_busy = 1;
-    int rc = g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
+    int rc = g_e4 ? (ext4_flush() == 0 ? FSDISK_OK : FSDISK_ERR_IO)
+           : g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
     g_busy = 0;
     g_last_err = rc;
     return rc;
+}
+
+/* a layout-5 disk just loaded: made ext4 (it stays layout 5 if that fails) */
+static void e4_move_over(const ata_disk_t* d) {
+    uint32_t t = timer_ms();
+    int rc = e4_migrate(d);
+    if (rc == FSDISK_OK) klog("fsdisk: the disk is ext4 now - its files where they were (%u ms)\n", timer_ms() - t);
+    else klog("fsdisk: the disk stays on layout 5 (%d)\n", rc);
 }
 
 int fsdisk_try_load(void) {
@@ -1546,12 +1973,20 @@ int fsdisk_try_load(void) {
     if (!fsdisk_find_installed(&target)) return 0;     /* (other disks: ordinary drives) */
     blockdev_set_system(disk_blockdev(&target));
 
+    int r6 = e4_try_load(&target);
+    if (r6 < 0) return -1;
+    if (r6 == 1) {
+        g_have_target = 1;
+        return 1;
+    }
+
     int r5 = v5_try_load(&target);
     if (r5 < 0) return -1;
     if (r5 == 1) {
         g_target = target;
         g_have_target = 1;
         g_synced_gen = fs_generation();
+        e4_move_over(&target);
         return 1;
     }
 
@@ -1579,6 +2014,7 @@ int fsdisk_try_load(void) {
         int rc = v5_format(&target, slot_lba_of(&l, s), bytes_to_sectors(hdr_size(l.version) + sb[s].payload_bytes));
         if (rc == FSDISK_OK) {
             klog("fsdisk: the disk was moved to layout 5 (only changed files are written from now on)\n");
+            e4_move_over(&target);
             return 1;
         }
         klog("fsdisk: the disk stays on layout %u (%d)\n", l.version, rc);
@@ -1610,6 +2046,15 @@ static void autosave_task(void) {
             g_frozen = 0;
         }
         if (!g_have_target || g_frozen) continue;
+        if (g_e4) {
+            /* ext4: the changed blocks to the disk within a second, the cache
+             * smaller when RAM runs low (what the files hold is on the disk) */
+            uint32_t total = kheap_total_bytes();
+            if (total - kheap_used_bytes() < total / 8) ext4_cache_trim(ext4_cache_bytes() / 2);
+            if (!ext4_dirty_blocks()) { warned = 0; continue; }
+            if (ext4_flush() != 0 && !warned) { klog("fsdisk: could not write to the disk\n"); warned = 1; }
+            continue;
+        }
         uint32_t gen = fs_generation();
         if (gen == g_synced_gen) { warned = 0; continue; }
         /* RAM running low: save now, even while things change - a saved file's
@@ -1638,12 +2083,22 @@ void fsdisk_start_autosave(void) {
 }
 
 int fsdisk_pending(void) {
+    if (g_e4) return ext4_dirty_blocks() != 0;
     return g_have_target && fs_generation() != g_synced_gen;
 }
 
 int fsdisk_last_error(void) { return g_last_err; }
 
 void fsdisk_space(uint64_t* used_bytes, uint64_t* capacity_bytes) {
+    if (g_e4) {
+        uint64_t b, f;
+        uint32_t i, fi;
+        ext4_statfs(&b, &f, &i, &fi);
+        uint64_t swap = (uint64_t)g_swap_sect * FSDISK_SECTOR;          /* (the swap file: not room for files) */
+        *capacity_bytes = b * 4096u - swap;
+        *used_bytes = (b - f) * 4096u > swap ? (b - f) * 4096u - swap : 0;
+        return;
+    }
     if (g_v5) {
         uint64_t used = (uint64_t)g_body_sect * FSDISK_SECTOR;
         for (int i = 0; i < g_nrecs; i++) if (g_rec[i].valid) used += (uint64_t)g_rec[i].sectors * FSDISK_SECTOR;
@@ -1688,6 +2143,7 @@ int fsdisk_install_layout(void) {
     int have[2];
     v5_mark_t m;
     if (!fsdisk_find_installed(&d)) return 0;
+    if (e4_detect(&d)) return 6;
     if (v5_detect(&d, &m)) return 5;
     if (!detect(&d, &l, sb, have)) return 0;
     return (int)l.version;
@@ -1792,7 +2248,7 @@ int fsdisk_compare_boot(void) {
     if (!fsdisk_find_install(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
     int lay = fsdisk_install_layout();
-    if (lay != (int)LAYOUT_V4 && lay != 5) return 0;            /* an old layout: always worth updating */
+    if (lay != (int)LAYOUT_V4 && lay != 5 && lay != 6) return 0;            /* an old layout: always worth updating */
     htab_load(&dst);
     memset(&g_new, 0, sizeof(g_new));
     int rc, same;
@@ -1827,7 +2283,7 @@ static int migrate_to_v4(const ata_disk_t* d) {
     fsdisk_super_t sb[2];
     int have[2];
     v5_mark_t m;
-    if (v5_detect(d, &m)) return FSDISK_OK;                     /* layout 5: its files stay where they are */
+    if (e4_detect(d) || v5_detect(d, &m)) return FSDISK_OK;     /* layouts 5 and 6: the files stay where they are */
     if (!detect(d, &old, sb, have) || old.version == LAYOUT_V4) return FSDISK_OK;
     if (!layout_v4(d, &nl)) return FSDISK_ERR_TOO_SMALL;
     uint8_t* buf = 0;
@@ -1955,6 +2411,7 @@ int fsdisk_check(int full, void (*out)(const char* line)) {
     char line[160];
     int problems = 0;
     if (!g_have_target) { out("disk: none installed - the files live in RAM only"); return 0; }
+    if (g_e4) return ext4_check(out);
     if (!g_v5) {
         ksnprintf(line, sizeof(line), "disk: layout %u (older) - its copies were checked when loaded", g_layout.version);
         out(line);
@@ -2047,6 +2504,41 @@ int fsdisk_check(int full, void (*out)(const char* line)) {
  * after a restart) - an older Banana OS sees free space there. */
 
 int fsdisk_swap_area(uint32_t want, uint32_t min, uint32_t* lba, uint32_t* sectors) {
+    if (g_e4 && g_have_target && !g_swap_sect) {
+        /* ext4: /swapfile, as Linux has one - blocks given out (not written,
+         * they read as zeros) in one run; kept from boot to boot, never shown
+         * in the tree (e4_walk), so nothing deletes it while it is in use */
+        uint64_t b, f;
+        uint32_t i, fi;
+        ext4_statfs(&b, &f, &i, &fi);
+        uint32_t room = (uint32_t)(f * 8u / 2u);                 /* half the free space at most */
+        if (want > room) want = room;
+        want &= ~(V5_BLOCK_SECT - 1u);
+        uint32_t s0 = 0, sn = 0;
+        if (g_swap_ino && (ext4_first_run(g_swap_ino, &s0, &sn) != 0 || sn < min)) {
+            ext4_unlink(EXT4_ROOT_INO, "swapfile");             /* (too small, or in pieces: made again) */
+            g_swap_ino = 0;
+            sn = 0;
+        }
+        if (!g_swap_ino) {
+            if (want < min) return -1;
+            g_swap_ino = ext4_create(EXT4_ROOT_INO, "swapfile", 0600, 0, 0);
+            if (!g_swap_ino || ext4_fallocate(g_swap_ino, (uint64_t)want * FSDISK_SECTOR) != 0 ||
+                ext4_first_run(g_swap_ino, &s0, &sn) != 0 || sn < min) {
+                if (g_swap_ino) ext4_unlink(EXT4_ROOT_INO, "swapfile");
+                g_swap_ino = 0;
+                return -1;
+            }
+            ext4_flush();
+        }
+        if (sn > want && want >= min) sn = want;
+        g_swap_lba = g_e4_base + s0;
+        g_swap_sect = sn;
+        *lba = g_swap_lba;
+        *sectors = sn;
+        klog("fsdisk: swap file of %u MB at sector %u\n", sn / 2048u, g_swap_lba);
+        return 0;
+    }
     if (!g_v5 || !g_have_target || g_swap_sect) return -1;
     want &= ~(V5_BLOCK_SECT - 1u);
     min &= ~(V5_BLOCK_SECT - 1u);
@@ -2082,4 +2574,8 @@ int fsdisk_swap_io(int write, uint32_t lba, uint32_t n, void* buf) {
     int rc = write ? disk_write(&g_target, lba, n, buf) : disk_read(&g_target, lba, n, buf);
     dunlock();
     return rc;
+}
+
+const char* fsdisk_fs_type(void) {
+    return g_e4 ? "ext4" : g_have_target ? "bananafs" : "ramfs";
 }

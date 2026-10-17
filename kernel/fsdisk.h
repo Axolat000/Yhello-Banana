@@ -110,5 +110,7 @@ void fsdisk_timing(fsdisk_timing_t* out);
  * and its sectors read (0) or written (1) */
 int  fsdisk_swap_area(uint32_t want, uint32_t min, uint32_t* lba, uint32_t* sectors);
 int  fsdisk_swap_io(int write, uint32_t lba, uint32_t n, void* buf);
+/* the installed disk's filesystem: "ext4", or "bananafs" (layouts 3-5); "ramfs": none */
+const char* fsdisk_fs_type(void);
 
 #endif

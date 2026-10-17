@@ -683,6 +683,7 @@ static void op_unmount(void* ctx) {
 
 static const fs_mount_ops_t g_ops = {
     op_read, op_write, op_append, op_create, op_remove, op_rename, op_unmount,
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL,                    /* (FAT: no Unix calls) */
 };
 
 /* ── mounting ──────────────────────────────────────────────────────── */

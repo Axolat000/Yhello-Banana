@@ -73,9 +73,23 @@ static int k_strstr(const char* hay, const char* needle) {
 
 /* ── mounts ─────────────────────────────────────────────────────── */
 
+/* the installed disk: what "no mount" (0) is written through to, if set */
+static mount_t g_sys;
+
 static mount_t* mount_of(int m) {
+    if (m == 0) return g_sys.used ? &g_sys : NULL;
     return (m > 0 && m <= FS_MAX_MOUNTS && mounts[m].used) ? &mounts[m] : NULL;
 }
+
+void fs_set_system_backend(const fs_mount_ops_t* ops, void* ctx, uint32_t root_node) {
+    g_sys.used = ops != NULL;
+    g_sys.ops = ops;
+    g_sys.ctx = ctx;
+    g_sys.root = 0;
+    if (ops && g_dslots > 0) D(0).node = root_node;
+}
+
+int fs_has_system_backend(void) { return g_sys.used; }
 
 
 /* ── path helpers ───────────────────────────────────────────────── */
@@ -338,7 +352,7 @@ static void init_file_meta(int i, int parent) {
  * than the last change, or a day old - not a metadata write per read */
 static void read_now(fs_file_t* f) {
     uint32_t now = rtc_now();
-    if (!now || f->mnt) return;
+    if (!now || f->mnt || g_sys.used) return;          /* (sticks and the ext4 disk: not kept) */
     if (f->atime <= f->mtime || now - f->atime > 86400u) {
         f->atime = now;
         touched();
@@ -411,8 +425,9 @@ static int remove_file(int i) {
     touched();
     if (!dir_writable(F(i).parent_dir)) return -1;
     mount_t* m = mount_of(F(i).mnt);
-    if (m && m->ops->remove(m->ctx, F(i).node, 0) != 0) { g_io_err = 1; return -1; }
     int parent = F(i).parent_dir;
+    if (m && (m->ops->remove_at ? m->ops->remove_at(m->ctx, D(parent).node, F(i).name, F(i).node, 0)
+                                : m->ops->remove(m->ctx, F(i).node, 0)) != 0) { g_io_err = 1; return -1; }
     free_file(i);
     dir_changed(parent);
     return 0;
@@ -535,9 +550,17 @@ int fs_append(int idx, const void* data, uint32_t len) {
     used_now(f);
     f->data_gen = g_fs_gen;
     f->mtime = rtc_now();
+    mount_t* m = mount_of(f->mnt);
+    if (m && m->ops->write_at && !f->loaded) {
+        /* written at the end on the disk: nothing of the file read in */
+        settle(f);
+        if (f->size + (uint64_t)len > FS_MAX_FILE_SIZE) return -1;
+        if (m->ops->write_at(m->ctx, f->node, f->size, data, len) != 0) { g_io_err = 1; return -1; }
+        f->size += len;
+        return 0;
+    }
     if (ensure_loaded(f) != 0) return -1;
     if (reserve(f, f->size + len) != 0) return -1;
-    mount_t* m = mount_of(f->mnt);
     if (m && m->ops->append(m->ctx, f->node, f->size, data, len) != 0) {
         g_io_err = 1;
         f->loaded = 0;
@@ -546,6 +569,77 @@ int fs_append(int idx, const void* data, uint32_t len) {
     memcpy(f->content + f->size, data, len);
     f->size += len;
     f->content[f->size] = '\0';
+    return 0;
+}
+
+int fs_write_at(int idx, uint32_t off, const void* data, uint32_t len) {
+    fs_file_t* f = fs_file_info(idx);
+    if (!f || !f->used) return -1;
+    if (off == f->size) return fs_append(idx, data, len);
+    touched();
+    g_perm_err = 0;
+    if (!file_writable(idx)) return -1;
+    if ((uint64_t)off + len > FS_MAX_FILE_SIZE) return -1;
+    settle(f);
+    used_now(f);
+    f->data_gen = g_fs_gen;
+    f->mtime = rtc_now();
+    uint32_t end = off + len > f->size ? off + len : f->size;
+    mount_t* m = mount_of(f->mnt);
+    if (m && m->ops->write_at) {
+        if (m->ops->write_at(m->ctx, f->node, off, data, len) != 0) { g_io_err = 1; f->loaded = 0; return -1; }
+        if (f->loaded) {                               /* the copy in RAM follows */
+            if (reserve(f, end) != 0) { kfree(f->content); f->content = NULL; f->cap = 0; f->loaded = 0; }
+            else {
+                if (off > f->size) memset(f->content + f->size, 0, off - f->size);
+                memcpy(f->content + off, data, len);
+                f->content[end] = '\0';
+            }
+        }
+        f->size = end;
+        return 0;
+    }
+    /* in RAM (the live CD), or a volume without it (FAT): the whole file */
+    if (ensure_loaded(f) != 0 || reserve(f, end) != 0) return -1;
+    uint32_t old = f->size;
+    if (off > old) memset(f->content + old, 0, off - old);
+    memcpy(f->content + off, data, len);
+    f->content[end] = '\0';
+    f->size = end;
+    if (m && m->ops->write(m->ctx, f->node, f->content, end) != 0) { g_io_err = 1; f->loaded = 0; return -1; }
+    return 0;
+}
+
+int fs_truncate(int idx, uint32_t size) {
+    fs_file_t* f = fs_file_info(idx);
+    if (!f || !f->used) return -1;
+    if (size == f->size) return 0;
+    touched();
+    g_perm_err = 0;
+    if (!file_writable(idx)) return -1;
+    if (size > FS_MAX_FILE_SIZE) return -1;
+    settle(f);
+    used_now(f);
+    f->data_gen = g_fs_gen;
+    f->mtime = rtc_now();
+    mount_t* m = mount_of(f->mnt);
+    if (m && m->ops->truncate) {
+        if (m->ops->truncate(m->ctx, f->node, size) != 0) { g_io_err = 1; return -1; }
+        if (f->loaded) {
+            if (reserve(f, size) != 0) { kfree(f->content); f->content = NULL; f->cap = 0; f->loaded = 0; }
+            else {
+                if (size > f->size) memset(f->content + f->size, 0, size - f->size);
+                f->content[size] = '\0';
+            }
+        }
+        f->size = size;
+        return 0;
+    }
+    if (ensure_loaded(f) != 0 || reserve(f, size) != 0) return -1;
+    if (size > f->size) memset(f->content + f->size, 0, size - f->size);
+    f->content[size] = '\0';
+    f->size = size;
+    if (m && m->ops->write(m->ctx, f->node, f->content, size) != 0) { g_io_err = 1; f->loaded = 0; return -1; }
     return 0;
 }
 
@@ -683,7 +777,8 @@ static int delete_dir_recursive(int idx) {
     if (rc) return rc;
     if (!dir_writable(D(idx).parent_dir)) return -1;
     mount_t* m = mount_of(D(idx).mnt);
-    if (m && m->ops->remove(m->ctx, D(idx).node, 1) != 0) { g_io_err = 1; return -1; }
+    if (m && (m->ops->remove_at ? m->ops->remove_at(m->ctx, D(D(idx).parent_dir).node, D(idx).name, D(idx).node, 1)
+                                : m->ops->remove(m->ctx, D(idx).node, 1)) != 0) { g_io_err = 1; return -1; }
     free_dir(idx);
     return 0;
 }
@@ -913,9 +1008,17 @@ int fs_create(const char* path) {
     return create_file_in(parent, leaf);
 }
 
+/* a mode, owner or date change on the ext4 disk too (entries on no mount) */
+static void sys_setattr(int is_dir, int idx, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime) {
+    if (!g_sys.used || !g_sys.ops->setattr) return;
+    if (is_dir ? D(idx).mnt : F(idx).mnt) return;
+    uint32_t node = is_dir ? D(idx).node : F(idx).node;
+    if (node && g_sys.ops->setattr(g_sys.ctx, node, is_dir, perms, uid, gid, mtime) != 0) g_io_err = 1;
+}
+
 int fs_touch(const char* path) {
     int i = fs_create(path);
-    if (i >= 0) { touched(); F(i).mtime = rtc_now(); }
+    if (i >= 0) { touched(); F(i).mtime = rtc_now(); sys_setattr(0, i, ~0u, ~0u, ~0u, F(i).mtime); }
     return i;
 }
 
@@ -1102,7 +1205,8 @@ int fs_move(const char* src, const char* dst) {
         }
         if (existing >= 0 && remove_file(existing) != 0) return -1;
         mount_t* m = mount_of(F(sfile).mnt);
-        if (m && m->ops->rename(m->ctx, F(sfile).node, 0, D(target_dir).node, target_name) != 0) {
+        if (m && (m->ops->rename_at ? m->ops->rename_at(m->ctx, D(sparent).node, F(sfile).name, F(sfile).node, 0, D(target_dir).node, target_name)
+                                    : m->ops->rename(m->ctx, F(sfile).node, 0, D(target_dir).node, target_name)) != 0) {
             g_io_err = 1;
             return -1;
         }
@@ -1127,7 +1231,8 @@ int fs_move(const char* src, const char* dst) {
     if (existing >= 0 && existing != sdir) return -1; /* don't clobber a dir */
     if (find_file_in(target_dir, target_name) >= 0) return -1;
     mount_t* m = mount_of(D(sdir).mnt);
-    if (m && m->ops->rename(m->ctx, D(sdir).node, 1, D(target_dir).node, target_name) != 0) {
+    if (m && (m->ops->rename_at ? m->ops->rename_at(m->ctx, D(sparent).node, D(sdir).name, D(sdir).node, 1, D(target_dir).node, target_name)
+                                : m->ops->rename(m->ctx, D(sdir).node, 1, D(target_dir).node, target_name)) != 0) {
         g_io_err = 1;
         return -1;
     }
@@ -1710,6 +1815,14 @@ int fs_read(int idx, uint32_t off, void* buf, uint32_t len) {
     if (len > f->size - off) len = f->size - off;
     used_now(f);
     read_now(f);
+    mount_t* m = f->loaded ? NULL : mount_of(f->mnt);
+    if (m && m->ops->read_at) {
+        /* straight from the disk, through its cache: nothing else of it read in */
+        f->loading = 1;
+        int rc = m->ops->read_at(m->ctx, f->node, off, buf, len);
+        f->loading = 0;
+        return rc == (int)len ? (int)len : -1;
+    }
     if (!f->loaded && !f->mnt && g_disk_read_range && f->size > STREAM_MIN) {
         f->loading = 1;                     /* (a write or a delete waits for it) */
         int rc = g_disk_read_range(idx, off, (uint8_t*)buf, len);
@@ -1735,7 +1848,7 @@ void fs_unpin(int idx) {
 static int droppable(int i) {
     fs_file_t* f = &F(i);
     if (!f->used || !f->loaded || f->loading || f->pins || !f->content || f->cap < 4096) return 0;
-    if (f->mnt) return mount_of(f->mnt) != NULL;          /* sticks are written through */
+    if (f->mnt || g_sys.used) return mount_of(f->mnt) != NULL;   /* written through: sticks, the ext4 disk */
     return g_disk_clean && g_disk_clean(i, f->data_gen);  /* the installed disk: once saved */
 }
 
@@ -1904,6 +2017,7 @@ int fs_chmod(const char* path, uint32_t perms) {
     touched();
     if (k) D(idx).mode = FS_S_IFDIR | (perms & 07777u);
     else F(idx).mode = (fmode(idx) & FS_S_IFMT) | (perms & 07777u);
+    sys_setattr(k, idx, perms & 07777u, ~0u, ~0u, ~0u);
     return 0;
 }
 
@@ -1920,6 +2034,7 @@ int fs_chown(const char* path, int uid, int gid) {
         if (uid >= 0) F(idx).uid = (uint32_t)uid;
         if (gid >= 0) F(idx).gid = (uint32_t)gid;
     }
+    sys_setattr(k, idx, ~0u, uid >= 0 ? (uint32_t)uid : ~0u, gid >= 0 ? (uint32_t)gid : ~0u, ~0u);
     return 0;
 }
 
@@ -1933,6 +2048,22 @@ int fs_symlink(const char* target, const char* linkpath) {
     if (parent < 0 || !leaf[0]) return -1;
     if (find_file_in(parent, leaf) >= 0 || find_dir_in(parent, leaf) >= 0) return -1;
     if (D(parent).mnt) { g_io_err = 1; return -1; }    /* FAT / exFAT have no links */
+    if (!dir_writable(parent)) return -1;
+    if (g_sys.used && g_sys.ops->symlink) {
+        /* the ext4 disk: a link of its own there (a fast link in the inode) */
+        uint32_t node = 0;
+        if (g_sys.ops->symlink(g_sys.ctx, D(parent).node, leaf, target, &node) != 0) { g_io_err = 1; return -1; }
+        touched();
+        int i = fs_mount_add_file(0, parent, leaf, node, k_strlen(target));
+        if (i < 0) return -1;
+        F(i).mode = FS_MODE_LINK;
+        F(i).uid = D(parent).uid;
+        F(i).gid = D(parent).gid;
+        F(i).mtime = F(i).ctime = F(i).atime = rtc_now();
+        F(i).data_gen = g_fs_gen;
+        dir_changed(parent);
+        return i;
+    }
     int i = create_file_in(parent, leaf);
     if (i < 0) return -1;
     if (fs_write(i, target, k_strlen(target)) != 0) { remove_file(i); return -1; }
@@ -2044,4 +2175,9 @@ int fs_check(int fix, void (*out)(const char* line)) {
         touched();
     }
     return problems;
+}
+
+void fs_set_node(int is_dir, int idx, uint32_t node) {
+    if (is_dir) { if (idx >= 0 && idx < g_dslots) D(idx).node = node; }
+    else if (idx >= 0 && idx < g_fslots) F(idx).node = node;
 }

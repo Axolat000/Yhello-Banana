@@ -142,7 +142,7 @@ static int df_rows(df_row_t* r, int max) {
     meminfo_get(&m);
     if (fsdisk_is_installed()) {
         fsdisk_space(&r[n].used, &r[n].size);
-        kstrlcpy(r[n].fs, "bananafs", sizeof(r[n].fs));
+        kstrlcpy(r[n].fs, fsdisk_fs_type(), sizeof(r[n].fs));
     } else {
         /* the live CD (or not installed): the files live in RAM */
         r[n].size = (uint64_t)m.total_kb << 10;
@@ -177,7 +177,7 @@ static void cmd_df(int argc, char** argv) {
     if (has_opt(argc, argv, "-i")) {
         uint32_t max = FS_MAX_FILES + FS_MAX_DIRS, used = fs_used_files() + fs_used_dirs();
         terminal_write_color("Filesystem     Inodes   IUsed   IFree IUse% Mounted on\n", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
-        ksnprintf(line, sizeof(line), "%-12s %8u %7u %7u %4u%% /", fsdisk_is_installed() ? "bananafs" : "ramfs",
+        ksnprintf(line, sizeof(line), "%-12s %8u %7u %7u %4u%% /", fsdisk_fs_type(),
                   max, used, max - used, (used * 100u + max - 1u) / max);
         terminal_writeln(line);
         ksnprintf(line, sizeof(line), "(up to %u files and %u folders; %u files and %u folders now)",

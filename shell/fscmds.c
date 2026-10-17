@@ -217,7 +217,9 @@ static void cmd_fsck(int argc, char** argv) {
             else { terminal_writeln("usage: fsck [-f] [-y|-n]   (-f: read every file back, -y: repair the tree)"); return; }
         }
     }
-    terminal_writeln("fsck: Banana OS filesystem (layout 5, metadata version 7)");
+    char hd[96];
+    ksnprintf(hd, sizeof(hd), "fsck: the installed disk's filesystem: %s", fsdisk_fs_type());
+    terminal_writeln(hd);
     terminal_writeln("Pass 1: the tree in memory (folders, files, names, links)");
     int p1 = fs_check(fix, say);
     char b[96];

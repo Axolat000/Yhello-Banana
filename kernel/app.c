@@ -610,24 +610,11 @@ static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len
     afd_t* f = get_fd(p, fd);
     if (f && f->sock) return usock_send(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, 0);
     if (!f || !(f->flags & (BANANA_O_WRITE | BANANA_O_APPEND))) return -1;
-    fs_file_t* ff = fs_get_file(f->fidx);
-    if (!ff) return -1;
+    fs_file_t* ff = fs_file_info(f->fidx);             /* (its data is not read in for a write) */
+    if (!ff || !ff->used) return -1;
     if (f->flags & BANANA_O_APPEND) f->pos = ff->size;
-    if (f->pos == ff->size) {
-        if (fs_append(f->fidx, buf, (uint32_t)len) != 0) return -1;
-    } else {
-        /* writing inside (or past) the data: build the new contents */
-        uint32_t end = f->pos + (uint32_t)len;
-        uint32_t size = end > ff->size ? end : ff->size;
-        char* nb = (char*)kmalloc(size + 1);
-        if (!nb) return -1;
-        memset(nb, 0, size);
-        memcpy(nb, ff->content, ff->size);
-        memcpy(nb + f->pos, buf, len);
-        int rc = fs_write(f->fidx, nb, size);
-        kfree(nb);
-        if (rc != 0) return -1;
-    }
+    if (len > 0xFFFFFFFFul - f->pos) return -1;
+    if (fs_write_at(f->fidx, f->pos, buf, (uint32_t)len) != 0) return -1;
     f->pos += (uint32_t)len;
     breathe(p, 0);
     return (long)len;

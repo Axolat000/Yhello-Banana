@@ -234,7 +234,7 @@ static void cmd_fsinfo(void) {
     if (inst) fsdisk_space(&used, &total);
     else used = fs_ram_used_bytes();
     put("{\"return\":[{\"name\":\"banana0\",\"mountpoint\":\"/\",\"type\":");
-    put_str(inst ? "bananafs" : "tmpfs");
+    put_str(inst ? fsdisk_fs_type() : "tmpfs");
     putf(",\"used-bytes\":%llu,\"total-bytes\":%llu,\"disk\":[]}]}", (unsigned long long)used,
          (unsigned long long)(total ? total : used));
     send_out();
