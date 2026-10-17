@@ -177,9 +177,13 @@ static const page_t PAGES[] = {
       "-f|also read every file back against its CRC-32C\n-y|repair the tree (lost entries go to /lost+found)\n-n|check only (the default)",
       "fsck\nfsck -f", "sync, df" },
     { "e2fsck", "disks", "e2fsck [-f] [-y]", "the same as fsck", NULL, NULL, NULL, "fsck" },
-    { "sync", "disks", "sync", "save to the installed disk now",
-      "Writes every change to the installed disk at once. Changes are saved by themselves about 2 seconds "
-      "after the last one; sync is for right now.", NULL, NULL, "fsck, install" },
+    { "sync", "disks", "sync", "write to the installed disk now",
+      "Writes every changed block to the installed disk (ext4) at once, as a journal transaction. Changes "
+      "go to the disk by themselves within half a second; sync is for right now.", NULL, NULL, "fsck, install, drop_caches" },
+    { "drop_caches", "disks", "drop_caches", "give back the RAM holding the disk's data",
+      "As Linux's /proc/sys/vm/drop_caches: the file data and disk blocks kept in RAM, and the entries of "
+      "folders nobody is in (no file open there, not the current folder) go - all of it is on the disk "
+      "and read again when used. It happens by itself too, when RAM runs low.", NULL, NULL, "free, sync" },
     { "fstest", "disks", "fstest [-k] <mount point>", "test a FAT32 or exFAT drive",
       "Checks a mounted FAT32 or exFAT drive end to end, in a folder of its own (fstest/): a folder, a small "
       "file and an append, 300 KiB plus 100 KiB appended, a rename (to a Unicode name on exFAT), a sub-folder "

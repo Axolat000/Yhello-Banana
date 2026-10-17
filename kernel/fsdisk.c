@@ -1581,10 +1581,11 @@ static void e4_meta(int is_dir, int idx, const ext4_stat_t* st) {
     fs_set_times(is_dir, idx, to_local(st->mtime), to_local(st->ctime));
 }
 
-/* folder ino (fs.c folder idx): its entries into the tree, its folders after */
-static void e4_walk(uint32_t ino, int idx, int depth, int* home) {
+/* folder idx (inode ino): its entries into the tree, one level - its own
+ * folders marked unread, read when something looks in them (fs.c) */
+static int e4_load_dir(int idx, uint32_t ino) {
     e4list_t l = { 0, 0, 0 };
-    if (depth > 64 || ext4_readdir(ino, e4_collect, &l) != 0) { kfree(l.e); return; }
+    if (ext4_readdir(ino, e4_collect, &l) != 0) { kfree(l.e); return -1; }
     for (int i = 0; i < l.n; i++) {
         e4ent_t* e = &l.e[i];
         ext4_stat_t st;
@@ -1595,11 +1596,7 @@ static void e4_walk(uint32_t ino, int idx, int depth, int* home) {
             int d = fs_mount_add_dir(0, idx, e->name, e->ino);
             if (d < 0) continue;
             e4_meta(1, d, &st);
-            if (depth == 1 && !strcmp(e->name, "banana")) {
-                const fs_dir_t* p = fs_get_dir(idx);
-                if (p && !strcmp(p->name, "home")) *home = d;
-            }
-            e4_walk(e->ino, d, depth + 1, home);
+            fs_set_unread(d);
         } else if ((t == EXT4_S_IFREG || t == EXT4_S_IFLNK) && st.size <= FS_MAX_FILE_SIZE) {
             int f = fs_mount_add_file(0, idx, e->name, e->ino, (uint32_t)st.size);
             if (f < 0) continue;
@@ -1607,6 +1604,7 @@ static void e4_walk(uint32_t ino, int idx, int depth, int* home) {
         }
     }
     kfree(l.e);
+    return 0;
 }
 
 /* the time zone (and whether the clock keeps UTC) from the settings file,
@@ -1632,10 +1630,12 @@ static int e4_attach(void) {
     ext4_stat_t st;
     if (ext4_stat(EXT4_ROOT_INO, &st) == 0) e4_meta(1, 0, &st);
     e4_peek_zone();
-    int home = 0;
+    /* the root folder only: the others are read when used */
     g_swap_ino = 0;
-    e4_walk(EXT4_ROOT_INO, 0, 0, &home);
-    fs_restore_end(home);
+    fs_set_dir_loader(e4_load_dir);
+    e4_load_dir(0, EXT4_ROOT_INO);
+    int home = fs_find_dir("/home/banana");
+    fs_restore_end(home > 0 ? home : 0);
     g_e4 = 1;
     g_v5 = 0;
     return 1;
@@ -1656,6 +1656,7 @@ static int e4_try_load(const ata_disk_t* d) {
 
 static int e4_copy_dir(int idx, uint32_t ino, uint8_t* buf) {
     int rc = 0;
+    fs_populate(idx);                                    /* (a folder not read yet: read now) */
     const fs_dir_t* dd = fs_get_dir(idx);
     if (!dd) return -1;
     for (int f = dd->kid_file; f >= 0 && rc == 0; ) {
@@ -1718,6 +1719,7 @@ static int e4_format(const ata_disk_t* d) {
     if (rc == FSDISK_OK && ext4_activate() != 0) rc = FSDISK_ERR_IO;
     if (rc != FSDISK_OK) return rc;
     fs_set_system_backend(&g_e4ops, 0, EXT4_ROOT_INO);
+    fs_set_dir_loader(e4_load_dir);                    /* (folders given back later are read again from it) */
     g_e4 = 1;
     g_v5 = 0;
     return FSDISK_OK;
@@ -2050,7 +2052,16 @@ static void autosave_task(void) {
             /* ext4: the changed blocks to the disk within a second, the cache
              * smaller when RAM runs low (what the files hold is on the disk) */
             uint32_t total = kheap_total_bytes();
-            if (total - kheap_used_bytes() < total / 8) ext4_cache_trim(ext4_cache_bytes() / 2);
+            int low = total - kheap_used_bytes() < total / 8;
+            if (low) ext4_cache_trim(ext4_cache_bytes() / 2);
+            /* many entries in the tables, or RAM low: folders nobody looked in for
+             * 10 minutes give theirs back (read again from the disk when used) */
+            static uint32_t last_unload;
+            if ((low || fs_entries() > 50000u) && timer_ms() - last_unload > 10000u) {
+                last_unload = timer_ms();
+                uint32_t n = fs_unload_idle(low ? 60000u : 600000u);
+                if (n) klog("fsdisk: %u entries of folders not used lately given back\n", n);
+            }
             if (!ext4_dirty_blocks()) { warned = 0; continue; }
             if (ext4_flush() != 0 && !warned) { klog("fsdisk: could not write to the disk\n"); warned = 1; }
             continue;
@@ -2507,7 +2518,7 @@ int fsdisk_swap_area(uint32_t want, uint32_t min, uint32_t* lba, uint32_t* secto
     if (g_e4 && g_have_target && !g_swap_sect) {
         /* ext4: /swapfile, as Linux has one - blocks given out (not written,
          * they read as zeros) in one run; kept from boot to boot, never shown
-         * in the tree (e4_walk), so nothing deletes it while it is in use */
+         * in the tree (e4_load_dir), so nothing deletes it while it is in use */
         uint64_t b, f;
         uint32_t i, fi;
         ext4_statfs(&b, &f, &i, &fi);

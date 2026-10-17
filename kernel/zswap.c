@@ -89,6 +89,7 @@ static void slot_put(uint32_t s, uint32_t n) {
 static int add_block(void) {
     if (g_nblk == NBLK) return -1;
     int pooled = 0;
+    (void)pooled;                                  /* (32-bit: no pool) */
     zent_t* blk = (zent_t*)kzalloc(EBLK * sizeof(zent_t));
 #ifdef __x86_64__
     if (!blk && (blk = (zent_t*)upage_alloc_reserve()) != NULL) {

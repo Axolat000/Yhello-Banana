@@ -580,6 +580,7 @@ static int a_open(const char* path, int flags) {
         p->fds[i].sock = NULL;
         p->fds[i].flags = flags ? flags : BANANA_O_READ;
         p->fds[i].pos = (flags & BANANA_O_APPEND) ? fs_file_info(idx)->size : 0;
+        fs_pin(idx);                       /* (open: its entry stays, kernel/fs.c gives back no folder holding it) */
         return i + 3;
     }
     return -1;
@@ -638,6 +639,7 @@ static int a_close(int fd) {
         return -1;
     }
     if (f->sock) { usock_close(f->sock); f->sock = NULL; }
+    else if (f->fidx >= 0) fs_unpin(f->fidx);
     f->used = 0;
     return 0;
 }
@@ -2610,6 +2612,7 @@ static void release(app_proc_t* p) {
     stop_threads(p);
     for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
         if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
+        else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);

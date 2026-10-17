@@ -60,6 +60,8 @@ typedef struct {
     int32_t  sib;        /* next folder in the same folder */
     int32_t  kid_dir, last_dir;     /* its subfolders, in creation order */
     int32_t  kid_file, last_file;   /* its files */
+    uint8_t  unread;     /* its entries not read from the disk yet (kernel/fsdisk.c reads them when used) */
+    uint32_t last_use;   /* timer_ms() it was last looked in */
     uint32_t mtime;      /* last time something in it was added, removed or renamed; ctime: made */
     uint32_t ctime;
     uint32_t atime;
@@ -245,6 +247,20 @@ int  fs_truncate(int idx, uint32_t size);
 /* loading the tree from the ext4 disk, or copying it there: the inode of
  * folder (is_dir) or file idx */
 void fs_set_node(int is_dir, int idx, uint32_t node);
+
+/* Folders read when used (the ext4 disk): load(dir, node) adds folder dir's
+ * entries (fs_mount_add_dir / _file, its folders marked unread with
+ * fs_set_unread) - called the first time a lookup, a listing or a walk looks
+ * in it. fs_populate does it now (copying a whole tree). */
+void fs_set_dir_loader(int (*load)(int dir, uint32_t node));
+void fs_set_unread(int dir);
+void fs_populate(int dir);
+/* folders nobody looked in for idle_ms, with nothing in them in use (open,
+ * pinned, read in), give their entries back - read again when used: the
+ * entries freed */
+uint32_t fs_unload_idle(uint32_t idle_ms);
+/* entries in the tables now (folders and files) */
+uint32_t fs_entries(void);
 
 /* mounts at path (made with mkdir -p; it must be empty): the mount id
  * (> 0), or -1. The volume's root folder has the handle root_node. */

@@ -270,7 +270,29 @@ static void relink_all(void) {
     for (int i = 0; i < g_fslots; i++) if (F(i).used) link_file(i);
 }
 
+/* ── folders read when used (the ext4 disk) ─────────────────────── */
+
+static int (*g_dir_loader)(int dir, uint32_t node);
+
+void fs_set_dir_loader(int (*load)(int dir, uint32_t node)) { g_dir_loader = load; }
+
+void fs_set_unread(int dir) {
+    if (dir >= 0 && dir < g_dslots && D(dir).used && g_dir_loader) D(dir).unread = 1;
+}
+
+/* folder d's entries in the tables (read from the disk the first time) */
+static void populate(int d) {
+    if (d < 0 || d >= g_dslots) return;
+    D(d).last_use = timer_ms();
+    if (!D(d).unread || !g_dir_loader) return;
+    D(d).unread = 0;                                 /* (first: the loader's own lookups must not come back here) */
+    if (g_dir_loader(d, D(d).node) != 0) g_io_err = 1;
+}
+
+void fs_populate(int dir) { populate(dir); }
+
 static int find_dir_in(int parent, const char* name_in) {
+    populate(parent);
     char name[FS_NAME_LEN];
     k_strcpy(name, name_in, FS_NAME_LEN);
     for (int i = g_dhash[name_hash(parent, name) & (DHASH - 1)]; i >= 0; i = D(i).hnext)
@@ -280,6 +302,7 @@ static int find_dir_in(int parent, const char* name_in) {
 }
 
 static int find_file_in(int parent, const char* name_in) {
+    populate(parent);
     char name[FS_NAME_LEN];
     k_strcpy(name, name_in, FS_NAME_LEN);
     for (int i = g_fhash[name_hash(parent, name) & (FHASH - 1)]; i >= 0; i = F(i).hnext)
@@ -765,6 +788,7 @@ static int has_mount_inside(int idx) {
 /* deletes a folder and everything in it (on its volume too); 0 = ok */
 static int delete_dir_recursive(int idx) {
     touched();
+    populate(idx);                                   /* (all of it, from the disk too) */
     int rc = 0;
     for (int i = D(idx).kid_file, nx; i >= 0; i = nx) {
         nx = F(i).sib;
@@ -948,6 +972,7 @@ void fs_ls(const char* path) {
         return;
     }
     int found = 0;
+    populate(target);
     for (int i = D(target).kid_dir; i >= 0; i = D(i).sib) {
         terminal_write_color(D(i).name, VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
         terminal_write("/  ");
@@ -972,6 +997,7 @@ void fs_ls_long(const char* path) {
         return;
     }
     int any = 0;
+    populate(target);
     for (int i = D(target).kid_dir; i >= 0; i = D(i).sib) {
         print_perm_size(dmode(i), D(i).uid, D(i).gid, 4096, D(i).mtime);
         terminal_write_color(D(i).name, VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK);
@@ -1302,6 +1328,7 @@ static void join_path(const char* prefix, const char* name, char* out, int outle
 /* path holds the folder's own path (len bytes); each level adds its name
  * and takes it off again - one buffer for the whole walk, not one a level */
 static void find_recursive(int dir_idx, char* path, int len, const char* filter) {
+    populate(dir_idx);
     for (int i = D(dir_idx).kid_dir; i >= 0; i = D(i).sib) {
         join_path(path, D(i).name, path, FS_PATH_LEN);
         int l2 = (int)k_strlen(path);
@@ -1405,6 +1432,7 @@ int fs_mount(const char* path, const fs_mount_ops_t* ops, void* ctx, uint32_t ro
     if (!id) return -1;
     int dir = fs_mkdir_p(path);
     if (dir <= 0 || D(dir).mnt) return -1;
+    populate(dir);
     if (D(dir).kid_dir >= 0 || D(dir).kid_file >= 0) return -1;     /* not empty */
     mounts[id].used = 1;
     mounts[id].root = dir;
@@ -1774,6 +1802,7 @@ int fs_list_files(const char* path, int* out_idx, int max) {
     int dir = resolve_dir(p);
     if (dir < 0) return -1;
     int n = 0;
+    populate(dir);
     for (int i = D(dir).kid_file; i >= 0; i = F(i).sib) {
         if (n < max) out_idx[n] = i;
         n++;
@@ -1787,6 +1816,7 @@ int fs_list_dirs(const char* path, int* out_idx, int max) {
     int dir = resolve_dir(p);
     if (dir < 0) return -1;
     int n = 0;
+    populate(dir);
     for (int i = D(dir).kid_dir; i >= 0; i = D(i).sib) {
         if (n < max) out_idx[n] = i;
         n++;
@@ -2180,4 +2210,58 @@ int fs_check(int fix, void (*out)(const char* line)) {
 void fs_set_node(int is_dir, int idx, uint32_t node) {
     if (is_dir) { if (idx >= 0 && idx < g_dslots) D(idx).node = node; }
     else if (idx >= 0 && idx < g_fslots) F(idx).node = node;
+}
+
+/* ── giving back what nobody looks at (folders read when used) ───── */
+
+uint32_t fs_entries(void) { return fs_used_files() + fs_used_dirs(); }
+
+static int is_mount_point(int d) {
+    for (int m = 1; m <= FS_MAX_MOUNTS; m++) if (mounts[m].used && mounts[m].root == d) return 1;
+    return 0;
+}
+
+/* nothing under folder d in use: no file open, pinned or being read, the
+ * current or home folder not in it, no mount, all of it idle */
+static int cold(int d, uint32_t now, uint32_t idle, int depth) {
+    if (depth > 64 || d == cwd || d == home_dir || D(d).mnt || is_mount_point(d)) return 0;
+    if (now - D(d).last_use < idle) return 0;
+    for (int i = D(d).kid_file; i >= 0; i = F(i).sib) {
+        fs_file_t* f = &F(i);
+        if (f->pins || f->loading || now - f->last_use < idle) return 0;
+    }
+    for (int i = D(d).kid_dir; i >= 0; i = D(i).sib) if (!cold(i, now, idle, depth + 1)) return 0;
+    return 1;
+}
+
+/* folder d's entries out of the tables (memory only: they stay on the disk) */
+static uint32_t forget_children(int d) {
+    uint32_t n = 0;
+    for (int i = D(d).kid_file, nx; i >= 0; i = nx) { nx = F(i).sib; free_file(i); n++; }
+    for (int i = D(d).kid_dir, nx; i >= 0; i = nx) {
+        nx = D(i).sib;
+        n += forget_children(i);
+        unlink_dir(i);
+        D(i).used = 0;
+        D(i).mnt = 0;
+        D(i).node = 0;
+        D(i).unread = 0;
+        if (i < g_dfree) g_dfree = i;
+        n++;
+    }
+    return n;
+}
+
+uint32_t fs_unload_idle(uint32_t idle_ms) {
+    if (!g_dir_loader || !g_sys.used) return 0;
+    uint32_t now = timer_ms(), n = 0;
+    for (int d = 1; d < g_dslots; d++) {
+        if (!D(d).used || D(d).unread || D(d).mnt) continue;
+        if (D(d).kid_dir < 0 && D(d).kid_file < 0) continue;
+        if (!cold(d, now, idle_ms, 0)) continue;
+        n += forget_children(d);
+        D(d).unread = 1;                            /* read again when used */
+    }
+    if (n) touched();                               /* (views of the tree list again) */
+    return n;
 }

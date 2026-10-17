@@ -23,3 +23,5 @@ echo "== a cut before the commit block: as if it never began"
 PRE=1 "$T/crash" "$T/c.img" 0 && "$E2FSCK" -fn "$T/c.img"
 rm -rf "$T"
 echo "ext4test: all passed"
+# (addfiles.c: N files put into an installed disk image, for tests of big trees -
+#  gcc -I "$T" addfiles.c "$T/ext4.c"; ./a.out disk.img 20000)
