@@ -25,5 +25,7 @@ uint32_t kheap_largest_free(void);
 /* called when an allocation finds no room, to free some (need: bytes in
  * one block) before it tries again - fs.c drops cached file data */
 void kheap_set_reclaim(uint32_t (*reclaim)(uint32_t need));
+/* [lo, hi) becomes heap too (memory the kernel image no longer needs) */
+void kheap_add_region(uintptr_t lo, uintptr_t hi);
 
 #endif

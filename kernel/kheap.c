@@ -288,3 +288,34 @@ uint32_t kheap_largest_free(void) {
     spin_unlock_irq(&g_lock, f);
     return best;
 }
+
+/* Memory handed to the heap later (the kernel's built-in packages, once
+ * they are kept on the disk): a free block between two used markers of no
+ * size - it is never merged with blocks that are not its neighbours - at
+ * the end of the list. */
+void kheap_add_region(uintptr_t lo, uintptr_t hi) {
+    lo = (lo + ALIGN - 1) & ~(uintptr_t)(ALIGN - 1);
+    hi &= ~(uintptr_t)(ALIGN - 1);
+    if (!g_head || hi <= lo || hi - lo < 3u * HDR + MIN_SPLIT || hi - lo > 0xF0000000u) return;
+    block_t* lead = (block_t*)lo;
+    block_t* b = (block_t*)(lo + HDR);
+    block_t* tail = (block_t*)(hi - HDR);
+    lead->size = 0;
+    lead->used = HEAP_MAGIC;
+    b->size = (uint32_t)((uintptr_t)tail - (uintptr_t)b - HDR);
+    b->used = 0;
+    tail->size = 0;
+    tail->used = HEAP_MAGIC;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    block_t* t = g_head;
+    while (t->next) t = t->next;
+    t->next = lead;
+    lead->prev = t;
+    lead->next = b;
+    b->prev = lead;
+    b->next = tail;
+    tail->prev = b;
+    tail->next = NULL;
+    g_total += b->size;
+    spin_unlock_irq(&g_lock, f);
+}

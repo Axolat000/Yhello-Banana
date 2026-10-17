@@ -14,6 +14,7 @@
  *   [ Search programs and files  ]   [Shut down][>]     |
  *   +---------------------------------------------------+
  */
+#include "kheap.h"
 #include "startmenu.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -125,9 +126,8 @@ static void add_all_programs(const char* q) {
 }
 
 /* files whose name has the query, under the home folder (a few) */
-static void add_files(const char* q, int max) {
+static void add_files_in(const char* q, int max, int* idx) {
     static char queue[48][FS_PATH_LEN];
-    static int idx[FS_LIST_MAX];
     int qh = 0, qt = 0, found = 0;
     kstrlcpy(queue[qt++], HOME, FS_PATH_LEN);
     while (qh < qt && found < max) {
@@ -158,6 +158,13 @@ static void add_files(const char* q, int max) {
             ksnprintf(queue[qt++], FS_PATH_LEN, "%s/%s", dir, d->name);
         }
     }
+}
+
+static void add_files(const char* q, int max) {
+    int* idx = (int*)kmalloc(FS_LIST_MAX * sizeof(int));     /* (for the search only) */
+    if (!idx) return;
+    add_files_in(q, max, idx);
+    kfree(idx);
 }
 
 static void build(void) {

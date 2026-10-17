@@ -1739,6 +1739,8 @@ static int droppable(int i) {
     return g_disk_clean && g_disk_clean(i, f->data_gen);  /* the installed disk: once saved */
 }
 
+#define CACHE_IDLE_MS 60000u                 /* saved file data unused this long leaves RAM */
+
 static void drop(int i) {
     fs_file_t* f = &F(i);
     kfree(f->content);
@@ -1782,6 +1784,16 @@ static uint32_t reclaim(uint32_t need) {
 void fs_trim(void) {
     static int hooked;
     if (!hooked) { kheap_set_reclaim(reclaim); hooked = 1; }
+    /* saved file data nobody used for a minute goes back to the heap, however
+     * much is free: RAM holds what is in use, the disk the rest (it is read
+     * in again when wanted). Checked every 5 s. */
+    static uint32_t last_scan;
+    uint32_t t = timer_ms();
+    if (t - last_scan >= 5000u) {
+        last_scan = t;
+        for (int i = 0; i < g_fslots; i++)
+            if (F(i).used && F(i).loaded && t - F(i).last_use >= CACHE_IDLE_MS && droppable(i)) drop(i);
+    }
     /* below 1/8 of the RAM free: files idle for 10 s go until 1/5 is free */
     uint32_t total = kheap_total_bytes(), free = total - kheap_used_bytes();
     if (free >= total / 8) return;

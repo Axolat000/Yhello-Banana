@@ -26,6 +26,16 @@ SECTIONS {
         *(.data .data.*)
     }
 
+    /* the packages built into the kernel (kernel/appbin.asm, exbin.asm): on an
+     * installed system they are kept as files on the disk, and these pages
+     * go to the heap after boot (kernel/builtin_apps.c) */
+    .payload BLOCK(4K) : ALIGN(4K) {
+        __payload_start = .;
+        *(.payload)
+        . = ALIGN(4K);
+        __payload_end = .;
+    }
+
     .bss BLOCK(4K) : ALIGN(4K) {
         *(COMMON)
         *(.bss .bss.*)

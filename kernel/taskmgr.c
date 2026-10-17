@@ -87,7 +87,8 @@ static uint32_t cpu_now(void) {
 static uint32_t mem_pct(void) {
     meminfo_t m;
     meminfo_get(&m);
-    return m.total_kb ? (uint32_t)((uint64_t)m.used_kb * 100 / m.total_kb) : 0;
+    /* (saved file data kept in RAM is a cache, given back when needed: not "in use") */
+    return m.total_kb ? (uint32_t)((uint64_t)(m.used_kb - m.cached_kb) * 100 / m.total_kb) : 0;
 }
 
 static void sample(void) {
@@ -412,9 +413,11 @@ void taskmgr_draw(const fb_info_t* fi) {
         meminfo_t mi;
         meminfo_get(&mi);
         char a[24], b[24];
-        human(mi.used_kb, a, sizeof(a));
+        char c[24];
+        human(mi.used_kb - mi.cached_kb, a, sizeof(a));
         human(mi.total_kb, b, sizeof(b));
-        ksnprintf(line, sizeof(line), "Memory in use:  %s of %s (largest free block %u KiB)", a, b, kheap_largest_free() / 1024);
+        human(mi.cached_kb, c, sizeof(c));
+        ksnprintf(line, sizeof(line), "Memory in use:  %s of %s (+ %s of cached files)", a, b, c);
         gfx_draw_text(lx, ty, line, C_TEXT, C_PANEL);
         uint32_t up = timer_ms() / 1000;
         int ntask = 0;
@@ -427,8 +430,8 @@ void taskmgr_draw(const fb_info_t* fi) {
         gfx_draw_text(lx, ty + 16, line, C_TEXT, C_PANEL);
         ksnprintf(line, sizeof(line), "Tasks:          %d kernel tasks, %d app%s", ntask, app_count(), app_count() == 1 ? "" : "s");
         gfx_draw_text(lx, ty + 32, line, C_TEXT, C_PANEL);
-        ksnprintf(line, sizeof(line), "Files:          %u files, %u folders (%u KiB in RAM)", fs_used_files(), fs_used_dirs(),
-                  fs_ram_used_bytes() / 1024);
+        ksnprintf(line, sizeof(line), "Files:          %u files, %u folders (%u KiB in RAM, %u KiB of it cached)", fs_used_files(), fs_used_dirs(),
+                  fs_ram_used_bytes() / 1024, mi.cached_kb);
         gfx_draw_text(lx, ty + 48, line, C_TEXT, C_PANEL);
         netif_t* nif = net_if();
         char ip[16] = "-";

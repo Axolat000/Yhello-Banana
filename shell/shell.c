@@ -2744,6 +2744,7 @@ void shell_run(void) {
 
     klog("boot: built-in apps\n");
     builtin_apps_install();         /* Media Player, Music (kernel/builtin_apps.c) */
+    builtin_release();              /* installed: the packages on the disk, their RAM to the heap */
     klog("boot: driver modules\n");
     drivers_load_installed();       /* (installed with pkg: sdk/driver) */
 

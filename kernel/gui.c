@@ -811,14 +811,13 @@ void gui_init(void) {
 /* The desktop is as big as the screen: GRUB asks for 800x600, but UEFI
  * firmware often only offers the panel's native mode (1920x1080, ...),
  * so the backbuffer and the wallpaper cache are sized at the first startx
- * (up to 2560x1600; the 800x600 static ones if that allocation fails). */
+ * (up to 2560x1600 - 800x600 if there is not room for that), from the
+ * heap: they are given back by stopx. */
 #define DESK_MAX_W 2560u
 #define DESK_MAX_H 1600u
-static uint32_t  g_desk_static[800u * 600u];
-static uint32_t  g_wall_static[800u * 600u];
-static uint32_t* g_desktop_backbuf = g_desk_static;
-static uint32_t* g_wallpaper_cache = g_wall_static;
-static uint32_t  g_desk_w = 800, g_desk_h = 600;
+static uint32_t* g_desktop_backbuf;        /* from the heap while the desktop runs */
+static uint32_t* g_wallpaper_cache;
+static uint32_t  g_desk_w, g_desk_h;
 static int       g_backbuf_active = 0;
 
 /* Cache of the rendered wallpaper: rendering it (bilinear upscale of a
@@ -826,25 +825,30 @@ static int       g_backbuf_active = 0;
  * wallpaper actually changes, never per frame. */
 static uint32_t g_wallpaper_cache_gen = 0;
 
-static void size_desktop(const fb_info_t* fi) {
+static int size_desktop(const fb_info_t* fi) {
     uint32_t w = fi->width > DESK_MAX_W ? DESK_MAX_W : fi->width;
     uint32_t h = fi->height > DESK_MAX_H ? DESK_MAX_H : fi->height;
-    if (w != g_desk_w || h != g_desk_h) g_wallpaper_cache_gen = (uint32_t)-1;   /* (a new size: redrawn at it) */
-    if (w <= 800 && h <= 600) { g_desk_w = w; g_desk_h = h; return; }
-    if (g_desktop_backbuf != g_desk_static && w == g_desk_w && h == g_desk_h) return;
-    uint32_t* bb = (uint32_t*)kmalloc(w * h * 4);
-    uint32_t* wc = (uint32_t*)kmalloc(w * h * 4);
-    if (!bb || !wc) {
-        kfree(bb); kfree(wc);
-        g_desk_w = fi->width < 800 ? fi->width : 800;
-        g_desk_h = fi->height < 600 ? fi->height : 600;
-        return;
+    if (g_desktop_backbuf && w == g_desk_w && h == g_desk_h) return 0;
+    for (int tries = 0; tries < 2; tries++) {
+        uint32_t* bb = (uint32_t*)kmalloc(w * h * 4);
+        uint32_t* wc = bb ? (uint32_t*)kmalloc(w * h * 4) : NULL;
+        if (bb && wc) {
+            kfree(g_desktop_backbuf);
+            kfree(g_wallpaper_cache);
+            g_desktop_backbuf = bb;
+            g_wallpaper_cache = wc;
+            g_desk_w = w;
+            g_desk_h = h;
+            g_wallpaper_cache_gen = (uint32_t)-1;          /* (a new size: redrawn at it) */
+            return 0;
+        }
+        kfree(bb);
+        /* not enough room: 800x600 (or less) at most */
+        if (w <= 800 && h <= 600) break;
+        if (w > 800) w = 800;
+        if (h > 600) h = 600;
     }
-    g_desktop_backbuf = bb;
-    g_wallpaper_cache = wc;
-    g_desk_w = w;
-    g_desk_h = h;
-    g_wallpaper_cache_gen = (uint32_t)-1;
+    return g_desktop_backbuf ? 0 : -1;
 }
 
 static void refresh_wallpaper_cache(const fb_info_t* fi) {
@@ -2655,7 +2659,11 @@ static void gui_poll_body(void) {
         appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !g_tv_open && !g_sw_open && !g_bar_kb);
 
         if (!g_backbuf_active) {
-            size_desktop(fi);
+            if (size_desktop(fi) < 0) {
+                gui_set_enabled(0);
+                terminal_writeln("startx: not enough free memory for the desktop's screen buffers");
+                return;
+            }
             fb_set_backbuffer(g_desktop_backbuf, g_desk_w, g_desk_h);
             g_backbuf_active = 1;
             g_force_redraw = 1;
@@ -3028,6 +3036,11 @@ void gui_set_enabled(int enabled) {
              * re-run gui_poll()'s one-time backbuffer setup. */
             fb_clear_backbuffer();
             g_backbuf_active = 0;
+            /* the screen buffers go back to the heap too (made again at the next startx) */
+            kfree(g_desktop_backbuf);
+            kfree(g_wallpaper_cache);
+            g_desktop_backbuf = g_wallpaper_cache = NULL;
+            g_desk_w = g_desk_h = 0;
         }
     }
 }

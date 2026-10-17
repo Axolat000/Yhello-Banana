@@ -20,6 +20,12 @@ const char* builtin_package_file(int i);              /* "mediaplayer.bpk", "pai
 /* the package with that file name, in a fresh buffer (kfree): 0, or -1 */
 int         builtin_package(const char* file, char** data, uint32_t* len);
 uint32_t    builtin_packages_stamp(void);                  /* changes with this kernel's packages */
+/* on an installed system: the packages saved as files on the disk
+ * (/usr/share/builtin, read when wanted) and the kernel's copies of them
+ * given to the heap - after builtin_apps_install(), at boot. The live CD
+ * keeps them. What was given back, in bytes (meminfo) */
+void        builtin_release(void);
+uint32_t    builtin_released_bytes(void);
 
 /* ── install profiles (the installer, `install --minimal`) ──────────── */
 #define PROFILE_FULL     0     /* every built-in app and the examples */

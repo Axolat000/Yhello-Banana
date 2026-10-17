@@ -8,6 +8,7 @@
 #include "repo.h"
 #include "crc32c.h"
 #include "timer.h"
+#include "fsdisk.h"
 
 extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[];
 
@@ -27,6 +28,8 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
  * CRC-32C of the package, as an app can change without a new version number
  * (systems from before build 161 have "name=version" lines) */
 #define MARKS "/etc/builtin-apps"
+
+static int g_released;                 /* the kernel's copies of the packages are given back (below) */
 
 /* 1 if a line of MARKS starts with "name=version" followed by one of ends */
 static int marked_as(const char* name, const char* version, const char* key_end, const char* ends) {
@@ -92,6 +95,7 @@ static int skipped(const char* name) {
 }
 
 void builtin_apps_install(void) {
+    if (g_released) return;                       /* (the kernel's copies are gone: checked at boot) */
     uint32_t t0 = timer_ms();
     int unpacked = 0;
     for (unsigned i = 0; i < sizeof(APPS) / sizeof(APPS[0]); i++) {
@@ -147,27 +151,109 @@ const char* builtin_package_file(int i) {
     return examples_file(i - NAPPS);
 }
 
-int builtin_package(const char* file, char** data, uint32_t* len) {
-    for (int i = 0; i < NAPPS; i++) {
-        char name[40];
-        ksnprintf(name, sizeof(name), "%s.bpk", APPS[i].name);
-        if (strcmp(name, file)) continue;
-        int zlen = (int)(APPS[i].end - APPS[i].start), n = 0;
-        char* d = zlen > 0 ? stbi_zlib_decode_malloc((const char*)APPS[i].start, zlen, &n) : NULL;
-        if (!d || n <= 0) { if (d) kfree(d); return -1; }
-        *data = d;
-        *len = (uint32_t)n;
-        return 0;
+/* ── the packages out of RAM ─────────────────────────────────────────
+ * On an installed system the built-in packages are kept as files on the
+ * disk (STORE, read when the App Store or selftest wants one) and the
+ * kernel's copy of them - its .payload pages, 12 MB - goes to the heap
+ * after the boot's check. The live CD keeps them in RAM (no disk). */
+#define STORE "/usr/share/builtin"
+
+extern char __payload_start[], __payload_end[];
+static uint32_t g_released_bytes;
+
+uint32_t builtin_released_bytes(void) { return g_released_bytes; }
+
+/* package k (an app: its compressed .bpk.z; then the examples' .bpk): its
+ * name in STORE, and where the kernel has it */
+static void blob_of(int k, char* name, int cap, const uint8_t** p, uint32_t* n) {
+    if (k < NAPPS) {
+        ksnprintf(name, (size_t)cap, "%s.bpk.z", APPS[k].name);
+        *p = APPS[k].start;
+        *n = (uint32_t)(APPS[k].end - APPS[k].start);
+    } else {
+        kstrlcpy(name, examples_file(k - NAPPS), (size_t)cap);
+        *p = examples_data(k - NAPPS, n);
     }
-    for (int i = 0; i < examples_count(); i++) {
-        if (strcmp(examples_file(i), file)) continue;
+}
+
+/* package k's bytes: a kmalloc'd copy (from the kernel, or the file once released) */
+static char* blob_copy(int k, uint32_t* n) {
+    char name[48];
+    const uint8_t* p;
+    blob_of(k, name, sizeof(name), &p, n);
+    if (!g_released) {
+        char* d = (char*)kmalloc(*n ? *n : 1);
+        if (d) memcpy(d, p, *n);
+        return d;
+    }
+    char path[FS_PATH_LEN];
+    ksnprintf(path, sizeof(path), STORE "/%s", name);
+    int fi = fs_find_file(path);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (!f || !f->content) return NULL;
+    char* d = (char*)kmalloc(f->size ? f->size : 1);
+    if (d) memcpy(d, f->content, f->size);
+    *n = f->size;
+    return d;
+}
+
+void builtin_release(void) {
+    if (g_released || !fsdisk_is_installed()) return;
+    uint32_t t0 = timer_ms();
+    fs_mkdir_p(STORE);
+    /* STORE/.index: "name crc" of each package saved there */
+#define INDEX_CAP 4096
+    char* index = (char*)kzalloc(INDEX_CAP);
+    if (!index) return;
+    int ifi = fs_find_file(STORE "/.index");
+    fs_file_t* ix = ifi >= 0 ? fs_get_file(ifi) : NULL;
+    const char* old = ix && ix->content ? ix->content : NULL;
+    for (int k = 0; k < builtin_package_count(); k++) {
+        char name[48], path[FS_PATH_LEN];
+        const uint8_t* p;
+        uint32_t n;
+        blob_of(k, name, sizeof(name), &p, &n);
+        ksnprintf(path, sizeof(path), STORE "/%s", name);
+        /* (there already from an earlier boot: the same bytes - the index has
+         * their CRC, and the file its size; it is not read) */
+        char line[80];
+        ksnprintf(line, sizeof(line), "%s %08x\n", name, crc32c(0, p, n));
+        kstrlcat(index, line, INDEX_CAP);
+        int fi = fs_find_file(path);
+        fs_file_t* f = fi >= 0 ? fs_file_info(fi) : NULL;
+        if (f && f->size == n && old && strstr(old, line)) continue;
+        if (fs_write_path(path, p, n) < 0) {
+            klog("builtin: %s could not be saved - the packages stay in RAM\n", path);
+            kfree(index);
+            return;
+        }
+        ifi = fs_find_file(STORE "/.index");                /* (the file table may have moved) */
+        ix = ifi >= 0 ? fs_get_file(ifi) : NULL;
+        old = ix && ix->content ? ix->content : NULL;
+    }
+    if (!old || strcmp(old, index)) fs_write_path(STORE "/.index", index, (uint32_t)strlen(index));
+    kfree(index);
+    uintptr_t lo = (uintptr_t)__payload_start, hi = (uintptr_t)__payload_end;
+    kheap_add_region(lo, hi);
+    g_released = 1;
+    g_released_bytes = (uint32_t)(hi - lo);
+    klog("builtin: %u KB of built-in packages kept on the disk, their RAM given back (%u ms)\n",
+         g_released_bytes >> 10, timer_ms() - t0);
+}
+
+int builtin_package(const char* file, char** data, uint32_t* len) {
+    for (int k = 0; k < builtin_package_count(); k++) {
+        if (strcmp(builtin_package_file(k), file)) continue;
         uint32_t n = 0;
-        const uint8_t* src = examples_data(i, &n);
-        char* d = src && n ? (char*)kmalloc(n) : NULL;
-        if (!d) return -1;
-        memcpy(d, src, n);
+        char* b = blob_copy(k, &n);
+        if (!b) return -1;
+        if (k >= NAPPS) { *data = b; *len = n; return 0; }
+        int out = 0;                                         /* (an app: unpacked) */
+        char* d = n ? stbi_zlib_decode_malloc(b, (int)n, &out) : NULL;
+        kfree(b);
+        if (!d || out <= 0) { if (d) kfree(d); return -1; }
         *data = d;
-        *len = n;
+        *len = (uint32_t)out;
         return 0;
     }
     return -1;

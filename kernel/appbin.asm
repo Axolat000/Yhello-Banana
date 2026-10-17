@@ -4,7 +4,7 @@
 
 global app_mediaplayer, app_mediaplayer_end, app_music, app_music_end, app_amethyst, app_amethyst_end, app_photos, app_photos_end, app_code, app_code_end, app_store, app_store_end
 
-section .rodata
+section .payload progbits alloc noexec nowrite align=16
 align 16
 %ifidn __OUTPUT_FORMAT__, elf64
 app_mediaplayer: incbin "apps/mediaplayer/mediaplayer-x86_64.bpk.z"

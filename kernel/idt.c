@@ -1,3 +1,4 @@
+#include "kheap.h"
 #include "idt.h"
 #include "crash.h"
 #include "types.h"
@@ -415,7 +416,10 @@ struct tss64 {
  * stack; core n's is at selector 0x10 + 16 * n, which is also how a core
  * knows which one it is (cpu_id(), kernel/smp.h). */
 static struct tss64 g_tss[SMP_MAX_CPUS];
-static uint8_t g_fault_stack[SMP_MAX_CPUS][16384] __attribute__((aligned(16)));
+/* core 0's fault stack; the others' come from the heap when they start
+ * (64 static ones were 1 MB, for cores most machines do not have) */
+#define FAULT_STACK 16384u
+static uint8_t g_fault_stack0[FAULT_STACK] __attribute__((aligned(16)));
 /* null, 64-bit code (0x08), a TSS (16 bytes) per core, then ring 3's data
  * and code (apps: kernel/app.c) */
 #define GDT_USER (2 + 2 * SMP_MAX_CPUS)
@@ -444,7 +448,7 @@ static void tss_init(void) {
     g_gdt[1] = 0x00AF9A000000FFFFull;      /* the same code segment as boot64.asm's */
     for (int c = 0; c < SMP_MAX_CPUS; c++) {
         struct tss64* t = &g_tss[c];
-        t->ist[0] = (uint64_t)(uintptr_t)(g_fault_stack[c] + sizeof(g_fault_stack[c]));
+        if (c == 0) t->ist[0] = (uint64_t)(uintptr_t)(g_fault_stack0 + FAULT_STACK);
         t->iomap = sizeof(*t);
         uint64_t base = (uint64_t)(uintptr_t)t, limit = sizeof(*t) - 1;
         g_gdt[2 + 2 * c] = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) | (0x89ull << 40) |
@@ -458,6 +462,10 @@ static void tss_init(void) {
 
 /* another core, starting (kernel/smp.c) */
 void idt_ap_init(int cpu) {
+    if (cpu > 0 && cpu < SMP_MAX_CPUS && !g_tss[cpu].ist[0]) {
+        uint8_t* s = (uint8_t*)kmalloc(FAULT_STACK);
+        if (s) g_tss[cpu].ist[0] = (uint64_t)(uintptr_t)(s + FAULT_STACK);
+    }
     gdt_load_cpu(cpu);
     __asm__ volatile("lidt %0" : : "m"(idtp));
 }

@@ -20,6 +20,7 @@ typedef struct {
     uint32_t files_kb;       /* of which: file data read into RAM, and the file tables */
     uint32_t free_kb;        /* what the heap has left */
     uint32_t avail_kb;       /* free + file data the cache would give back (saved, not in use) */
+    uint32_t cached_kb;      /* of used: that file data (saved: it leaves RAM when idle or needed) */
     uint32_t largest_kb;     /* its largest free block (the biggest single allocation possible) */
 } meminfo_t;
 

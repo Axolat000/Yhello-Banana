@@ -295,7 +295,10 @@ static void clamp_scroll(void) {
 }
 
 static void scan(void) {
-    static int d[FS_LIST_MAX], f[FS_LIST_MAX];   /* static: the GUI runs on 16 KiB task stacks */
+    /* (not on the GUI's 16 KiB task stack: from the heap, for the scan) */
+    int* d = (int*)kmalloc(FS_LIST_MAX * sizeof(int));
+    int* f = (int*)kmalloc(FS_LIST_MAX * sizeof(int));
+    if (!d || !f) { kfree(d); kfree(f); g_count = 0; g_sel = g_hover = -1; clamp_scroll(); return; }
     int nd = fs_list_dirs(g_path, d, FS_LIST_MAX);
     if (nd < 0) {                       /* folder vanished: go home */
         kstrlcpy(g_path, HOME, sizeof(g_path));
@@ -318,6 +321,8 @@ static void scan(void) {
         if (item_name(&it)[0] == '.' && !g_show_hidden) continue;
         if (matches(item_name(&it), g_search)) g_items[g_count++] = it;
     }
+    kfree(d);
+    kfree(f);
     for (int i = 1; i < g_count; i++) {             /* insertion sort: a few hundred at most */
         item_t t = g_items[i];
         int j = i - 1;
@@ -647,7 +652,8 @@ static char g_rename[FS_NAME_LEN];
 
 static int copy_tree(const char* src, const char* dst, int depth) {
     if (depth > 12 || fs_mkdir(dst) < 0) return -1;
-    static int idx[FS_LIST_MAX];
+    int* idx = (int*)kmalloc(FS_LIST_MAX * sizeof(int));     /* (for this folder's files only) */
+    if (!idx) return -1;
     int rc = 0;
     int nf = fs_list_files(src, idx, FS_LIST_MAX);
     for (int i = 0; i < nf && i < FS_LIST_MAX; i++) {
@@ -657,6 +663,7 @@ static int copy_tree(const char* src, const char* dst, int depth) {
         ksnprintf(d, sizeof(d), "%s/%s", dst, name);
         if (fs_copy(s, d) < 0) rc = -1;
     }
+    kfree(idx);
     int dirs[32];
     int nd = fs_list_dirs(src, dirs, 32);
     char (*names)[FS_NAME_LEN] = kmalloc(32 * FS_NAME_LEN);     /* (8 KiB: not on the GUI's stack) */

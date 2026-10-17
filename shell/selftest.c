@@ -19,6 +19,7 @@
 #include "../kernel/smp.h"
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
+#include "../kernel/builtin_apps.h"
 #include "../kernel/deflate.h"
 
 /*
@@ -29,10 +30,16 @@
  * the result. (Filesystems: fstest.)
  */
 
-extern const uint8_t ex_systest[], ex_systest_end[];
-extern const uint8_t ex_cltest[], ex_cltest_end[];
-extern const uint8_t ex_posixtest[], ex_posixtest_end[];
-extern const uint8_t ex_mousetest[], ex_mousetest_end[];
+/* a built-in example package (kernel/builtin_apps.c: in RAM on the live CD,
+ * a file on the disk once installed) written to path: 0, or -1 */
+static int write_ex(const char* path, const char* file) {
+    char* d;
+    uint32_t n;
+    if (builtin_package(file, &d, &n) != 0) return -1;
+    int rc = fs_write_path(path, d, n) < 0 ? -1 : 0;
+    kfree(d);
+    return rc;
+}
 
 static int g_fail, g_ok;
 
@@ -62,7 +69,7 @@ static int install(void) {
     if (done) return 0;
     const char* tmp = "/tmp/systest.bpk";
     char msg[160];
-    if (fs_write_path(tmp, ex_systest, (uint32_t)(ex_systest_end - ex_systest)) < 0 || pkg_install(tmp, msg, sizeof(msg)) != 0) {
+    if (write_ex(tmp, "systest.bpk") < 0 || pkg_install(tmp, msg, sizeof(msg)) != 0) {
         report("install systest", 0, msg);
         return -1;
     }
@@ -144,7 +151,7 @@ static void t_opencl(void) {
     section("OpenCL barriers, shared memory and vectors");
     const char* tmp = "/tmp/cltest.bpk";
     char msg[160] = { 0 };
-    if (fs_write_path(tmp, ex_cltest, (uint32_t)(ex_cltest_end - ex_cltest)) < 0 ||
+    if (write_ex(tmp, "cltest.bpk") < 0 ||
         pkg_install(tmp, msg, sizeof(msg)) != 0) {
         fs_delete(tmp, 0);
         report("install cltest", 0, msg);
@@ -161,7 +168,7 @@ static void t_posix(const char* part) {
     section("the POSIX layer: mmap (162), pthreads (163), sockets (164), signals (165), dlopen (166), epoll (172)");
     const char* tmp = "/tmp/posixtest.bpk";
     char msg[160] = { 0 };
-    if (fs_write_path(tmp, ex_posixtest, (uint32_t)(ex_posixtest_end - ex_posixtest)) < 0 ||
+    if (write_ex(tmp, "posixtest.bpk") < 0 ||
         pkg_install(tmp, msg, sizeof(msg)) != 0) {
         fs_delete(tmp, 0);
         report("install posixtest", 0, msg);
@@ -176,7 +183,7 @@ static void t_posix(const char* part) {
 static void mouse_demo(void) {
     if(!gui_is_enabled()) { report("mouse capture demo",0,"startx first, then selftest mouse demo in a terminal");return; }
     const char* tmp="/tmp/mousetest.bpk";char msg[160]={0};
-    if(fs_write_path(tmp,ex_mousetest,(uint32_t)(ex_mousetest_end-ex_mousetest))<0 || pkg_install(tmp,msg,sizeof(msg))) {
+    if(write_ex(tmp, "mousetest.bpk") < 0 || pkg_install(tmp,msg,sizeof(msg))) {
         fs_delete(tmp,0);report("install mouse demo",0,msg);return;
     }
     fs_delete(tmp,0);char* args[]={"mousetest"};

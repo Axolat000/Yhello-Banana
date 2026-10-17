@@ -72,6 +72,13 @@ static void* dma_alloc(uint32_t size, uint32_t align) {
     return p;
 }
 
+/* the DMA ring and the queue, made the first time a card is there: 0 / -1 */
+static int alloc_bufs(void) {
+    if (!g_ring) g_ring = (uint8_t*)dma_alloc(RING, 4096);
+    if (!g_queue) g_queue = (uint8_t*)kmalloc(QUEUE);
+    return g_ring && g_queue ? 0 : -1;
+}
+
 /* ══ the feeder ═══════════════════════════════════════════════════════ */
 
 /* What is written into the ring goes out to RAM right away (CLFLUSH, one
@@ -646,9 +653,9 @@ void audio_init(void) {
     probe_t p;
     memset(&p, 0, sizeof(p));
     pci_scan(probe_cb, &p);
-    g_ring = (uint8_t*)dma_alloc(RING, 4096);
-    g_queue = (uint8_t*)kmalloc(QUEUE);
-    if (!g_ring || !g_queue) return;
+    /* (the buffers only when there is a card: 1 MB of RAM otherwise kept for nothing) */
+    if (!p.have_hda && !p.have_ac97) { kstrlcpy(g_card_name, "none (PC speaker only)", sizeof(g_card_name)); return; }
+    if (alloc_bufs() != 0) return;
     if (p.have_hda && hda_init(&p.hda) != 0) g_card = NULL;
     if (!g_card && p.have_ac97 && ac97_init(&p.ac97) != 0) g_card = NULL;
     if (!g_card) { kstrlcpy(g_card_name, "none (PC speaker only)", sizeof(g_card_name)); return; }
@@ -674,7 +681,8 @@ static void switch_card(const card_t* c, const char* name) {
     if (g_card && g_card->stop) g_card->stop();
     g_card = c;
     kstrlcpy(g_card_name, name, sizeof(g_card_name));
-    if (!c || !g_ring) return;
+    if (!c) return;
+    if (alloc_bufs() != 0) { g_card = NULL; kstrlcpy(g_card_name, "none", sizeof(g_card_name)); return; }
     memset(g_ring, 0, RING);
     flush(g_ring, RING);
     if (c->start() != 0) { g_card = NULL; kstrlcpy(g_card_name, "none", sizeof(g_card_name)); return; }

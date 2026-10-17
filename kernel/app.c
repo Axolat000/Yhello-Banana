@@ -788,26 +788,33 @@ static int a_stat(const char* path, banana_stat_t* st) {
 }
 
 static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
-    static int idx[FS_LIST_MAX];
     if (!path || !ent || index < 0) return -1;
+    /* (from the heap for the call: apps on several cores may list at once) */
+    int* idx = (int*)kmalloc(FS_LIST_MAX * sizeof(int));
+    if (!idx) return -1;
+    int rc = -1;
     int nd = fs_list_dirs(path, idx, FS_LIST_MAX);
-    if (nd < 0) return -1;
-    if (index < nd && index < FS_LIST_MAX) {
+    if (nd >= 0 && index < nd && index < FS_LIST_MAX) {
         const fs_dir_t* d = fs_get_dir(idx[index]);
-        if (!d) return -1;
-        kstrlcpy(ent->name, d->name, sizeof(ent->name));
-        ent->size = 0;
-        ent->is_dir = 1;
-        return 0;
+        if (d) {
+            kstrlcpy(ent->name, d->name, sizeof(ent->name));
+            ent->size = 0;
+            ent->is_dir = 1;
+            rc = 0;
+        }
+    } else if (nd >= 0) {
+        index -= nd;
+        int nf = fs_list_files(path, idx, FS_LIST_MAX);
+        if (index < nf && index < FS_LIST_MAX) {
+            fs_file_t* f = fs_file_info(idx[index]);
+            kstrlcpy(ent->name, f->name, sizeof(ent->name));
+            ent->size = f->size;
+            ent->is_dir = 0;
+            rc = 0;
+        }
     }
-    index -= nd;
-    int nf = fs_list_files(path, idx, FS_LIST_MAX);
-    if (index >= nf || index >= FS_LIST_MAX) return -1;
-    fs_file_t* f = fs_file_info(idx[index]);
-    kstrlcpy(ent->name, f->name, sizeof(ent->name));
-    ent->size = f->size;
-    ent->is_dir = 0;
-    return 0;
+    kfree(idx);
+    return rc;
 }
 
 static int a_getcwd(char* buf, int size) {
