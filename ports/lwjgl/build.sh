@@ -7,9 +7,13 @@
 #   liblwjgl.so         LWJGL's core (its C sources, with libffi 3.4.6 for
 #                       the calls into C and the callbacks back into Java)
 #   liblwjgl_opengl.so  the OpenGL binding (GLX left out)
+#   liblwjgl_stb.so     stb: images (Minecraft decodes its textures with it),
+#                       TrueType, Vorbis, ...
 #   libglfw.so          GLFW 3.4's API over Banana OS windows and OpenGL 3.3
 #                       (native/glfw.c + sdk/lib/gl3.c: Mesa's libOSMesa.so)
 #   libGL.so.1          glXGetProcAddress, for LWJGL's GL.create() (native/libgl.c)
+#   libopenal.so        OpenAL 1.1's API over Banana OS's sound (native/openal.c:
+#                       a mixer of its own - Minecraft's sound)
 # and <output>/lwjgldisk.img, a FAT32 disk for QEMU (-drive file=...,if=virtio)
 # with jdk/, java.bpk, lib/libOSMesa.so, lwjgl/ and the test, which draws a
 # triangle in a window with LWJGL:
@@ -34,7 +38,9 @@ FFI=3.4.6
 FFI_SHA=b0dea9df23c863a7a50e825440f3ebffabd65df1497108e5d437747843895a4e
 JAR_SHA="lwjgl:dc9c7b2d48e8396d68895f8902ffa01e46253de44dfe927533ff09457ebfeec4
 lwjgl-opengl:5062da750e5f7ec89e27e8b67b7d40fa8c4b16890159e35f828116ce6c8eca1e
-lwjgl-glfw:bedc757fd2b1b255146db26b74b9cbd1fcf5644b89b47b104fa721c741604259"
+lwjgl-glfw:bedc757fd2b1b255146db26b74b9cbd1fcf5644b89b47b104fa721c741604259
+lwjgl-stb:0cff7aa46ea9d70fcc20857015293ea80fbf21adcac34600c84da9b81a44ca93
+lwjgl-openal:ae0e82767cacf08921f578fba9d84753ddeb00ceada0510a2b4a882be28fbf95"
 SDK=$(realpath "$HERE/../../sdk")
 JDK_OUT=$(realpath -m "${JDK_OUT:-$HERE/../openjdk/build}")
 MESA_OUT=$(realpath -m "${MESA_OUT:-$HERE/../mesa/build}")
@@ -122,10 +128,19 @@ GLSRC=$(ls "$L"/opengl/src/generated/c/*.c | grep -v -e _WGL -e _GLX)
 cc_all "$W/opengl" $LCF -I"$L/opengl/src/main/c" -- $GLSRC
 so liblwjgl_opengl.so liblwjgl_opengl.so -Wl,--version-script="$VS" "$W"/opengl/*.o
 
+# liblwjgl_stb.so (stb's own sources, in the generated files)
+# shellcheck disable=SC2086
+cc_all "$W/stb" $LCF -isystem "$L/stb/src/main/c" -- "$L"/stb/src/generated/c/*.c
+so liblwjgl_stb.so liblwjgl_stb.so -Wl,--version-script="$VS" "$W"/stb/*.o
+
 # libglfw.so (GLFW on bwin + bgl3) and libGL.so.1
 cc_all "$W/glfw" -std=gnu11 -Wall -Wextra -- "$HERE/native/glfw.c" "$SDK/lib/gl3.c" "$HERE/native/libgl.c"
 so libglfw.so libglfw.so "$W/glfw/glfw.o" "$W/glfw/gl3.o"
 so libGL.so.1 libGL.so.1 "$W/glfw/libgl.o" -L"$LW" -l:libglfw.so
+
+# libopenal.so (OpenAL over banana_play)
+cc_all "$W/openal" -std=gnu11 -Wall -Wextra -- "$HERE/native/openal.c"
+so libopenal.so libopenal.so "$W/openal/openal.o"
 
 # what they (and Mesa) need from the java app: everything must be in its
 # export table - a java app built before the SDK had it cannot load them
@@ -144,7 +159,8 @@ fi
 # ours in our copies of the jars
 H=$W/sha1
 rm -rf "$H"
-for jl in lwjgl:liblwjgl.so lwjgl-opengl:opengl/liblwjgl_opengl.so lwjgl-glfw:glfw/libglfw.so; do
+for jl in lwjgl:liblwjgl.so lwjgl-opengl:opengl/liblwjgl_opengl.so lwjgl-glfw:glfw/libglfw.so \
+          lwjgl-stb:stb/liblwjgl_stb.so lwjgl-openal:openal/libopenal.so; do
     j=${jl%%:*} p=${jl#*:}
     mkdir -p "$(dirname "$H/META-INF/linux/x64/org/lwjgl/$p")"
     printf '%s\r\n' "$(sha1sum "$LW/$(basename "$p")" | cut -d' ' -f1)" > "$H/META-INF/linux/x64/org/lwjgl/$p.sha1"

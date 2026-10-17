@@ -354,7 +354,7 @@ int uname(struct utsname* u) {
 
 int getrlimit(int res, struct rlimit* r) {
     r->rlim_cur = r->rlim_max = RLIM_INFINITY;
-    if (res == RLIMIT_NOFILE) r->rlim_cur = r->rlim_max = 64;
+    if (res == RLIMIT_NOFILE) r->rlim_cur = r->rlim_max = 256;   /* (kernel/app.c's APP_FD_MAX + 3) */
     if (res == RLIMIT_STACK) r->rlim_cur = r->rlim_max = 1ul << 20;    /* (the main thread's) */
     if (res == RLIMIT_CORE) r->rlim_cur = r->rlim_max = 0;
     return 0;

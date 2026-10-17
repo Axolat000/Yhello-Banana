@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <sys/time.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +29,14 @@ int open(const char* path, int flags, ...) {
         if (__banana->stat(path, &st) == 0) { errno = EEXIST; return -1; }
     }
     int fd = __banana->open(path, f);
-    if (fd < 0) { errno = ENOENT; return -1; }
+    if (fd < 0) {
+        /* why: it is not there - or it is a folder, or every descriptor is
+         * taken (EMFILE: Java then knows, instead of "no such file") */
+        banana_stat_t st;
+        if (__banana->stat(path, &st) != 0) errno = ENOENT;
+        else errno = st.is_dir ? EISDIR : EMFILE;
+        return -1;
+    }
     return fd;
 }
 
@@ -93,7 +101,29 @@ int stat(const char* path, struct stat* st) {
     return 0;
 }
 
-int mkdir(const char* path, mode_t mode) { (void)mode; return __banana->mkdir(path) == 0 ? 0 : -1; }
+/* errno as on Linux, EEXIST above all: Java's Files.createDirectories takes
+ * a folder that is there by it (it saw a stale ENOENT and gave up) */
+int mkdir(const char* path, mode_t mode) {
+    (void)mode;
+    if (!path || !*path) { errno = ENOENT; return -1; }
+    banana_stat_t b;
+    if (__banana->stat(path, &b) == 0) { errno = EEXIST; return -1; }
+    if (__banana->mkdir(path) == 0) return 0;
+    /* why not: the folder it would go in */
+    char parent[512];
+    size_t n = strlen(path);
+    if (n >= sizeof(parent)) { errno = ENAMETOOLONG; return -1; }
+    memcpy(parent, path, n + 1);
+    while (n > 1 && parent[n - 1] == '/') parent[--n] = 0;
+    char* slash = strrchr(parent, '/');
+    if (slash == parent) slash[1] = 0;
+    else if (slash) *slash = 0;
+    else strcpy(parent, ".");
+    if (__banana->stat(parent, &b) != 0) errno = ENOENT;
+    else if (!b.is_dir) errno = ENOTDIR;
+    else errno = EACCES;                        /* (a read-only drive, a full one) */
+    return -1;
+}
 
 /* ── aligned memory ───────────────────────────────────────────────── */
 /* Keep a list of aligned allocations instead of probing below every pointer
@@ -170,7 +200,7 @@ int gettimeofday(struct timeval* tv, void* tz) {
 }
 
 char* realpath(const char* path, char* resolved) {
-    char buf[1024];
+    char buf[PATH_MAX];                         /* (what a caller's buffer holds) */
     if (!path || !*path) { errno = ENOENT; return NULL; }
     if (path[0] == '/') buf[0] = 0;
     else if (!getcwd(buf, sizeof(buf))) return NULL;

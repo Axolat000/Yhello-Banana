@@ -24,7 +24,7 @@ extern "C" {
 #define LLONG_MAX  9223372036854775807LL
 #define LLONG_MIN  (-9223372036854775807LL - 1)
 #define ULLONG_MAX 18446744073709551615ULL
-#define PATH_MAX   128
+#define PATH_MAX   512        /* (the kernel's FS_PATH_LEN) */
 #define IOV_MAX    1024
 #define NAME_MAX   255
 #ifdef __cplusplus

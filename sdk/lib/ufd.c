@@ -1,7 +1,8 @@
 /* Banana OS SDK: the file descriptors the C library makes itself, where the
  * system has none of its own - eventfd counters, epoll sets (over poll()),
  * pipes and AF_UNIX socket pairs (between the app's threads). They are
- * numbered from UFD_BASE up, above the system's files and sockets (3..66);
+ * numbered from UFD_BASE up, above the system's files and sockets (3..255,
+ * kernel/app.c's APP_FD_MAX; all below select()'s FD_SETSIZE of 1024);
  * read, write, close, poll / select, fcntl, fstat, ioctl, send / recv,
  * shutdown and dup / dup2 know them. Java's selectors (epoll + eventfd)
  * and its FileDispatcherImpl (a socketpair, dup2 to close) run on these. */
@@ -23,7 +24,7 @@ extern const banana_api_t* __banana;
 
 int __kpoll(struct pollfd* fds, nfds_t n, int timeout_ms);       /* socket.c: the system's poll */
 
-#define UFD_BASE  128
+#define UFD_BASE  256
 #define UFD_MAX   128
 #define PIPE_SIZE 65536
 #define EV_MAX    0xfffffffffffffffeull                         /* an eventfd's largest count */

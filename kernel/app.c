@@ -34,7 +34,10 @@
 #include "usock.h"
 #include "../net/net.h"
 
-#define APP_FD_MAX  64
+/* files and sockets an app has open at once: descriptors 3..255 (the SDK's
+ * own - pipes, eventfd, epoll - come after them, from 256: sdk/lib/ufd.c).
+ * Java keeps every jar of its class path open: Minecraft ran out at 64 */
+#define APP_FD_MAX  253
 #define APP_STACK   (1u << 20)        /* 1 MiB */
 #define APP_GUARD   (16u << 10)       /* unmapped pages under it (64-bit): an overflow faults */
 #define STACK_CANARY 0xB4A4A5C0u      /* at the bottom of the stack: checked on every system call */

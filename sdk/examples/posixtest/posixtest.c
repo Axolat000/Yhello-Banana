@@ -9,6 +9,7 @@
  *   posixtest epoll    epoll, eventfd, pipes, socket pairs, dup2
  *   posixtest signals  handlers, faults as signals, masks, pthread_kill
  *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
+ *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #include <semaphore.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/ioctl.h>
@@ -1004,6 +1006,35 @@ static void t_dlopen(void) {
     check("dlclose", dlclose(h1) == 0 && dlclose(h2) == 0, "");
 }
 
+/* ── files ──────────────────────────────────────────────────────── */
+
+/* mkdir's errno: Java's Files.createDirectories takes a folder that is
+ * there by EEXIST, and gave up on Banana OS before it was set */
+static void t_files(void) {
+    const char* home = getenv("HOME");
+    char dir[256], sub[300], file[300];
+    snprintf(dir, sizeof(dir), "%s/posixtest-dir", home && *home ? home : "/home/banana");
+    snprintf(sub, sizeof(sub), "%s/missing/deeper", dir);
+    snprintf(file, sizeof(file), "%s/a-file", dir);
+    rmdir(dir);
+    int made = mkdir(dir, 0755) == 0;
+    errno = 0;
+    int again = mkdir(dir, 0755);
+    check("mkdir, and again: EEXIST", made && again == -1 && errno == EEXIST, "");
+    errno = 0;
+    int deep = mkdir(sub, 0755);
+    int e1 = errno;
+    FILE* f = fopen(file, "w");
+    if (f) fclose(f);
+    char under[340];
+    snprintf(under, sizeof(under), "%s/x", file);
+    errno = 0;
+    int nd = mkdir(under, 0755);
+    check("mkdir with no parent: ENOENT; under a file: ENOTDIR", deep == -1 && e1 == ENOENT && nd == -1 && errno == ENOTDIR, "");
+    remove(file);
+    rmdir(dir);
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (!only || !strcmp(only, "mmap")) t_mmap();
@@ -1012,6 +1043,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "epoll")) t_epoll();
     if (!only || !strcmp(only, "signals")) t_signals();
     if (!only || !strcmp(only, "dlopen")) t_dlopen();
+    if (!only || !strcmp(only, "files")) t_files();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }
