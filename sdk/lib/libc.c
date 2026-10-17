@@ -349,7 +349,8 @@ void __time_init(void) { g_start_ms = __banana->ticks_ms(); }
 static int leap(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
 static const int g_mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
-time_t mktime(struct tm* tm) {
+/* seconds since 1970 of tm read as UTC (timegm) */
+time_t __tm_to_epoch(const struct tm* tm) {
     long days = 0;
     int year = tm->tm_year + 1900;
     for (int y = 1970; y < year; y++) days += leap(y) ? 366 : 365;
@@ -358,11 +359,34 @@ time_t mktime(struct tm* tm) {
     return ((days * 24 + tm->tm_hour) * 60 + tm->tm_min) * 60 + tm->tm_sec;
 }
 
+/* the system's time zone (Settings > Date & time): seconds east of UTC at
+ * the instant utc - 0 on a system older than API version 21 (its clock:
+ * the local time) */
+static int has_zone(void) {
+    return __banana->size >= offsetof(banana_api_t, utc_offset) + sizeof(void*);
+}
+long __utc_offset(time_t utc) {
+    return has_zone() ? __banana->utc_offset(utc > 0 ? (unsigned int)utc : 1u) : 0;
+}
+
+time_t mktime(struct tm* tm) {
+    time_t local = __tm_to_epoch(tm);
+    long off = __utc_offset(local);                     /* (a guess: the offset differs by an hour at most) */
+    time_t utc = local - off;
+    long off2 = __utc_offset(utc);
+    if (off2 != off) utc = local - off2;
+    return utc;
+}
+
 time_t time(time_t* t) {
-    banana_time_t bt;
-    __banana->localtime(&bt);
-    struct tm tm = { bt.second, bt.minute, bt.hour, bt.day, bt.month - 1, bt.year - 1900, bt.weekday, 0, 0, 0, "UTC" };
-    time_t v = mktime(&tm);
+    time_t v = 0;
+    if (has_zone()) v = (time_t)__banana->time_utc();
+    if (!v) {
+        banana_time_t bt;
+        __banana->localtime(&bt);
+        struct tm tm = { bt.second, bt.minute, bt.hour, bt.day, bt.month - 1, bt.year - 1900, bt.weekday, 0, 0, 0, "UTC" };
+        v = __tm_to_epoch(&tm);
+    }
     if (t) *t = v;
     return v;
 }
@@ -393,9 +417,36 @@ struct tm* gmtime_r(const time_t* t, struct tm* out) {
 }
 
 struct tm* gmtime(const time_t* t) { static struct tm tm; return gmtime_r(t, &tm); }
-/* the clock chip keeps local time */
-struct tm* localtime(const time_t* t) { return gmtime(t); }
-struct tm* localtime_r(const time_t* t, struct tm* out) { return gmtime_r(t, out); }
+
+int snprintf(char* buf, size_t n, const char* fmt, ...);
+
+/* "UTC+01:00" for an offset (4 kept: a few localtime() results at once) */
+static const char* zone_name(long off) {
+    static char names[4][12];
+    static int next;
+    if (!off) return "UTC";
+    char* s = names[next++ & 3];
+    long a = off < 0 ? -off : off;
+    snprintf(s, 12, "UTC%c%02ld:%02ld", off < 0 ? '-' : '+', a / 3600, a / 60 % 60);
+    return s;
+}
+
+struct tm* localtime_r(const time_t* t, struct tm* out) {
+    long off = __utc_offset(*t);
+    time_t l = *t + off;
+    gmtime_r(&l, out);
+    /* summer time: more than the year's smaller offset (January's or July's) */
+    struct tm y;
+    gmtime_r(t, &y);
+    struct tm jan = { 0, 0, 12, 1, 0, y.tm_year, 0, 0, 0, 0, 0 }, jul = jan;
+    jul.tm_mon = 6;
+    long a = __utc_offset(__tm_to_epoch(&jan)), b = __utc_offset(__tm_to_epoch(&jul));
+    out->tm_isdst = off > (a < b ? a : b);
+    out->tm_gmtoff = off;
+    out->tm_zone = zone_name(off);
+    return out;
+}
+struct tm* localtime(const time_t* t) { static struct tm tm; return localtime_r(t, &tm); }
 
 /* ── POSIX clocks (the system timer: milliseconds) ────────────────── */
 
@@ -472,6 +523,12 @@ size_t strftime(char* buf, size_t max, const char* fmt, const struct tm* tm) {
         case 'S': snprintf(tmp, sizeof(tmp), "%02d", tm->tm_sec); break;
         case 'a': snprintf(tmp, sizeof(tmp), "%s", wd[tm->tm_wday % 7]); break;
         case 'b': snprintf(tmp, sizeof(tmp), "%s", mo[tm->tm_mon % 12]); break;
+        case 'z': {                                /* +0100 */
+            long o = tm->tm_gmtoff, a = o < 0 ? -o : o;
+            snprintf(tmp, sizeof(tmp), "%c%02ld%02ld", o < 0 ? '-' : '+', a / 3600, a / 60 % 60);
+            break;
+        }
+        case 'Z': snprintf(tmp, sizeof(tmp), "%s", tm->tm_zone ? tm->tm_zone : "UTC"); break;
         case '%': tmp[0] = '%'; tmp[1] = 0; break;
         case 0: fmt--; break;
         default: tmp[0] = '%'; tmp[1] = *fmt; tmp[2] = 0; break;

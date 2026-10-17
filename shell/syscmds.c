@@ -20,6 +20,7 @@
 #include "../kernel/settings.h"
 #include "aptcmd.h"
 #include "adbcmd.h"
+#include "datecmd.h"
 
 static void say(const char* fmt, ...) {
     char buf[256];
@@ -325,6 +326,7 @@ int syscmd_dispatch(const char* line) {
     if (strcmp(argv[0], "fstest") == 0) return fstest_cmd(argc, argv);
     if (strcmp(argv[0], "crashtest") == 0) return crashtest_cmd(argc, argv);
     if (strcmp(argv[0], "selftest") == 0) return selftest_cmd(argc, argv);
+    if (datecmd_dispatch(argc, argv)) return 1;
     if (strcmp(argv[0], "apt") == 0 || strcmp(argv[0], "apt-get") == 0) { cmd_apt(argc, argv); return 1; }
     if (strcmp(argv[0], "adb") == 0) { cmd_adb(argc, argv); return 1; }
     if (strcmp(argv[0], "fastboot") == 0) { cmd_fastboot(argc, argv); return 1; }
@@ -342,8 +344,10 @@ int syscmd_dispatch(const char* line) {
     }
     if (strcmp(argv[0], "settings") == 0) {
         int apps = argc > 1 && strcmp(argv[1], "apps") == 0;           /* `settings apps [name]` */
-        if (argc > 1 && !apps) { terminal_writeln("usage: settings [apps [name]]"); return 1; }
+        int time = argc > 1 && strcmp(argv[1], "time") == 0;           /* `settings time`: Date & time */
+        if (argc > 1 && !apps && !time) { terminal_writeln("usage: settings [apps [name] | time]"); return 1; }
         if (!(apps ? gui_open_settings_app(argc > 2 ? argv[2] : NULL) : gui_open_settings())) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
+        else if (time) settings_open_page(SETTINGS_PAGE_TIME);
         return 1;
     }
     if (strcmp(argv[0], "taskmgr") == 0) {

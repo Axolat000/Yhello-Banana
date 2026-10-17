@@ -179,7 +179,9 @@ static int expires_past(const char* s) {
     if (year < 100) year += 2000;
     if (m < 0 || !year) return 0;
     rtc_datetime_t now;
-    if (rtc_read_datetime(&now) != 0) return 0;
+    uint32_t utc = rtc_now_utc();                   /* (a cookie's date is GMT's) */
+    if (!utc) return 0;
+    rtc_split_time(utc, &now);
     uint32_t a = year * 400 + (uint32_t)m * 32 + day, b = now.year * 400u + (now.month - 1u) * 32u + now.day;
     return a < b;
 }

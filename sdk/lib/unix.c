@@ -693,9 +693,30 @@ int fchdir(int fd) { (void)fd; errno = ENOTSUP; return -1; }
 
 long timezone;
 int daylight;
-static char g_utc[] = "UTC";
+static char g_utc[] = "UTC", g_tzn[2][12];
 char* tzname[2] = { g_utc, g_utc };
-void tzset(void) {}
+time_t __tm_to_epoch(const struct tm* tm);
+long   __utc_offset(time_t utc);
+
+/* the zone of Settings > Date & time: timezone (seconds WEST of UTC, as
+ * POSIX has it), daylight (1: it has a summer time), tzname (winter, summer) */
+void tzset(void) {
+    time_t now = time(NULL);
+    struct tm y;
+    gmtime_r(&now, &y);
+    struct tm jan = { 0, 0, 12, 1, 0, y.tm_year, 0, 0, 0, 0, 0 }, jul = jan;
+    jul.tm_mon = 6;
+    long a = __utc_offset(__tm_to_epoch(&jan)), b = __utc_offset(__tm_to_epoch(&jul));
+    long w = a < b ? a : b, s = a < b ? b : a;
+    timezone = -w;
+    daylight = s != w;
+    for (int k = 0; k < 2; k++) {
+        long o = k ? s : w, n = o < 0 ? -o : o;
+        if (!o) { tzname[k] = g_utc; continue; }
+        snprintf(g_tzn[k], sizeof(g_tzn[k]), "UTC%c%02ld:%02ld", o < 0 ? '-' : '+', n / 3600, n / 60 % 60);
+        tzname[k] = g_tzn[k];
+    }
+}
 
 char* asctime_r(const struct tm* tm, char* buf) {
     static const char wd[] = "SunMonTueWedThuFriSat", mon[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
@@ -707,7 +728,7 @@ char* asctime(const struct tm* tm) { static char b[32]; return asctime_r(tm, b);
 char* ctime_r(const time_t* t, char* buf) { struct tm tm; return asctime_r(localtime_r(t, &tm), buf); }
 char* ctime(const time_t* t) { static char b[32]; return ctime_r(t, b); }
 double difftime(time_t a, time_t b) { return (double)(a - b); }
-time_t timegm(struct tm* tm) { return mktime(tm); }
+time_t timegm(struct tm* tm) { return __tm_to_epoch(tm); }
 
 size_t wcsftime(wchar_t* s, size_t max, const wchar_t* fmt, const struct tm* tm) {
     char f[256], out[512];

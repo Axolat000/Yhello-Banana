@@ -10,6 +10,7 @@
 #include "keyboard.h"
 #include "gui.h"
 #include "rtc.h"
+#include "tz.h"
 #include "random.h"
 #include "clipboard.h"
 #include "serial.h"
@@ -912,6 +913,9 @@ static void a_localtime(banana_time_t* t) {
     int h = (dt.day + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;   /* 0 = Saturday */
     t->weekday = (h + 6) % 7;
 }
+
+static unsigned int a_time_utc(void) { return rtc_now_utc(); }
+static int a_utc_offset(unsigned int utc) { return tz_offset_at(tz_current(), utc ? utc : rtc_now_utc()); }
 
 static unsigned int a_random(void) { return random_u32(); }
 
@@ -1857,6 +1861,8 @@ static void spec_init(void) {
     SPEC(win_wheel, "i", 0);
     SPEC(win_capture_mouse, "ii", 0);
     SPEC(win_mouse_captured, "i", 0);
+    SPEC(time_utc, "", 0);
+    SPEC(utc_offset, "i", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2333,6 +2339,8 @@ static void api_init(void) {
     g_api.win_wheel = G(a_win_wheel);
     g_api.win_capture_mouse = G(a_win_capture_mouse);
     g_api.win_mouse_captured = G(a_win_mouse_captured);
+    g_api.time_utc = G(a_time_utc);
+    g_api.utc_offset = G(a_utc_offset);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);

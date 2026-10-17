@@ -1177,7 +1177,7 @@ static void cmd_history(void) {
 }
 
 static const char* const known_cmds[] = {
-    "help", "neofetch", "echo", "clear", "uname", "whoami", "hostname", "date",
+    "help", "neofetch", "echo", "clear", "uname", "whoami", "hostname", "date", "timezone",
     "ls", "cd", "pwd", "mkdir", "rm", "touch", "cp", "mv", "edit", "cat", "run",
     "uptime", "top", "exit", "start", "stop", "startx", "stopx",
     "keyboardctl", "loadctl", "usbctl", "proc_info", "ram_info", "gpu_info",
@@ -1491,31 +1491,6 @@ static void cmd_uname(int persona) {
 
 static void cmd_whoami(void) { terminal_writeln("banana"); }
 static void cmd_hostname(void) { terminal_writeln("banana-os-0.6"); }
-
-static void cmd_date(void) {
-    rtc_datetime_t dt;
-    if (rtc_read_datetime(&dt) != 0) {
-        terminal_writeln("date: RTC unavailable");
-        return;
-    }
-    char b[16];
-    terminal_write(u32_to_str(dt.year, b, sizeof(b)));
-    terminal_putchar('-');
-    if (dt.month < 10) terminal_putchar('0');
-    terminal_write(u32_to_str(dt.month, b, sizeof(b)));
-    terminal_putchar('-');
-    if (dt.day < 10) terminal_putchar('0');
-    terminal_write(u32_to_str(dt.day, b, sizeof(b)));
-    terminal_putchar(' ');
-    if (dt.hour < 10) terminal_putchar('0');
-    terminal_write(u32_to_str(dt.hour, b, sizeof(b)));
-    terminal_putchar(':');
-    if (dt.minute < 10) terminal_putchar('0');
-    terminal_write(u32_to_str(dt.minute, b, sizeof(b)));
-    terminal_putchar(':');
-    if (dt.second < 10) terminal_putchar('0');
-    terminal_writeln(u32_to_str(dt.second, b, sizeof(b)));
-}
 
 /* ── path-taking commands (parse an optional flag + a path token) ──── */
 static void cmd_ls(const char* args) {
@@ -2415,7 +2390,6 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (k_strcmp(line, "pwd")      == 0) { fs_pwd();         return; }
     if (k_strcmp(line, "whoami")   == 0) { cmd_whoami();     return; }
     if (k_strcmp(line, "hostname") == 0) { cmd_hostname();   return; }
-    if (k_strcmp(line, "date")     == 0) { cmd_date();       return; }
     if (k_strcmp(line, "history")  == 0) { cmd_history();    return; }
     if (k_strcmp(line, "find")     == 0) { cmd_find("");     return; }
     if (k_strcmp(line, "uptime")   == 0) { cmd_uptime();     return; }

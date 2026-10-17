@@ -38,6 +38,7 @@
 #include "repo.h"
 #include "app.h"
 #include "task.h"
+#include "tz.h"
 
 void shell_power(int reboot);
 
@@ -853,25 +854,135 @@ static void draw_network(void) {
     button(x + 360, y + 276, 64, ipv6_enabled() ? "On" : "Off", ipv6_enabled());
 }
 
+/* Date & time: the clock set by hand (- / + on each part), what the
+ * computer's clock keeps, and the time zone (a list that scrolls) */
+static const char* const MON[12] = { "January", "February", "March", "April", "May", "June", "July",
+                                     "August", "September", "October", "November", "December" };
+#define TZ_ROW 18
+static int g_tz_top = -1;                        /* the first zone shown (-1: the current one's page) */
+
+static void step_rect(int row, int col, int* bx, int* by) { *bx = cx0() + 52 + col * 132; *by = cy0() + 96 + row * 26; }
+static int  tz_list_y(void) { return cy0() + 200; }
+static int  tz_rows(void) { int n = (g_win.y + g_win.h - 34 - tz_list_y()) / TZ_ROW; return n < 1 ? 1 : n; }
+
 static void draw_time(void) {
     int x = cx0(), y = cy0();
     label(x, y, "Date & time", C_HEAD);
     rtc_datetime_t t;
-    char line[96];
-    static const char* const MON[12] = { "January", "February", "March", "April", "May", "June", "July",
-                                         "August", "September", "October", "November", "December" };
-    if (rtc_read_datetime(&t) == 0 && t.month >= 1 && t.month <= 12) {
+    char line[128];
+    uint32_t utc = rtc_now_utc();
+    int ok = rtc_read_datetime(&t) == 0 && t.month >= 1 && t.month <= 12;
+    if (ok) {
+        static const char* const WD[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
         ksnprintf(line, sizeof(line), "%02u:%02u:%02u", t.hour, t.minute, t.second);
-        gfx_draw_text_scaled(x, y + 28, 3, line, C_HEAD, C_PANEL);
-        ksnprintf(line, sizeof(line), "%u %s %u", t.day, MON[t.month - 1], t.year);
-        label(x, y + 64, line, C_TEXT);
+        gfx_draw_text_scaled(x, y + 22, 3, line, C_HEAD, C_PANEL);
+        ksnprintf(line, sizeof(line), "%s %u %s %u", WD[(rtc_now() / 86400u + 4u) % 7u], t.day, MON[t.month - 1], t.year);
+        label(x, y + 52, line, C_TEXT);
     } else {
         label(x, y + 28, "The clock could not be read.", C_DIM);
     }
-    uint32_t up = timer_ms() / 1000;
-    ksnprintf(line, sizeof(line), "Up for %uh %02um %02us", up / 3600, (up / 60) % 60, up % 60);
-    label(x, y + 92, line, C_DIM);
-    label(x, y + 120, "The time comes from the computer's hardware clock.", C_DIM);
+    const tz_zone_t* z = tz_get(tz_current());
+    char off[16];
+    tz_format_offset(tz_offset_at(tz_current(), utc), off, sizeof(off));
+    ksnprintf(line, sizeof(line), "%s - %s%s", z ? z->label : "UTC", off, tz_is_summer(tz_current(), utc) ? ", summer time" : "");
+    label(x, y + 70, line, C_DIM);
+
+    /* set by hand: each part - and + */
+    if (ok) {
+        char v[5][8];
+        ksnprintf(v[0], 8, "%u", t.day);
+        kstrlcpy(v[1], MON[t.month - 1], 4);
+        ksnprintf(v[2], 8, "%u", t.year);
+        ksnprintf(v[3], 8, "%02u h", t.hour);
+        ksnprintf(v[4], 8, "%02u min", t.minute);
+        label(x, y + 102, "Date", C_TEXT);
+        label(x, y + 128, "Time", C_TEXT);
+        for (int k = 0; k < 5; k++) {
+            int bx, by;
+            step_rect(k / 3, k % 3, &bx, &by);
+            button(bx, by, 22, "-", 0);
+            label(bx + 30, by + 6, v[k], C_HEAD);
+            button(bx + 92, by, 22, "+", 0);
+        }
+    }
+    label(x, y + 158, "The computer's clock keeps", C_TEXT);
+    button(x + 224, y + 154, 100, "Local time", !rtc_keeps_utc());
+    button(x + 330, y + 154, 60, "UTC", rtc_keeps_utc());
+
+    /* the time zone */
+    label(x, y + 182, "Time zone", C_HEAD);
+    int rows = tz_rows(), n = tz_count();
+    if (g_tz_top < 0) g_tz_top = tz_current() - rows / 2;
+    if (g_tz_top > n - rows) g_tz_top = n - rows;
+    if (g_tz_top < 0) g_tz_top = 0;
+    button(x + cw() - 52, y + 178, 24, "^", 0);
+    button(x + cw() - 24, y + 178, 24, "v", 0);
+    for (int r = 0; r < rows && g_tz_top + r < n; r++) {
+        int i = g_tz_top + r, ry = tz_list_y() + r * TZ_ROW;
+        const tz_zone_t* zz = tz_get(i);
+        int on = i == tz_current();
+        radio(x, ry, on);
+        tz_format_offset(tz_offset_at(i, utc), off, sizeof(off));
+        label(x + 22, ry + 3, off, on ? C_HEAD : C_DIM);
+        kstrlcpy(line, zz->label, sizeof(line));
+        int room = (cw() - 112) / 8;
+        if (room > 0 && (int)strlen(line) > room) line[room] = 0;
+        label(x + 112, ry + 3, line, on ? C_HEAD : C_TEXT);
+    }
+}
+
+/* a part of the local time - or +: 0 day, 1 month, 2 year, 3 hour, 4 minute */
+static void time_step(int part, int d) {
+    uint32_t now = rtc_now();
+    if (!now) return;
+    rtc_datetime_t t;
+    rtc_split_time(now, &t);
+    int y = t.year, m = t.month, day = t.day;
+    uint32_t nt = now;
+    if (part == 0) nt = now + (uint32_t)(d * 86400);
+    else if (part == 3) nt = now + (uint32_t)(d * 3600);
+    else if (part == 4) nt = now + (uint32_t)(d * 60);
+    else {
+        if (part == 1) { m += d; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } }
+        else y += d;
+        static const uint8_t D[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        int md = D[m - 1] + (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0));
+        if (day > md) day = md;
+        nt = rtc_make_time(y, m, day, t.hour, t.minute, t.second);
+    }
+    if (rtc_set_time(nt) != 0) { kstrlcpy(g_status, "The clock holds 2000-2099 only", sizeof(g_status)); return; }
+    char s[40];
+    rtc_format(nt, s, sizeof(s));
+    ksnprintf(g_status, sizeof(g_status), "Clock set: %s", s);
+}
+
+static void click_time(int mx, int my) {
+    int x = cx0(), y = cy0();
+    for (int k = 0; k < 5; k++) {
+        int bx, by;
+        step_rect(k / 3, k % 3, &bx, &by);
+        if (inside(mx, my, bx, by, 22, 20)) { time_step(k, -1); return; }
+        if (inside(mx, my, bx + 92, by, 22, 20)) { time_step(k, 1); return; }
+    }
+    if (inside(mx, my, x + 224, y + 154, 100, 20) || inside(mx, my, x + 330, y + 154, 60, 20)) {
+        int utc = mx >= x + 330;
+        if (utc != rtc_keeps_utc()) rtc_set_keeps_utc(utc);
+        kstrlcpy(g_status, utc ? "The computer's clock keeps UTC (as Linux does)"
+                               : "The computer's clock keeps the local time (as Windows does)", sizeof(g_status));
+        return;
+    }
+    int rows = tz_rows();
+    if (inside(mx, my, x + cw() - 52, y + 178, 24, 20)) { g_tz_top -= rows - 1; if (g_tz_top < 0) g_tz_top = 0; return; }
+    if (inside(mx, my, x + cw() - 24, y + 178, 24, 20)) { g_tz_top += rows - 1; return; }   /* (kept in range when drawn) */
+    for (int r = 0; r < rows && g_tz_top + r < tz_count(); r++) {
+        int ry = tz_list_y() + r * TZ_ROW;
+        if (inside(mx, my, x, ry - 2, cw(), TZ_ROW)) {
+            int i = g_tz_top + r;
+            tz_set(i);
+            ksnprintf(g_status, sizeof(g_status), "Time zone: %s", tz_get(i)->label);
+            return;
+        }
+    }
 }
 
 static void draw_about(void) {
@@ -1358,6 +1469,8 @@ void settings_click(int mx, int my) {
         else return;
         save_speed();
         ksnprintf(g_status, sizeof(g_status), "Pointer speed: %d", mouse_get_speed());
+    } else if (g_page == PG_TIME) {
+        click_time(mx, my);
     } else if (g_page == PG_APPS) {
         click_apps(mx, my);
     } else if (g_page == PG_STARTUP) {
@@ -1453,6 +1566,8 @@ void settings_boot(void) {
         if (k_parse_u32(v, &n) && n <= 100) audio_set_volume((int)n);
     }
     if (cfg_get(CFG_SETTINGS, "keyboard", v, sizeof(v))) keyboard_set_layout(v);
+    rtc_boot();                         /* whether the clock chip keeps UTC */
+    tz_boot();                          /* the time zone */
     if (cfg_get(CFG_SETTINGS, "tp_tap", v, sizeof(v))) tp_tap_to_click = strcmp(v, "0") != 0;
     if (cfg_get(CFG_SETTINGS, "tp_natural", v, sizeof(v))) tp_natural_scroll = strcmp(v, "0") != 0;
     if (cfg_get(CFG_SETTINGS, "mouse_speed", v, sizeof(v))) {

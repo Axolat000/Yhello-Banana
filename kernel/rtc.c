@@ -1,6 +1,8 @@
 #include "rtc.h"
 #include "timer.h"
 #include "kstring.h"
+#include "tz.h"
+#include "settings.h"
 
 #define CMOS_ADDR 0x70
 #define CMOS_DATA 0x71
@@ -41,7 +43,7 @@ void rtc_init(void) {
     /* No setup needed for basic RTC reads. */
 }
 
-int rtc_read_datetime(rtc_datetime_t* out) {
+static int cmos_datetime(rtc_datetime_t* out) {
     if (!out) return -1;
 
     rtc_datetime_t a, b;
@@ -127,8 +129,14 @@ void rtc_split_time(uint32_t t, rtc_datetime_t* out) {
     out->second = (uint8_t)(secs % 60u);
 }
 
-static uint32_t base, base_ms;
-static int have;
+/* ── the system's time ─────────────────────────────────────────────
+ * The clock chip is read once, then counted with the timer (read again
+ * every 10 minutes). What it holds - "raw" - is the local time (as Windows
+ * keeps it: the default) or UTC (as Linux does: `date utc on`); the time
+ * zone (kernel/tz.c) turns one into the other. */
+
+static uint32_t base, base_ms;                         /* raw seconds at timer_ms() base_ms */
+static int have, g_utc;
 
 static uint8_t bin_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 
@@ -137,8 +145,24 @@ static void cmos_write(uint8_t reg, uint8_t v) {
     outb(CMOS_DATA, v);
 }
 
-int rtc_set_time(uint32_t t) {
-    if (t < 946684800u) return -1;                       /* (the clock holds 2000-2099) */
+static uint32_t raw_now(void) {
+    uint32_t ms = timer_ms();
+    if (!have || ms - base_ms > 600000u) {
+        rtc_datetime_t dt;
+        if (cmos_datetime(&dt) == 0 && dt.year >= 1970) {
+            base = rtc_make_time(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+            base_ms = ms;
+            have = 1;
+        } else if (!have) {
+            return 0;
+        }
+    }
+    return base + (ms - base_ms) / 1000u;
+}
+
+/* the chip set to raw (2000-2099): 0, -1 */
+static int write_raw(uint32_t t) {
+    if (t < 946684800u) return -1;
     rtc_datetime_t dt;
     rtc_split_time(t, &dt);
     if (dt.year > 2099) return -1;
@@ -161,25 +185,56 @@ int rtc_set_time(uint32_t t) {
     cmos_write(0x09, V(dt.year % 100));
     cmos_write(0x0B, reg_b);
 #undef V
-    base = t;                                            /* rtc_now() counts from here */
+    base = t;                                            /* counted from here */
     base_ms = timer_ms();
     have = 1;
     return 0;
 }
 
+uint32_t rtc_now_utc(void) {
+    uint32_t r = raw_now();
+    if (!r) return 0;
+    return g_utc ? r : tz_to_utc(r);
+}
+
 uint32_t rtc_now(void) {
-    uint32_t ms = timer_ms();
-    if (!have || ms - base_ms > 600000u) {
-        rtc_datetime_t dt;
-        if (rtc_read_datetime(&dt) == 0 && dt.year >= 1970) {
-            base = rtc_make_time(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
-            base_ms = ms;
-            have = 1;
-        } else if (!have) {
-            return 0;
-        }
-    }
-    return base + (ms - base_ms) / 1000u;
+    uint32_t r = raw_now();
+    if (!r) return 0;
+    return g_utc ? tz_to_local(r) : r;
+}
+
+int rtc_read_datetime(rtc_datetime_t* out) {
+    uint32_t t = rtc_now();
+    if (!out || !t) return -1;
+    rtc_split_time(t, out);
+    return 0;
+}
+
+int rtc_set_utc(uint32_t utc) {
+    if (!utc) return -1;
+    return write_raw(g_utc ? utc : tz_to_local(utc));
+}
+
+int rtc_set_time(uint32_t t) {
+    return t ? rtc_set_utc(tz_to_utc(t)) : -1;
+}
+
+void rtc_zone_changed(uint32_t utc) {
+    if (!g_utc) rtc_set_utc(utc);
+}
+
+int rtc_keeps_utc(void) { return g_utc; }
+
+void rtc_set_keeps_utc(int on) {
+    uint32_t utc = rtc_now_utc();
+    g_utc = on != 0;
+    settings_set("rtc_utc", g_utc ? "1" : "0");
+    if (utc) rtc_set_utc(utc);                           /* (the same instant, kept the new way) */
+}
+
+void rtc_boot(void) {
+    char v[8];
+    if (settings_get("rtc_utc", v, sizeof(v))) g_utc = strcmp(v, "0") != 0;
 }
 
 void rtc_format(uint32_t t, char* out, int cap) {

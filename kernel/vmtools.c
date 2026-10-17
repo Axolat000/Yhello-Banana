@@ -444,7 +444,7 @@ void vmtools_command(const char* args) {
         return;
     }
     if (strcmp(args, "time") == 0) {
-        uint32_t h = vmtools_host_time(), g = rtc_now();
+        uint32_t h = vmtools_host_time(), g = rtc_now_utc();
         char b[96];
         if (!h) { terminal_writeln("vmtools: the hypervisor gives no clock here (the guest agent's guest-set-time sets it)"); return; }
         ksnprintf(b, sizeof(b), "host: %u, this system: %u (%d s apart)", h, g, (int)(g - h));
@@ -475,5 +475,5 @@ void vmtools_command(const char* args) {
     line(b);
     vser_describe(line);
     uint32_t h = vmtools_host_time();
-    if (h) { ksnprintf(b, sizeof(b), "Host clock:   %d s from this system's", (int)(rtc_now() - h)); line(b); }
+    if (h) { ksnprintf(b, sizeof(b), "Host clock:   %d s from this system's", (int)(rtc_now_utc() - h)); line(b); }
 }

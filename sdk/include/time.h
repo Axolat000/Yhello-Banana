@@ -9,7 +9,7 @@ typedef long clock_t;
 #define CLOCKS_PER_SEC 1000
 struct tm {
     int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst;
-    long        tm_gmtoff;                  /* seconds east of UTC (0: the clock chip keeps local time) */
+    long        tm_gmtoff;                  /* seconds east of UTC (the time zone of Settings > Date & time) */
     const char* tm_zone;
 };
 char*      ctime(const time_t* t);

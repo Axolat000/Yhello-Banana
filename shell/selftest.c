@@ -22,6 +22,9 @@
 #include "../kernel/builtin_apps.h"
 #include "../kernel/zswap.h"
 #include "../kernel/deflate.h"
+#include "../kernel/tz.h"
+#include "../kernel/rtc.h"
+#include "datecmd.h"
 
 /*
  * selftest [ring3 | memory | limits | cores] - checks the system features
@@ -332,6 +335,63 @@ static void swap_helper(void) {
 }
 #endif
 
+/* the time zones' rules on known dates, local <-> UTC, the clock set by hand */
+static void t_time(void) {
+    section("time zones and the clock");
+    char note[128];
+    struct { const char* zone; int y, mo, d, h, mi, s; int want; } C[] = {
+        { "Europe/Paris",      2026, 3, 29, 0, 59, 59, 3600 },   /* (UTC) the last second of winter */
+        { "Europe/Paris",      2026, 3, 29, 1, 0, 0, 7200 },     /* summer from 01:00 UTC */
+        { "Europe/Paris",      2026, 10, 25, 0, 59, 59, 7200 },
+        { "Europe/Paris",      2026, 10, 25, 1, 0, 0, 3600 },
+        { "America/New_York",  2026, 3, 8, 6, 59, 59, -18000 },  /* 02:00 EST */
+        { "America/New_York",  2026, 3, 8, 7, 0, 0, -14400 },
+        { "America/New_York",  2026, 11, 1, 5, 59, 59, -14400 }, /* 02:00 EDT */
+        { "America/New_York",  2026, 11, 1, 6, 0, 0, -18000 },
+        { "Australia/Sydney",  2026, 4, 4, 15, 59, 59, 39600 },  /* 03:00 AEDT, 5 April */
+        { "Australia/Sydney",  2026, 4, 4, 16, 0, 0, 36000 },
+        { "Australia/Sydney",  2026, 10, 3, 16, 0, 0, 39600 },   /* 02:00 AEST, 4 October */
+        { "Pacific/Auckland",  2026, 9, 26, 14, 0, 0, 46800 },   /* 02:00 NZST, 27 September */
+        { "America/Santiago",  2026, 7, 1, 12, 0, 0, -14400 },
+        { "America/Santiago",  2026, 12, 1, 12, 0, 0, -10800 },
+        { "Asia/Kolkata",      2026, 7, 1, 12, 0, 0, 19800 },
+        { "Asia/Kathmandu",    2026, 1, 1, 12, 0, 0, 20700 },
+    };
+    int bad = 0, n = (int)(sizeof(C) / sizeof(C[0]));
+    for (int k = 0; k < n; k++) {
+        int z = tz_find(C[k].zone);
+        int got = z < 0 ? -1 : tz_offset_at(z, rtc_make_time(C[k].y, C[k].mo, C[k].d, C[k].h, C[k].mi, C[k].s));
+        if (got != C[k].want && !bad++)
+            ksnprintf(note, sizeof(note), "%s %04d-%02d-%02d %02d:%02d: %d s, want %d", C[k].zone, C[k].y, C[k].mo, C[k].d, C[k].h, C[k].mi, got, C[k].want);
+    }
+    if (!bad) ksnprintf(note, sizeof(note), "%d instants in %d zones", n, 7);
+    report("summer time starts and ends on the right second", bad == 0, note);
+
+    int was = tz_use(tz_find("Europe/Paris"));
+    uint32_t a = tz_to_utc(rtc_make_time(2026, 7, 1, 12, 0, 0));
+    uint32_t g = tz_to_utc(rtc_make_time(2026, 3, 29, 2, 30, 0));     /* (does not exist: read as winter) */
+    uint32_t o = tz_to_utc(rtc_make_time(2026, 10, 25, 2, 30, 0));    /* (twice: the first, summer's) */
+    int ok = a == rtc_make_time(2026, 7, 1, 10, 0, 0) && g == rtc_make_time(2026, 3, 29, 1, 30, 0) &&
+             o == rtc_make_time(2026, 10, 25, 0, 30, 0) && tz_to_local(a) == rtc_make_time(2026, 7, 1, 12, 0, 0);
+    report("local time to UTC and back (summer, the skipped and the repeated hour)", ok, "");
+    uint32_t u = rtc_now_utc(), l = rtc_now();
+    int d = (int)(l - u) - tz_offset_at(tz_current(), u);
+    ksnprintf(note, sizeof(note), "local %u, UTC %u", l, u);
+    report("the clock: local time = UTC + the zone's offset", u && d >= -1 && d <= 1, note);
+
+    /* by hand: a day on, then back (the clock chip itself is written) */
+    uint32_t t0 = rtc_now_utc();
+    int set = rtc_set_utc(t0 + 86400u);
+    uint32_t t1 = rtc_now_utc();
+    rtc_set_utc(t0 + (t1 - t0 - 86400u));
+    ksnprintf(note, sizeof(note), "%d s on", (int)(t1 - t0));
+    report("the clock set by hand, and back", set == 0 && t1 - t0 >= 86400u && t1 - t0 <= 86401u, note);
+    char err[96];
+    int r1 = date_set_text("30/02/2026", NULL, err, sizeof(err)), r2 = date_set_text(NULL, "25:00", err, sizeof(err));
+    report("dates and times that do not exist are refused", r1 != 0 && r2 != 0, "");
+    tz_use(was);
+}
+
 static void t_swap(void) {
     section("compressed memory: swap in RAM (build 182)");
 #ifndef __x86_64__
@@ -399,8 +459,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -430,6 +490,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "zip") ? "selftest: checking ZIP archives" :
                      only && !strcmp(only, "clipboard") ? "selftest: checking the clipboard history" :
                      only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
+                     only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
@@ -437,6 +498,8 @@ int selftest_cmd(int argc, char** argv) {
         t_zip();
     } else if (only && !strcmp(only, "clipboard")) {
         t_clip();
+    } else if (only && !strcmp(only, "time")) {
+        t_time();
     } else if (only && !strcmp(only, "swap")) {
         if (install() == 0) t_swap();
     } else if(only && !strcmp(only,"boot")) {
@@ -474,6 +537,7 @@ int selftest_cmd(int argc, char** argv) {
             t_zip();
             t_clip();
             t_swap();
+            t_time();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

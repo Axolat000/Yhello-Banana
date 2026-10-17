@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 19.
+ * The Banana OS application interface (ABI), version 21.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 20u
+#define BANANA_API_VERSION 21u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -482,6 +482,11 @@ typedef struct banana_api {
      * minimize, desktop switch, close or app exit release it. 0 / -1. */
     int   (*win_capture_mouse)(int win,int capture);
     int   (*win_mouse_captured)(int win); /* 1 active, 0 released, -1 invalid */
+    /* v21: the time in UTC, seconds since 1970 (0: no clock); and how far
+     * the local time is from it - seconds east of UTC - at the instant utc
+     * (0: now), with the summer time of the zone set in Settings */
+    unsigned int (*time_utc)(void);
+    int   (*utc_offset)(unsigned int utc);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

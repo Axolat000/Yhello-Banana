@@ -5,6 +5,7 @@
 #include "task.h"
 #include "timer.h"
 #include "rtc.h"
+#include "tz.h"
 #include "serial.h"
 #include "smp.h"
 #include "fs.h"
@@ -276,18 +277,21 @@ static void handle(const char* o, uint32_t len) {
         put("}}");
         send_out();
     } else if (strcmp(cmd, "guest-get-time") == 0) {
-        putf("{\"return\":%llu}", (unsigned long long)rtc_now() * 1000000000ull);
+        putf("{\"return\":%llu}", (unsigned long long)rtc_now_utc() * 1000000000ull);
         send_out();
     } else if (strcmp(cmd, "guest-set-time") == 0) {
         /* no time: "set the clock from the hardware clock" - it already is */
-        if (get_num(o, len, "time", &n) && rtc_set_time((uint32_t)((uint64_t)n / 1000000000ull)) != 0) {
+        if (get_num(o, len, "time", &n) && rtc_set_utc((uint32_t)((uint64_t)n / 1000000000ull)) != 0) {
             error_reply("InvalidParameter", "the time is outside what the clock holds (2000-2099)");
             return;
         }
         put("{\"return\":{}}");
         send_out();
     } else if (strcmp(cmd, "guest-get-timezone") == 0) {
-        put("{\"return\":{\"zone\":\"local\",\"offset\":0}}");
+        {
+            const tz_zone_t* z = tz_get(tz_current());
+            putf("{\"return\":{\"zone\":\"%s\",\"offset\":%d}}", z ? z->id : "UTC", tz_offset_at(tz_current(), rtc_now_utc()));
+        }
         send_out();
     } else if (strcmp(cmd, "guest-network-get-interfaces") == 0) {
         cmd_interfaces();

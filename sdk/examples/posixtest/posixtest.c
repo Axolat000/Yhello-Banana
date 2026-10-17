@@ -1010,6 +1010,28 @@ static void t_dlopen(void) {
 
 /* mkdir's errno: Java's Files.createDirectories takes a folder that is
  * there by EEXIST, and gave up on Banana OS before it was set */
+/* the time: UTC from time(), the zone's offset in localtime(), back with mktime() */
+static void t_time(void) {
+    time_t now = time(NULL);
+    struct tm g, l;
+    gmtime_r(&now, &g);
+    localtime_r(&now, &l);
+    long diff = (long)(timegm(&l) - now);             /* (the local fields read as UTC: now + offset) */
+    char note[96];
+    snprintf(note, sizeof(note), "offset %ld s, gmtoff %ld, %s", diff, l.tm_gmtoff, l.tm_zone ? l.tm_zone : "-");
+    check("localtime() = UTC + tm_gmtoff", now > 1700000000 && diff == l.tm_gmtoff && diff % 900 == 0, note);
+    struct tm c = l;
+    check("mktime(localtime(t)) == t", mktime(&c) == now, "");
+    char z[16];
+    strftime(z, sizeof(z), "%z", &l);
+    long a = l.tm_gmtoff < 0 ? -l.tm_gmtoff : l.tm_gmtoff;
+    char want[16];
+    snprintf(want, sizeof(want), "%c%02ld%02ld", l.tm_gmtoff < 0 ? '-' : '+', a / 3600, a / 60 % 60);
+    check("strftime %z", !strcmp(z, want), z);
+    tzset();
+    check("tzset: timezone is minus the winter offset", timezone == -(l.tm_gmtoff - (l.tm_isdst ? 3600 : 0)), "");
+}
+
 static void t_files(void) {
     const char* home = getenv("HOME");
     char dir[256], sub[300], file[300];
@@ -1044,6 +1066,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "signals")) t_signals();
     if (!only || !strcmp(only, "dlopen")) t_dlopen();
     if (!only || !strcmp(only, "files")) t_files();
+    if (!only || !strcmp(only, "time")) t_time();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

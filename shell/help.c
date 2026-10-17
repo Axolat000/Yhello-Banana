@@ -209,7 +209,21 @@ static const page_t PAGES[] = {
     { "uname", "system", "uname", "the system's name", NULL, NULL, NULL, "neofetch" },
     { "whoami", "system", "whoami", "the user", NULL, NULL, NULL, "passwd" },
     { "hostname", "system", "hostname", "the computer's name", NULL, NULL, NULL, NULL },
-    { "date", "system", "date", "the date and time (from the clock)", NULL, NULL, NULL, "uptime" },
+    { "date", "system", "date [-u | -a] | date set [YYYY-MM-DD] [HH:MM[:SS]] | date utc on|off",
+      "the date and time; set the clock by hand",
+      "Shows the local time - the time zone's (see timezone) - with the zone and whether it is summer time. "
+      "date set sets the clock: a date (2026-10-17, or 17/10/2026), a time (18:30 or 18:30:15), or both; "
+      "the part not given stays as it is. The computer's clock chip keeps the local time (as Windows does: a "
+      "PC that also starts Windows shows the same time in both) or UTC (as Linux does): date utc on|off "
+      "changes which, keeping the time. Settings > Date & time does the same with the mouse.",
+      "-u|the time in UTC\n-a|local time, UTC, and what the clock chip keeps",
+      "date set 2026-10-17 18:30\ndate set 9:05\ndate utc on", "timezone" },
+    { "timezone", "system", "timezone [list [words] | <zone or place>]", "the time zone",
+      "With nothing, the zone in use and its offset from UTC. timezone list shows every zone (words: only "
+      "those naming them); timezone Europe/Paris, or a place - timezone tokyo - sets it: the time does not "
+      "change, the local time does. Summer time comes and goes by itself, by the zone's rule (the EU's, the "
+      "USA's, Australia's...). Apps get it too: localtime(), strftime %z / %Z; Java reads /etc/timezone.",
+      NULL, "timezone list europe\ntimezone new york\ntimezone UTC", "date" },
     { "uptime", "system", "uptime", "how long it has been running, the load average", NULL, NULL, NULL, "top" },
     { "neofetch", "system", "neofetch", "a summary of the system", NULL, NULL, NULL, "hw_info" },
     { "top", "system", "top", "a live view of the processor, memory and tasks", "q quits.", NULL, NULL, "htop" },
@@ -330,7 +344,7 @@ static const page_t PAGES[] = {
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
-    { "settings", "desktop", "settings [apps [name]]", "open Settings (or its Apps page)",
+    { "settings", "desktop", "settings [apps [name] | time]", "open Settings (or its Apps or Date & time page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
       "whether it is running or has an update; select one to open it, stop it, update it or uninstall it "
       "(Uninstall asks for a second click). The Apps launcher's Details opens the same page.",

@@ -21,6 +21,7 @@
 void settings_open(void);
 #define SETTINGS_PAGE_DISPLAY 0
 #define SETTINGS_PAGE_FONTS   1
+#define SETTINGS_PAGE_TIME    8
 #define SETTINGS_PAGE_TASKBAR 3
 #define SETTINGS_PAGE_STARTUP 9
 #define SETTINGS_PAGE_APPS    10
