@@ -6,6 +6,7 @@
 #include "../kernel/fs.h"
 #include "../kernel/fsdisk.h"
 #include "../kernel/rtc.h"
+#include "../kernel/zip.h"
 
 static void err(const char* cmd, const char* what, const char* path) {
     char b[FS_PATH_LEN + 64];
@@ -234,6 +235,141 @@ static void cmd_fsck(int argc, char** argv) {
     }
 }
 
+/* ── zip / unzip (kernel/zip.c) ──────────────────────────────────── */
+
+/* p made absolute (the shell's folder in front of a relative one) */
+static void absolute(const char* p, char* out, int cap) {
+    if (p[0] == '/' || p[0] == '~') { kstrlcpy(out, p, (size_t)cap); return; }
+    char cwd[FS_PATH_LEN];
+    fs_cwd_path(cwd, sizeof(cwd));
+    if (!strcmp(p, ".")) kstrlcpy(out, cwd, (size_t)cap);
+    else ksnprintf(out, (size_t)cap, "%s%s%s", cwd, cwd[1] ? "/" : "", p);
+}
+
+static int pct(uint32_t size, uint32_t csize) {
+    return size ? (int)(100 - (uint64_t)csize * 100 / size) : 0;
+}
+
+static void zip_line(const zip_entry_t* e, const char* note, void* arg) {
+    (void)note;
+    if (*(int*)arg) return;                                       /* -q */
+    char b[FS_PATH_LEN + 48];
+    if (e->is_dir) ksnprintf(b, sizeof(b), "  adding: %s (stored 0%%)", e->name);
+    else ksnprintf(b, sizeof(b), "  adding: %s (%s %d%%)", e->name, e->method == 8 ? "deflated" : "stored", pct(e->size, e->csize));
+    terminal_writeln(b);
+}
+
+static void cmd_zip(int argc, char** argv) {
+    int quiet = 0, flags = 0, i = 1;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        for (const char* o = argv[i] + 1; *o; o++) {
+            if (*o == 'r') continue;                              /* (folders are always added with all they hold) */
+            else if (*o == 'q') quiet = 1;
+            else if (*o == '0') flags |= ZIP_STORE;
+            else if (*o >= '1' && *o <= '9') flags &= ~ZIP_STORE;
+            else i = argc;
+        }
+    }
+    if (argc - i < 2) {
+        terminal_writeln("usage: zip [-r] [-q] [-0] ARCHIVE[.zip] FILE|FOLDER...   (-0: store, no compression; folders: all they hold)");
+        return;
+    }
+    char zp[FS_PATH_LEN];
+    absolute(argv[i], zp, sizeof(zp));
+    if (!zip_is_zip_name(zp) && !strchr(strrchr(zp, '/') ? strrchr(zp, '/') : zp, '.'))
+        kstrlcat(zp, ".zip", sizeof(zp));
+    int n = argc - i - 1;
+    static char paths[30][FS_PATH_LEN];
+    const char* ptrs[30];
+    for (int k = 0; k < n && k < 30; k++) { absolute(argv[i + 1 + k], paths[k], FS_PATH_LEN); ptrs[k] = paths[k]; }
+    zip_stats_t st;
+    char why[FS_PATH_LEN + 80];
+    if (fs_find_file(zp) >= 0) fs_delete(zp, 0);                   /* (a new archive: no updating in place) */
+    if (zip_create(zp, ptrs, n, flags, zip_line, &quiet, &st, why, sizeof(why)) < 0) { err("zip", why, NULL); return; }
+    char b[FS_PATH_LEN + 96];
+    ksnprintf(b, sizeof(b), "zip: %s - %d file%s, %d folder%s, %u -> %u bytes (%d%% smaller)", zp, st.files, st.files == 1 ? "" : "s",
+              st.dirs, st.dirs == 1 ? "" : "s", st.bytes, st.zbytes, st.bytes > st.zbytes ? pct(st.bytes, st.zbytes) : 0);
+    terminal_writeln(b);
+}
+
+typedef struct { int quiet; uint32_t total, ztotal; int n; } unzip_ctx_t;
+
+static void unzip_list_line(const zip_entry_t* e, const char* note, void* arg) {
+    (void)note;
+    unzip_ctx_t* c = (unzip_ctx_t*)arg;
+    rtc_datetime_t dt;
+    rtc_split_time(e->mtime, &dt);
+    char b[FS_PATH_LEN + 64];
+    ksnprintf(b, sizeof(b), "%10u  %04u-%02u-%02u %02u:%02u   %s", e->size, dt.year, dt.month, dt.day, dt.hour, dt.minute, e->name);
+    terminal_writeln(b);
+    c->total += e->size;
+    c->ztotal += e->csize;
+    c->n++;
+}
+
+static void unzip_line(const zip_entry_t* e, const char* note, void* arg) {
+    unzip_ctx_t* c = (unzip_ctx_t*)arg;
+    char b[FS_PATH_LEN + 80];
+    if (note) {
+        ksnprintf(b, sizeof(b), "  %s: %s", e->name, note);
+        terminal_write_color(b, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+        terminal_putchar('\n');
+        return;
+    }
+    if (c->quiet) return;
+    ksnprintf(b, sizeof(b), "%s %s", e->is_dir ? "   creating:" : e->method == 8 ? "  inflating:" : " extracting:", e->name);
+    terminal_writeln(b);
+}
+
+static void cmd_unzip(int argc, char** argv) {
+    int list = 0, flags = 0, bad = 0;
+    unzip_ctx_t c = { 0 };
+    const char* zip = NULL, *dest = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-d") && i + 1 < argc) dest = argv[++i];
+        else if (argv[i][0] == '-' && argv[i][1]) {
+            for (const char* o = argv[i] + 1; *o; o++) {
+                if (*o == 'l') list = 1;
+                else if (*o == 'o') flags |= ZIP_OVERWRITE;
+                else if (*o == 'q') c.quiet = 1;
+                else bad = 1;
+            }
+        } else if (!zip) zip = argv[i];
+        else bad = 1;
+    }
+    if (bad || !zip) {
+        terminal_writeln("usage: unzip [-l] [-o] [-q] ARCHIVE.zip [-d FOLDER]   (-l: list, -o: replace files that are there)");
+        return;
+    }
+    char zp[FS_PATH_LEN], dp[FS_PATH_LEN], why[FS_PATH_LEN + 80];
+    absolute(zip, zp, sizeof(zp));
+    if (fs_find_file(zp) < 0 && !zip_is_zip_name(zp)) kstrlcat(zp, ".zip", sizeof(zp));
+    if (list) {
+        terminal_writeln("    Length  Date       Time    Name");
+        terminal_writeln("----------  ---------- -----   ----");
+        if (zip_list(zp, unzip_list_line, &c, why, sizeof(why)) < 0) { err("unzip", why, NULL); return; }
+        terminal_writeln("----------                     ----");
+        char b[96];
+        ksnprintf(b, sizeof(b), "%10u                     %d file%s (%u bytes in the archive)", c.total, c.n, c.n == 1 ? "" : "s", c.ztotal);
+        terminal_writeln(b);
+        return;
+    }
+    absolute(dest ? dest : ".", dp, sizeof(dp));
+    char b[FS_PATH_LEN + 16];
+    ksnprintf(b, sizeof(b), "Archive:  %s", zp);
+    terminal_writeln(b);
+    zip_stats_t st;
+    if (zip_extract(zp, dp, flags, unzip_line, &c, &st, why, sizeof(why)) < 0) { err("unzip", why, NULL); return; }
+    ksnprintf(b, sizeof(b), "unzip: %d file%s, %d folder%s, %u bytes", st.files, st.files == 1 ? "" : "s", st.dirs, st.dirs == 1 ? "" : "s", st.bytes);
+    if (st.skipped || st.failed) {
+        char m[64];
+        ksnprintf(m, sizeof(m), " - %d skipped%s, %d failed", st.skipped, st.skipped && !(flags & ZIP_OVERWRITE) ? " (-o replaces)" : "", st.failed);
+        kstrlcat(b, m, sizeof(b));
+    }
+    terminal_write_color(b, st.failed ? VGA_COLOR_YELLOW : VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    terminal_putchar('\n');
+}
+
 int fscmd_dispatch(const char* line) {
     char* buf = (char*)kmalloc(1024);
     if (!buf) return 0;
@@ -248,6 +384,8 @@ int fscmd_dispatch(const char* line) {
     else if (strcmp(argv[0], "readlink") == 0) cmd_readlink(argc, argv);
     else if (strcmp(argv[0], "stat") == 0) cmd_stat(argc, argv);
     else if (strcmp(argv[0], "fsck") == 0 || strcmp(argv[0], "e2fsck") == 0) cmd_fsck(argc, argv);
+    else if (strcmp(argv[0], "zip") == 0) cmd_zip(argc, argv);
+    else if (strcmp(argv[0], "unzip") == 0) cmd_unzip(argc, argv);
     else done = 0;
     kfree(buf);
     return done;

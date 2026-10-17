@@ -45,6 +45,7 @@
 #include "fileops.h"
 #include "keyboard.h"
 #include "rtc.h"
+#include "zip.h"
 
 #define HOME      "/home/banana"
 #define TITLE_H   20
@@ -138,6 +139,7 @@ static uint32_t* g_thumb;
 static int      g_thumb_for = -1;
 
 static void select_name(const char* name);
+static void extract_zip(const char* path, const char* name, int here);
 static void ensure_visible(void);
 
 /* ── helpers ──────────────────────────────────────────────────────── */
@@ -617,6 +619,7 @@ static void open_item(int i) {
     child_path(item_name(it), path, sizeof(path));
     if (it->is_dir) { go(path); return; }
     if (has_ext(item_name(it), ".bpk")) { install_package(path); return; }
+    if (zip_is_zip_name(item_name(it))) { extract_zip(path, item_name(it), 0); return; }
     if (open_media(path, item_name(it))) return;
     if (has_ext(item_name(it), ".wav")) { play_sound(path); return; }
     if (is_video(item_name(it))) { set_status_c("Install the Media Player app to play videos", 1); return; }
@@ -818,11 +821,81 @@ static void properties(void) {
     set_status(msg);
 }
 
+/* ── ZIP archives (kernel/zip.c) ──────────────────────────────────── */
+
+/* a name in this folder that is not taken: "name", "name (2)"... + ext */
+static void free_name(const char* stem, const char* ext, char* path, int cap) {
+    char nm[FS_NAME_LEN];
+    for (int n = 1; n < 1000; n++) {
+        if (n == 1) ksnprintf(nm, sizeof(nm), "%s%s", stem, ext);
+        else ksnprintf(nm, sizeof(nm), "%s (%d)%s", stem, n, ext);
+        child_path(nm, path, cap);
+        if (fs_find_file(path) < 0 && fs_find_dir(path) < 0) return;
+    }
+}
+
+/* "photos.zip" -> "photos", "notes.txt" -> "notes" (a folder keeps its whole name) */
+static void stem_of(const char* name, int is_dir, char* out, int cap) {
+    kstrlcpy(out, name, (size_t)cap);
+    char* dot = is_dir ? NULL : strrchr(out, '.');
+    if (dot && dot != out) *dot = 0;
+}
+
+/* here: into this folder; else into a new folder named after the archive, opened after */
+static void extract_zip(const char* path, const char* name, int here) {
+    char dest[FS_PATH_LEN], stem[FS_NAME_LEN], err[FS_PATH_LEN + 80], msg[160];
+    zip_stats_t st;
+    if (here) kstrlcpy(dest, g_path, sizeof(dest));
+    else { stem_of(name, 0, stem, sizeof(stem)); free_name(stem, "", dest, sizeof(dest)); }
+    set_status("Extracting...");
+    int rc = zip_extract(path, dest, 0, NULL, NULL, &st, err, sizeof(err));
+    if (rc < 0) {
+        if (!here && fs_find_dir(dest) >= 0 && !st.files && !st.dirs) fs_delete(dest, 1);
+        scan();
+        ksnprintf(msg, sizeof(msg), "Could not extract \"%s\": %s", name, err);
+        set_status_c(msg, 1);
+        return;
+    }
+    if (here) scan();
+    else go(dest);
+    int n = st.files;
+    if (st.failed || st.skipped)
+        ksnprintf(msg, sizeof(msg), "Extracted %d file%s - %d skipped, %d failed (%s)", n, n == 1 ? "" : "s", st.skipped, st.failed, err);
+    else
+        ksnprintf(msg, sizeof(msg), "Extracted %d file%s and %d folder%s from \"%s\"", n, n == 1 ? "" : "s", st.dirs, st.dirs == 1 ? "" : "s", name);
+    set_status_c(msg, st.failed != 0);
+}
+
+/* the selected items into a new archive here, named after the one right-clicked */
+static void compress_selected(void) {
+    static char paths[64][FS_PATH_LEN];
+    int n = marked_paths(paths, 64);
+    if (!n || g_sel < 0) return;
+    const char* ptrs[64];
+    for (int i = 0; i < n; i++) ptrs[i] = paths[i];
+    char stem[FS_NAME_LEN], zp[FS_PATH_LEN], err[FS_PATH_LEN + 80], msg[160];
+    stem_of(item_name(&g_items[g_sel]), g_items[g_sel].is_dir, stem, sizeof(stem));
+    free_name(stem, ".zip", zp, sizeof(zp));
+    set_status("Compressing...");
+    zip_stats_t st;
+    int rc = zip_create(zp, ptrs, n, 0, NULL, NULL, &st, err, sizeof(err));
+    scan();
+    if (rc < 0) { ksnprintf(msg, sizeof(msg), "Could not make the ZIP file: %s", err); set_status_c(msg, 1); return; }
+    const char* zn = strrchr(zp, '/') + 1;
+    select_name(zn);
+    char a[24], b[24];
+    human_size(st.bytes, a, sizeof(a));
+    human_size(st.zbytes, b, sizeof(b));
+    ksnprintf(msg, sizeof(msg), "Made \"%s\": %d file%s, %s -> %s", zn, st.files, st.files == 1 ? "" : "s", a, b);
+    set_status(msg);
+}
+
 /* ── menus ────────────────────────────────────────────────────────── */
 
 enum { M_OPEN = 1, M_EDIT, M_INSTALL, M_PLAY, M_WALLPAPER, M_COPY, M_CUT, M_PASTE, M_RENAME, M_DELETE,
        M_NEWFOLDER, M_NEWFILE, M_TERMINAL, M_REFRESH, M_USB, M_EJECT, M_PROPS, M_CLOSE, M_VIEW_DETAILS, M_VIEW_ICONS,
-       M_SELECT_NONE, M_BROWSER, M_FONT, M_CODE, M_RESTORE, M_EMPTY_TRASH, M_DELETE_FOREVER, M_SELECT_ALL, M_HIDDEN };
+       M_SELECT_NONE, M_BROWSER, M_FONT, M_CODE, M_RESTORE, M_EMPTY_TRASH, M_DELETE_FOREVER, M_SELECT_ALL, M_HIDDEN,
+       M_EXTRACT, M_EXTRACT_HERE, M_ZIP };
 
 static void menu_cb(int id, void* arg) {
     (void)arg;
@@ -840,6 +913,9 @@ static void menu_cb(int id, void* arg) {
     case M_WALLPAPER: if (path[0]) set_wallpaper(path, item_name(&g_items[g_sel])); break;
     case M_FONT: if (path[0]) install_font(path); break;
     case M_CODE: if (path[0]) open_in_code(path); break;
+    case M_EXTRACT: if (path[0]) extract_zip(path, item_name(&g_items[g_sel]), 0); break;
+    case M_EXTRACT_HERE: if (path[0]) extract_zip(path, item_name(&g_items[g_sel]), 1); break;
+    case M_ZIP: compress_selected(); break;
     case M_COPY: clip_selected(0); break;
     case M_CUT: clip_selected(1); break;
     case M_PASTE: paste_here(); break;
@@ -913,6 +989,7 @@ static void item_menu(int mx, int my, int row) {
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Cut", M_CUT, 0 };
         items[n++] = (ctx_item_t){ "Copy", M_COPY, 0 };
+        items[n++] = (ctx_item_t){ "Compress to ZIP file", M_ZIP, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Delete", M_DELETE, 0 };
         g_gen++;
@@ -927,6 +1004,10 @@ static void item_menu(int mx, int my, int row) {
         items[n++] = (ctx_item_t){ "Open", M_OPEN, 0 };
         if (!it->is_dir) {
             if (has_ext(name, ".bpk")) items[n++] = (ctx_item_t){ "Install app", M_INSTALL, 0 };
+            if (zip_is_zip_name(name)) {
+                items[n++] = (ctx_item_t){ "Extract to a folder", M_EXTRACT, 0 };
+                items[n++] = (ctx_item_t){ "Extract here", M_EXTRACT_HERE, 0 };
+            }
             if (has_ext(name, ".wav") || media_app(name)) items[n++] = (ctx_item_t){ "Play", M_PLAY, 0 };
             if (is_image_file(it->idx)) items[n++] = (ctx_item_t){ "Set as desktop background", M_WALLPAPER, 0 };
             if (is_font_name(name)) items[n++] = (ctx_item_t){ "Install font", M_FONT, 0 };
@@ -941,6 +1022,7 @@ static void item_menu(int mx, int my, int row) {
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Cut", M_CUT, 0 };
         items[n++] = (ctx_item_t){ "Copy", M_COPY, 0 };
+        if (!(!it->is_dir && zip_is_zip_name(name))) items[n++] = (ctx_item_t){ "Compress to ZIP file", M_ZIP, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Delete", M_DELETE, 0 };
         items[n++] = (ctx_item_t){ "Rename", M_RENAME, 0 };

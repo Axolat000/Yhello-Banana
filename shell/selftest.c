@@ -17,6 +17,8 @@
 #include "../kernel/pkg.h"
 #include "../kernel/hmem.h"
 #include "../kernel/smp.h"
+#include "../kernel/zip.h"
+#include "../kernel/deflate.h"
 
 /*
  * selftest [ring3 | memory | limits | cores] - checks the system features
@@ -192,10 +194,110 @@ static void t_ram(void) {
     report("live firmware total covers the managed RAM",kb>0 && kb>=managed,note);
 }
 
+/* ── ZIP archives (kernel/zip.c, kernel/deflate.c) ─────────────────── */
+
+static int same_file(const char* a, const char* b) {
+    int ia = fs_find_file(a), ib = fs_find_file(b);
+    if (ia < 0 || ib < 0) return 0;
+    fs_file_t* fa = fs_get_file(ia);
+    uint32_t na = fa ? fa->size : 0;
+    char* copy = (char*)kmalloc(na ? na : 1);
+    if (!copy) return 0;
+    if (na) memcpy(copy, fa->content, na);
+    fs_file_t* fb = fs_get_file(ib);
+    int same = fb && fb->size == na && (!na || memcmp(copy, fb->content, na) == 0);
+    kfree(copy);
+    return same;
+}
+
+/* a stored archive of one entry named name, by hand (names zip_create would never write) */
+static uint32_t raw_zip(uint8_t* z, const char* name, const char* data) {
+    uint32_t nl = (uint32_t)strlen(name), dl = (uint32_t)strlen(data), crc = crc32_update(0, data, dl), p = 0;
+    uint8_t h[46];
+#define P16(o, v) (h[o] = (uint8_t)(v), h[(o) + 1] = (uint8_t)((v) >> 8))
+#define P32(o, v) (P16(o, (v) & 0xFFFF), P16((o) + 2, (v) >> 16))
+    memset(h, 0, 46); P32(0, 0x04034b50u); P16(4, 20); P32(14, crc); P32(18, dl); P32(22, dl); P16(26, nl);
+    memcpy(z + p, h, 30); p += 30; memcpy(z + p, name, nl); p += nl; memcpy(z + p, data, dl); p += dl;
+    uint32_t cd = p;
+    memset(h, 0, 46); P32(0, 0x02014b50u); P16(4, 20); P16(6, 20); P32(16, crc); P32(20, dl); P32(24, dl); P16(28, nl);
+    memcpy(z + p, h, 46); p += 46; memcpy(z + p, name, nl); p += nl;
+    memset(h, 0, 46); P32(0, 0x06054b50u); P16(8, 1); P16(10, 1); P32(12, p - cd); P32(16, cd);
+    memcpy(z + p, h, 22); p += 22;
+#undef P16
+#undef P32
+    return p;
+}
+
+static void t_zip(void) {
+    section("ZIP archives: zip / unzip, Files' Extract and Compress");
+    if (fs_find_dir("/tmp/zt") >= 0) fs_delete("/tmp/zt", 1);
+    fs_mkdir_p("/tmp/zt/src/sub/deep");
+    /* text (compresses well), pseudo-random bytes (does not), an empty file */
+    uint32_t tn = 60000, bn = 20000;
+    char* t = (char*)kmalloc(tn);
+    uint8_t* b = (uint8_t*)kmalloc(bn);
+    if (!t || !b) { kfree(t); kfree(b); report("ZIP checks", 0, "out of memory"); return; }
+    for (uint32_t i = 0; i < tn; i++) t[i] = "the quick brown banana jumps over the lazy kernel\n"[i % 50];
+    uint32_t r = 12345;
+    for (uint32_t i = 0; i < bn; i++) { r = r * 1103515245u + 12345u; b[i] = (uint8_t)(r >> 16); }
+    fs_write_path("/tmp/zt/src/a.txt", t, tn);
+    fs_write_path("/tmp/zt/src/b.bin", b, bn);
+    fs_write_path("/tmp/zt/src/empty.txt", "", 0);
+    fs_write_path("/tmp/zt/src/sub/c.txt", "hello from a folder\n", 20);
+    fs_write_path("/tmp/zt/src/sub/deep/d.txt", t, 777);
+    kfree(t);
+    kfree(b);
+
+    char err[FS_PATH_LEN + 80], note[160];
+    zip_stats_t st;
+    const char* in[] = { "/tmp/zt/src" };
+    int rc = zip_create("/tmp/zt/t.zip", in, 1, 0, NULL, NULL, &st, err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%d files, %d folders, %u -> %u bytes%s%s", st.files, st.dirs, st.bytes, st.zbytes, rc ? ": " : "", rc ? err : "");
+    report("zip a folder (5 files, 3 folders), compressed", rc == 0 && st.files == 5 && st.dirs == 3 && st.zbytes < st.bytes / 2, note);
+    int n = zip_list("/tmp/zt/t.zip", NULL, NULL, err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%d entries", n);
+    report("list it", n == 8, note);
+    rc = zip_extract("/tmp/zt/t.zip", "/tmp/zt/out", 0, NULL, NULL, &st, err, sizeof(err));
+    int same = same_file("/tmp/zt/src/a.txt", "/tmp/zt/out/src/a.txt") && same_file("/tmp/zt/src/b.bin", "/tmp/zt/out/src/b.bin") &&
+               same_file("/tmp/zt/src/empty.txt", "/tmp/zt/out/src/empty.txt") && same_file("/tmp/zt/src/sub/c.txt", "/tmp/zt/out/src/sub/c.txt") &&
+               same_file("/tmp/zt/src/sub/deep/d.txt", "/tmp/zt/out/src/sub/deep/d.txt");
+    ksnprintf(note, sizeof(note), "%d files, %d failed%s%s", st.files, st.failed, err[0] ? ": " : "", err);
+    report("extract it: every file the same, byte for byte", rc == 0 && st.files == 5 && !st.failed && same, note);
+    rc = zip_extract("/tmp/zt/t.zip", "/tmp/zt/out", 0, NULL, NULL, &st, err, sizeof(err));
+    int kept = st.skipped == 5 && st.files == 0;
+    rc |= zip_extract("/tmp/zt/t.zip", "/tmp/zt/out", ZIP_OVERWRITE, NULL, NULL, &st, err, sizeof(err));
+    report("again: files there are kept, or replaced with -o", rc == 0 && kept && st.files == 5, "");
+
+    /* names that would land outside the folder */
+    uint8_t* z = (uint8_t*)kmalloc(512);
+    if (z) {
+        uint32_t zl = raw_zip(z, "../evil.txt", "pwned");
+        fs_write_path("/tmp/zt/evil1.zip", z, zl);
+        zl = raw_zip(z, "/tmp/zt/abs.txt", "pwned");
+        fs_write_path("/tmp/zt/evil2.zip", z, zl);
+        zip_stats_t s1, s2;
+        zip_extract("/tmp/zt/evil1.zip", "/tmp/zt/x/y", 0, NULL, NULL, &s1, err, sizeof(err));
+        zip_extract("/tmp/zt/evil2.zip", "/tmp/zt/x/y", 0, NULL, NULL, &s2, err, sizeof(err));
+        report("\"../\" and absolute names are refused", s1.skipped == 1 && s2.skipped == 1 && fs_find_file("/tmp/zt/x/evil.txt") < 0 &&
+               fs_find_file("/tmp/zt/abs.txt") < 0 && fs_find_file("/tmp/zt/evil.txt") < 0, "");
+        zl = raw_zip(z, "ok.txt", "fine data");
+        fs_write_path("/tmp/zt/good.zip", z, zl);
+        zip_extract("/tmp/zt/good.zip", "/tmp/zt/g", 0, NULL, NULL, &s1, err, sizeof(err));
+        z[30 + 6] ^= 0x20;                                  /* "fine data" -> "Fine data": the CRC no longer matches */
+        fs_write_path("/tmp/zt/bad.zip", z, zl);
+        zip_extract("/tmp/zt/bad.zip", "/tmp/zt/b", 0, NULL, NULL, &s2, err, sizeof(err));
+        report("a damaged file is caught by its CRC", s1.files == 1 && s2.failed == 1 && fs_find_file("/tmp/zt/b/ok.txt") < 0, err);
+        kfree(z);
+    }
+    fs_write_path("/tmp/zt/not.zip", "just some text, not an archive", 30);
+    report("a file that is not a ZIP is refused", zip_list("/tmp/zt/not.zip", NULL, NULL, err, sizeof(err)) < 0, err);
+    fs_delete("/tmp/zt", 1);
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -222,9 +324,12 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
                      only && !strcmp(only, "ram") ? "selftest: checking RAM reporting" :
+                     only && !strcmp(only, "zip") ? "selftest: checking ZIP archives" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
+    } else if (only && !strcmp(only, "zip")) {
+        t_zip();
     } else if(only && !strcmp(only,"boot")) {
         section("graphical boot menu rendering");bootmenu_tests_run(report);
     } else if(only && !strcmp(only,"mouse")) {
@@ -257,6 +362,7 @@ int selftest_cmd(int argc, char** argv) {
             bootmenu_tests_run(report);
             t_ram();
             t_posix(NULL);
+            t_zip();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }

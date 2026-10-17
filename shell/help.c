@@ -108,6 +108,19 @@ static const page_t PAGES[] = {
       "Shows a file's or folder's type, size, blocks, index, permissions (octal and rwx), owner, group "
       "and its three dates: access, modify and birth. A link is described itself unless -L is given.",
       "-L|follow symbolic links", "stat /etc/motd\nstat -L ~/latest", "ls, chmod" },
+    { "zip", "files", "zip [-r] [-q] [-0] <archive>[.zip] <file|folder>...", "pack files and folders into a ZIP archive",
+      "Makes a new ZIP archive (an existing one is replaced) of the files and folders given, folders with "
+      "everything in them, each under its own name. Files are compressed (deflate) unless that would not "
+      "make them smaller. Archives open on Windows, macOS and Linux; up to 4 GB and 65535 entries.",
+      "-r|folders with all they hold (always done)\n-q|quiet: only the summary\n-0|store, no compression",
+      "zip photos.zip ~/Pictures\nzip -0 backup.zip notes.txt todo.txt", "unzip" },
+    { "unzip", "files", "unzip [-l] [-o] [-q] <archive>.zip [-d <folder>]", "extract a ZIP archive",
+      "Extracts every file and folder of a ZIP archive into the current folder, or the one -d gives (made "
+      "if needed). Files already there are kept unless -o is given. Names that would land outside the "
+      "folder (\"../\", absolute) and encrypted or ZIP64 entries are skipped; every file's CRC is checked. "
+      "In Files, double-click an archive (or right-click > Extract) to extract it.",
+      "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
+      "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
     /* ── text ── */
     { "cat", "text", "cat <file>", "print a file",
       "Prints a text file. Binary files are refused (they would fill the screen with noise).", NULL,
