@@ -99,7 +99,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ports/openjdk/src
-          key: openjdk-ref-17.0.20.1-zero-v1
+          key: openjdk-ref-17.0.20.1-server-v1
       - name: Mesa reference build cache
         if: steps.bundle.outputs.cache-hit != 'true'
         uses: actions/cache@v4
