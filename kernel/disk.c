@@ -51,7 +51,8 @@ int disk_write(const ata_disk_t* d, uint32_t lba, uint32_t count, const void* bu
 int disk_flush(const ata_disk_t* d) {
     if (d->nvme) return nvme_flush(d->nvme - 1);
     if (d->vblk) return virtio_blk_flush(d->vblk - 1);
-    return d->ahci_port >= 0 ? ahci_flush(d->ahci_port) : 0;   /* ata.c flushes after each write */
+    if (d->ahci_port >= 0) return ahci_flush(d->ahci_port);
+    return d->is_atapi ? 0 : ata_flush(d->bus, d->is_slave);
 }
 
 int disk_cd_read(const ata_disk_t* d, uint32_t lba, uint32_t count, void* buf) {

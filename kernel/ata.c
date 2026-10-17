@@ -5,6 +5,14 @@ static inline uint8_t  inb(uint16_t p) { uint8_t  v; __asm__ volatile("inb  %1,%
 static inline void     outb(uint16_t p, uint8_t v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
 static inline uint16_t inw(uint16_t p) { uint16_t v; __asm__ volatile("inw  %1,%0":"=a"(v):"Nd"(p)); return v; }
 static inline void     outw(uint16_t p, uint16_t v) { __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p)); }
+/* n words in one string instruction: a virtual machine handles it in one
+ * go, where an inw / outw each traps into the hypervisor */
+static inline void insw_n(uint16_t p, void* buf, uint32_t n) {
+    __asm__ volatile("cld; rep insw" : "+D"(buf), "+c"(n) : "d"(p) : "memory");
+}
+static inline void outsw_n(uint16_t p, const void* buf, uint32_t n) {
+    __asm__ volatile("cld; rep outsw" : "+S"(buf), "+c"(n) : "d"(p) : "memory");
+}
 
 #define ATA_REG_DATA       0
 #define ATA_REG_FEATURES   1
@@ -200,7 +208,7 @@ int ata_read_sectors(int bus, int is_slave, uint32_t lba, uint8_t count, void* b
     uint16_t* dst = (uint16_t*)buf;
     for (int s = 0; s < count; s++) {
         if (wait_drq(io, 1000000) < 0) return -1;
-        for (int w = 0; w < 256; w++) dst[s * 256 + w] = inw(io + ATA_REG_DATA);
+        insw_n(io + ATA_REG_DATA, dst + s * 256, 256);
     }
     return 0;
 }
@@ -220,10 +228,19 @@ int ata_write_sectors(int bus, int is_slave, uint32_t lba, uint8_t count, const 
     const uint16_t* src = (const uint16_t*)buf;
     for (int s = 0; s < count; s++) {
         if (wait_drq(io, 1000000) < 0) return -1;
-        for (int w = 0; w < 256; w++) outw(io + ATA_REG_DATA, src[s * 256 + w]);
+        outsw_n(io + ATA_REG_DATA, src + s * 256, 256);
     }
-
-    outb(io + ATA_REG_COMMAND, ext ? ATA_CMD_FLUSH_EXT : ATA_CMD_CACHE_FLUSH);
-    if (wait_not_busy(io, 1000000) < 0) return -1;
+    /* the drive takes it into its cache; ata_flush (disk_flush) makes it stick */
+    int st = wait_not_busy(io, 1000000);
+    if (st < 0 || (st & (ATA_SR_ERR | ATA_SR_DF))) return -1;
     return 0;
+}
+
+int ata_flush(int bus, int is_slave) {
+    uint16_t io = bus_io(bus);
+    select_drive(bus, is_slave);
+    if (wait_not_busy(io, 1000000) < 0) return -1;
+    outb(io + ATA_REG_COMMAND, g_lba48[bus & 1][is_slave & 1] ? ATA_CMD_FLUSH_EXT : ATA_CMD_CACHE_FLUSH);
+    int st = wait_not_busy(io, 10000000);
+    return st < 0 || (st & (ATA_SR_ERR | ATA_SR_DF)) ? -1 : 0;
 }

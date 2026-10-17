@@ -1741,6 +1741,19 @@ static int pick_target(const char* cmd, const char* args, int n) {
     return k - 1;
 }
 
+/* "install: 41 MB in 12.3 s (CD / stick 8.1 s, disk 3.9 s, files 0.4 s)" */
+static void print_timing(const char* cmd, const char* what) {
+    fsdisk_timing_t t;
+    fsdisk_timing(&t);
+    char b[160], f[32] = "";
+    if (t.files_ms) ksnprintf(f, sizeof(f), ", files %u.%u s", t.files_ms / 1000u, t.files_ms % 1000u / 100u);
+    ksnprintf(b, sizeof(b), "%s: %s %u MB in %u.%u s (CD / stick %u.%u s, disk %u.%u s%s)", cmd, what,
+              t.written_bytes ? (t.written_bytes + 524287u) >> 20 : (t.image_bytes + 524287u) >> 20,
+              t.total_ms / 1000u, t.total_ms % 1000u / 100u, t.read_ms / 1000u, t.read_ms % 1000u / 100u,
+              t.disk_ms / 1000u, t.disk_ms % 1000u / 100u, f);
+    terminal_writeln(b);
+}
+
 static void cmd_install(const char* args) {
     /* --full (the default), --standard, --minimal: the apps it puts on the disk */
     int profile = PROFILE_FULL;
@@ -1802,6 +1815,7 @@ static void cmd_install(const char* args) {
     }
     terminal_writeln("install: copying boot image and filesystem, please wait...");
     int rc = fsdisk_install_to(&target);
+    if (rc == FSDISK_OK) print_timing("install", "wrote");
     switch (rc) {
         case FSDISK_OK:
             terminal_write_color(
@@ -1860,6 +1874,7 @@ static void cmd_update(const char* args) {
     terminal_writeln("update: comparing the installed system with this CD / USB stick...");
     terminal_flush();
     int same = k == 0 ? fsdisk_compare_boot() : 0;    /* (the comparison reads the first install) */
+    if (k == 0 && same >= 0) print_timing("update", "compared");
     if (same == FSDISK_ERR_NO_SOURCE) {
         terminal_write_color("update: no Banana OS CD or USB stick found - plug in the one with the new version.\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
@@ -1888,6 +1903,7 @@ static void cmd_update(const char* args) {
     terminal_writeln("update: writing the new system, please wait (do not switch off)...");
     terminal_flush();
     int rc = fsdisk_update_on(&d);
+    if (rc == FSDISK_OK) print_timing("update", "wrote");
     if (rc == FSDISK_OK) {
         terminal_write_color(
             "update: done. Remove the CD (or boot from the disk) and restart to use the new version.\n",

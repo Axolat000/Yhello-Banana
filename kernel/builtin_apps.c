@@ -7,6 +7,7 @@
 #include "examples.h"
 #include "repo.h"
 #include "crc32c.h"
+#include "timer.h"
 
 extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[];
 
@@ -45,15 +46,32 @@ static int marked_as(const char* name, const char* version, const char* key_end,
 static int marked(const char* name, const char* version, uint32_t crc) {
     char k[16];
     ksnprintf(k, sizeof(k), "#%08x", crc);
-    return marked_as(name, version, k, "\n");
+    return marked_as(name, version, k, "\n~");
+}
+
+/* the same, known from the compressed package's CRC ("name=version#crc~zcrc"
+ * lines, build 177): nothing needs unpacking to know it is the one installed */
+static int marked_z(const char* name, uint32_t zcrc) {
+    int fi = fs_find_file(MARKS);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (!f || !f->content) return 0;
+    char k[16];
+    ksnprintf(k, sizeof(k), "~%08x\n", zcrc);
+    int n = (int)strlen(name);
+    for (const char* p = f->content; (p = strstr(p, k)); p++) {
+        const char* line = p;
+        while (line > f->content && line[-1] != '\n') line--;
+        if (!strncmp(line, name, (size_t)n) && line[n] == '=') return 1;
+    }
+    return 0;
 }
 
 /* some package of this version was (a removed app stays removed) */
 static int marked_version(const char* name, const char* version) { return marked_as(name, version, "", "\n#"); }
 
-static void mark(const char* name, const char* version, uint32_t crc) {
-    char line[80];
-    ksnprintf(line, sizeof(line), "%s=%s#%08x\n", name, version, crc);
+static void mark(const char* name, const char* version, uint32_t crc, uint32_t zcrc) {
+    char line[96];
+    ksnprintf(line, sizeof(line), "%s=%s#%08x~%08x\n", name, version, crc, zcrc);
     int fi = fs_find_file(MARKS);
     if (fi < 0) { fs_mkdir_p("/etc"); fi = fs_create(MARKS); }
     if (fi >= 0) fs_append(fi, line, (uint32_t)strlen(line));
@@ -74,9 +92,15 @@ static int skipped(const char* name) {
 }
 
 void builtin_apps_install(void) {
+    uint32_t t0 = timer_ms();
+    int unpacked = 0;
     for (unsigned i = 0; i < sizeof(APPS) / sizeof(APPS[0]); i++) {
         int zlen = (int)(APPS[i].end - APPS[i].start), len = 0;
         if (zlen <= 0) continue;
+        /* the package this system already has (or left out on purpose): not unpacked again */
+        uint32_t zcrc = crc32c(0, APPS[i].start, (uint32_t)zlen);
+        if (marked_z(APPS[i].name, zcrc)) continue;
+        unpacked++;
         uint8_t* bpk = (uint8_t*)stbi_zlib_decode_malloc((const char*)APPS[i].start, zlen, &len);
         if (!bpk || len <= 0) { klog("apps: %s: the built-in package is damaged\n", APPS[i].name); continue; }
         pkg_info_t mine, have;
@@ -97,13 +121,16 @@ void builtin_apps_install(void) {
             if (want) {
                 char msg[160];
                 if (pkg_install_mem(bpk, (uint32_t)len, msg, sizeof(msg)) == 0) {
-                    mark(mine.name, mine.version, crc);
+                    mark(mine.name, mine.version, crc, zcrc);
                     klog("apps: %s\n", msg);
                 } else klog("apps: %s: %s\n", mine.name, msg);
+            } else if (installed && !marked_z(mine.name, zcrc)) {
+                mark(mine.name, mine.version, crc, zcrc);        /* (known now: not unpacked at the next boots) */
             }
         }
         kfree(bpk);
     }
+    if (unpacked) klog("apps: built-in apps checked in %u ms (%d unpacked)\n", timer_ms() - t0, unpacked);
     repo_builtin_refresh();          /* the App Store can install them again (builtin: source) */
 }
 

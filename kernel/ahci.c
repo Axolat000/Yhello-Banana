@@ -17,7 +17,7 @@
 #define MAX_PORTS    32
 #define MAX_DEV      16
 #define CMD_TIMEOUT  10000u          /* ms */
-#define MAX_SECTORS  128u            /* per command (64 KiB) */
+#define MAX_SECTORS  2048u           /* per command (1 MiB) */
 
 /* HBA registers */
 #define HBA_CAP   0x00
@@ -374,7 +374,7 @@ int ahci_atapi_read(int port, uint32_t lba, uint32_t count, void* buf) {
     if (!p) return -1;
     uint8_t* b = (uint8_t*)buf;
     while (count) {
-        uint32_t n = count > 32 ? 32 : count;
+        uint32_t n = count > 256 ? 256 : count;          /* (512 KiB a command) */
         uint8_t pkt[12] = { 0xA8, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
                             (uint8_t)(n >> 24), (uint8_t)(n >> 16), (uint8_t)(n >> 8), (uint8_t)n, 0, 0 };   /* READ(12) */
         int ok = -1;

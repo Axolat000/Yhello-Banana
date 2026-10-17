@@ -255,7 +255,22 @@ static volatile uint32_t g_prog_done, g_prog_total;
 
 void fsdisk_progress(uint32_t* done, uint32_t* total) { *done = g_prog_done; *total = g_prog_total; }
 
-static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t sink, void* ctx) {
+static fsdisk_timing_t g_tm;
+void fsdisk_timing(fsdisk_timing_t* out) { *out = g_tm; }
+
+/* The image is read 1 MB at a time (READ_BLOCKS), with the block before
+ * and the block after it: a name the patch renames may cross a chunk's
+ * edge, and is found whole that way (patching is the same on both sides:
+ * a renamed name is not found again). Each chunk goes to the sink at its
+ * own place, so a sink can skip what has not changed. */
+#define READ_BLOCKS  512u                  /* 1 MB of CD blocks per read */
+#define HASH_BLOCKS  32u                   /* the unit of the image's checksum table: 64 KB */
+#define HTAB_MAX     2048u                 /* 2048 x 64 KB: the 128 MB boot area */
+
+/* need(first block, blocks): 0 skips that chunk (NULL: every chunk) */
+typedef int (*chunk_need_t)(uint32_t blk, uint32_t nblk);
+
+static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t sink, void* ctx, chunk_need_t need) {
     uint32_t total = iso_bytes / 2048u;
     char vv[24];
     g_video_new[0] = 0;
@@ -263,44 +278,105 @@ static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t s
         kstrlcpy(g_video_new, vv, sizeof(g_video_new));
     g_prog_done = 0;
     g_prog_total = total + 1;
+    g_tm.image_bytes = iso_bytes;
     find_marker(src, total);
-    uint8_t* buf = (uint8_t*)kmalloc(FSDISK_COPY_BUF_BYTES + CARRY);
-    if (!buf) return -1;
-    uint32_t done = 0, carry_blk = 0;
-    int have_carry = 0, rc = 0;
+    /* [the block before][the chunk][the block after] */
+    uint8_t* buf = (uint8_t*)kmalloc(READ_BLOCKS * 2048u + 2u * CARRY);
+    uint8_t* prev = (uint8_t*)kmalloc(CARRY);
+    if (!buf || !prev) { kfree(buf); kfree(prev); return -1; }
+    memset(buf, 0, CARRY);
+    uint32_t done = 0;
+    int rc = 0, have_before = 1;
     while (done < total && rc == 0) {
-        uint32_t chunk = total - done;
-        if (chunk > FSDISK_COPY_CHUNK_BLOCKS) chunk = FSDISK_COPY_CHUNK_BLOCKS;
-        if (src_read(src, done, chunk, buf + CARRY) != 0) { rc = -1; break; }
-        uint8_t* start = have_carry ? buf : buf + CARRY;
-        uint32_t len = chunk * 2048u + (have_carry ? CARRY : 0);
-        uint32_t first = have_carry ? carry_blk : done;
-        patch_marker(start, len);
-        done += chunk;
+        uint32_t n = total - done < READ_BLOCKS ? total - done : READ_BLOCKS;
+        uint32_t after = done + n < total ? 1u : 0u;
+        if (need && !need(done, n)) { done += n; g_prog_done = done; have_before = 0; continue; }
+        uint32_t t0 = timer_ms();
+        if (!have_before && src_read(src, done - 1u, 1, buf) != 0) { rc = -1; break; }
+        if (src_read(src, done, n + after, buf + CARRY) != 0) { rc = -1; break; }
+        g_tm.read_ms += timer_ms() - t0;
+        memcpy(prev, buf + CARRY + (n - 1u) * 2048u, CARRY);      /* (as read: the next chunk's "before") */
+        patch_marker(buf, CARRY + (n + after) * 2048u);
+        t0 = timer_ms();
+        rc = sink(done, n, buf + CARRY, ctx);
+        g_tm.disk_ms += timer_ms() - t0;
+        done += n;
         g_prog_done = done;
+        memcpy(buf, prev, CARRY);
+        have_before = 1;
         task_yield();                      /* the desktop keeps drawing (the installer's progress) */
-        if (done < total) {
-            /* the last block waits for the next chunk (a name may continue there) */
-            if (len / 2048u > 1) rc = sink(first, len / 2048u - 1, start, ctx);
-            memcpy(buf, start + len - CARRY, CARRY);
-            have_carry = 1;
-            carry_blk = first + len / 2048u - 1;
-        } else {
-            rc = sink(first, len / 2048u, start, ctx);
-        }
     }
+    kfree(prev);
     kfree(buf);
     return rc;
 }
 
+/* ── the boot image's checksum table ──────────────────────────────────
+ * Install and update keep a CRC-32C of every 64 KB of the boot image they
+ * wrote, in a few sectors at the end of the boot area. An update then
+ * finds what changed by reading the CD alone, and writes only that; it
+ * does not have to read the whole disk back to know it is up to date. The
+ * table names the image it was made for (its volume descriptor, which
+ * holds the time the CD was made): an image written another way - an
+ * older Banana OS's update - makes it stale, and it is not used. */
+typedef struct {
+    uint32_t tab[HTAB_MAX];
+    uint32_t n;                            /* chunks in tab */
+    int      valid;                        /* tab is what the disk holds */
+} htab_t;
+
+static htab_t g_old, g_new;                /* the disk's table, and the one being made */
+
+static void hash_chunks(uint32_t blk, uint32_t nblk, const uint8_t* data) {
+    for (uint32_t k = 0; k < nblk; k += HASH_BLOCKS) {
+        uint32_t i = (blk + k) / HASH_BLOCKS, len = (nblk - k < HASH_BLOCKS ? nblk - k : HASH_BLOCKS) * 2048u;
+        if (i < HTAB_MAX) { g_new.tab[i] = crc32c(0, data + k * 2048u, len); if (i + 1 > g_new.n) g_new.n = i + 1; }
+    }
+}
+
 static int sink_write(uint32_t blk, uint32_t nblk, const uint8_t* data, void* ctx) {
+    hash_chunks(blk, nblk, data);
+    g_tm.written_bytes += nblk * 2048u;
     return disk_write((const ata_disk_t*)ctx, blk * 4u, nblk * 4u, data) == 0 ? 0 : -1;
+}
+
+/* an update: only the 64 KB pieces whose checksum is not the disk's (runs of them in one write) */
+static int sink_delta(uint32_t blk, uint32_t nblk, const uint8_t* data, void* ctx) {
+    hash_chunks(blk, nblk, data);
+    uint32_t run = 0, run_len = 0;
+    for (uint32_t k = 0; k <= nblk; k += HASH_BLOCKS) {
+        uint32_t i = (blk + k) / HASH_BLOCKS;
+        int changed = k < nblk && !(g_old.valid && i < g_old.n && g_old.tab[i] == g_new.tab[i]);
+        if (changed) {
+            if (!run_len) run = k;
+            run_len += nblk - k < HASH_BLOCKS ? nblk - k : HASH_BLOCKS;
+            continue;
+        }
+        if (run_len) {
+            g_tm.written_bytes += run_len * 2048u;
+            if (disk_write((const ata_disk_t*)ctx, (blk + run) * 4u, run_len * 4u, data + run * 2048u) != 0) return -1;
+            run_len = 0;
+        }
+    }
+    return 0;
+}
+
+/* comparing with the table: how many 64 KB pieces differ */
+static int sink_hash_compare(uint32_t blk, uint32_t nblk, const uint8_t* data, void* ctx) {
+    hash_chunks(blk, nblk, data);
+    int* differ = (int*)ctx;
+    for (uint32_t k = 0; k < nblk; k += HASH_BLOCKS) {
+        uint32_t i = (blk + k) / HASH_BLOCKS;
+        if (!(i < g_old.n && g_old.tab[i] == g_new.tab[i])) (*differ)++;
+    }
+    return 0;
 }
 
 /* Copies the CD's boot image (block-exact, per the ISO9660 PVD) onto the
  * disk from LBA 0 - 2048-byte CD blocks become 4 disk sectors each. */
 static int copy_boot_image(const img_src_t* src, const ata_disk_t* dst, uint32_t iso_bytes) {
-    return stream_image(src, iso_bytes, sink_write, (void*)dst);
+    memset(&g_new, 0, sizeof(g_new));
+    return stream_image(src, iso_bytes, sink_write, (void*)dst, NULL);
 }
 
 /* ── the filesystem on disk ───────────────────────────────────────────
@@ -320,6 +396,13 @@ static int copy_boot_image(const img_src_t* src, const ata_disk_t* dst, uint32_t
 #define V4_BASE_LBA         (128u * 1024u * 1024u / FSDISK_SECTOR)
 #define V4_TAIL_SECTORS     2048u                        /* 1 MB left free at the end */
 #define V4_MIN_SLOT_SECTORS (32u * 1024u * 1024u / FSDISK_SECTOR)
+/* the checksum table's place: the last 32 KB of the 128 MB boot area (the
+ * image must end before it) - a header sector, then the checksums */
+#define HTAB_LBA     (V4_BASE_LBA - 64u)
+#define HTAB_SECTORS (1u + HTAB_MAX * 4u / FSDISK_SECTOR)
+#define HTAB_MAGIC   0x48534842u              /* "BHSH" */
+#define IMAGE_MAX    (HTAB_LBA * FSDISK_SECTOR)
+
 #define V3_BASE_LBA         (32u * 1024u * 1024u / FSDISK_SECTOR)
 #define V3_SLOT_SECTORS     (((uint32_t)24u + (256u * 1024u * 1024u) + 65535u) / FSDISK_SECTOR)
 #define MAX_PAYLOAD_LIMIT   (1024u * 1024u * 1024u)      /* the files live in RAM anyway */
@@ -1384,8 +1467,13 @@ int fsdisk_install(void) {
     return fsdisk_install_to(&target);
 }
 
+static int htab_save(const ata_disk_t* d, uint32_t iso_bytes);
+static int htab_drop(const ata_disk_t* d);
+
 int fsdisk_install_to(const ata_disk_t* tp) {
     ata_disk_t target = *tp;
+    memset(&g_tm, 0, sizeof(g_tm));
+    uint32_t t_start = timer_ms();
     if (target.is_atapi || !target.sectors) return FSDISK_ERR_NO_TARGET;
     /* what was mounted from it goes, and it is never mounted again */
     blockdev_set_system(disk_blockdev(&target));
@@ -1395,7 +1483,7 @@ int fsdisk_install_to(const ata_disk_t* tp) {
 
     uint32_t iso_bytes;
     if (src_iso_size(&source, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
-    if (iso_bytes > V4_BASE_LBA * FSDISK_SECTOR) return FSDISK_ERR_ISO_TOO_BIG;
+    if (iso_bytes > IMAGE_MAX) return FSDISK_ERR_ISO_TOO_BIG;
 
     layout_t l;
     if (!layout_v4(&target, &l)) return FSDISK_ERR_TOO_SMALL;
@@ -1403,12 +1491,17 @@ int fsdisk_install_to(const ata_disk_t* tp) {
     v5_new_mark(&target, &m);
     if (bytes_to_sectors(fs_snapshot_size()) > m.data_end - m.data_lba) return FSDISK_ERR_FULL;
 
+    if (htab_drop(&target) != 0) return FSDISK_ERR_IO;
     if (copy_boot_image(&source, &target, iso_bytes) != 0) return FSDISK_ERR_IO;
     /* old headers: a layout-3 install's (past the new image), a layout-4 one's */
     if (iso_bytes <= V3_BASE_LBA * FSDISK_SECTOR) wipe_header(&target, V3_BASE_LBA);
     wipe_header(&target, V4_BASE_LBA);
     if (l.nslots == 2) wipe_header(&target, slot_lba_of(&l, 1));
+    uint32_t t_files = timer_ms();
     int rc = v5_format(&target, 0, 0);
+    g_tm.files_ms = timer_ms() - t_files;
+    if (rc == FSDISK_OK) htab_save(&target, iso_bytes);     /* (the next update: only what changed) */
+    g_tm.total_ms = timer_ms() - t_start;
     if (rc != FSDISK_OK) return rc;
     g_prog_done = g_prog_total;
 
@@ -1599,6 +1692,85 @@ int fsdisk_install_layout(void) {
     return (int)l.version;
 }
 
+typedef struct __attribute__((packed)) {
+    uint32_t magic, version, n, iso_bytes;
+    uint32_t pvd_check;                      /* CRC-32C of the image's volume descriptor (CD block 16) on the disk */
+    uint32_t tab_check;                      /* CRC-32C of the checksums */
+    uint32_t check;                          /* of the fields above */
+} htab_hdr_t;
+
+/* the volume descriptor as the disk has it: its CRC-32C, or 0 */
+static uint32_t pvd_check_of(const ata_disk_t* d) {
+    uint8_t* b = (uint8_t*)kmalloc(2048);
+    if (!b) return 0;
+    uint32_t c = disk_read(d, 16u * 4u, 4, b) == 0 ? crc32c(0, b, 2048) | 1u : 0;
+    kfree(b);
+    return c;
+}
+
+/* g_old: the disk's table, if it is the one of the image the disk holds */
+static void htab_load(const ata_disk_t* d) {
+    memset(&g_old, 0, sizeof(g_old));
+    uint8_t* b = (uint8_t*)kmalloc(HTAB_SECTORS * FSDISK_SECTOR);
+    if (!b) return;
+    htab_hdr_t h;
+    if (disk_read(d, HTAB_LBA, HTAB_SECTORS, b) == 0) {
+        memcpy(&h, b, sizeof(h));
+        if (h.magic == HTAB_MAGIC && h.version == 1 && h.n <= HTAB_MAX &&
+            h.check == crc32c(0, &h, 24u) &&
+            h.tab_check == crc32c(0, b + FSDISK_SECTOR, h.n * 4u) && h.pvd_check == pvd_check_of(d)) {
+            memcpy(g_old.tab, b + FSDISK_SECTOR, h.n * 4u);
+            g_old.n = h.n;
+            g_old.valid = 1;
+        }
+    }
+    kfree(b);
+}
+
+/* g_new onto the disk, for the image just written (after it is flushed) */
+static int htab_save(const ata_disk_t* d, uint32_t iso_bytes) {
+    uint8_t* b = (uint8_t*)kzalloc(HTAB_SECTORS * FSDISK_SECTOR);
+    if (!b) return -1;
+    htab_hdr_t h = { HTAB_MAGIC, 1, g_new.n, iso_bytes, pvd_check_of(d), 0, 0 };
+    memcpy(b + FSDISK_SECTOR, g_new.tab, g_new.n * 4u);
+    h.tab_check = crc32c(0, b + FSDISK_SECTOR, g_new.n * 4u);
+    h.check = crc32c(0, &h, 24u);
+    memcpy(b, &h, sizeof(h));
+    int rc = h.pvd_check && disk_write(d, HTAB_LBA, HTAB_SECTORS, b) == 0 && disk_flush(d) == 0 ? 0 : -1;
+    kfree(b);
+    return rc;
+}
+
+/* the table goes before the image changes: half an update leaves none (the next one writes all) */
+static int htab_drop(const ata_disk_t* d) {
+    if (HTAB_LBA >= d->sectors) return 0;
+    uint8_t z[FSDISK_SECTOR];
+    memset(z, 0, sizeof(z));
+    return disk_write(d, HTAB_LBA, 1, z) == 0 && disk_flush(d) == 0 ? 0 : -1;
+}
+
+/* the last comparison against the table (fsdisk_compare_boot), which the
+ * update right after it uses: only the CD chunks that changed are read again */
+static htab_t     g_cmp;
+static int        g_cmp_ok;
+static ata_disk_t g_cmp_disk;
+static uint32_t   g_cmp_iso, g_cmp_src;
+
+/* the CD (or stick) image's volume descriptor: its CRC-32C (it names the build), or 0 */
+static uint32_t src_pvd_check(const img_src_t* s) {
+    uint8_t* b = (uint8_t*)kmalloc(2048);
+    if (!b) return 0;
+    uint32_t c = src_read(s, 16, 1, b) == 0 ? crc32c(0, b, 2048) | 1u : 0;
+    kfree(b);
+    return c;
+}
+
+static int need_changed(uint32_t blk, uint32_t nblk) {
+    for (uint32_t i = blk / HASH_BLOCKS; i < (blk + nblk + HASH_BLOCKS - 1u) / HASH_BLOCKS; i++)
+        if (!(i < g_old.n && i < g_cmp.n && g_old.tab[i] == g_cmp.tab[i])) return 1;
+    return 0;
+}
+
 typedef struct { const ata_disk_t* disk; uint8_t* buf; int same; } cmp_ctx_t;
 
 static int sink_compare(uint32_t blk, uint32_t nblk, const uint8_t* data, void* vctx) {
@@ -1610,6 +1782,9 @@ static int sink_compare(uint32_t blk, uint32_t nblk, const uint8_t* data, void* 
 }
 
 int fsdisk_compare_boot(void) {
+    memset(&g_tm, 0, sizeof(g_tm));
+    g_cmp_ok = 0;
+    uint32_t t_start = timer_ms();
     ata_disk_t dst;
     img_src_t src;
     uint32_t iso_bytes;
@@ -1617,12 +1792,30 @@ int fsdisk_compare_boot(void) {
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
     int lay = fsdisk_install_layout();
     if (lay != (int)LAYOUT_V4 && lay != 5) return 0;            /* an old layout: always worth updating */
-    cmp_ctx_t c = { &dst, (uint8_t*)kmalloc(FSDISK_COPY_BUF_BYTES + CARRY), 1 };
-    if (!c.buf) return FSDISK_ERR_IO;
-    int rc = stream_image(&src, iso_bytes, sink_compare, &c);
-    kfree(c.buf);
+    htab_load(&dst);
+    memset(&g_new, 0, sizeof(g_new));
+    int rc, same;
+    if (g_old.valid) {
+        /* the CD against the table: nothing of the disk is read */
+        int differ = 0;
+        rc = stream_image(&src, iso_bytes, sink_hash_compare, &differ, NULL);
+        same = differ == 0 && g_new.n == g_old.n;
+        g_cmp = g_new;
+        g_cmp_ok = rc == 0;
+        g_cmp_disk = dst;
+        g_cmp_iso = iso_bytes;
+        g_cmp_src = src_pvd_check(&src);
+    } else {
+        /* no table (installed by an older Banana OS): the disk is read back */
+        cmp_ctx_t c = { &dst, (uint8_t*)kmalloc(READ_BLOCKS * 2048u), 1 };
+        if (!c.buf) return FSDISK_ERR_IO;
+        rc = stream_image(&src, iso_bytes, sink_compare, &c, NULL);
+        kfree(c.buf);
+        same = c.same;
+    }
+    g_tm.total_ms = timer_ms() - t_start;
     if (rc != 0) return FSDISK_ERR_IO;
-    return c.same;
+    return same;
 }
 
 /* Moves a layout-3 install's files to layout 4: the newest good copy is
@@ -1668,21 +1861,36 @@ int fsdisk_update(void) {
 }
 
 int fsdisk_update_on(const ata_disk_t* dp) {
+    memset(&g_tm, 0, sizeof(g_tm));
+    uint32_t t_start = timer_ms();
     ata_disk_t dst;
     img_src_t src;
     uint32_t iso_bytes;
     dst = *dp;
     if (!fsdisk_holds_banana(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
-    if (iso_bytes > V4_BASE_LBA * FSDISK_SECTOR) return FSDISK_ERR_ISO_TOO_BIG;
+    if (iso_bytes > IMAGE_MAX) return FSDISK_ERR_ISO_TOO_BIG;
     int rc = migrate_to_v4(&dst);
     if (rc != FSDISK_OK) return rc;
-    /* the boot area only: the files after it stay as they are */
-    if (copy_boot_image(&src, &dst, iso_bytes) != 0) return FSDISK_ERR_IO;
+    /* the boot area only: the files after it stay as they are. With the
+     * table, only the 64 KB pieces that changed are written */
+    htab_load(&dst);
+    memset(&g_new, 0, sizeof(g_new));
+    /* just compared (same disk, same CD): only the chunks that differ are read */
+    chunk_need_t need = NULL;
+    if (g_cmp_ok && g_old.valid && disk_same(&g_cmp_disk, &dst) && g_cmp_iso == iso_bytes && g_cmp_src && g_cmp_src == src_pvd_check(&src)) {
+        g_new = g_cmp;
+        need = need_changed;
+    }
+    g_cmp_ok = 0;
+    if (htab_drop(&dst) != 0) return FSDISK_ERR_IO;
+    if (stream_image(&src, iso_bytes, sink_delta, (void*)&dst, need) != 0) return FSDISK_ERR_IO;
     if (iso_bytes <= V3_BASE_LBA * FSDISK_SECTOR) wipe_header(&dst, V3_BASE_LBA);
     if (disk_flush(&dst) != 0) return FSDISK_ERR_IO;
+    htab_save(&dst, iso_bytes);              /* (without it the next update writes everything: no harm) */
     g_fi_state = -1;
     g_prog_done = g_prog_total;
+    g_tm.total_ms = timer_ms() - t_start;
     return FSDISK_OK;
 }
 
@@ -1711,6 +1919,8 @@ int fsdisk_set_boot_video(const char* value) {
         }
         if ((s / CH) % 16 == 0) task_yield();
     }
+    /* the image is not the one its checksum table describes any more */
+    if (hits && (htab_drop(&g_target) != 0 || disk_flush(&g_target) != 0)) rc = -1;
     dunlock();
     kfree(buf);
     if (rc == 0 && hits) {

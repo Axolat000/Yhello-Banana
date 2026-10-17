@@ -97,5 +97,13 @@ int  fsdisk_frozen(void);
 int  fsdisk_check(int full, void (*out)(const char* line));
 /* how far an install / update / comparison is (done of total) */
 void fsdisk_progress(uint32_t* done, uint32_t* total);
+/* how the last install / update / comparison spent its time (ms): reading
+ * the CD or stick, writing or comparing the disk, saving the files; the
+ * boot image's size and how much of it was written */
+typedef struct {
+    uint32_t total_ms, read_ms, disk_ms, files_ms;
+    uint32_t image_bytes, written_bytes;
+} fsdisk_timing_t;
+void fsdisk_timing(fsdisk_timing_t* out);
 
 #endif

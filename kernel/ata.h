@@ -33,5 +33,7 @@ int ata_probe_disks(ata_disk_t* out);
  * for "256 sectors", not supported here). */
 int ata_read_sectors(int bus, int is_slave, uint32_t lba, uint8_t count, void* buf);
 int ata_write_sectors(int bus, int is_slave, uint32_t lba, uint8_t count, const void* buf);
+/* the drive's write cache onto the disk (the writes above only reach the cache) */
+int ata_flush(int bus, int is_slave);
 
 #endif
