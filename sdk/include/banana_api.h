@@ -536,6 +536,11 @@ typedef struct banana_ucontext {
 #define BANANA_HAS(api, field) \
     ((api)->size >= (unsigned long)((const char*)&(api)->field - (const char*)(api)) + sizeof(void*))
 
+/* 64-bit: vm_map hands out addresses from here on (kernel/uvm.h's
+ * UVM_BASE); the memory the kernel allocates for an app (malloc, http_get's
+ * data...) is below it - the SDK's heap tells the two apart so */
+#define BANANA_VM_BASE 0x0000640000000000ull
+
 /* vm_map / vm_protect (the same values as kernel/uvm.h) */
 #define BANANA_PROT_NONE  0
 #define BANANA_PROT_READ  1

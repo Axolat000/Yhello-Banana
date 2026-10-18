@@ -152,6 +152,20 @@ static void t_cores(void) {
     else report("they spread over the cores", cores >= 2, cores >= 2 ? "" : "all stayed on one core");
 }
 
+static void t_malloc(void) {
+    section("malloc in the app (build 190)");
+    int rc = run("malloc", NULL, NULL);
+    if (rc < 100) { report("random blocks, realloc and alignment", 0, "a block changed, out of memory or a crash"); return; }
+    report("random blocks, realloc and alignment", 1, "");
+#ifdef __x86_64__
+    char note[96];
+    ksnprintf(note, sizeof(note), "%dx as fast as the kernel's allocator (times above)", rc - 100);
+    report("faster than a system call per malloc", rc - 100 >= 2, note);
+#else
+    skip("faster than a system call per malloc", "the 32-bit kernel keeps the kernel's allocator");
+#endif
+}
+
 /* Install the matching built-in test, even if an older package is on disk. */
 static void t_opencl(void) {
     section("OpenCL barriers, shared memory and vectors");
@@ -547,8 +561,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -582,6 +596,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
                      only && !strcmp(only, "sleep") ? "selftest: checking ACPI S3" :
+                     only && !strcmp(only, "malloc") ? "selftest: checking the apps' heap" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -622,6 +637,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "memory")) t_memory();
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
+        if (!only || !strcmp(only, "malloc")) t_malloc();
         if (!only) {
             t_opencl();
             browser_test_run(report);

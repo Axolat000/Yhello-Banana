@@ -31,6 +31,11 @@
 #include "uspace.h"
 #include "idt.h"
 #include "uvm.h"
+
+#ifdef __x86_64__
+/* the SDK's heap tells kernel memory from mapped memory by this address */
+_Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must be kernel/uvm.h's UVM_BASE");
+#endif
 #include "meminfo.h"
 #include "hmem.h"
 #include "upage.h"
@@ -2792,6 +2797,16 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     return 0;
 }
 
+/* what an app holds: its blocks' memory, and (64-bit) the pages of its
+ * mapped memory in RAM - where its malloc heap is now (sdk/lib/malloc.c) */
+static uint32_t app_mem_bytes(app_proc_t* p) {
+    uint64_t n = umem_used(p->mem);
+#ifdef __x86_64__
+    n += uvm_resident(p->us);
+#endif
+    return n > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
 int app_count(void) {
     int n = 0;
     for (int i = 0; i < APP_MAX; i++) if (g_procs[i].used) n++;
@@ -2804,7 +2819,7 @@ void app_list(void) {
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
         if (!p->used) continue;
-        uint32_t mem = umem_used(p->mem);
+        uint32_t mem = app_mem_bytes(p);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
         terminal_writeln(line);
@@ -2822,7 +2837,7 @@ int app_snapshot(app_info_t* out, int max) {
         kstrlcpy(out[n].name, p->name, sizeof(out[n].name));
         out[n].pid = p->pid;
         out[n].desktop = p->own_task;
-        out[n].mem = umem_used(p->mem);
+        out[n].mem = app_mem_bytes(p);
         out[n].threads = 1;
         for (int t = 0; t < APP_THREADS; t++) if (p->threads[t].used && !p->threads[t].done) out[n].threads++;
         n++;

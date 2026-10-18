@@ -18,7 +18,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, malloc, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -28,6 +28,10 @@ selftest limits          an app with 60 threads, an app with 60 files open,
                          24 apps at once
 selftest cores           threads calling malloc / free / a lock on every core, and
                          whether they spread over the cores (SMP=4 in QEMU)
+selftest malloc          the apps' own heap (sdk/lib/malloc.c): random blocks with
+                         every byte checked, realloc, aligned blocks; then 200000
+                         malloc + free on one thread and on every core, timed against
+                         the kernel's allocator (64-bit: must be at least 2x as fast)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
@@ -196,6 +200,15 @@ flags, long messages, clipped and padded framebuffers (nothing drawn outside
 them). It writes preview PNGs and reports to `build/test/crashscreen/` without
 booting anything; prints `PASS` when every check holds.
 
+### `tools/test_malloc.py`
+
+The apps' heap (`sdk/lib/malloc.c`), built with the SDK's own flags and run on
+Linux under a stand-in for the system's call table (`vm_map` is `mmap`), by
+`tools/tests/malloc.c`: 1.2 million random `malloc` / `calloc` / `realloc` /
+`free` with every byte checked (without and with the thread cache), aligned
+blocks from 16 B to 64 KiB alignment, kernel memory passed back to the kernel,
+8 threads freeing each other's blocks, and nothing left in use at the end.
+
 ## A full check before a release
 
 ```
@@ -205,6 +218,7 @@ MEM=8G tools/dev.sh apps
 tools/test-exfat.sh
 tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
 python3 tools/test_crashscreen.py
+python3 tools/test_malloc.py
 ```
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an

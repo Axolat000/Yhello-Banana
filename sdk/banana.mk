@@ -91,7 +91,7 @@ $(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o $(BUILD)/i686/cljit.o $(BUILD)/x86_64/cl
 $(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o: $(wildcard $(BANANA_SDK)/lib/cl*.h)
 endif
 
-LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
+LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/malloc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
             $(BANANA_SDK)/lib/math.c $(BANANA_SDK)/lib/posix.c $(BANANA_SDK)/lib/setjmp.c \
             $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c \
             $(BANANA_SDK)/lib/signal.c $(BANANA_SDK)/lib/dl.c $(BANANA_SDK)/lib/cxxrt.c \

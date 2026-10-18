@@ -85,6 +85,20 @@ above-4-GiB totals, reserved regions, tag ordering and live accounting.
 
 Grid regression coverage includes fixed/percentage/fractional columns, `minmax`, numeric `repeat`, gaps, automatic rows and resize (up to 16 columns). Spans, named lines, auto-fit/auto-fill and explicit row tracks are not implemented. Static lossy/lossless WebP and alpha streams decode; animated WebP is unsupported.
 
+## Optimizations
+
+Done in this order, each with its own build, `selftest` part and commit.
+
+| Optimization | Status | Notes |
+|---|---|---|
+| malloc inside the app | **testing** (build 190) | `sdk/lib/malloc.c`: size classes in 64 KiB spans, a cache of free blocks per thread (no lock, no system call for most calls), large blocks mapped, memory given back; the heap is mapped memory, so swap compresses it. `selftest malloc`; `tools/test_malloc.py` passes on Linux (1.2M random calls, 8 threads, aligned blocks, nothing left in use). |
+| AVX (XSAVE) | next | The kernel never enables XSAVE, so apps cannot use AVX/AVX2 (FFmpeg, Mesa, HotSpot fall back to SSE); task switches save with `fxsave`, which would lose the upper halves of AVX registers. |
+| `syscall` / `sysret` | planned | System calls enter through `int 0x80`, the slowest way; the 8-byte stubs can change without rebuilding apps. |
+| Interrupt-driven disk I/O | planned | AHCI and virtio-blk are polled; interrupts and some read-ahead free the CPU while the disk works. |
+| A faster kernel heap | planned | `kmalloc` walks one first-fit list from the start; size-class bins. |
+| Fewer TLB flushes | planned | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
+| TCP window scaling and SACK | planned | The receive window is capped at 64 KiB, so a download gets at most 64 KiB per round trip (about 1.3 MB/s at 50 ms). |
+
 ## Not planned
 
 Section 3 of the original list (a CI boot test, untracking build outputs, README fixes) was left out on purpose. Two parts of it were done anyway because the build needed them: the stale tracked `.o` files are no longer tracked, and `tools/dev.sh` boots and tests the system.

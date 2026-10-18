@@ -20,6 +20,7 @@
 #include <banana.h>
 #include <sys/mman.h>
 #include <stdint.h>
+#include "banana_api.h"
 
 static unsigned xs(unsigned* x) {
     *x ^= *x << 13; *x ^= *x >> 17; *x ^= *x << 5;
@@ -301,6 +302,92 @@ static int t_suspend(const char* path) {
     return bad;
 }
 
+/* ── malloc: the app's heap (sdk/lib/malloc.c) against the kernel's allocator ── */
+extern const banana_api_t* __banana;
+int __malloc_heap(void);
+
+#define MB_SLOTS 256
+#define MB_ROUNDS 200000
+
+/* MB_ROUNDS malloc / free pairs over a window of live blocks (16 B .. 1 KiB),
+ * through the heap (kernel = 0) or the kernel's allocator (1): milliseconds */
+static unsigned bench(int kernel, unsigned seed) {
+    void* live[MB_SLOTS] = { 0 };
+    unsigned x = seed, t0 = banana_ticks();
+    for (int i = 0; i < MB_ROUNDS; i++) {
+        unsigned k = xs(&x) % MB_SLOTS;
+        if (live[k]) { if (kernel) __banana->free(live[k]); else free(live[k]); }
+        size_t n = 16 + xs(&x) % 1008;
+        live[k] = kernel ? __banana->malloc(n) : malloc(n);
+        if (live[k]) ((char*)live[k])[0] = 1;
+    }
+    for (int k = 0; k < MB_SLOTS; k++) if (live[k]) { if (kernel) __banana->free(live[k]); else free(live[k]); }
+    return banana_ticks() - t0;
+}
+
+static volatile int g_mb_kernel;
+static int bench_worker(void* arg) { return (int)bench(g_mb_kernel, 77u + (unsigned)(long)arg); }
+
+/* all cores at once: the slowest thread's time */
+static unsigned bench_all(int kernel, int n) {
+    g_mb_kernel = kernel;
+    int ids[16];
+    unsigned worst = 0;
+    for (int i = 0; i < n; i++) ids[i] = banana_thread(bench_worker, (void*)(long)i);
+    for (int i = 0; i < n; i++) if (ids[i] > 0) { unsigned t = (unsigned)banana_join(ids[i]); if (t > worst) worst = t; }
+    return worst;
+}
+
+static int t_malloc(void) {
+    /* first: every byte of random blocks survives, realloc keeps data, alignment holds */
+    int bad = 0;
+    unsigned x = 4242;
+    static unsigned char* blk[512];
+    static size_t len[512];
+    for (int i = 0; i < 50000 && !bad; i++) {
+        int k = (int)(xs(&x) % 512);
+        if (blk[k]) {
+            for (size_t j = 0; j < len[k]; j++) if (blk[k][j] != (unsigned char)(k + j)) { bad = 1; break; }
+            if (xs(&x) % 3 == 0) {
+                size_t n = xs(&x) % 70000 + 1;
+                unsigned char* q = realloc(blk[k], n);
+                if (!q) { bad = 2; break; }
+                for (size_t j = len[k] < n ? len[k] : n; j < n; j++) q[j] = (unsigned char)(k + j);
+                blk[k] = q; len[k] = n;
+                continue;
+            }
+            free(blk[k]);
+            blk[k] = NULL;
+        } else {
+            len[k] = xs(&x) % (xs(&x) % 8 ? 600 : 70000) + 1;
+            blk[k] = malloc(len[k]);
+            if (!blk[k]) { bad = 2; break; }
+            for (size_t j = 0; j < len[k]; j++) blk[k][j] = (unsigned char)(k + j);
+        }
+    }
+    for (int k = 0; k < 512; k++) { free(blk[k]); blk[k] = NULL; }
+    for (size_t a = 16; a <= 65536 && !bad; a *= 2) {
+        void* p = NULL;
+        if (posix_memalign(&p, a, 1000) || ((unsigned long)p % a)) bad = 3;
+        free(p);
+    }
+    if (bad) { printf("malloc: %s\n", bad == 1 ? "a block changed" : bad == 2 ? "out of memory" : "a block was not aligned"); return 1; }
+
+    /* then: how fast */
+    int heap = __malloc_heap();
+    int n = banana_cpus();
+    if (n < 2) n = 2;
+    if (n > 16) n = 16;
+    unsigned h1 = bench(0, 1), k1 = bench(1, 1);
+    unsigned hn = bench_all(0, n), kn = bench_all(1, n);
+    unsigned s1 = h1 ? k1 / h1 : k1, sn = hn ? kn / hn : kn;
+    printf("malloc: %s; %d malloc + free each: 1 thread %u ms (kernel's allocator %u ms), %d threads %u ms (kernel's %u ms)\n",
+           heap ? "the app's own heap" : "the kernel's allocator (32-bit)", MB_ROUNDS, h1, k1, n, hn, kn);
+    unsigned speed = s1 < sn ? s1 : sn;
+    if (speed > 150) speed = 150;
+    return 100 + (int)speed;                            /* (selftest: 100 + how many times faster) */
+}
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
@@ -312,7 +399,8 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "suspend") && argc>2) return t_suspend(argv[2]);
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"
+    if (!strcmp(m, "malloc")) return t_malloc();
+    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }
