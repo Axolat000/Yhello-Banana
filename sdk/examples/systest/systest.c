@@ -533,26 +533,28 @@ static int t_avx(void) { printf("avx: the 32-bit build does not check it\n"); re
 #ifdef __x86_64__
 #define SC_CALLS 200000
 
-/* a call through the table keeps rbx and r12-r15 (callee-saved) */
-static int sc_saved(void) {
-    unsigned long bad;
-    void* fn = (void*)__banana->ticks_ms;
-    __asm__ volatile(
-        "mov $0x1111111111111111, %%rbx\n mov $0x1212121212121212, %%r12\n mov $0x1313131313131313, %%r13\n"
-        "mov $0x1414141414141414, %%r14\n mov $0x1515151515151515, %%r15\n"
-        "call *%1\n"
-        "xor %0, %0\n"
-        "mov $0x1111111111111111, %%rax\n cmp %%rax, %%rbx\n setne %b0\n"
-        "mov $0x1212121212121212, %%rax\n cmp %%rax, %%r12\n jne 1f\n"
-        "mov $0x1313131313131313, %%rax\n cmp %%rax, %%r13\n jne 1f\n"
-        "mov $0x1414141414141414, %%rax\n cmp %%rax, %%r14\n jne 1f\n"
-        "mov $0x1515151515151515, %%rax\n cmp %%rax, %%r15\n jne 1f\n"
-        "jmp 2f\n 1: mov $1, %0\n 2:\n"
-        : "=&r"(bad), "+r"(fn)
-        :
-        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "rbx", "r12", "r13", "r14", "r15", "memory", "cc");
-    return bad ? 0 : 1;
-}
+/* a call through the table keeps rbx and r12-r15 (callee-saved): a
+ * function of its own in assembly (its registers are all in use - inline
+ * asm would leave the compiler none). 1 if they came back */
+int systest_sc_saved(void* fn);
+__asm__(
+    ".text\n"
+    "systest_sc_saved:\n"
+    "    push %rbx\n push %r12\n push %r13\n push %r14\n push %r15\n"   /* (5 + the return address: rsp 16-aligned) */
+    "    mov $0x1111111111111111, %rbx\n mov $0x1212121212121212, %r12\n mov $0x1313131313131313, %r13\n"
+    "    mov $0x1414141414141414, %r14\n mov $0x1515151515151515, %r15\n"
+    "    call *%rdi\n"
+    "    xor %eax, %eax\n"
+    "    mov $0x1111111111111111, %rcx\n cmp %rcx, %rbx\n jne 1f\n"
+    "    mov $0x1212121212121212, %rcx\n cmp %rcx, %r12\n jne 1f\n"
+    "    mov $0x1313131313131313, %rcx\n cmp %rcx, %r13\n jne 1f\n"
+    "    mov $0x1414141414141414, %rcx\n cmp %rcx, %r14\n jne 1f\n"
+    "    mov $0x1515151515151515, %rcx\n cmp %rcx, %r15\n jne 1f\n"
+    "    mov $1, %eax\n"
+    "1:  pop %r15\n pop %r14\n pop %r13\n pop %r12\n pop %rbx\n"
+    "    ret\n");
+
+static int sc_saved(void) { return systest_sc_saved((void*)__banana->ticks_ms); }
 
 /* draw_text: 9 arguments - the 4th (h) in r10 now, 3 on the stack */
 static int sc_args(void) {
