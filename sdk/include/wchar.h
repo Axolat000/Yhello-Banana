@@ -8,7 +8,10 @@ extern "C" {
 #include <stddef.h>
 #include <stdarg.h>
 typedef unsigned int wint_t;
-typedef struct { unsigned int __state; } mbstate_t;
+/* Match the GNU C++ stream ABI used by optional native-code ports.
+ * The UTF-8 decoder uses the first word; the second is reserved. */
+typedef struct { unsigned int __state, __reserved; } __mbstate_t;
+typedef __mbstate_t mbstate_t;
 #define WEOF ((wint_t)-1)
 #ifndef WCHAR_MIN
 #define WCHAR_MIN (-2147483647 - 1)

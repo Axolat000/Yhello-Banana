@@ -9,7 +9,7 @@ objects and libOSMesa.so is linked the way ninja links it, without the
 system's C library (its functions come from the app: the SDK's dlopen).
 Objects go to OUT/objs, errors to OUT/logs/<object>.log; a summary is
 printed. EXTRA (environment): more compiler flags; JOBS: parallel jobs;
-KEEP=1: objects already compiled are kept."""
+KEEP=1: reuse objects whose compiler arguments, source and headers match."""
 import collections, hashlib, json, os, re, shlex, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +25,12 @@ TRIPLE = subprocess.check_output(["gcc", "-dumpmachine"], text=True).strip()
 CXX_DIRS = ["/usr/include/c++/" + GCC, "/usr/include/c++/" + GCC + "/" + TRIPLE,
             "/usr/include/" + TRIPLE + "/c++/" + GCC, "/usr/include/x86_64-linux-gnu/c++/" + GCC]
 PRE_CXX = ["-nostdinc++"] + [arg for directory in CXX_DIRS if os.path.isdir(directory) for arg in ["-isystem", directory]]
+
+LLVM_LIBRARY = os.environ.get("LLVM_LIBRARY")
+if LLVM_LIBRARY:
+    llvm_include = os.path.join(HERE, "../llvm/include")
+    PRE += ["-isystem", llvm_include]
+    PRE_CXX += ["-include", os.path.join(llvm_include, "cxx_compat.h")]
 
 # what the build machine had and Banana OS has not: zlib (Mesa then uses its
 # own CRC-32), SPIRV-Tools (only for printing SPIR-V); plain diagnostics
@@ -111,7 +117,7 @@ def rewrite(cmd, out):
 
 # The reference build targets host headers. SDK or port header changes must
 # also invalidate the target cache, even when the source file stayed put.
-roots = [SDK + "/include", HERE + "/include", os.path.abspath(REF + "/../../src"), REF]
+roots = [SDK + "/include", HERE + "/include", HERE + "/../llvm/include", os.path.abspath(REF + "/../../src"), REF]
 header_hash = hashlib.sha256()
 for base in roots:
     if not os.path.isdir(base): continue
@@ -203,6 +209,7 @@ libgcc = subprocess.run([cc, "-print-libgcc-file-name"], capture_output=True, te
 libstdcxx = subprocess.run([cc, "-print-file-name=libstdc++.a"], capture_output=True, text=True).stdout.strip()
 subprocess.run(["ar", "x", "--output=" + OUT + "/lib", libstdcxx, "hashtable_c++0x.o"], check=True)
 final = [newargs[0], "-nostdlib", crt[0]] + newargs[1:] + [OUT + "/lib/hashtable_c++0x.o", libgcc, crt[1]]
+if LLVM_LIBRARY: final += [os.path.abspath(LLVM_LIBRARY)]
 r = subprocess.run(final, cwd=REF, capture_output=True, text=True)
 if r.returncode:
     print(r.stderr[-4000:])

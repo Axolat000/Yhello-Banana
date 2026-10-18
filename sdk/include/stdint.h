@@ -84,11 +84,19 @@ typedef __UINT_FAST64_TYPE__  uint_fast64_t;
 #define INT8_C(c)    c
 #define INT16_C(c)   c
 #define INT32_C(c)   c
+#ifdef __INT64_C
+#define INT64_C(c)   __INT64_C(c)
+#else
 #define INT64_C(c)   c ## LL
+#endif
 #define UINT8_C(c)   c
 #define UINT16_C(c)  c
 #define UINT32_C(c)  c ## U
+#ifdef __UINT64_C
+#define UINT64_C(c)  __UINT64_C(c)
+#else
 #define UINT64_C(c)  c ## ULL
+#endif
 #define INTMAX_C(c)  c ## LL
 #define UINTMAX_C(c) c ## ULL
 #define INTMAX_MAX   __INTMAX_MAX__

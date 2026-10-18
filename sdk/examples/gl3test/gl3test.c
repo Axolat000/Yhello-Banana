@@ -102,6 +102,14 @@ static int offscreen(void) {
     printf("GL_VERSION  %s\nGL_RENDERER %s\nGLSL        %s\n", (const char*)glGetString(GL_VERSION),
            (const char*)glGetString(GL_RENDERER), (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
     if (required_renderer) check(strstr((const char*)glGetString(GL_RENDERER), required_renderer) != NULL, "requested rendering backend is active");
+    if (required_renderer && !strcmp(required_renderer,"llvmpipe")) {
+        void* lib=dlopen("libLLVM.so",RTLD_NOW|RTLD_NOLOAD);
+        int (*runtime)(void)=lib?(int(*)(void))dlsym(lib,"banana_llvm_runtime_check"):NULL;
+        int rc=runtime?runtime():-1;
+        if(rc)printf("LLVM C++ runtime check: %d\n",rc);
+        check(rc==0,"C++ narrow/wide streams and fragmented UTF-8 state");
+        if(lib)dlclose(lib);
+    }
     GLint major = 0, minor = 0, prof = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -133,18 +141,32 @@ static int offscreen(void) {
     GLuint tex, fbo;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE, "framebuffer object complete");
-    glViewport(0, 0, 16, 16);
+    glViewport(0, 0, 256, 256);
     glClearColor(0.0f, 0.5f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     unsigned char rgba[4] = { 0 };
     glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     check(rgba[0] == 0 && rgba[1] >= 0x7e && rgba[1] <= 0x81 && rgba[2] == 0xff, "glReadPixels from the FBO");
+    /* Many tiles and repeated readbacks exercise the CPU worker pool and
+     * the virtual GPU completion path, with new uniforms every frame. */
+    unsigned begin=banana_ticks();int burst_ok=1;
+    for(int frame=0;frame<24;frame++) {
+        float tint=(frame&1)?1.0f:0.0f;
+        glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(p);glUniform1f(glGetUniformLocation(p,"angle"),0);
+        glUniform3f(glGetUniformLocation(p,"tint"),tint,tint,tint);
+        glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
+        glReadPixels(128,128,1,1,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+        if((frame&1)?(rgba[0]<0x20||rgba[1]<0x20||rgba[2]<0x20):(rgba[0]||rgba[1]||rgba[2]))burst_ok=0;
+    }
+    printf("  24 frames at 256x256 with completion/readback: %u ms\n",banana_ticks()-begin);
+    check(burst_ok,"repeated tiled rendering sees every uniform update");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     check(glGetError() == GL_NO_ERROR, "no GL error");
     bgl3_destroy(gl);

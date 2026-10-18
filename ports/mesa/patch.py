@@ -49,3 +49,9 @@ if 'Banana: validate the selected screen' not in s:
       }
       if (osmesa->depth_stencil_format == PIPE_FORMAT_NONE) { FREE(osmesa); return NULL; }''')
 write(p, s)
+# Banana's OSMesa has no Linux DRM modifier/udmabuf interface.
+p=root/'src/gallium/drivers/llvmpipe/lp_texture.c';s=p.read_text().replace('#ifndef _WIN32\n', '#if !defined(_WIN32) && !defined(__BANANA_OS__)\n');write(p,s)
+p=root/'src/gallium/drivers/llvmpipe/lp_scene.c';s=p.read_text()
+if '#undef HAVE_REALLOCARRAY' not in s:
+ s=s.replace('#include "util/reallocarray.h"', '#ifdef __BANANA_OS__\n#undef HAVE_REALLOCARRAY\n#endif\n#include "util/reallocarray.h"')
+write(p,s)

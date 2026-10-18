@@ -123,6 +123,35 @@ desktop. All resources were returned after each test. Standard VGA passed
 the same OpenGL tests using softpipe. A full target rebuild compiled all
 819 objects, and every strong library import resolved against the SDK.
 
-## Remaining stages
+## 6. LLVMpipe CPU rendering
 
-- LLVMpipe: pending.
+The optional Mesa build includes LLVMpipe and its LLVM 18.1.8 JIT runtime.
+It renders on the processor and works without a 3D GPU. VirGL remains the
+first automatic choice when available; this build uses LLVMpipe as the
+software fallback. `GALLIUM_DRIVER=softpipe` still selects the simpler renderer.
+
+```sh
+JOBS=6 LLVMPIPE=1 ports/mesa/build.sh
+DISK=ports/mesa/build-llvmpipe/gl3disk.img MEM=2G KVM=1 tools/dev.sh run
+```
+
+Inside the OS, run `selftest llvmpipe`. It explicitly requires LLVMpipe and
+checks its C++ runtime, restartable UTF-8 state, shader compilation,
+interpolated triangle pixels and framebuffer readback. The 256 MiB test disk
+contains both shared libraries; they can also be installed together in `/lib`.
+The default Mesa build stays available without the LLVM dependency.
+
+See [the LLVM port notes](ports/llvm/README.md) for dependencies, reproducible
+build steps and runtime limits. This is an initial OSMesa renderer, with the
+same CPU readback presentation interface as the other Mesa backends. It does
+not add native GPU drivers, Vulkan, or an OpenGL conformance certification.
+
+Validation: the clean LLVM target build compiled all 1156 selected objects,
+and the Mesa target compiled all 926 objects. Both shared libraries passed
+strong-import audits. QEMU passed shader/pixel checks with LLVMpipe using
+both a baseline CPU (128-bit vectors) and an AVX CPU (256-bit vectors),
+including repeated 256x256 draws and readbacks. Repeated runs before and
+after starting the desktop passed; the LLVM-enabled library also passed
+VirGL rendering and returned all host resources. The complete system suite
+passed 247 checks with zero failures. Hosted surface and exhaustive UTF-8
+checks passed under address/undefined-behavior sanitizers.
