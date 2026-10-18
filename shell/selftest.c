@@ -1,4 +1,5 @@
 #include "selftest.h"
+#include "../kernel/gpu.h"
 #include "../kernel/disk.h"
 #include "../kernel/iowait.h"
 #include "../kernel/idt.h"
@@ -37,7 +38,7 @@
 #include "datecmd.h"
 
 /*
- * selftest [ring3 | memory | limits | cores] - checks the system features
+ * selftest [gpu | ring3 | memory | limits | cores] - checks the system features
  * from inside Banana OS, one ok / FAIL line each, and a summary. What must
  * run as an app is done by systest (sdk/examples/systest), installed from
  * the copy built into the kernel: the exit code of each of its modes is
@@ -842,10 +843,11 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
+    if(only && !strcmp(only,"gpu") && argc!=2) { terminal_writeln("usage: selftest gpu");return 1; }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
         terminal_writeln("usage: selftest mouse [demo]");return 1;
     }
@@ -886,7 +888,9 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
                      only && !strcmp(only, "net") ? "selftest: checking TCP" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if(only && !strcmp(only,"sleep")) {
+    if(only && !strcmp(only,"gpu")) {
+        section("GPU presentation and diagnostics");gpu_tests(report);
+    } else if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
     } else if(only && !strcmp(only,"ram")) {
         t_ram();
@@ -938,6 +942,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only) {
             t_opencl();
             browser_test_run(report);
+            gpu_tests(report);
             mouse_capture_tests(report);
             bootmenu_tests_run(report);
             t_ram();

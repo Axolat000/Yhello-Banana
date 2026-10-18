@@ -15,6 +15,7 @@
 #include "kstring.h"
 #include "serial.h"
 #include "paging.h"
+#include "timer.h"
 
 /* PCI capabilities of a virtio device */
 #define CAP_VENDOR       0x09
@@ -133,6 +134,7 @@ static int setup_queue(vq_t* q, int qi) {
 
 /* sends a request (and waits for the device): 0 if it answered OK */
 static int submit(vq_t* q, void* req, uint32_t rlen, void* resp, uint32_t slen) {
+    uint64_t started = timer_counter();
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
     q->desc[0].addr = (uintptr_t)req;
@@ -157,6 +159,7 @@ static int submit(vq_t* q, void* req, uint32_t rlen, void* resp, uint32_t slen) 
     }
     if (ok) q->last_used++;
     if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
+    if (!crash_in_progress()) gpu_note_command(timer_counter() - started, !ok);
     if (!ok) { if(!crash_in_progress())klog("virtio-gpu: no answer from the device\n"); return -1; }
     uint32_t t = ((hdr_t*)resp)->type;
     return t == RESP_OK_NODATA || t == RESP_OK_DISPLAY_INFO ? 0 : -1;

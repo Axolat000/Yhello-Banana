@@ -1210,7 +1210,7 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "swap", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
+    "free", "swap", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "gpubench", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
     "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
     /* kernel/vmtools.c */
@@ -2586,6 +2586,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (k_strncmp(line, "proc_info ", 10) == 0) { cmd_proc_info(k_skip_spaces(line+10)); return; }
     if (k_strncmp(line, "ram_info ", 9) == 0) { cmd_ram_info(k_skip_spaces(line+9)); return; }
     if (k_strncmp(line, "gpu_info ", 9) == 0) { cmd_gpu_info(k_skip_spaces(line+9)); return; }
+    if (k_strcmp(line, "gpubench") == 0) { gpu_bench(); return; }
     if (k_strcmp(line, "lsgpu") == 0) { gpu_list(); return; }
     if (k_strcmp(line, "drivers") == 0) { drivers_list(); return; }
     if (k_strncmp(line, "driver load ", 12) == 0) {

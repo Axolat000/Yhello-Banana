@@ -68,6 +68,18 @@ int    gpu_has_hw_cursor(void);
 void   gpu_wait_vblank(void);
 int    gpu_backlight(int percent);     /* percent < 0 reads; -1 without one */
 
+/* Telemetry is separate from gpu_t: loadable driver ABI stays stable. */
+typedef struct {
+    uint64_t frames, copied_bytes, copy_ns, flushes, flushed_bytes, flush_ns;
+    uint64_t commands, command_ns, timeouts;
+} gpu_stats_t;
+void gpu_stats(gpu_stats_t* out);
+void gpu_note_present(uint64_t bytes, uint64_t ns);
+void gpu_note_command(uint64_t ns, int timeout);
+void gpu_diagnostics(void);
+void gpu_bench(void);
+void gpu_tests(void (*report)(const char*, int, const char*));
+
 void   gpu_list(void);                  /* lsgpu */
 /* after gpu_init: a card with no driver here (AMD, NVIDIA, Intel Arc / Xe)
  * keeps the firmware's screen - named, its framebuffer write-combining */

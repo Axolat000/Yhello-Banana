@@ -1,6 +1,8 @@
 #include "fb.h"
 #include "kstring.h"
 #include "gpu.h"
+#include "gpu_surface.h"
+#include "timer.h"
 
 /* Multiboot2 info parsing (only what we need) */
 typedef struct {
@@ -202,35 +204,20 @@ void fb_clear_backbuffer(void) {
     g_bb_w = g_bb_h = 0;
 }
 
-void fb_present(void) {
-    if (!g_fb_ok || !g_bb) return;
-
-    uint32_t w = g_bb_w;
-    uint32_t h = g_bb_h;
-    if (w > g_fb.width) w = g_fb.width;
-    if (h > g_fb.height) h = g_fb.height;
-
-    for (uint32_t y = 0; y < h; y++) {
-        uint32_t* dst = (uint32_t*)(g_fb.addr + (uintptr_t)(y * g_fb.pitch));
-        memcpy(dst, &g_bb[y * g_bb_w], w * 4u);
-    }
-    gpu_flush(0, 0, (int)w, (int)h);
-}
-
 void fb_present_rect(int x, int y, int w, int h) {
     if (!g_fb_ok || !g_bb) return;
-    int x1 = x + w, y1 = y + h;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
-    if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
-    if (x1 > (int)g_bb_w) x1 = (int)g_bb_w;
-    if (y1 > (int)g_bb_h) y1 = (int)g_bb_h;
-    if (x >= x1 || y >= y1) return;
-    for (int yy = y; yy < y1; yy++) {
-        uint32_t* dst = (uint32_t*)(g_fb.addr + (uintptr_t)((uint32_t)yy * g_fb.pitch));
-        memcpy(dst + x, &g_bb[(uint32_t)yy * g_bb_w + (uint32_t)x], (uint32_t)(x1 - x) * 4u);
-    }
-    gpu_flush(x, y, x1 - x, y1 - y);
+    gpu_surface_t dst = {(uint32_t*)g_fb.addr, (int)g_fb.width, (int)g_fb.height, (int)(g_fb.pitch / 4)};
+    gpu_surface_t src = {g_bb, (int)g_bb_w, (int)g_bb_h, (int)g_bb_w};
+    gpu_rect_t r = {x, y, w, h};
+    int width = dst.width < src.width ? dst.width : src.width;
+    int height = dst.height < src.height ? dst.height : src.height;
+    if (!gpu_rect_clip(&r, width, height)) return;
+    uint64_t t = timer_counter();
+    uint64_t bytes = gpu_surface_copy(dst, src, r);
+    gpu_note_present(bytes, timer_counter() - t);
+    gpu_flush(r.x, r.y, r.w, r.h);
 }
 
+void fb_present(void) {
+    fb_present_rect(0, 0, (int)g_bb_w, (int)g_bb_h);
+}

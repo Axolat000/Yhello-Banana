@@ -367,6 +367,8 @@ static const page_t PAGES[] = {
     { "usb", "hardware", "usb rescan", "look for USB devices plugged in or out", NULL, NULL, NULL, "lsusb" },
     { "usbctl", "hardware", "usbctl", "USB legacy handoff state", NULL, NULL, NULL, NULL },
     { "lsgpu", "hardware", "lsgpu", "graphics cards: driver, mode, video memory", NULL, NULL, NULL, "resolution" },
+    { "gpubench", "hardware", "gpubench", "offscreen framebuffer bandwidth and GPU counters",
+      "Measures CPU copies in RAM, checks pixels and reports presentation counters. This is not GPU 3D performance.", NULL, NULL, "lsgpu, selftest" },
     { "gpu_info", "hardware", "gpu_info [-n -r -b -p -m]", "the framebuffer", NULL, NULL, NULL, "lsgpu" },
     { "brightness", "hardware", "brightness [0-100]", "a laptop panel's backlight (Intel graphics)", NULL, NULL, NULL, NULL },
     { "keyboardctl", "hardware", "keyboardctl [layout]", "the keyboard layout",
@@ -412,7 +414,7 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [gpu|ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
       "ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",

@@ -7,6 +7,7 @@
 #include "task.h"
 #include "terminal.h"
 #include "timer.h"
+#include "spinlock.h"
 
 #define GPU_MAX 4
 static gpu_t* g_gpus[GPU_MAX];
@@ -18,6 +19,28 @@ static gpu_t* g_active;
 static volatile int g_dx0 = 1 << 30, g_dy0 = 1 << 30, g_dx1, g_dy1;
 static int g_flusher;                    /* the task runs */
 static int g_booting;                    /* in gpu_init: the terminal is not up yet */
+
+static gpu_stats_t g_stats;
+static spinlock_t g_stats_lock = SPINLOCK_INIT;
+void gpu_stats(gpu_stats_t* out) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock); *out = g_stats; spin_unlock_irq(&g_stats_lock, f);
+}
+void gpu_note_present(uint64_t bytes, uint64_t ns) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock);
+    g_stats.frames++; g_stats.copied_bytes += bytes; g_stats.copy_ns += ns;
+    spin_unlock_irq(&g_stats_lock, f);
+}
+void gpu_note_command(uint64_t ns, int timeout) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock);
+    g_stats.commands++; g_stats.command_ns += ns; g_stats.timeouts += !!timeout;
+    spin_unlock_irq(&g_stats_lock, f);
+}
+static void flush_driver(gpu_t* g, int x, int y, int w, int h) {
+    uint64_t t = timer_counter(); g->flush(g, x, y, w, h); t = timer_counter() - t;
+    uintptr_t f = spin_lock_irq(&g_stats_lock);
+    g_stats.flushes++; g_stats.flushed_bytes += (uint64_t)w * h * 4; g_stats.flush_ns += t;
+    spin_unlock_irq(&g_stats_lock, f);
+}
 
 gpu_t* gpu_active(void) { return g_active; }
 
@@ -50,7 +73,7 @@ void gpu_set_framebuffer(uintptr_t addr, int w, int h, int pitch) {
 void gpu_flush(int x, int y, int w, int h) {
     gpu_t* g = g_active;
     if (!g || !g->flush || w <= 0 || h <= 0) return;
-    if (!g_flusher) { g->flush(g, x, y, w, h); return; }      /* (at boot: right away) */
+    if (!g_flusher) { flush_driver(g, x, y, w, h); return; }      /* (at boot: right away) */
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
     if (x < g_dx0) g_dx0 = x;
@@ -87,7 +110,7 @@ static void flusher_task(void) {
         if (y1 > (int)fi->height) y1 = (int)fi->height;
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
-        if (x1 > x0 && y1 > y0) g->flush(g, x0, y0, x1 - x0, y1 - y0);
+        if (x1 > x0 && y1 > y0) flush_driver(g, x0, y0, x1 - x0, y1 - y0);
     }
 }
 
@@ -205,4 +228,5 @@ static int list_cb(const pci_dev_t* d, void* ctx) {
 void gpu_list(void) {
     pci_scan(list_cb, NULL);
     if (!fb_available()) terminal_writeln("(no framebuffer: text mode)");
+    gpu_diagnostics();
 }
