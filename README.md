@@ -14,6 +14,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Install on SCSI disks and eMMC (build 191)** - a **virtio-scsi** driver (`kernel/virtio_scsi.c`): the SCSI controller of QEMU / KVM and **Proxmox** (*VirtIO SCSI* and *VirtIO SCSI single* - its default for new VMs), legacy or modern; every target and LUN behind it is asked what it is (INQUIRY), and each disk is sized (READ CAPACITY, the 16-byte form past 2 TiB) and read and written with READ(10) / WRITE(10), its cache flushed with SYNCHRONIZE CACHE, the other tasks running while it works. The **SD card driver** now also starts **eMMC** chips (the built-in storage of tablets, Chromebooks and small laptops) and MMC cards: CMD1, the size from the EXT_CSD, the widest bus the controller has (8 or 4 bits) and high speed at 52 MHz, checked by reading the EXT_CSD back - else the narrow, slow bus; a slot wired to a chip on the board is always there and is tried as eMMC first. The cards present at boot are started right away, so an install on one is found. Data now moves by the controller's own **ADMA2** DMA, up to 512 KiB a command, where the processor copied it 4 bytes at a time (an SD install in QEMU: 14 s of disk writing instead of 25). SCSI disks, eMMC and SD cards are now **install targets** like IDE, SATA, NVMe and virtio (`install` lists them: *SCSI #0*, *eMMC #0*, *SD card #0*), and the installed system finds its files on them and boots from them; their FAT32 / exFAT partitions are mounted at `/mnt/scsi`, `/mnt/mmc` and `/mnt/sd`. Tested in QEMU: installs on virtio-scsi (legacy, and modern with the disk at LUN 1 as Proxmox attaches it) and on an SD card, each booted from that disk with Banana's fsck and Linux's e2fsck clean. eMMC itself is not tested yet: the QEMU here will not attach its eMMC device.
+
 - **A shared clock when CPU counters are unreliable (build 199)** - elapsed time, scheduling and timeout measurements use HPET, then the ACPI PM timer, with interrupt counting as the fallback. This fixes hours-long benchmark results caused by an unstable host TSC being exposed through QEMU. Narrow counters are extended across rollovers, and S3 retains the monotonic epoch. `selftest clock` checks conversion, rollover, elapsed time against CMOS and reads from migrating app threads.
 
 - **No more freezes in VirtualBox; old Minecraft (build 198, merged)** - in VirtualBox on Hyper-V (WSL 2's "NEM" mode) a core running app code never left the guest, so the machine's timers stopped and the desktop froze: such a core now exits to the hypervisor at least once a millisecond (only in a virtual machine). The SDK's aligned-block table is a hash table with a lock that yields (the JVM and Mesa freeing from many threads spun every core), and the wall clock never runs backwards. Minecraft 1.7.2 to 1.12.2 run through `lwjgl2.jar`, LWJGL 2's API over LWJGL 3, with a compatibility-profile GL context and OpenJDK's headless `java.desktop` natives.
@@ -122,7 +124,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **USB sticks (FAT32)** - plugged-in sticks are mounted at `/mnt/usb`, read and write, long file names included; every tool works on them (`ls`, `cp`, Files, the browser, `pkg install`...). `umount` ejects
 - **NVMe SSDs** - a polled NVMe driver: NVMe disks are install targets (and boot on UEFI), FAT32 partitions are mounted at `/mnt/nvme`
 - **virtio disks** - virtio-blk (QEMU/KVM, Proxmox, cloud VMs): install targets like NVMe, FAT32 partitions mounted at `/mnt/virtio`; virtio disks and network cards work over the legacy and the modern (virtio 1.x only) interface
-- **SD card readers** - SDHCI readers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out
+- **SD card readers and eMMC** - SDHCI controllers (PCI): SD, SDHC and SDXC cards are mounted at `/mnt/sd` when put in and unmounted when taken out; eMMC chips (and MMC cards) at `/mnt/mmc`. Both are install targets
+- **SCSI disks** - virtio-scsi (QEMU/KVM, Proxmox's *VirtIO SCSI* and *VirtIO SCSI single*): every target and LUN, install targets like virtio, FAT32 partitions mounted at `/mnt/scsi`
 - **Firewall (optional)** - off unless turned on (`firewall on`, Settings > Network): connections from outside refused but for the ports allowed (`firewall allow tcp 22`), pings only if allowed, everything you start works as before; `firewall log` shows what was blocked
 - **IPv6 (optional)** - off by default; `toggle6 [on|off]`, `ipv6 on/off` and Settings > Network control the same switch. Link-local/SLAAC addresses, neighbour discovery, ping, TCP, UDP and AAAA DNS. IPv4 stays independent. `curl -6` and `wget -6` select IPv6; bracket literal addresses, e.g. `http://[::1]:8080/`. Use `selftest ipv6` for local checks; it restores the previous toggle state without changing saved settings.
 - **Intel Macs** - Apple keyboards (Command works as Ctrl), Apple NVMe SSDs (2015-2017 Macs, T2 Macs), the speakers of Macs' HD Audio codecs (GPIO amplifiers), and the Apple SMC's temperatures and fans in `sensors`
@@ -209,8 +212,9 @@ Banana-OS/
 │   ├── blockdev.c      # Removable drives + the automount task
 │   ├── nvme.c          # NVMe SSD driver
 │   ├── virtio_blk.c    # virtio-blk disks (QEMU/KVM, clouds)
+│   ├── virtio_scsi.c   # virtio-scsi disks (QEMU/KVM, Proxmox)
 │   ├── virtio_pci.c    # the virtio PCI transport (legacy and modern)
-│   ├── sdhci.c         # SD card readers
+│   ├── sdhci.c         # SD card readers and eMMC
 │   ├── sensors.c       # CPU temperature (Intel DTS, AMD Tctl)
 │   ├── applesmc.c      # the Apple SMC of Intel Macs (temperatures, fans)
 │   ├── gamepad.c       # game controllers (the common layout)
