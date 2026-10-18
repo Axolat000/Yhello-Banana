@@ -9,6 +9,7 @@
 #include "serial.h"
 #include "paging.h"
 #include "fpu.h"
+#include "tlb.h"
 
 #define KSTACK_GUARD (16u << 10)
 
@@ -86,6 +87,7 @@ typedef struct task {
     char         crash[112];              /* what the last one was */
     uint8_t      fpu[FPU_AREA] __attribute__((aligned(64)));   /* FPU/SSE/AVX registers while switched out (xsave: 64-byte aligned) */
     uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
+    const struct tlb_tag* tag;            /* ... and what the TLBs keep of them (kernel/tlb.c) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
     uintptr_t    fs_base;                 /* ... and its thread pointer (TLS, 64-bit): task_set_fs */
 } task_t;
@@ -388,10 +390,9 @@ static void guard_check(task_t* t) {
 static void enter_space(const task_t* t, int cpu) {
 #ifdef __x86_64__
     if (t->rsp0) tss_set_rsp0(cpu, t->rsp0);
-    uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
-    if (cpu >= 0 && cpu < SMP_MAX_CPUS) smp_cur_cr3[cpu] = want;   /* (before it is loaded: TLB shootdowns, kernel/smp.c) */
-    __asm__ volatile("mov %%cr3, %0" : "=r"(have));
-    if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
+    /* (loaded again only if another space - or this one changed since:
+     * what the TLB has of the kernel, and with PCIDs of the space, is kept) */
+    tlb_load(t->cr3 ? t->cr3 : paging_kernel_cr3(), t->cr3 ? t->tag : NULL);
     /* its thread pointer (an app thread's TLS; the kernel does not use FS) */
     __asm__ volatile("wrmsr" :: "a"((uint32_t)t->fs_base), "d"((uint32_t)((uint64_t)t->fs_base >> 32)), "c"(0xC0000100u));
 #else
@@ -399,10 +400,11 @@ static void enter_space(const task_t* t, int cpu) {
 #endif
 }
 
-void task_set_user(uintptr_t cr3, uintptr_t rsp0) {
+void task_set_user(uintptr_t cr3, const struct tlb_tag* tag, uintptr_t rsp0) {
     task_t* t = g_current;
     if (!t) return;
     t->cr3 = cr3;
+    t->tag = tag;
     t->rsp0 = rsp0;
     enter_space(t, 0);
 }
@@ -577,6 +579,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->cpu = 0;
     t->came_home = 0;
     t->cr3 = 0;
+    t->tag = NULL;
     t->rsp0 = 0;
     t->fs_base = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
@@ -947,11 +950,8 @@ void task_ap_loop(int cpu) {
         t->cpu = cpu;
         a->task = t;
         if (!a->used) { a->first = t; a->used = 1; }   /* sysmon logs it (the kernel is not ours here) */
-        /* its page tables - loaded again even if the same: the boot core
-         * may have changed them (guard pages) since */
-#ifdef __x86_64__
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
-#endif
+        /* its page tables (forgotten first if the boot core changed them
+         * since - guard pages: kernel/tlb.c) */
         enter_space(t, cpu);
         task_switch(&a->idle_sp, t->sp);
         enter_space(&g_idle, cpu);          /* the kernel's tables again: t's may go away */

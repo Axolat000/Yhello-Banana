@@ -9,6 +9,7 @@
 #include "zswap.h"
 #include "smp.h"
 #include "task.h"
+#include "tlb.h"
 
 #ifdef __x86_64__
 
@@ -47,6 +48,7 @@ struct uspace {
     uint64_t       vm_zpages;           /* of its pages, compressed away (kernel/zswap.c) */
     volatile int   zbusy;               /* the compressor is working on it: not freed yet */
     spinlock_t     vm_lock;             /* its threads fault pages in on any core */
+    tlb_tag_t      tag;                 /* what the cores' TLBs keep of it (kernel/tlb.c) */
 };
 
 static uspace_t* g_all;                 /* every address space: kernel changes go to each */
@@ -130,6 +132,7 @@ uspace_t* uspace_create(void) {
         kfree(us->pml4); kfree(us->pdpt); kfree(us);
         return NULL;
     }
+    tlb_tag_init(&us->tag);
     uintptr_t f = spin_lock_irq(&g_lock);
     copy_kernel(us);
     us->next = g_all;
@@ -186,6 +189,7 @@ void uspace_destroy(uspace_t* us) {
 }
 
 uintptr_t uspace_cr3(uspace_t* us) { return us ? (uintptr_t)us->pml4 : 0; }
+struct tlb_tag* uspace_tag(uspace_t* us) { return us ? &us->tag : NULL; }
 
 int uspace_map(uspace_t* us, uintptr_t addr, uint32_t size) {
     if (!us || (addr & 0x1FFFFF) || (size & 0x1FFFFF) || (uint64_t)addr + size > ((uint64_t)GIBS << 30)) return -1;
@@ -223,6 +227,7 @@ void uspace_guard(uspace_t* us, uintptr_t addr, uint32_t size, int guard) {
         if (cur) __asm__ volatile("invlpg (%0)" :: "r"(a) : "memory");
     }
     spin_unlock_irq(&g_lock, f);
+    if (guard) tlb_space_changed(&us->tag);             /* (a core that ran it before forgets the page) */
 }
 
 void uspace_kernel_changed(void) {
@@ -230,6 +235,8 @@ void uspace_kernel_changed(void) {
     for (uspace_t* us = g_all; us; us = us->next) copy_kernel(us);
     spin_unlock_irq(&g_lock, f);
 }
+
+static volatile uint32_t g_stale;
 
 int uspace_fault_is_stale(uintptr_t addr, uint32_t err) {
     if (!(err & 4)) return 0;                           /* not from user mode */
@@ -244,8 +251,11 @@ int uspace_fault_is_stale(uintptr_t addr, uint32_t err) {
         t = (const uint64_t*)(uintptr_t)(e & ADDR_MASK);
     }
     __asm__ volatile("invlpg (%0)" :: "r"(addr) : "memory");
+    g_stale++;
     return 1;
 }
+
+uint32_t uspace_stale_faults(void) { return g_stale; }
 
 /* ── the mmap region (uvm.h) ──────────────────────────────────────────
  * Its tables are the app's alone (PML4 slots UVM_PML4..): a page is a
@@ -397,6 +407,7 @@ static uint64_t vm_find(uspace_t* us, uint64_t len, uint64_t hint) {
 /* the other cores forget us's old translations: until they did, the pages
  * just taken out of its tables are not given to anyone (kernel/smp.c) */
 static void shootdown(uspace_t* us) {
+    tlb_space_changed(&us->tag);                        /* (the cores that ran it before: when they load it again) */
     if (is_current(us)) reload_cr3();                   /* (this core too: a fault reclaiming runs on the app's tables) */
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0" : "=r"(fl));
@@ -754,10 +765,12 @@ uint64_t uvm_compressed(uspace_t* us) { return us ? us->vm_zpages * 4096 : 0; }
 uspace_t* uspace_create(void) { return NULL; }
 void      uspace_destroy(uspace_t* us) { (void)us; }
 uintptr_t uspace_cr3(uspace_t* us) { (void)us; return 0; }
+struct tlb_tag* uspace_tag(uspace_t* us) { (void)us; return NULL; }
 int       uspace_map(uspace_t* us, uintptr_t addr, uint32_t size) { (void)us; (void)addr; (void)size; return 0; }
 void      uspace_guard(uspace_t* us, uintptr_t addr, uint32_t size, int guard) { (void)us; (void)addr; (void)size; (void)guard; }
 void      uspace_kernel_changed(void) {}
 int       uspace_fault_is_stale(uintptr_t addr, uint32_t err) { (void)addr; (void)err; return 0; }
+uint32_t  uspace_stale_faults(void) { return 0; }
 /* (no mmap region: kernel/app.c maps app memory directly) */
 int       uvm_owns(uspace_t* us, const void* p, uint64_t n) { (void)us; (void)p; (void)n; return 0; }
 int       uvm_owns_str(uspace_t* us, const char* s) { (void)us; (void)s; return 0; }

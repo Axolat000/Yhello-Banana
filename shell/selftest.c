@@ -8,6 +8,8 @@
 #include "../kernel/acpi_sleep.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/kheap.h"
+#include "../kernel/tlb.h"
+#include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/gui.h"
 #include "../kernel/browser_test.h"
@@ -294,6 +296,40 @@ static void t_heap(void) {
               (uint32_t)((uint64_t)ms * 1000000u / PAIRS));
     report("malloc / free among many blocks", !fail && !bad && ms * 1000u < (uint32_t)PAIRS * 2u,
            fail ? "out of memory" : bad ? err : note);
+}
+
+/* ── the TLB: global kernel pages, PCIDs (build 195) ── */
+static void t_tlb(void) {
+    section("fewer TLB flushes: global kernel pages, PCIDs (build 195)");
+#ifdef __x86_64__
+    char msg[128] = "", note[128];
+    uint32_t old_ns, new_ns;
+    int kept;
+    int rc = tlb_selftest(msg, sizeof(msg), &old_ns, &new_ns, &kept);
+    ksnprintf(note, sizeof(note), "%s, %s", tlb_has_global() ? "global kernel pages" : "no global pages (no PGE)",
+              tlb_has_pcid() ? "PCIDs" : "no PCIDs");
+    report("a changed address space is never seen as it was", rc == 0, rc ? msg : note);
+    if (rc) return;
+    if (!tlb_has_pcid())
+        skip("a space's translations kept across switches", "this processor has no PCIDs (QEMU: CPU=max, or KVM=1)");
+    else
+        report("a space's translations kept across switches", 1,
+               kept ? "an untold change stayed unseen: the processor kept them"
+                    : "the processor forgot them anyway (QEMU without KVM does)");
+    if (old_ns && new_ns) {
+        ksnprintf(note, sizeof(note), "there and back, 128 pages touched: %u ns, %u ns forgetting everything (%u.%ux)",
+                  new_ns, old_ns, old_ns / new_ns, old_ns * 10u / new_ns % 10u);
+        report("switches no slower", (uint64_t)new_ns * 4 <= (uint64_t)old_ns * 5, note);
+    }
+    int arc = run("tlb", NULL, NULL);
+    tlb_stats_t st;
+    tlb_stats(&st);
+    ksnprintf(note, sizeof(note), "%d cores; since boot %llu of %llu loads kept the TLB, %llu full flushes, %u stale faults",
+              arc - 100, st.kept, st.loads, st.full, uspace_stale_faults());
+    report("threads remapping pages on every core: every fresh page zero", arc >= 100, arc >= 100 ? note : "see the line above");
+#else
+    skip("the TLB", "the 32-bit kernel runs without paging");
+#endif
 }
 
 /* Install the matching built-in test, even if an older package is on disk. */
@@ -691,8 +727,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | tlb | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -731,6 +767,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
                      only && !strcmp(only, "disk") ? "selftest: checking disk waits" :
                      only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
+                     only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -776,6 +813,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "syscall")) t_syscall();
         if (!only || !strcmp(only, "disk")) t_disk();
         if (!only || !strcmp(only, "heap")) t_heap();
+        if (!only || !strcmp(only, "tlb")) t_tlb();
         if (!only) {
             t_opencl();
             browser_test_run(report);

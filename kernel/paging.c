@@ -3,6 +3,7 @@
 #include "kstring.h"
 #include "serial.h"
 #include "uspace.h"
+#include "tlb.h"
 
 #ifdef __x86_64__
 
@@ -11,6 +12,7 @@
 #define P_PWT     0x008ull
 #define P_PCD     0x010ull
 #define P_LARGE   0x080ull
+#define P_GLOBAL  0x100ull              /* kept when CR3 is loaded: every space has the kernel's (kernel/tlb.c) */
 #define ADDR_MASK 0x000FFFFFFFFFF000ull
 
 /* The kernel's own page tables (boot/boot64.asm). While an app runs, CR3
@@ -25,11 +27,11 @@ uintptr_t paging_kernel_cr3(void) {
 }
 
 /* after a change to the kernel's tables: the apps' copies follow, and this
- * processor forgets what it cached (whichever tables it runs on) */
+ * processor forgets what it cached - global pages too - the others before
+ * their next task */
 static void kernel_tables_changed(void) {
     uspace_kernel_changed();
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
+    tlb_kernel_changed(0);
 }
 
 /* a zeroed, 4 KiB-aligned page for a new table (heap memory is below
@@ -65,7 +67,7 @@ static int map_high(uint64_t phys, uint64_t size, uint64_t flags) {
         if (*e3 & P_LARGE) continue;                    /* a 1 GiB page covers it already */
         uint64_t* pd = (uint64_t*)(uintptr_t)(*e3 & ADDR_MASK);
         uint64_t* e2 = &pd[(a >> 21) & 511];
-        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | flags;
+        *e2 = a | P_PRESENT | P_WRITE | P_LARGE | P_GLOBAL | flags;
         __asm__ volatile("invlpg (%0)" :: "r"((uintptr_t)a) : "memory");
     }
     kernel_tables_changed();
@@ -98,8 +100,7 @@ void paging_pat_init(void) {
     lo = (lo & ~0x0000FF00u) | (0x01u << 8);       /* entry 1 (PWT): write-combining (was write-through) */
     __asm__ volatile("wbinvd" ::: "memory");
     __asm__ volatile("wrmsr" :: "a"(lo), "d"(hi), "c"(0x277));
-    uintptr_t cr3;
-    __asm__ volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
+    tlb_flush_all();
     __asm__ volatile("wbinvd" ::: "memory");
     g_pat = 1;
 }
@@ -144,7 +145,7 @@ static uint64_t* small_pte(uintptr_t addr) {
         uint64_t* pt = new_table();
         if (!pt) return NULL;
         uint64_t big = *e2 & ~0x1FFFFFull & ADDR_MASK;
-        uint64_t flags = *e2 & (P_WRITE | P_PWT | P_PCD);
+        uint64_t flags = *e2 & (P_WRITE | P_PWT | P_PCD | P_GLOBAL);
         for (int i = 0; i < 512; i++) pt[i] = (big + ((uint64_t)i << 12)) | P_PRESENT | flags;
         *e2 = (uint64_t)(uintptr_t)pt | P_PRESENT | P_WRITE;
         kernel_tables_changed();                        /* flush */
@@ -161,6 +162,9 @@ int paging_guard(uintptr_t addr, uint32_t size, int guard) {
         else *pte |= P_PRESENT;
         __asm__ volatile("invlpg (%0)" :: "r"(a) : "memory");
     }
+    /* (a global page: the other cores keep it across CR3 loads - they
+     * forget it before their next task, as they used to) */
+    if (guard) tlb_kernel_changed(1);
     return 1;
 }
 
@@ -174,7 +178,7 @@ void paging_guard_null(void) {
     uint64_t* pdpt = (uint64_t*)(uintptr_t)(pml4[0] & ADDR_MASK);
     uint64_t* pd = (uint64_t*)(uintptr_t)(pdpt[0] & ADDR_MASK);
     if (!(pd[0] & P_LARGE)) return;                     /* already split */
-    for (int i = 0; i < 512; i++) g_low_pt[i] = ((uint64_t)i << 12) | P_PRESENT | P_WRITE;
+    for (int i = 0; i < 512; i++) g_low_pt[i] = ((uint64_t)i << 12) | P_PRESENT | P_WRITE | P_GLOBAL;
     g_low_pt[0] = 0;                                    /* 0..4095: not present */
     pd[0] = (uint64_t)(uintptr_t)g_low_pt | P_PRESENT | P_WRITE;
     kernel_tables_changed();                            /* flush the TLB */

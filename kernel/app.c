@@ -1370,10 +1370,10 @@ static int enter_user(app_proc_t* p, uintptr_t fn, uintptr_t a0, uintptr_t a1, u
     /* where fn returns to: a system call that ends the thread (at 8 mod 16,
      * as after a call) */
     uintptr_t usp = (((uintptr_t)stack + size) & ~(uintptr_t)15) - 8;
-    task_set_user(uspace_cr3(p->us), kstack_top(kstack));
+    task_set_user(uspace_cr3(p->us), uspace_tag(p->us), kstack_top(kstack));
     *(uintptr_t*)usp = p->ret_stub;         /* (a stack it mapped: its tables are loaded now) */
     int rc = app_enter_user(fn, a0, a1, a2, usp, saved_sp);
-    task_set_user(0, 0);                    /* the kernel's tables: the app's may go now */
+    task_set_user(0, NULL, 0);              /* the kernel's tables: the app's may go now */
     task_set_fs(0);
     return rc;
 }

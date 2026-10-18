@@ -56,8 +56,10 @@ s3_arch_suspend:
     mov CTRLREG,cr0
     mov [CTXREG+C_CR0],eax
     mov CTRLREG,cr3
+    and eax,~0xfff               ; (no PCID: it is turned on again in C, kernel/tlb.c)
     mov [CTXREG+C_CR3],eax
     mov CTRLREG,cr4
+    and eax,~((1<<17)|(1<<7))    ; PCIDE, PGE: not before long mode (tlb_cpu_init)
     mov [CTXREG+C_CR4],eax
     sgdt [CTXREG+C_GDT]
     sidt [CTXREG+C_IDT]

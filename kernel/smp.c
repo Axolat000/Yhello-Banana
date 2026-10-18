@@ -1,5 +1,6 @@
 #include "smp.h"
 #include "fpu.h"
+#include "tlb.h"
 #include "paging.h"
 #include "task.h"
 #include "timer.h"
@@ -386,10 +387,15 @@ typedef struct __attribute__((packed)) {
     uint32_t cpu, pad;
 } tramp_data_t;
 
+/* PCIDs (CR4.PCIDE) can only be turned on in long mode, global pages are
+ * left for later too: tlb_cpu_init (kernel/tlb.c) */
+#define TRAMP_CR4_LATER ((1u << 17) | (1u << 7))
+
 static void smp_ap_entry(uint32_t cpu) {
     idt_ap_init((int)cpu);                  /* GDT with its own TSS, the IDT */
     paging_pat_init();                      /* the same page attributes as the boot core (write-combining) */
     fpu_cpu_init();                         /* x87 / SSE / AVX as the boot core has them (kernel/fpu.c) */
+    tlb_cpu_init();                         /* global pages, PCIDs (kernel/tlb.c) */
     uint32_t lo, hi;
     rdmsr(0x1B, &lo, &hi);
     if (!(lo & (1u << 11))) { lo |= 1u << 11; wrmsr(0x1B, lo, hi); }           /* off -> xAPIC */
@@ -600,8 +606,8 @@ void smp_init(void) {
     uint32_t elo, ehi;
     rdmsr(0xC0000080u, &elo, &ehi);
     td->cr0 = (uint32_t)cr0;
-    td->cr3 = (uint32_t)cr3;
-    td->cr4 = (uint32_t)cr4;
+    td->cr3 = (uint32_t)cr3 & ~0xFFFu;
+    td->cr4 = (uint32_t)cr4 & ~TRAMP_CR4_LATER;
     td->efer = elo & ((1u << 0) | (1u << 8) | (1u << 11));    /* SCE, LME, NXE */
     td->entry = (uint64_t)(uintptr_t)smp_ap_entry;
 
@@ -671,7 +677,7 @@ int smp_s3_resume(void) {
     uintptr_t cr0,cr3,cr4;
     __asm__ volatile("mov %%cr0,%0; mov %%cr3,%1; mov %%cr4,%2":"=r"(cr0),"=r"(cr3),"=r"(cr4));
     uint32_t elo,ehi;rdmsr(0xc0000080,&elo,&ehi);
-    td->cr0=(uint32_t)cr0;td->cr3=(uint32_t)cr3;td->cr4=(uint32_t)cr4;
+    td->cr0=(uint32_t)cr0;td->cr3=(uint32_t)cr3&~0xFFFu;td->cr4=(uint32_t)cr4&~TRAMP_CR4_LATER;
     td->efer=elo&((1u<<0)|(1u<<8)|(1u<<11));td->entry=(uintptr_t)smp_ap_entry;
     for(int cpu=1;cpu<g_cpus;cpu++) {
         td->stack=g_ap_stack[cpu];td->cpu=(uint32_t)cpu;g_ap_up=0;__sync_synchronize();

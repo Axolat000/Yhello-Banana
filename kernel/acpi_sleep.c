@@ -2,6 +2,7 @@
  * Other platforms need AML method execution and their own driver PM hooks. */
 #include "acpi_sleep.h"
 #include "fpu.h"
+#include "tlb.h"
 #include "smp.h"
 #include "idt.h"
 #include "task.h"
@@ -201,6 +202,7 @@ int acpi_s3_suspend(unsigned seconds,char* reason,int cap) {
     rc=s3_arch_suspend();
     fpu_cpu_init();                         /* (the wake reset XCR0: AVX state cannot be restored without it) */
     serial_init();pci_restore();idt_s3_resume();timer_s3_resume(before);
+    tlb_cpu_init();                         /* (CR4 came back without global pages, PCIDs: kernel/tlb.c) */
     int ap_rc=smp_s3_resume();
     outw(pm.cnta,old_cnta);if(pm.cntb)outw(pm.cntb,old_cntb);
     outw(pm.evta,0xffff);if(pm.evtb)outw(pm.evtb,0xffff);

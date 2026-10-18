@@ -13,6 +13,9 @@
  *   systest swap N MS      maps N MiB, fills every page (zeros, text, noise),
  *                          waits MS ms (selftest compresses it meanwhile:
  *                          kernel/zswap.c) and checks every byte again
+ *   systest tlb            a thread per core maps, marks, write-protects and
+ *                          unmaps pages of its own over and over: a fresh
+ *                          page must read zero; exit code 100 + the cores seen
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -231,6 +234,61 @@ static int t_cores(void) {
            n, ROUNDS, g_total, n * ROUNDS, cores, cores == 1 ? "" : "s", banana_ticks() - t0);
     if (bad || g_total != n * ROUNDS) return 1;
     return 100 + cores;
+}
+
+/* tlb: each thread has two pages at addresses of its own, mapped again
+ * (MAP_FIXED, or after munmap) every round - fresh pages, which must read
+ * zero - marked, made read-only and writable again; now and then it sleeps
+ * (task switches, other cores: what their TLBs keep, kernel/tlb.c). A
+ * fresh page showing the last round's mark was read through a translation
+ * some core should have forgotten. */
+#define TLB_ROUNDS 3000
+static unsigned char* g_tlb_area;
+
+static int tlb_worker(void* arg) {
+    long id = (long)arg;
+    unsigned char* p = g_tlb_area + id * 2 * 4096;
+    for (int r = 0; r < TLB_ROUNDS; r++) {
+        if (r & 1) munmap(p, 2 * 4096);
+        if (mmap(p, 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != p) return 2;
+        if (p[0] || p[4096] || p[4095]) {
+            printf("thread %ld, round %d: a fresh page reads %u / %u (the last round's mark)\n", id, r, p[0], p[4096]);
+            return 3;
+        }
+        unsigned char mark = (unsigned char)(r % 255 + 1);
+        p[0] = p[4096] = mark;
+        if (mprotect(p, 2 * 4096, PROT_READ) || p[0] != mark) return 4;
+        if (mprotect(p, 2 * 4096, PROT_READ | PROT_WRITE)) return 4;
+        p[4095] = mark;
+        if (r % 50 == 0) {
+            int c = core_id();
+            if (c < 64) __sync_fetch_and_or(&g_seen, 1ull << c);
+            banana_sleep(1);
+        }
+    }
+    return 0;
+}
+
+static int t_tlb(void) {
+    int n = banana_cpus();
+    if (n < 2) n = 2;
+    if (n > 16) n = 16;
+    g_tlb_area = mmap(NULL, (size_t)n * 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (g_tlb_area == MAP_FAILED) { printf("tlb: mmap failed\n"); return 1; }
+    unsigned t0 = banana_ticks();
+    int ids[16], bad = 0;
+    g_seen = 0;
+    for (int i = 0; i < n; i++) ids[i] = banana_thread(tlb_worker, (void*)(long)i);
+    for (int i = 0; i < n; i++) {
+        int got = ids[i] > 0 ? banana_join(ids[i]) : -1;
+        if (got != 0) { printf("tlb thread %d: returned %d (want 0)\n", i, got); bad = 1; }
+    }
+    munmap(g_tlb_area, (size_t)n * 2 * 4096);
+    int cores = 0;
+    for (int k = 0; k < 64; k++) if (g_seen & (1ull << k)) cores++;
+    printf("%d threads x %d rounds of mmap / mprotect / munmap: %s, on %d core%s, %u ms\n",
+           n, TLB_ROUNDS, bad ? "FAILED" : "every fresh page zero", cores, cores == 1 ? "" : "s", banana_ticks() - t0);
+    return bad ? 1 : 100 + cores;
 }
 
 /* page i of the swap test: zeros (1 in 4), text (compresses), or noise (1 in 8: does not) */
@@ -547,7 +605,8 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "malloc")) return t_malloc();
     if (!strcmp(m, "avx")) return t_avx();
     if (!strcmp(m, "syscall")) return t_syscall();
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc | avx | syscall\n"
+    if (!strcmp(m, "tlb")) return t_tlb();
+    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc | avx | syscall | tlb\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }

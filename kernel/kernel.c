@@ -29,6 +29,7 @@
 #include "virtio_blk.h"
 #include "paging.h"
 #include "fpu.h"
+#include "tlb.h"
 #include "hmem.h"
 #include "smp.h"
 #include "splash.h"
@@ -53,6 +54,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
      * triple-faulting into a VM reset. */
     idt_init();
     fpu_init();
+    tlb_cpu_init();           /* the kernel's pages global, PCIDs where there are (kernel/tlb.c) */
 
     serial_init();
     klog("Banana OS 0.6 booting\n");

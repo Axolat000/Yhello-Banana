@@ -100,7 +100,7 @@ _start:
 .pd_loop:
     mov eax, ecx
     shl eax, 21
-    or eax, 0x83                    ; present + writable + 2 MiB page
+    or eax, 0x183                   ; present + writable + 2 MiB page + global (kernel/tlb.c)
     mov [pd + ecx * 8], eax
     mov dword [pd + ecx * 8 + 4], 0
     inc ecx

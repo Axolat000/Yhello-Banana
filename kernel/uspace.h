@@ -24,8 +24,9 @@ typedef struct uspace uspace_t;
 uspace_t* uspace_create(void);                  /* NULL if out of memory */
 /* frees its tables; nothing may run on it any more (CR3 elsewhere) */
 void      uspace_destroy(uspace_t* us);
-/* what CR3 is loaded with to run on it */
+/* what CR3 is loaded with to run on it, and what the TLBs keep of it (kernel/tlb.c) */
 uintptr_t uspace_cr3(uspace_t* us);
+struct tlb_tag* uspace_tag(uspace_t* us);
 /* opens [addr, addr + size) to the app: 2 MiB-aligned, whole 2 MiB blocks; 0 or -1 */
 int       uspace_map(uspace_t* us, uintptr_t addr, uint32_t size);
 /* makes 4 KiB pages of its memory fault (guard = 1) or usable again (0) */
@@ -39,5 +40,8 @@ void      uspace_kernel_changed(void);
  * stale translation another processor kept from before the block was the
  * app's): 1 if the access can simply be tried again */
 int       uspace_fault_is_stale(uintptr_t addr, uint32_t err);
+/* how many there were since boot (selftest tlb: the kernel's global pages
+ * are such translations too, kept across CR3 loads - kernel/tlb.c) */
+uint32_t  uspace_stale_faults(void);
 
 #endif

@@ -96,8 +96,8 @@ Done in this order, each with its own build, `selftest` part and commit.
 | `syscall` / `sysret` | **testing** (build 192) | The call stubs use `syscall` (the 4th argument in r10) and return with `sysret`; the task's kernel stack through a per-core area (`swapgs`); a kernel code/data pair for syscall's selectors. `int 0x80` stays; sigreturn and non-canonical returns go back by `iretq`. `selftest syscall`. |
 | Interrupt-driven disk I/O | **testing** (build 193) | `kernel/iowait.c`: a short spin, then sleep until the disk's interrupt (AHCI, virtio-blk; a look every 2 ms if none comes) or yield between looks (NVMe, whose interrupts stay off - MSI-X is not supported). A lock per disk and per FAT32 / exFAT volume. Read-ahead left out: ext4 already reads whole extents in one request and caches metadata. `selftest disk`. |
 | A faster kernel heap | **testing** (build 194) | Free blocks in TLSF bins (25 levels x 16, bitmaps): a fit in a couple of bit scans; neighbours still merged; aligned blocks from the bins first. `tools/test_kheap.py`: 300000 random calls with every byte and the heap's structure checked; 27 ns vs ~200 us a malloc + free among 10000 live blocks. `selftest heap`. |
-| Fewer TLB flushes | next | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
-| TCP window scaling and SACK | planned | The receive window is capped at 64 KiB, so a download gets at most 64 KiB per round trip (about 1.3 MB/s at 50 ms). |
+| Fewer TLB flushes | testing (build 195) | The kernel's pages are global (kept across CR3 loads); with PCIDs each core keeps the last 63 address spaces' translations, forgotten only when a space changed (kernel/tlb.c). `selftest tlb`. |
+| TCP window scaling and SACK | next | The receive window is capped at 64 KiB, so a download gets at most 64 KiB per round trip (about 1.3 MB/s at 50 ms). |
 
 ## Not planned
 
