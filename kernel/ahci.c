@@ -86,6 +86,7 @@ typedef struct {
     int      ok;
     uint8_t  bus, dev, fn;
     uint8_t  irq;                     /* its interrupt line (0: none we can use) */
+    int      s64;                     /* 64-bit addresses (CAP.S64A) */
 } hba_t;
 
 typedef struct {
@@ -192,8 +193,9 @@ static int exec_locked(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count,
     while (off < bytes && n < PRD_MAX) {
         uint32_t chunk = bytes - off;
         if (chunk > (4u << 20)) chunk = 4u << 20;
-        t->prdt[n].dba = (uint32_t)((uintptr_t)buf + off);
-        t->prdt[n].dbau = 0;
+        uint64_t a = (uint64_t)(uintptr_t)buf + off;   /* (kernel/disk.c: a buffer this HBA reaches) */
+        t->prdt[n].dba = (uint32_t)a;
+        t->prdt[n].dbau = (uint32_t)(a >> 32);
         t->prdt[n].dbc = chunk - 1;
         off += chunk;
         n++;
@@ -253,6 +255,10 @@ static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const 
     return rc;
 }
 
+int ahci_addr64(int port) {
+    return port >= 0 && port < g_nports && g_ports[port].hba->s64;
+}
+
 static void ident_string(const uint16_t* id, int first, int words, char* out) {
     for (int i = 0; i < words; i++) {
         out[i * 2] = (char)(id[first + i] >> 8);
@@ -289,6 +295,7 @@ static int find_hba(const pci_dev_t* d, void* ctx) {
     h->dev = d->dev;
     h->fn = d->fn;
     h->irq = d->irq_line > 0 && d->irq_line < 16 ? d->irq_line : 0;
+    h->s64 = (rd(h->abar, HBA_CAP) >> 31) & 1;
     return 0;
 }
 
@@ -323,6 +330,7 @@ static void init_all(void) {
         volatile uint8_t* abar = h->abar;
         handoff(abar);
         wr(abar, HBA_GHC, rd(abar, HBA_GHC) | GHC_AE);
+        if (h->irq) { wr(abar, HBA_IS, 0xFFFFFFFFu); wr(abar, HBA_GHC, rd(abar, HBA_GHC) | 2u); }   /* GHC.IE */
         uint32_t pi = rd(abar, HBA_PI), vs = rd(abar, HBA_VS);
         h->ok = 1;
         char line[96];

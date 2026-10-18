@@ -44,6 +44,12 @@ int io_wait(iowait_t* w, int (*done)(void*), void* ctx, uint32_t timeout_ms, int
     }
 }
 
+void io_wait_step(void) {
+    if (!io_can_sleep()) { __asm__ volatile("pause"); return; }
+    task_yield();
+    timer_idle();
+}
+
 void io_wake(iowait_t* w) {
     int pid = w->pid;
     if (pid >= 0) { g_irq_wakes++; task_wake(pid); }

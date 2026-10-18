@@ -687,7 +687,26 @@ fail:
 
 #define DIRECT_MIN 16u                       /* runs this long bypass the cache */
 
-static long do_read(const raw_inode_t* in, const emap_t* m, uint64_t off, uint8_t* buf, uint32_t len) {
+/* read-ahead, per file as Linux has it: a file read where its last read ended
+ * gets a window twice as big each time (up to 1 MiB), one read at random
+ * places gets none - the block it asked for alone */
+#define RA_MAX 256u
+typedef struct { uint32_t ino; uint64_t next; uint32_t win; } ra_t;
+static ra_t     g_ra[8];
+static uint32_t g_ra_turn;
+static uint8_t  g_ra_buf[RA_MAX * BS];
+
+static uint32_t ra_window(uint32_t ino, uint64_t off, uint32_t len) {
+    ra_t* r = 0;
+    for (int i = 0; i < 8; i++) if (g_ra[i].ino == ino) r = &g_ra[i];
+    if (!r) { r = &g_ra[g_ra_turn++ % 8]; r->ino = ino; r->win = off ? 1 : 4; r->next = ~0ull; }
+    if (off == r->next) r->win = r->win * 2 > RA_MAX ? RA_MAX : (r->win ? r->win * 2 : 4);
+    else if (off) r->win = 1;
+    r->next = off + len;
+    return r->win;
+}
+
+static long do_read(const raw_inode_t* in, const emap_t* m, uint64_t off, uint8_t* buf, uint32_t len, uint32_t window) {
     uint64_t size = i_size(in);
     if (off >= size) return 0;
     if (len > size - off) len = (uint32_t)(size - off);
@@ -720,17 +739,14 @@ static long do_read(const raw_inode_t* in, const emap_t* m, uint64_t off, uint8_
             continue;
         }
         /* a part: through the cache, reading ahead what follows in the run */
-        if (!cfind(pblk) && run > 1) {
-            uint32_t ra = run < 16 ? run : 16, k = 1;
+        if (!cfind(pblk) && run > 1 && window > 1) {
+            uint32_t ra = run < window ? run : window, k = 1;
             while (k < ra && !cfind(pblk + k)) k++;
-            uint8_t* tmp = (uint8_t*)kmalloc(k * BS);
-            if (tmp && dev_read(pblk, k, tmp) == 0) {
+            if (dev_read(pblk, k, g_ra_buf) == 0)
                 for (uint32_t j = 0; j < k; j++) {
                     cblk_t* c = cget(pblk + j, 1);
-                    if (c) { memcpy(c->data, tmp + j * BS, BS); cput(c); }
+                    if (c) { memcpy(c->data, g_ra_buf + j * BS, BS); cput(c); }
                 }
-            }
-            kfree(tmp);
         }
         cblk_t* c = cget(pblk, 0);
         if (!c) return -1;
@@ -1259,7 +1275,7 @@ long ext4_read(uint32_t ino, uint64_t off, void* buf, uint32_t len) {
     emap_t m;
     long r = -1;
     if (iread(ino, &in) == 0 && emap_load(&in, &m) == 0) {
-        r = do_read(&in, &m, off, (uint8_t*)buf, len);
+        r = do_read(&in, &m, off, (uint8_t*)buf, len, ra_window(ino, off, len));
         emap_free(&m);
     }
     unlock();

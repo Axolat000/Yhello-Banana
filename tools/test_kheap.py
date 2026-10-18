@@ -13,7 +13,7 @@ root = Path(__file__).resolve().parents[1]
 out = root / "build/test/kheap"
 out.mkdir(parents=True, exist_ok=True)
 base = sys.argv[1] if len(sys.argv) > 1 else "d9c9071"     # (build 193: the heap before the bins)
-flags = ["-O2", "-g", "-Wall", "-Wextra"]
+flags = ["-O2", "-g", "-Wall", "-Wextra", "-fno-pie"]   # (_kernel_end is an absolute address: no PIE)
 syms = ["kheap_init", "kmalloc", "kzalloc", "kfree", "krealloc", "kmalloc_aligned", "kheap_total_bytes",
         "kheap_used_bytes", "kheap_largest_free", "kheap_set_reclaim", "kheap_add_region"]
 
@@ -39,6 +39,6 @@ old_o = build("old", git_show("kernel/kheap.c"), git_show("kernel/kheap.h"))
 old_renamed = out / "kheap_old_renamed.o"
 subprocess.run(["objcopy", *[f"--redefine-sym={s}=old_{s}" for s in syms], str(old_o), str(old_renamed)], check=True)
 exe = out / "test"
-subprocess.run(["gcc", "-O1", "-g", str(root / "tools/tests/kheap.c"), str(new_o), str(old_renamed),
+subprocess.run(["gcc", "-O1", "-g", "-no-pie", str(root / "tools/tests/kheap.c"), str(new_o), str(old_renamed),
                 "-Wl,--defsym=_kernel_end=0x100000", "-o", str(exe)], check=True)
 sys.exit(subprocess.run([str(exe)]).returncode)

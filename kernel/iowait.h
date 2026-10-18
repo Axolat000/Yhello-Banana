@@ -35,6 +35,10 @@ int  io_can_sleep(void);
 int  io_wait(iowait_t* w, int (*done)(void* ctx), void* ctx, uint32_t timeout_ms, int irq);
 /* the device's interrupt: wake the task waiting for it */
 void io_wake(iowait_t* w);
+/* one step of a wait a driver polls itself (kernel/ata.c): the other tasks
+ * run, then the processor sleeps until the next interrupt - where the task
+ * may not sleep, a pause */
+void io_wait_step(void);
 
 /* since boot: waits that slept, and wake-ups by a device's interrupt
  * (selftest disk: are interrupts arriving?) */

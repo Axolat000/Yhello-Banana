@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "serial.h"
 #include "blockdev.h"
+#include "idt.h"
 
 /*
  * NVMe: one admin queue pair and one I/O queue pair per controller, both
@@ -29,9 +30,11 @@ typedef struct {
     uint8_t* bounce;              /* CHUNK bytes */
     uint64_t* prps;               /* the PRP list for the bounce buffer */
     uint32_t sectors;             /* namespace 1, 512-byte sectors (28-bit API) */
+    uint32_t max_sect;            /* sectors a command takes (MDTS; 2 MiB at most: one PRP list page) */
+    uint8_t  irq;                 /* its INTx line (0: none - polled) */
     char     model[41];
     blockdev_t* bd;
-    iowait_t w;                   /* one command at a time (one bounce buffer, one PRP list) */
+    iowait_t w;                   /* one command at a time (one bounce buffer, one PRP list); who waits */
 } nvme_t;
 
 static nvme_t g_nv[NVME_MAX];
@@ -59,9 +62,9 @@ static int cq_ready(void* ctx) {
 }
 
 /* submits a 64-byte command on queue qid (0 admin, 1 I/O) and waits for
- * its completion - the other tasks run meanwhile (no interrupt: its
- * vectors stay masked; kernel/iowait.c); returns the status field (0 =
- * success), -1 on a timeout */
+ * its completion - the other tasks run meanwhile, the task asleep until
+ * the completion interrupt where there is a line (kernel/iowait.c);
+ * returns the status field (0 = success), -1 on a timeout */
 static int submit(nvme_t* n, int qid, uint32_t* cmd) {
     uint8_t* sq = qid ? n->iosq : n->asq;
     uint8_t* cq = qid ? n->iocq : n->acq;
@@ -74,10 +77,11 @@ static int submit(nvme_t* n, int qid, uint32_t* cmd) {
     memcpy(sq + (uint32_t)*tail * sqe, cmd, 64);
     if (sqe > 64) memset(sq + (uint32_t)*tail * sqe + 64, 0, sqe - 64);
     *tail = (uint16_t)((*tail + 1) % QDEPTH);
+    if (n->irq) w32(n, 0x10, 1u);                                   /* INTMC: vector 0 on (the handler masks it) */
     w32(n, 0x1000 + (uint32_t)(2 * qid) * n->dstrd, *tail);          /* SQ tail doorbell */
     cqwait_t cw = { cq, head, phase };
     for (;;) {
-        if (io_wait(&n->w, cq_ready, &cw, 5000, 0) != 0) return -1;
+        if (io_wait(&n->w, cq_ready, &cw, 5000, n->irq) != 0) return -1;   /* (asleep until nvme_irq, with a line) */
         volatile uint32_t* e = (volatile uint32_t*)(cq + (uint32_t)*head * 16);
         uint32_t dw3 = e[3];
         *head = (uint16_t)((*head + 1) % QDEPTH);
@@ -100,6 +104,8 @@ static int admin(nvme_t* n, uint8_t opc, uint32_t nsid, void* prp1, uint32_t c10
     cmd[11] = c11;
     return submit(n, 0, cmd);
 }
+
+static void nvme_irq(void);
 
 static int start_controller(nvme_t* n, const pci_dev_t* pd) {
     int io;
@@ -134,8 +140,13 @@ static int start_controller(nvme_t* n, const pci_dev_t* pd) {
     n->aphase = n->iophase = 1;
     /* polled: no interrupts at all (a level-triggered INTx nobody acks
      * would keep the CPU in the interrupt handler of whoever shares it) */
-    w32(n, 0x0C, 0xFFFFFFFFu);                         /* INTMS: mask every vector */
-    pci_write16(pd->bus, pd->dev, pd->fn, 0x04, (uint16_t)(pci_read16(pd->bus, pd->dev, pd->fn, 0x04) | (1u << 10)));
+    w32(n, 0x0C, 0xFFFFFFFFu);                         /* INTMS: every vector masked (submit unmasks 0) */
+    uint16_t pcmd = pci_read16(pd->bus, pd->dev, pd->fn, 0x04);
+    n->irq = pd->irq_line > 0 && pd->irq_line < 16 ? pd->irq_line : 0;
+    /* INTx on when there is a line (the handler masks the vector: no storm on a
+     * shared level-triggered line), off - polled - when there is none */
+    pci_write16(pd->bus, pd->dev, pd->fn, 0x04, (uint16_t)(n->irq ? pcmd & ~(1u << 10) : pcmd | (1u << 10)));
+    if (n->irq) irq_install(n->irq, nvme_irq);
     w32(n, 0x14, (4u << 20) | ((n->io_sqe == 128 ? 7u : 6u) << 16) | 1u);   /* CQ entry 16 B, SQ entry 64 (128) B, 4 KiB pages, enable */
     t0 = timer_ms();
     while (!(r32(n, 0x1C) & 1)) {
@@ -147,6 +158,10 @@ static int start_controller(nvme_t* n, const pci_dev_t* pd) {
     uint8_t* id = (uint8_t*)page_alloc(PAGE);
     if (!id) return -1;
     if (admin(n, 0x06, 0, id, 1, 0) != 0) { klog("nvme: identify controller failed\n"); return -1; }
+    /* the largest transfer (MDTS: 2^n pages, 0 none), 2 MiB at most - a PRP list page */
+    uint32_t mdts = id[77], maxb = 2u << 20;
+    if (mdts && mdts < 9 && (PAGE << mdts) < maxb) maxb = PAGE << mdts;
+    n->max_sect = maxb / 512;
     memcpy(n->model, id + 24, 40);
     n->model[40] = 0;
     for (int i = 39; i >= 0 && n->model[i] == ' '; i--) n->model[i] = 0;
@@ -162,24 +177,31 @@ static int start_controller(nvme_t* n, const pci_dev_t* pd) {
     n->sectors = nsze > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)nsze;
 
     /* the I/O queue pair (id 1), polled */
-    if (admin(n, 0x05, 0, n->iocq, ((uint32_t)(QDEPTH - 1) << 16) | 1, 1) != 0) { klog("nvme: cannot create the I/O CQ\n"); return -1; }
+    if (admin(n, 0x05, 0, n->iocq, ((uint32_t)(QDEPTH - 1) << 16) | 1, n->irq ? 3u : 1u) != 0) { klog("nvme: cannot create the I/O CQ\n"); return -1; }
     if (admin(n, 0x01, 0, n->iosq, ((uint32_t)(QDEPTH - 1) << 16) | 1, (1u << 16) | 1) != 0) { klog("nvme: cannot create the I/O SQ\n"); return -1; }
     klog("nvme: %s, %u MiB\n", n->model, n->sectors / 2048);
     return 0;
 }
 
-static int rw(nvme_t* n, int write, uint32_t lba, uint32_t count) {
+/* one read / write of count sectors at addr: PRP1 the first page (from addr's
+ * offset in it), PRP2 the second page, or the PRP list of all the others */
+static int rw(nvme_t* n, int write, uint32_t lba, uint32_t count, uint8_t* addr) {
     uint32_t cmd[16];
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = write ? 0x01 : 0x02;
     cmd[1] = 1;                                   /* namespace 1 */
-    uint64_t p1 = (uint64_t)(uintptr_t)n->bounce;
+    uint64_t p1 = (uint64_t)(uintptr_t)addr;
     cmd[6] = (uint32_t)p1;
     cmd[7] = (uint32_t)(p1 >> 32);
-    uint32_t bytes = count * 512;
-    if (bytes > PAGE) {
-        /* two pages: the second one's address; more: the PRP list */
-        uint64_t p2 = bytes > 2 * PAGE ? (uint64_t)(uintptr_t)n->prps : (uint64_t)(uintptr_t)(n->bounce + PAGE);
+    uint32_t bytes = count * 512, first = PAGE - (uint32_t)(p1 & (PAGE - 1));
+    if (bytes > first) {
+        uint64_t next = p1 + first, p2;
+        if (bytes - first <= PAGE) p2 = next;                  /* two pages: the second one */
+        else {
+            uint32_t k = 0;
+            for (uint64_t a = next; a < p1 + bytes; a += PAGE) n->prps[k++] = a;
+            p2 = (uint64_t)(uintptr_t)n->prps;
+        }
         cmd[8] = (uint32_t)p2;
         cmd[9] = (uint32_t)(p2 >> 32);
     }
@@ -189,17 +211,24 @@ static int rw(nvme_t* n, int write, uint32_t lba, uint32_t count) {
     return submit(n, 1, cmd) == 0 ? 0 : -1;
 }
 
-int nvme_read(int idx, uint32_t lba, uint32_t count, void* buf) {
+/* straight into / out of the caller's buffer (kernel/disk.c sends only ones
+ * the controller reaches) when it is 4-byte aligned; else through bounce */
+static int xfer(int idx, uint32_t lba, uint32_t count, uint8_t* b, int write) {
     if (idx < 0 || idx >= g_count) return -1;
     nvme_t* n = &g_nv[idx];
-    uint8_t* out = (uint8_t*)buf;
-    int rc = 0;
     io_lock(&n->w);
-    while (count) {
-        uint32_t c = count > CHUNK / 512 ? CHUNK / 512 : count;
-        if (rw(n, 0, lba, c) != 0) { klog("nvme: read error at %u\n", lba); rc = -1; break; }
-        memcpy(out, n->bounce, c * 512);
-        out += c * 512;
+    int direct = !((uintptr_t)b & 3), rc = 0;
+    while (count && rc == 0) {
+        uint32_t c = direct ? (count > n->max_sect ? n->max_sect : count)
+                            : (count > CHUNK / 512 ? CHUNK / 512 : count);
+        if (direct) rc = rw(n, write, lba, c, b);
+        else {
+            if (write) memcpy(n->bounce, b, c * 512);
+            rc = rw(n, write, lba, c, n->bounce);
+            if (!write && rc == 0) memcpy(b, n->bounce, c * 512);
+        }
+        if (rc) klog("nvme: %s error at %u\n", write ? "write" : "read", lba);
+        b += c * 512;
         lba += c;
         count -= c;
     }
@@ -207,22 +236,17 @@ int nvme_read(int idx, uint32_t lba, uint32_t count, void* buf) {
     return rc;
 }
 
-int nvme_write(int idx, uint32_t lba, uint32_t count, const void* buf) {
-    if (idx < 0 || idx >= g_count) return -1;
-    nvme_t* n = &g_nv[idx];
-    const uint8_t* in = (const uint8_t*)buf;
-    int rc = 0;
-    io_lock(&n->w);
-    while (count) {
-        uint32_t c = count > CHUNK / 512 ? CHUNK / 512 : count;
-        memcpy(n->bounce, in, c * 512);
-        if (rw(n, 1, lba, c) != 0) { klog("nvme: write error at %u\n", lba); rc = -1; break; }
-        in += c * 512;
-        lba += c;
-        count -= c;
-    }
-    io_unlock(&n->w);
-    return rc;
+int nvme_read(int idx, uint32_t lba, uint32_t count, void* buf) { return xfer(idx, lba, count, (uint8_t*)buf, 0); }
+int nvme_write(int idx, uint32_t lba, uint32_t count, const void* buf) { return xfer(idx, lba, count, (uint8_t*)buf, 1); }
+
+/* INTx (level-triggered, maybe shared): vector 0 masked at once - the
+ * waiting command finds its completion, the next one unmasks it */
+static void nvme_irq(void) {
+    for (int i = 0; i < NVME_MAX; i++)
+        if (g_nv[i].irq && g_nv[i].regs) {
+            w32(&g_nv[i], 0x0C, 1u);                    /* (one being started too) */
+            io_wake(&g_nv[i].w);
+        }
 }
 
 int nvme_flush(int idx) {

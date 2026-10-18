@@ -18,6 +18,8 @@ int ahci_probe(ata_disk_t* out, int max);
 int ahci_read(int port, uint32_t lba, uint32_t count, void* buf);
 int ahci_write(int port, uint32_t lba, uint32_t count, const void* buf);
 int ahci_flush(int port);
+/* 1 if the port's HBA takes 64-bit addresses (CAP.S64A) */
+int ahci_addr64(int port);
 
 /* 2048-byte blocks on a SATA CD/DVD drive */
 int ahci_atapi_read(int port, uint32_t lba, uint32_t count, void* buf);
