@@ -3,6 +3,8 @@
 #include "ahci.h"
 #include "nvme.h"
 #include "virtio_blk.h"
+#include "virtio_scsi.h"
+#include "sdhci.h"
 #include "kstring.h"
 #include "blockdev.h"
 #include "iowait.h"
@@ -21,6 +23,8 @@ int disk_probe(ata_disk_t* out, int max) {
     n += ahci_probe(out + n, max - n);
     n += nvme_probe(out + n, max - n);
     n += virtio_blk_probe(out + n, max - n);
+    n += virtio_scsi_probe(out + n, max - n);
+    n += sdhci_probe(out + n, max - n);
     return n;
 }
 
@@ -39,7 +43,8 @@ static volatile int g_bounce_lock;
 static int below_4g(const void* p, uint32_t bytes) { return (uint64_t)(uintptr_t)p + bytes <= 0x100000000ull; }
 
 static int needs_bounce(const ata_disk_t* d, const void* p, uint32_t bytes) {
-    if (d->vblk) return 0;                              /* (virtio copies through its own) */
+    if (d->vblk || d->scsi) return 0;                   /* (virtio copies through its own) */
+    if (d->mmc) return 0;                               /* (the processor copies: any address) */
 #ifdef __x86_64__
     if ((uint64_t)(uintptr_t)p >= UVM_HOLE) return 1;
 #endif
@@ -77,6 +82,8 @@ static int ide_rw(const ata_disk_t* d, uint32_t lba, uint32_t count, uint8_t* b,
 static int raw_rw(const ata_disk_t* d, uint32_t lba, uint32_t count, void* buf, int write) {
     if (d->nvme) return write ? nvme_write(d->nvme - 1, lba, count, buf) : nvme_read(d->nvme - 1, lba, count, buf);
     if (d->vblk) return write ? virtio_blk_write(d->vblk - 1, lba, count, buf) : virtio_blk_read(d->vblk - 1, lba, count, buf);
+    if (d->scsi) return write ? virtio_scsi_write(d->scsi - 1, lba, count, buf) : virtio_scsi_read(d->scsi - 1, lba, count, buf);
+    if (d->mmc) return write ? sdhci_write(d->mmc - 1, lba, count, buf) : sdhci_read(d->mmc - 1, lba, count, buf);
     if (d->ahci_port >= 0) return write ? ahci_write(d->ahci_port, lba, count, buf) : ahci_read(d->ahci_port, lba, count, buf);
     return ide_rw(d, lba, count, (uint8_t*)buf, write);
 }
@@ -105,6 +112,8 @@ int disk_write(const ata_disk_t* d, uint32_t lba, uint32_t count, const void* bu
 int disk_flush(const ata_disk_t* d) {
     if (d->nvme) return nvme_flush(d->nvme - 1);
     if (d->vblk) return virtio_blk_flush(d->vblk - 1);
+    if (d->scsi) return virtio_scsi_flush(d->scsi - 1);
+    if (d->mmc) return 0;                               /* (no write cache turned on) */
     if (d->ahci_port >= 0) return ahci_flush(d->ahci_port);
     if (d->is_atapi) return 0;
     ata_lock(d->bus);
@@ -154,6 +163,8 @@ int disk_cd_iso_size(const ata_disk_t* d, uint32_t* out_bytes) {
 void disk_describe(const ata_disk_t* d, char* out, int cap) {
     if (d->nvme) ksnprintf(out, (size_t)cap, "NVMe #%d", d->nvme - 1);
     else if (d->vblk) ksnprintf(out, (size_t)cap, "virtio #%d", d->vblk - 1);
+    else if (d->scsi) ksnprintf(out, (size_t)cap, "SCSI #%d", d->scsi - 1);
+    else if (d->mmc) ksnprintf(out, (size_t)cap, "%s #%d", sdhci_is_emmc(d->mmc - 1) ? "eMMC" : "SD card", d->mmc - 1);
     else if (d->ahci_port >= 0) ksnprintf(out, (size_t)cap, "SATA #%d", d->ahci_port);
     else ksnprintf(out, (size_t)cap, "IDE %s %s", d->bus == ATA_BUS_PRIMARY ? "primary" : "secondary",
                    d->is_slave ? "slave" : "master");
@@ -181,12 +192,16 @@ static int extra_write(blockdev_t* bd, uint32_t lba, uint32_t count, const void*
 int disk_same(const ata_disk_t* a, const ata_disk_t* b) {
     if (a->nvme || b->nvme) return a->nvme == b->nvme;
     if (a->vblk || b->vblk) return a->vblk == b->vblk;
+    if (a->scsi || b->scsi) return a->scsi == b->scsi;
+    if (a->mmc || b->mmc) return a->mmc == b->mmc;
     if (a->ahci_port >= 0 || b->ahci_port >= 0) return a->ahci_port == b->ahci_port;
     return a->bus == b->bus && a->is_slave == b->is_slave;
 }
 
 blockdev_t* disk_blockdev(const ata_disk_t* d) {
     char name[16];
+    if (d->scsi) return virtio_scsi_blockdev(d->scsi - 1);
+    if (d->mmc) return sdhci_blockdev(d->mmc - 1);
     if (d->nvme) ksnprintf(name, sizeof(name), "nvme%d", d->nvme - 1);
     else if (d->vblk) ksnprintf(name, sizeof(name), "virtio%d", d->vblk - 1);
     else {
@@ -209,7 +224,7 @@ void disk_attach_extra(int (*holds_system)(const ata_disk_t* d)) {
             blockdev_set_system(disk_blockdev(d));
             continue;
         }
-        if (d->nvme || d->vblk || disk_blockdev(d)) continue;   /* (already block devices) */
+        if (d->nvme || d->vblk || d->scsi || d->mmc || disk_blockdev(d)) continue;   /* (already block devices) */
         g_extra[g_nextra] = *d;
         const char* kind = d->ahci_port >= 0 ? "sata" : "ide";
         blockdev_t* bd = blockdev_register_kind(kind, d->model[0] ? d->model : "hard disk", d->sectors, 512,

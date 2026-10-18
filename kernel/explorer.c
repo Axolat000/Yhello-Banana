@@ -1148,6 +1148,8 @@ static int     g_nplaces;
 static const char* kind_name(const char* kind) {
     if (!strcmp(kind, "usb")) return "USB stick";
     if (!strcmp(kind, "sd")) return "SD card";
+    if (!strcmp(kind, "mmc")) return "eMMC storage";
+    if (!strcmp(kind, "scsi")) return "SCSI disk";
     if (!strcmp(kind, "nvme")) return "NVMe disk";
     if (!strcmp(kind, "virtio")) return "Virtual disk";
     if (!strcmp(kind, "sata")) return "SATA disk";
