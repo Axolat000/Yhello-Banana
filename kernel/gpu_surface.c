@@ -24,6 +24,43 @@ uint64_t gpu_surface_copy(gpu_surface_t dst, gpu_surface_t src, gpu_rect_t r) {
     return (uint64_t)r.w * r.h * 4;
 }
 
+uint64_t gpu_surface_damage(gpu_surface_t src, gpu_surface_t previous, int valid,
+                           void (*changed)(gpu_rect_t, void*), void* context) {
+    if (!src.pixels || !previous.pixels || !changed || src.width <= 0 || src.height <= 0 ||
+        src.stride < src.width || previous.width < src.width || previous.height < src.height ||
+        previous.stride < previous.width) return 0;
+    uint64_t bytes = 0;
+    for (int y = 0; y < src.height; y += 32) {
+        int h = src.height - y < 32 ? src.height - y : 32, run = -1;
+        for (int x = 0; x <= src.width; x += 32) {
+            int w = src.width - x < 32 ? src.width - x : 32;
+            int dirty = x < src.width && !valid;
+            if (valid && x < src.width) for (int yy = y; yy < y + h; yy++)
+                if (memcmp(src.pixels + (size_t)yy * src.stride + x,
+                           previous.pixels + (size_t)yy * previous.stride + x, (size_t)w * 4)) { dirty = 1; break; }
+            if (dirty && run < 0) run = x;
+            if (!dirty && run >= 0) {
+                gpu_rect_t r = {run, y, x - run, h};
+                bytes += gpu_surface_copy(previous, src, r); changed(r, context); run = -1;
+            }
+            /* The final partial tile has no x == width iteration. */
+            if (x < src.width && x + 32 >= src.width) {
+                if (run >= 0) {
+                    gpu_rect_t r = {run, y, src.width - run, h};
+                    bytes += gpu_surface_copy(previous, src, r); changed(r, context);
+                }
+                break;
+            }
+        }
+    }
+    return bytes;
+}
+
+typedef struct { int n; uint64_t area; } damage_check_t;
+static void count_damage(gpu_rect_t r, void* p) {
+    damage_check_t* c = p; c->n++; c->area += (uint64_t)r.w * r.h;
+}
+
 void gpu_surface_tests(void (*report)(const char*, int, const char*)) {
     uint32_t a[10 * 7 + 2], b[12 * 7 + 2];
     for (int i = 0; i < 72; i++) a[i] = 0x11223344;
@@ -48,4 +85,20 @@ void gpu_surface_tests(void (*report)(const char*, int, const char*)) {
     report("empty, offscreen and overflowing rectangles are rejected", ok, "");
     src.width = 4; src.height = 2;
     report("presentation respects both surface sizes", gpu_surface_copy(dst, src, (gpu_rect_t){0, 0, 8, 7}) == 32, "");
+    uint32_t current[65 * 33], previous[65 * 33];
+    memset(current, 0x3a, sizeof(current)); memset(previous, 0, sizeof(previous));
+    src = (gpu_surface_t){current, 65, 33, 65}; dst = (gpu_surface_t){previous, 65, 33, 65};
+    damage_check_t c = {0, 0};
+    n = gpu_surface_damage(src, dst, 0, count_damage, &c);
+    report("first damaged frame includes partial edge tiles", n == sizeof(current) && c.area == 65 * 33 && !memcmp(current, previous, sizeof(current)), "");
+    c = (damage_check_t){0, 0};
+    n = gpu_surface_damage(src, dst, 1, count_damage, &c);
+    report("unchanged frames copy no pixels", !n && !c.n, "");
+    current[32 * 65 + 64]++;
+    n = gpu_surface_damage(src, dst, 1, count_damage, &c);
+    report("one edge pixel updates only its damaged tile", n == 4 && c.n == 1 && !memcmp(current, previous, sizeof(current)), "");
+    current[0]++; current[64]++;
+    c = (damage_check_t){0, 0};
+    n = gpu_surface_damage(src, dst, 1, count_damage, &c);
+    report("separate damaged tiles leave the clean middle untouched", n == (32 * 32 + 32) * 4 && c.n == 2 && !memcmp(current, previous, sizeof(current)), "");
 }

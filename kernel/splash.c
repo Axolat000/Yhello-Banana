@@ -1,5 +1,6 @@
 #include "splash.h"
 #include "fb.h"
+#include "gpu.h"
 #include "timer.h"
 #include "terminal.h"
 
@@ -130,6 +131,7 @@ static void draw_all(void) {
     draw_banana();
     g_phase = (int)(timer_ms() / DOT_MS % 3);
     draw_dots(g_phase);
+    gpu_flush(0, 0, g_w, g_h);
     g_busy = 0;
 }
 
@@ -152,6 +154,7 @@ void splash_tick(void) {
     if (phase == g_phase) return;
     g_phase = phase;
     draw_dots(phase);
+    gpu_flush(g_dot_x0 - g_dot_r, g_dot_y - g_dot_r, 2 * g_dot_step + 2 * g_dot_r + 1, 2 * g_dot_r + 1);
 }
 
 void splash_end(void) {

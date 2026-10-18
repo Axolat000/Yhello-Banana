@@ -54,6 +54,7 @@ gpu_t* gpu_active(void);
 int    gpu_register(gpu_t* g);
 /* fb.c: an area was drawn */
 void   gpu_flush(int x, int y, int w, int h);
+void   gpu_dirty_raw(void); /* a caller will write through a raw framebuffer pointer */
 /* Built-in drivers may provide a bounded, allocation-free panic update.
  * Kept outside gpu_t so the driver-module structure ABI stays unchanged. */
 void   gpu_register_panic(gpu_t* g, void (*present)(void));
@@ -72,9 +73,11 @@ int    gpu_backlight(int percent);     /* percent < 0 reads; -1 without one */
 typedef struct {
     uint64_t frames, copied_bytes, copy_ns, flushes, flushed_bytes, flush_ns;
     uint64_t commands, command_ns, timeouts;
+    uint64_t damage_frames, candidate_bytes, damage_bytes;
 } gpu_stats_t;
 void gpu_stats(gpu_stats_t* out);
 void gpu_note_present(uint64_t bytes, uint64_t ns);
+void gpu_note_damage(uint64_t candidate, uint64_t copied);
 void gpu_note_command(uint64_t ns, int timeout);
 void gpu_diagnostics(void);
 void gpu_bench(void);

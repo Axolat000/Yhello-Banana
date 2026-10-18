@@ -28,6 +28,7 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb);
 /* Optional backbuffer to reduce flicker */
 void fb_set_backbuffer(uint32_t* buf, uint32_t buf_width, uint32_t buf_height);
 void fb_clear_backbuffer(void);
+void fb_present_damage(void);       /* exact RAM shadow comparison, desktop only */
 void fb_present(void);              /* copy backbuffer -> framebuffer */
 void fb_putpixel_direct(int x, int y, uint32_t rgb); /* always to framebuffer */
 /* copies one rectangle of the backbuffer to the screen */

@@ -17,6 +17,9 @@ void gpu_diagnostics(void) {
     ksnprintf(line, sizeof(line), "    driver: %llu updates, %llu KiB, %llu us; %llu commands, %llu timeouts",
               s.flushes, s.flushed_bytes >> 10, s.flush_ns / 1000, s.commands, s.timeouts);
     terminal_writeln(line);
+    ksnprintf(line, sizeof(line), "    damage: %llu frames, %llu KiB changed / %llu KiB considered",
+              s.damage_frames, s.damage_bytes >> 10, s.candidate_bytes >> 10);
+    terminal_writeln(line);
 }
 
 void gpu_tests(void (*report)(const char*, int, const char*)) {

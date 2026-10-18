@@ -17,9 +17,25 @@ Both kernel architectures build. The seven in-OS checks passed with QEMU
 standard VGA, virtio-vga and VMware SVGA. `gpubench` checked pixels and the
 shell help registry reported no missing pages or duplicate commands.
 
+## 2. Damage tracking
+
+The desktop compares 32x32 tiles against its previous frame in RAM, joins
+adjacent changed tiles and copies only changed runs. Comparisons are exact;
+there is no hash-collision risk and no video-memory readback. The shadow
+is invalidated when the framebuffer or backbuffer changes. Allocation
+failure falls back to the full copy. Software cursor erasure is explicit.
+Virtual GPUs coalesce up to 32 rectangles and flush them on demand; direct
+console drawing and the splash mark their writes. The old unconditional
+full-screen refresh every 100 ms is gone.
+
+`selftest gpu` adds unchanged-frame, edge-tile and separated-change checks.
+The hosted checks pass with address/undefined-behavior sanitizers. Both
+kernels link. A virtio desktop passes all checks, changes resolution,
+returns to the console and reports no GPU timeouts. In one run 5 MiB
+changed out of 74 MiB considered; actual savings depend on the workload.
+
 ## Remaining stages
 
-- Damage tracking: pending.
 - Asynchronous commands: pending.
 - Frame presentation: pending.
 - VirGL: pending.

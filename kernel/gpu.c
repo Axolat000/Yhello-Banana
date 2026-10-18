@@ -8,6 +8,7 @@
 #include "terminal.h"
 #include "timer.h"
 #include "spinlock.h"
+#include "gpu_surface.h"
 
 #define GPU_MAX 4
 static gpu_t* g_gpus[GPU_MAX];
@@ -16,7 +17,11 @@ static int    g_ngpus;
 static gpu_t* g_active;
 
 /* what was drawn since the last push to the screen (virtual GPUs) */
-static volatile int g_dx0 = 1 << 30, g_dy0 = 1 << 30, g_dx1, g_dy1;
+#define DIRTY_MAX 32
+static gpu_rect_t g_dirty[DIRTY_MAX];
+static int g_ndirty;
+static volatile int g_raw_dirty;
+void gpu_dirty_raw(void) { g_raw_dirty = 1; }
 static int g_flusher;                    /* the task runs */
 static int g_booting;                    /* in gpu_init: the terminal is not up yet */
 
@@ -28,6 +33,11 @@ void gpu_stats(gpu_stats_t* out) {
 void gpu_note_present(uint64_t bytes, uint64_t ns) {
     uintptr_t f = spin_lock_irq(&g_stats_lock);
     g_stats.frames++; g_stats.copied_bytes += bytes; g_stats.copy_ns += ns;
+    spin_unlock_irq(&g_stats_lock, f);
+}
+void gpu_note_damage(uint64_t candidate, uint64_t copied) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock);
+    g_stats.damage_frames++; g_stats.candidate_bytes += candidate; g_stats.damage_bytes += copied;
     spin_unlock_irq(&g_stats_lock, f);
 }
 void gpu_note_command(uint64_t ns, int timeout) {
@@ -72,45 +82,55 @@ void gpu_set_framebuffer(uintptr_t addr, int w, int h, int pitch) {
 
 void gpu_flush(int x, int y, int w, int h) {
     gpu_t* g = g_active;
-    if (!g || !g->flush || w <= 0 || h <= 0) return;
-    if (!g_flusher) { flush_driver(g, x, y, w, h); return; }      /* (at boot: right away) */
+    if (!g || !g->flush) return;
+    const fb_info_t* fi = fb_info();
+    gpu_rect_t r = {x, y, w, h};
+    if (!gpu_rect_clip(&r, (int)fi->width, (int)fi->height)) return;
+    if (!g_flusher) { flush_driver(g, r.x, r.y, r.w, r.h); return; }
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
-    if (x < g_dx0) g_dx0 = x;
-    if (y < g_dy0) g_dy0 = y;
-    if (x + w > g_dx1) g_dx1 = x + w;
-    if (y + h > g_dy1) g_dy1 = y + h;
+    /* Merge only when the bounding rectangle costs no more than the two
+     * updates. Distant small changes must not become a full-screen copy. */
+    for (int i = 0; i < g_ndirty;) {
+        gpu_rect_t a = g_dirty[i];
+        int x0 = a.x < r.x ? a.x : r.x, y0 = a.y < r.y ? a.y : r.y;
+        int x1 = a.x + a.w > r.x + r.w ? a.x + a.w : r.x + r.w;
+        int y1 = a.y + a.h > r.y + r.h ? a.y + a.h : r.y + r.h;
+        if ((uint64_t)(x1 - x0) * (y1 - y0) <= (uint64_t)a.w * a.h + (uint64_t)r.w * r.h) {
+            r = (gpu_rect_t){x0, y0, x1 - x0, y1 - y0};
+            g_dirty[i] = g_dirty[--g_ndirty]; i = 0;
+        } else i++;
+    }
+    if (g_ndirty == DIRTY_MAX) {
+        g_ndirty = 0; r = (gpu_rect_t){0, 0, (int)fi->width, (int)fi->height};
+    }
+    g_dirty[g_ndirty++] = r;
     if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
-/* pushes what was drawn, at most 60 times a second; the whole screen
- * now and then too, for whatever draws without telling (the terminal) */
 static void flusher_task(void) {
     task_set_background();
-    uint32_t last_full = 0;
     for (;;) {
         gpu_t* g = g_active;
-        task_sleep_ms(g && g->flush ? 16 : 500);     /* (a real sleep: the other tasks run) */
+        task_sleep_ms(g && g->flush ? 16 : 500);
         if (!g || !g->flush) continue;
-        const fb_info_t* fi = fb_info();
+        gpu_rect_t dirty[DIRTY_MAX];
         uintptr_t fl;
         __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
-        int x0 = g_dx0, y0 = g_dy0, x1 = g_dx1, y1 = g_dy1;
-        g_dx0 = g_dy0 = 1 << 30;
-        g_dx1 = g_dy1 = 0;
-        if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
-        uint32_t now = timer_ms();
-        if (now - last_full >= 100) {
-            last_full = now;
-            x0 = y0 = 0;
-            x1 = (int)fi->width;
-            y1 = (int)fi->height;
+        int n = g_ndirty;
+        memcpy(dirty, g_dirty, (size_t)n * sizeof(*dirty)); g_ndirty = 0;
+        if (g_raw_dirty) {
+            const fb_info_t* f = fb_info();
+            dirty[0] = (gpu_rect_t){0, 0, (int)f->width, (int)f->height};
+            n = 1; g_raw_dirty = 0;
         }
-        if (x1 > (int)fi->width) x1 = (int)fi->width;
-        if (y1 > (int)fi->height) y1 = (int)fi->height;
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x1 > x0 && y1 > y0) flush_driver(g, x0, y0, x1 - x0, y1 - y0);
+        if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
+        for (int i = 0; i < n; i++) {
+            gpu_rect_t r = dirty[i];
+            const fb_info_t* f = fb_info();
+            if (gpu_rect_clip(&r, (int)f->width, (int)f->height))
+                flush_driver(g, r.x, r.y, r.w, r.h);
+        }
     }
 }
 

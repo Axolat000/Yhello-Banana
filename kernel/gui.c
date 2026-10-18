@@ -2263,8 +2263,11 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     kb_draw_overlays(fi);
     ctxmenu_draw();
 
-    /* push backbuffer to framebuffer once per frame, then the cursor */
-    fb_present();
+    /* The software pointer is outside the shadow image. Erase its previous
+     * location even when the desktop pixels underneath did not change. */
+    if (g_hw_shape < 0 && g_ptr_drawn_x >= 0)
+        fb_present_rect(g_ptr_drawn_x + CURSOR_X0, g_ptr_drawn_y + CURSOR_Y0, CURSOR_W, CURSOR_H);
+    fb_present_damage();
     draw_cursor(mx, my);
 }
 
