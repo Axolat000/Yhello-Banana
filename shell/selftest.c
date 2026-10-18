@@ -15,6 +15,7 @@
 #include "../kernel/browser_test.h"
 #include "ipv6test.h"
 #include "../net/ipv6.h"
+#include "../net/tcp.h"
 #include "../kernel/fs.h"
 #include "../kernel/kstring.h"
 #include "../kernel/terminal.h"
@@ -330,6 +331,87 @@ static void t_tlb(void) {
 #else
     skip("the TLB", "the 32-bit kernel runs without paging");
 #endif
+}
+
+/* ── TCP: window scaling, SACK (build 196) ── */
+static uint8_t net_byte(uint32_t i) { return (uint8_t)(i * 7u + (i >> 11)); }
+
+/* bytes through a loopback connection (127.0.0.1 to itself), checked
+ * byte for byte: 0 and *ms, or -1 and what went wrong in msg */
+static int net_move(tcp_conn_t* s, tcp_conn_t* c, uint32_t total, uint32_t* ms, char* msg, int cap) {
+    enum { CH = 16384 };
+    uint8_t* buf = (uint8_t*)kmalloc(CH);
+    if (!buf) { ksnprintf(msg, (size_t)cap, "out of memory"); return -1; }
+    uint32_t sent = 0, got = 0, t0 = timer_ms();
+    int rc = 0;
+    while (got < total) {
+        if (timer_ms() - t0 > 60000) { ksnprintf(msg, (size_t)cap, "only %u of %u bytes in 60 s", got, total); rc = -1; break; }
+        uint32_t space = tcp_send_space(s);
+        if (sent < total && space) {
+            uint32_t n = total - sent < space ? total - sent : space;
+            if (n > CH) n = CH;
+            for (uint32_t k = 0; k < n; k++) buf[k] = net_byte(sent + k);
+            if (tcp_send(s, buf, n, 0) != (int)n) { ksnprintf(msg, (size_t)cap, "tcp_send failed"); rc = -1; break; }
+            sent += n;
+        }
+        int n = tcp_recv(c, buf, CH, 0);
+        if (n > 0) {
+            for (int k = 0; k < n && !rc; k++)
+                if (buf[k] != net_byte(got + (uint32_t)k)) { ksnprintf(msg, (size_t)cap, "byte %u wrong", got + (uint32_t)k); rc = -1; }
+            if (rc) break;
+            got += (uint32_t)n;
+            continue;
+        }
+        if (n != NET_ERR_TIMEOUT) { ksnprintf(msg, (size_t)cap, "tcp_recv: %s after %u bytes", net_strerror(n), got); rc = -1; break; }
+        net_wait(1);
+    }
+    *ms = timer_ms() - t0;
+    kfree(buf);
+    return rc;
+}
+
+static void t_net(void) {
+    section("TCP: window scaling and SACK (build 196)");
+    if (!net_if()->dev) { skip("a loopback connection", "no network card (loopback needs one: QEMU has e1000)"); return; }
+    int err;
+    const uint16_t port = 47196;
+    tcp_listener_t* l = tcp_listen(port, &err);
+    if (!l) { report("a loopback connection", 0, net_strerror(err)); return; }
+    tcp_conn_t* c = tcp_connect(IP4(127, 0, 0, 1), port, 3000, &err);
+    tcp_conn_t* s = c ? tcp_accept(l, 1000) : NULL;
+    if (!c || !s) {
+        report("a loopback connection", 0, c ? "not accepted" : net_strerror(err));
+        if (c) tcp_abort(c);
+        tcp_unlisten(l);
+        return;
+    }
+    tcp_info_t ci, si;
+    tcp_info(c, &ci);
+    tcp_info(s, &si);
+    char note[128], msg[96];
+    ksnprintf(note, sizeof(note), "window %u KiB (shift %u), SACK %s", ci.rcv_window >> 10, ci.rcv_ws, ci.sack ? "on" : "off");
+    report("window scaling and SACK agreed", ci.wscale && si.wscale && ci.sack && si.sack && ci.rcv_window > 65535u &&
+           si.snd_window == ci.rcv_window, note);
+    uint32_t ms;
+    const uint32_t MB = 1u << 20;
+    int rc = net_move(s, c, 8 * MB, &ms, msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "8 MiB in %u ms (%u MB/s)", ms, ms ? (uint32_t)(8ull * 1000 / ms) : 0);
+    report("8 MiB through loopback, every byte right", rc == 0, rc ? msg : note);
+    /* every 25th data segment lost: SACK says what got through, only the
+     * holes go again */
+    tcp_stats_t a, b;
+    tcp_stats(&a);
+    tcp_test_loss(25);
+    rc = net_move(s, c, 2 * MB, &ms, msg, sizeof(msg));
+    tcp_test_loss(0);
+    tcp_stats(&b);
+    ksnprintf(note, sizeof(note), "2 MiB in %u ms: %u lost, %u holes resent by SACK, %u fast, %u timeouts",
+              ms, b.test_dropped - a.test_dropped, b.sack_rexmit - a.sack_rexmit, b.fast_rexmit - a.fast_rexmit, b.rto_rexmit - a.rto_rexmit);
+    report("1 segment in 25 lost: every byte right, holes resent", rc == 0 && b.sack_rexmit + b.fast_rexmit > a.sack_rexmit + a.fast_rexmit,
+           rc ? msg : note);
+    tcp_abort(c);
+    tcp_abort(s);
+    tcp_unlisten(l);
 }
 
 /* Install the matching built-in test, even if an older package is on disk. */
@@ -727,8 +809,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | tlb | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -768,6 +850,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "disk") ? "selftest: checking disk waits" :
                      only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
                      only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
+                     only && !strcmp(only, "net") ? "selftest: checking TCP" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -796,6 +879,8 @@ int selftest_cmd(int argc, char** argv) {
             section("Tailwind CSS, React, Vue, Alpine, Astro and DOM observers");
             browser_test_run(report);
         }
+    } else if (only && !strcmp(only, "net")) {
+        t_net();
     } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "posix")) {
@@ -814,6 +899,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "disk")) t_disk();
         if (!only || !strcmp(only, "heap")) t_heap();
         if (!only || !strcmp(only, "tlb")) t_tlb();
+        if (!only) t_net();
         if (!only) {
             t_opencl();
             browser_test_run(report);

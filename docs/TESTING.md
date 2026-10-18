@@ -47,6 +47,13 @@ selftest disk            reads 32 MiB twice from the first SATA / virtio / NVMe 
 selftest heap            the kernel's heap checked through (every block, the list both
                          ways, every free block in its bin), then 100000 kmalloc +
                          kfree among 2000 live blocks with holes (under 2 us each)
+selftest tlb             global kernel pages and PCIDs: a private address space whose
+                         page is changed under it must never be seen as it was; switches
+                         timed against forgetting everything; threads on every core
+                         mapping / write-protecting / unmapping pages (fresh pages read 0)
+selftest net             TCP over loopback: window scaling and SACK agreed (window over
+                         64 KiB), 8 MiB checked byte for byte, then 2 MiB with 1 data
+                         segment in 25 dropped (holes resent; still every byte right)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
@@ -233,6 +240,16 @@ byte checked and `kheap_check()` every 5000; everything freed must merge back
 into one block. Then the same fragmented workload on it and on the `kheap.c`
 of `BASE` (default: build 193's, before the bins), timed.
 
+### `tools/test_tcp.py [BASE]`
+
+TCP (`net/tcp.c`) on Linux with stand-in headers (`tools/tests/tcp_stub`):
+both ends of a connection in one process over a simulated link
+(`tools/tests/tcp_sim.c`: a one-way delay, a bandwidth, a bottleneck queue,
+random loss, a virtual clock). Downloads from 2 to 300 ms round trips, with
+0 to 2% loss, checked byte for byte; window scaling and SACK must be agreed,
+and at a 100 ms round trip it must be at least 4x the `tcp.c` of `BASE`
+(default: build 195's, before window scaling and SACK).
+
 ## A full check before a release
 
 ```
@@ -244,6 +261,7 @@ tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
 python3 tools/test_crashscreen.py
 python3 tools/test_malloc.py
 python3 tools/test_kheap.py
+python3 tools/test_tcp.py
 ```
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an

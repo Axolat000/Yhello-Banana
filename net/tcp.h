@@ -8,7 +8,11 @@
  * TCP (RFC 793 / 1122 / 6298): active and passive open, reliable
  * in-order byte stream with retransmission (RTT-estimated RTO with
  * backoff, fast retransmit on 3 duplicate ACKs), flow control, out-of-
- * order segment reassembly, delayed ACKs and orderly close.
+ * order segment reassembly, delayed ACKs and orderly close. Window
+ * scaling (RFC 7323): a 512 KiB receive window instead of 64 KiB, so a
+ * download is no longer held to 64 KiB per round trip. SACK (RFC 2018):
+ * the receiver says which segments it holds beyond a loss, and the
+ * sender resends only the holes (NewReno, RFC 6582, without it).
  *
  * The API is blocking and meant for shell-command tasks: every wait
  * polls the stack itself (net_wait()), so it works whether or not netd
@@ -71,5 +75,26 @@ void tcp_dump(void);     /* netstat */
 int      tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max);
 int      tcp_pending(const tcp_listener_t* l);
 uint16_t tcp_local_port(const tcp_conn_t* c);
+
+/* what a connection agreed on (selftest net, netstat) */
+typedef struct {
+    int      wscale, sack;              /* both sides use window scaling / SACK */
+    uint8_t  snd_ws, rcv_ws;            /* the shifts: the peer's, ours */
+    uint32_t rcv_window;                /* the window we offer now (bytes) */
+    uint32_t snd_window;                /* the peer's (bytes) */
+} tcp_info_t;
+void tcp_info(const tcp_conn_t* c, tcp_info_t* i);
+
+typedef struct {
+    uint32_t fast_rexmit;               /* losses found by 3 duplicate ACKs */
+    uint32_t sack_rexmit;               /* holes resent by what SACK said */
+    uint32_t rto_rexmit;                /* retransmission timeouts */
+    uint32_t sack_acks;                 /* ACKs we sent with SACK blocks */
+    uint32_t test_dropped;              /* segments tcp_test_loss dropped */
+} tcp_stats_t;
+void tcp_stats(tcp_stats_t* s);         /* since boot */
+/* selftest net: every nth data segment to a loopback (127.x) peer is
+ * dropped instead of sent (0: none) */
+void tcp_test_loss(uint32_t every);
 
 #endif
