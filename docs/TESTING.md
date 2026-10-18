@@ -18,7 +18,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, malloc, AVX, syscall, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, malloc, AVX, syscall, disk, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -40,6 +40,10 @@ selftest syscall         the syscall / sysret entry: rbx and r12-r15 kept throug
                          call, a 9-argument call (4th argument in r10, 3 on the
                          stack) drawing a glyph checked pixel by pixel; then 200000
                          calls timed against int 0x80 (must be at least 1.1x as fast)
+selftest disk            reads 32 MiB twice from the first SATA / virtio / NVMe disk
+                         (read only): the same data both times; a task waking every
+                         1 ms must keep running meanwhile (30%); how many waits the
+                         disk's interrupt ended (QEMU: DISK=disk.img or -machine q35)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /

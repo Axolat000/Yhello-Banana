@@ -1,4 +1,6 @@
 #include "selftest.h"
+#include "../kernel/disk.h"
+#include "../kernel/iowait.h"
 #include "../kernel/idt.h"
 #include "../kernel/fpu.h"
 #include "../kernel/bootmenu_test.h"
@@ -195,6 +197,68 @@ static void t_syscall(void) {
 #else
     skip("the syscall entry", "the 32-bit kernel calls the system directly (ring 0)");
 #endif
+}
+
+/* ── disks: interrupt-driven waits (build 193) ── */
+static volatile int g_tick_run, g_ticks;
+
+/* tries to wake every millisecond while the disk is read */
+static void disk_ticker(void) {
+    while (g_tick_run == 1) { task_sleep_ms(1); g_ticks++; }
+    g_tick_run = 2;
+}
+
+static uint32_t sum32(const uint8_t* b, uint32_t n) {
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+static void t_disk(void) {
+    section("disks: waiting without stopping the system (build 193)");
+    static ata_disk_t d[8];
+    int n = disk_probe(d, 8), pick = -1;
+    for (int i = 0; i < n && pick < 0; i++)
+        if (d[i].present && !d[i].is_atapi && (d[i].nvme || d[i].vblk || d[i].ahci_port >= 0) && d[i].sectors >= 65536) pick = i;
+    if (pick < 0) { skip("reads while other tasks run", "no SATA, virtio or NVMe disk (QEMU: DISK=disk.img, or -machine q35)"); return; }
+    const char* kind = d[pick].nvme ? "NVMe" : d[pick].vblk ? "virtio" : "SATA";
+    enum { CH = 2048, CHUNKS = 32 };                /* 1 MiB at a time, 32 MiB */
+    uint8_t* buf = (uint8_t*)kmalloc(CH * 512);
+    if (!buf) { report("reads while other tasks run", 0, "out of memory"); return; }
+    uint32_t s0, w0, s1, w1;
+    io_stats(&s0, &w0);
+    uint32_t sums[2] = { 0, 0 }, ms[2] = { 0, 0 };
+    int ok = 1;
+    for (int pass = 0; pass < 2 && ok; pass++) {
+        g_ticks = 0;
+        g_tick_run = pass == 0 ? 1 : 0;             /* (the first pass with the ticker beside it) */
+        if (pass == 0 && task_create("disktick", disk_ticker) < 0) g_tick_run = 0;
+        uint32_t t0 = timer_ms();
+        for (int c = 0; c < CHUNKS && ok; c++) {
+            if (disk_read(&d[pick], (uint32_t)c * CH, CH, buf) != 0) ok = 0;
+            else sums[pass] = sums[pass] * 31u + sum32(buf, CH * 512);
+        }
+        ms[pass] = timer_ms() - t0;
+        if (pass == 0 && g_tick_run == 1) { g_tick_run = 0; while (g_tick_run != 2) task_sleep_ms(1); }
+    }
+    kfree(buf);
+    io_stats(&s1, &w1);
+    char note[128];
+    ksnprintf(note, sizeof(note), "%s disk, 32 MiB twice: %u ms, %u ms", kind, ms[0], ms[1]);
+    report("the same data read twice", ok && sums[0] == sums[1], ok ? note : "a read failed");
+    if (!ok) return;
+    if (ms[0] < 20) {
+        skip("other tasks run while it reads", "the reads took under 20 ms: nothing to measure");
+    } else {
+        ksnprintf(note, sizeof(note), "a 1 ms task woke %d times in %u ms", g_ticks, ms[0]);
+        report("other tasks run while it reads", (uint32_t)g_ticks * 10 >= ms[0] * 3, note);
+    }
+    if (d[pick].nvme) skip("woken by the disk's interrupt", "NVMe waits let the others run between looks (its interrupts stay off)");
+    else {
+        ksnprintf(note, sizeof(note), "%u waits slept, %u woken by the interrupt", s1 - s0, w1 - w0);
+        if (s1 == s0) skip("woken by the disk's interrupt", "every command was done within the short spin");
+        else report("woken by the disk's interrupt", w1 > w0, w1 > w0 ? note : "no interrupt arrived: 2 ms polling instead");
+    }
 }
 
 /* Install the matching built-in test, even if an older package is on disk. */
@@ -592,8 +656,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -630,6 +694,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "malloc") ? "selftest: checking the apps' heap" :
                      only && !strcmp(only, "avx") ? "selftest: checking AVX" :
                      only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
+                     only && !strcmp(only, "disk") ? "selftest: checking disk waits" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -673,6 +738,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "malloc")) t_malloc();
         if (!only || !strcmp(only, "avx")) t_avx();
         if (!only || !strcmp(only, "syscall")) t_syscall();
+        if (!only || !strcmp(only, "disk")) t_disk();
         if (!only) {
             t_opencl();
             browser_test_run(report);

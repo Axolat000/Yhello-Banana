@@ -655,6 +655,8 @@ int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* t
     return (int)t->pid;
 }
 
+int task_ready(void) { return g_current != NULL; }
+
 int task_current_pid(void) {
     /* on another core: the app task running there (a system call made there, kernel/app.c) */
     int c = cpu_id();

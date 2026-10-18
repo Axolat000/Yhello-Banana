@@ -1,4 +1,5 @@
 #include "fat32.h"
+#include "iowait.h"
 #include "fs.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -65,6 +66,7 @@ typedef struct {
     int      mnt;
     int      skipped;              /* entries that did not fit the tree */
     int      io_err;
+    iowait_t lock;                     /* one operation at a time: a disk command may let other tasks run */
 } fvol_t;
 
 static fvol_t* g_vols[FS_MAX_MOUNTS + 1];
@@ -507,7 +509,7 @@ static int new_node(fvol_t* v) {
 
 /* ── fs mount ops ──────────────────────────────────────────────────── */
 
-static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
+static int op_read_l(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
     fvol_t* v = (fvol_t*)ctx;
     if (node >= v->nnodes || !v->nodes[node].used) return -1;
     v->io_err = 0;
@@ -515,7 +517,7 @@ static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
     return read_chain(v, v->nodes[node].first, buf, size);
 }
 
-static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
+static int op_write_l(void* ctx, uint32_t node, const void* data, uint32_t len) {
     fvol_t* v = (fvol_t*)ctx;
     if (node == 0 || node >= v->nnodes || !v->nodes[node].used) return -1;
     fnode_t* n = &v->nodes[node];
@@ -538,13 +540,13 @@ static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
     return rc;
 }
 
-static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
+static int op_append_l(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
     fvol_t* v = (fvol_t*)ctx;
     if (node == 0 || node >= v->nnodes || !v->nodes[node].used) return -1;
     fnode_t* n = &v->nodes[node];
     if (!n->first || old_size == 0) {
         uint8_t* all = (uint8_t*)data;
-        return op_write(ctx, node, all, len);
+        return op_write_l(ctx, node, all, len);
     }
     if (!len) return 0;
     v->io_err = 0;
@@ -579,7 +581,7 @@ static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* da
     return rc;
 }
 
-static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
+static int op_create_l(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
     fvol_t* v = (fvol_t*)ctx;
     if (parent >= v->nnodes || !v->nodes[parent].used || !v->nodes[parent].is_dir) return -1;
     v->io_err = 0;
@@ -632,7 +634,7 @@ static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, u
     return fat_flush(v);
 }
 
-static int op_remove(void* ctx, uint32_t node, int is_dir) {
+static int op_remove_l(void* ctx, uint32_t node, int is_dir) {
     fvol_t* v = (fvol_t*)ctx;
     (void)is_dir;
     if (node == 0 || node >= v->nnodes || !v->nodes[node].used) return -1;
@@ -643,7 +645,7 @@ static int op_remove(void* ctx, uint32_t node, int is_dir) {
     return (fat_flush(v) != 0 || v->io_err) ? -1 : 0;
 }
 
-static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
+static int op_rename_l(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
     fvol_t* v = (fvol_t*)ctx;
     if (node == 0 || node >= v->nnodes || !v->nodes[node].used) return -1;
     if (new_parent >= v->nnodes || !v->nodes[new_parent].used || !v->nodes[new_parent].is_dir) return -1;
@@ -672,13 +674,37 @@ static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, 
     return (fat_flush(v) != 0 || v->io_err) ? -1 : 0;
 }
 
-static void op_unmount(void* ctx) {
+static void op_unmount_l(void* ctx) {
     fvol_t* v = (fvol_t*)ctx;
     fat_flush(v);
     if (v->mnt > 0 && v->mnt <= FS_MAX_MOUNTS && g_vols[v->mnt] == v) g_vols[v->mnt] = NULL;
     kfree(v->nodes);
     kfree(v->cbuf);
     kfree(v);
+}
+
+/* the operations fs.c calls: one at a time on a volume (a task can be
+ * switched out while it waits for the disk, kernel/iowait.c) */
+static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_read_l(ctx, node, buf, size); io_unlock(&v->lock); return rc;
+}
+static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_write_l(ctx, node, data, len); io_unlock(&v->lock); return rc;
+}
+static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_append_l(ctx, node, old_size, data, len); io_unlock(&v->lock); return rc;
+}
+static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_create_l(ctx, parent, name, is_dir, node); io_unlock(&v->lock); return rc;
+}
+static int op_remove(void* ctx, uint32_t node, int is_dir) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_remove_l(ctx, node, is_dir); io_unlock(&v->lock); return rc;
+}
+static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); int rc = op_rename_l(ctx, node, is_dir, new_parent, new_name); io_unlock(&v->lock); return rc;
+}
+static void op_unmount(void* ctx) {
+    fvol_t* v = (fvol_t*)ctx; io_lock(&v->lock); op_unmount_l(ctx);       /* (v is gone after this) */
 }
 
 static const fs_mount_ops_t g_ops = {
@@ -869,9 +895,7 @@ static int mount_at(blockdev_t* bd, uint32_t base, const char* where, char* err,
     return mnt;
 }
 
-static int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
-    if (mnt <= 0 || mnt > FS_MAX_MOUNTS || !g_vols[mnt]) return 0;
-    fvol_t* v = g_vols[mnt];
+static int fat32_space_l(fvol_t* v, uint64_t* total, uint64_t* free_bytes) {
     if (!v->nfree_ok) {
         /* count the free clusters once, 32 KiB of FAT at a time; kept up to date after that */
         if (fat_flush(v) != 0) return 0;
@@ -894,6 +918,16 @@ static int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
     *total = (uint64_t)v->nclusters * v->clus_bytes;
     *free_bytes = (uint64_t)v->nfree * v->clus_bytes;
     return 1;
+}
+
+/* (counting reads the FAT: in turn with the volume's operations) */
+static int fat32_space(int mnt, uint64_t* total, uint64_t* free_bytes) {
+    if (mnt <= 0 || mnt > FS_MAX_MOUNTS || !g_vols[mnt]) return 0;
+    fvol_t* v = g_vols[mnt];
+    io_lock(&v->lock);
+    int rc = fat32_space_l(v, total, free_bytes);
+    io_unlock(&v->lock);
+    return rc;
 }
 
 static int fat32_describe(int mnt, char* out, int cap) {

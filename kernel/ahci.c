@@ -1,4 +1,6 @@
 #include "ahci.h"
+#include "iowait.h"
+#include "idt.h"
 #include "pci.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -83,6 +85,7 @@ typedef struct {
     volatile uint8_t* abar;
     int      ok;
     uint8_t  bus, dev, fn;
+    uint8_t  irq;                     /* its interrupt line (0: none we can use) */
 } hba_t;
 
 typedef struct {
@@ -92,6 +95,9 @@ typedef struct {
     cmd_header_t* clist;
     cmd_table_t*  table;
     void*         fis;
+    iowait_t      w;                  /* one command at a time; who waits for it (kernel/iowait.c) */
+    int           irq;                /* its completion interrupts are on */
+    volatile uint32_t is_seen;        /* PX_IS bits the interrupt handler cleared */
 } port_t;
 
 static hba_t  g_hba[MAX_HBA];
@@ -151,16 +157,23 @@ static int setup_port(port_t* p) {
     p->clist[0].ctbau = 0;
     wr(r, PX_SERR, 0xFFFFFFFFu);
     wr(r, PX_IS, 0xFFFFFFFFu);
-    wr(r, PX_IE, 0);                  /* polled */
+    wr(r, PX_IE, 0);                  /* (interrupts on once every port is set up: init_all) */
     start_port(r);
     return 0;
+}
+
+/* the command in slot 0 is done (or failed) */
+static int cmd_done(void* ctx) {
+    port_t* p = (port_t*)ctx;
+    volatile uint8_t* r = port_regs(p);
+    return !(rd(r, PX_CI) & 1) || ((rd(r, PX_IS) | p->is_seen) & (1u << 30));
 }
 
 /*
  * One command in slot 0. fis_cmd: the ATA command; packet: an ATAPI
  * command (12 bytes) or NULL; buf/bytes: the data (bytes may be 0).
  */
-static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const uint8_t* packet,
+static int exec_locked(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const uint8_t* packet,
                 void* buf, uint32_t bytes, int write) {
     volatile uint8_t* r = port_regs(p);
     if (wait_clear(r, PX_TFD, TFD_BSY | TFD_DRQ, 1000) != 0) {
@@ -211,19 +224,16 @@ static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const 
     h->prdbc = 0;
 
     wr(r, PX_IS, 0xFFFFFFFFu);
+    p->is_seen = 0;
     wr(r, PX_CI, 1);
-    uint32_t t0 = timer_ms();
-    for (;;) {
-        if (!(rd(r, PX_CI) & 1)) break;
-        if (rd(r, PX_IS) & (1u << 30)) break;     /* task file error */
-        if ((uint32_t)(timer_ms() - t0) > CMD_TIMEOUT) {
-            klog("ahci: port %d: command %x timed out\n", p->port, fis_cmd);
-            stop_port(r);
-            start_port(r);
-            return -1;
-        }
+    /* done, or a task file error - the task sleeps meanwhile (kernel/iowait.c) */
+    if (io_wait(&p->w, cmd_done, p, CMD_TIMEOUT, p->irq) != 0) {
+        klog("ahci: port %d: command %x timed out\n", p->port, fis_cmd);
+        stop_port(r);
+        start_port(r);
+        return -1;
     }
-    if (rd(r, PX_TFD) & TFD_ERR || rd(r, PX_IS) & (1u << 30)) {
+    if (rd(r, PX_TFD) & TFD_ERR || (rd(r, PX_IS) | p->is_seen) & (1u << 30)) {
         klog("ahci: port %d: command %x failed (tfd %x)\n", p->port, fis_cmd, rd(r, PX_TFD));
         stop_port(r);
         wr(r, PX_SERR, 0xFFFFFFFFu);
@@ -232,6 +242,15 @@ static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const 
         return -1;
     }
     return 0;
+}
+
+/* (a task can be switched out while its command runs: one at a time) */
+static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const uint8_t* packet,
+                void* buf, uint32_t bytes, int write) {
+    io_lock(&p->w);
+    int rc = exec_locked(p, fis_cmd, lba, count, packet, buf, bytes, write);
+    io_unlock(&p->w);
+    return rc;
 }
 
 static void ident_string(const uint16_t* id, int first, int words, char* out) {
@@ -269,7 +288,29 @@ static int find_hba(const pci_dev_t* d, void* ctx) {
     h->bus = d->bus;
     h->dev = d->dev;
     h->fn = d->fn;
+    h->irq = d->irq_line > 0 && d->irq_line < 16 ? d->irq_line : 0;
     return 0;
+}
+
+/* a command finished or failed on some port: what it reported is noted
+ * (exec reads it) and its waiter woken. (Lines are shared: nothing to do
+ * if it was not one of ours.) */
+static void ahci_irq(void) {
+    for (int i = 0; i < g_nhba; i++) {
+        hba_t* h = &g_hba[i];
+        if (!h->ok || !h->irq) continue;
+        uint32_t is = rd(h->abar, HBA_IS);
+        if (!is) continue;
+        for (int pn = 0; pn < MAX_PORTS; pn++) {
+            if (!(is & (1u << pn))) continue;
+            volatile uint8_t* r = h->abar + 0x100 + (uint32_t)pn * 0x80;
+            uint32_t pis = rd(r, PX_IS);
+            wr(r, PX_IS, pis);
+            for (int k = 0; k < g_nports; k++)
+                if (g_ports[k].hba == h && g_ports[k].port == pn) { g_ports[k].is_seen |= pis; io_wake(&g_ports[k].w); }
+        }
+        wr(h->abar, HBA_IS, is);
+    }
 }
 
 static void init_all(void) {
@@ -310,7 +351,22 @@ static void init_all(void) {
             p->port = pn;
             p->atapi = sig == SIG_ATAPI;
             if (setup_port(p) != 0) continue;
+            p->w.pid = -1;
             g_nports++;
+        }
+        /* completion and error interrupts (polling stays as the fallback) */
+        if (h->irq) {
+            irq_install(h->irq, ahci_irq);
+            for (int k = 0; k < g_nports; k++) {
+                if (g_ports[k].hba != h) continue;
+                volatile uint8_t* r = port_regs(&g_ports[k]);
+                wr(r, PX_IS, 0xFFFFFFFFu);
+                /* D2H register, PIO setup, DMA setup, set device bits, descriptor done; errors */
+                wr(r, PX_IE, (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 5) | (0xFu << 27) | (1u << 30));
+                g_ports[k].irq = 1;
+            }
+            wr(abar, HBA_IS, 0xFFFFFFFFu);
+            wr(abar, HBA_GHC, rd(abar, HBA_GHC) | (1u << 1));          /* GHC.IE */
         }
     }
 }

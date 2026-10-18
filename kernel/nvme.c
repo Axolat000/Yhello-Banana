@@ -1,4 +1,5 @@
 #include "nvme.h"
+#include "iowait.h"
 #include "pci.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -30,6 +31,7 @@ typedef struct {
     uint32_t sectors;             /* namespace 1, 512-byte sectors (28-bit API) */
     char     model[41];
     blockdev_t* bd;
+    iowait_t w;                   /* one command at a time (one bounce buffer, one PRP list) */
 } nvme_t;
 
 static nvme_t g_nv[NVME_MAX];
@@ -48,8 +50,18 @@ static void* page_alloc(uint32_t size) {
     return p;
 }
 
+/* the completion queue has an entry for us */
+typedef struct { uint8_t* cq; uint16_t* head; int* phase; } cqwait_t;
+static int cq_ready(void* ctx) {
+    cqwait_t* c = (cqwait_t*)ctx;
+    volatile uint32_t* e = (volatile uint32_t*)(c->cq + (uint32_t)*c->head * 16);
+    return (int)((e[3] >> 16) & 1) == *c->phase;
+}
+
 /* submits a 64-byte command on queue qid (0 admin, 1 I/O) and waits for
- * its completion; returns the status field (0 = success), -1 on a timeout */
+ * its completion - the other tasks run meanwhile (no interrupt: its
+ * vectors stay masked; kernel/iowait.c); returns the status field (0 =
+ * success), -1 on a timeout */
 static int submit(nvme_t* n, int qid, uint32_t* cmd) {
     uint8_t* sq = qid ? n->iosq : n->asq;
     uint8_t* cq = qid ? n->iocq : n->acq;
@@ -63,19 +75,16 @@ static int submit(nvme_t* n, int qid, uint32_t* cmd) {
     if (sqe > 64) memset(sq + (uint32_t)*tail * sqe + 64, 0, sqe - 64);
     *tail = (uint16_t)((*tail + 1) % QDEPTH);
     w32(n, 0x1000 + (uint32_t)(2 * qid) * n->dstrd, *tail);          /* SQ tail doorbell */
-    uint32_t start = timer_ms();
+    cqwait_t cw = { cq, head, phase };
     for (;;) {
+        if (io_wait(&n->w, cq_ready, &cw, 5000, 0) != 0) return -1;
         volatile uint32_t* e = (volatile uint32_t*)(cq + (uint32_t)*head * 16);
         uint32_t dw3 = e[3];
-        if ((int)((dw3 >> 16) & 1) == *phase) {
-            *head = (uint16_t)((*head + 1) % QDEPTH);
-            if (*head == 0) *phase ^= 1;
-            w32(n, 0x1000 + (uint32_t)(2 * qid + 1) * n->dstrd, *head);   /* CQ head doorbell */
-            if ((dw3 & 0xFFFF) == cid) return (int)((dw3 >> 17) & 0x7FFF);
-            klog("nvme: stray completion %x (want cid %x)\n", dw3, cid);
-        }
-        if (timer_ms() - start > 5000) return -1;
-        timer_idle();
+        *head = (uint16_t)((*head + 1) % QDEPTH);
+        if (*head == 0) *phase ^= 1;
+        w32(n, 0x1000 + (uint32_t)(2 * qid + 1) * n->dstrd, *head);       /* CQ head doorbell */
+        if ((dw3 & 0xFFFF) == cid) return (int)((dw3 >> 17) & 0x7FFF);
+        klog("nvme: stray completion %x (want cid %x)\n", dw3, cid);
     }
 }
 
@@ -184,30 +193,36 @@ int nvme_read(int idx, uint32_t lba, uint32_t count, void* buf) {
     if (idx < 0 || idx >= g_count) return -1;
     nvme_t* n = &g_nv[idx];
     uint8_t* out = (uint8_t*)buf;
+    int rc = 0;
+    io_lock(&n->w);
     while (count) {
         uint32_t c = count > CHUNK / 512 ? CHUNK / 512 : count;
-        if (rw(n, 0, lba, c) != 0) { klog("nvme: read error at %u\n", lba); return -1; }
+        if (rw(n, 0, lba, c) != 0) { klog("nvme: read error at %u\n", lba); rc = -1; break; }
         memcpy(out, n->bounce, c * 512);
         out += c * 512;
         lba += c;
         count -= c;
     }
-    return 0;
+    io_unlock(&n->w);
+    return rc;
 }
 
 int nvme_write(int idx, uint32_t lba, uint32_t count, const void* buf) {
     if (idx < 0 || idx >= g_count) return -1;
     nvme_t* n = &g_nv[idx];
     const uint8_t* in = (const uint8_t*)buf;
+    int rc = 0;
+    io_lock(&n->w);
     while (count) {
         uint32_t c = count > CHUNK / 512 ? CHUNK / 512 : count;
         memcpy(n->bounce, in, c * 512);
-        if (rw(n, 1, lba, c) != 0) { klog("nvme: write error at %u\n", lba); return -1; }
+        if (rw(n, 1, lba, c) != 0) { klog("nvme: write error at %u\n", lba); rc = -1; break; }
         in += c * 512;
         lba += c;
         count -= c;
     }
-    return 0;
+    io_unlock(&n->w);
+    return rc;
 }
 
 int nvme_flush(int idx) {
@@ -216,7 +231,10 @@ int nvme_flush(int idx) {
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0x00;
     cmd[1] = 1;
-    return submit(&g_nv[idx], 1, cmd) == 0 ? 0 : -1;
+    io_lock(&g_nv[idx].w);                        /* (the I/O queue is shared with reads / writes) */
+    int rc = submit(&g_nv[idx], 1, cmd) == 0 ? 0 : -1;
+    io_unlock(&g_nv[idx].w);
+    return rc;
 }
 
 int nvme_probe(ata_disk_t* out, int max) {
@@ -249,6 +267,7 @@ static int scan_cb(const pci_dev_t* d, void* ctx) {
     if ((!apple && (d->class_code != 0x01 || d->subclass != 0x08 || d->prog_if != 0x02)) || g_count >= NVME_MAX) return 0;
     nvme_t* n = &g_nv[g_count];
     memset(n, 0, sizeof(*n));
+    n->w.pid = -1;
     if (start_controller(n, d) == 0) {
         n->bd = blockdev_register_kind("nvme", n->model, n->sectors, 512, bd_read, bd_write, (void*)(uintptr_t)g_count);
         g_count++;

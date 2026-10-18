@@ -107,6 +107,9 @@ void task_set_user(uintptr_t cr3, uintptr_t rsp0);
 /* the calling task's FS base from now on (an app thread's TLS; 64-bit) */
 void task_set_fs(uintptr_t base);
 
+/* 1 once the scheduler runs (task_init): tasks may sleep */
+int  task_ready(void);
+
 /* Real sleep: marks the calling task SLEEPING and does not resume it
  * until at least `ms` milliseconds have passed (or task_wake()). */
 void task_sleep_ms(uint32_t ms);

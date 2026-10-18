@@ -1,4 +1,5 @@
 #include "exfat.h"
+#include "iowait.h"
 #include "fs.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -78,6 +79,7 @@ typedef struct {
     int      mnt;
     int      skipped;
     int      io_err;
+    iowait_t lock;                     /* one operation at a time: a disk command may let other tasks run */
 } xvol_t;
 
 static xvol_t* g_vols[FS_MAX_MOUNTS + 1];
@@ -625,7 +627,7 @@ static int del_set(xvol_t* v, uint32_t parent, uint32_t pos, int cnt) {
 
 static int node_ok(xvol_t* v, uint32_t node) { return node < v->nnodes && v->nodes[node].used; }
 
-static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
+static int op_read_l(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
     xvol_t* v = (xvol_t*)ctx;
     if (!node_ok(v, node)) return -1;
     v->io_err = 0;
@@ -636,7 +638,7 @@ static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
     return 0;
 }
 
-static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
+static int op_write_l(void* ctx, uint32_t node, const void* data, uint32_t len) {
     xvol_t* v = (xvol_t*)ctx;
     if (node == 0 || !node_ok(v, node) || v->readonly) return -1;
     v->io_err = 0;
@@ -668,11 +670,11 @@ static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
     return rc;
 }
 
-static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
+static int op_append_l(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
     xvol_t* v = (xvol_t*)ctx;
     if (node == 0 || !node_ok(v, node) || v->readonly) return -1;
     xnode_t* n = &v->nodes[node];
-    if (!n->first || !old_size) return op_write(ctx, node, data, len);   /* (nothing there yet) */
+    if (!n->first || !old_size) return op_write_l(ctx, node, data, len);   /* (nothing there yet) */
     if (!len) return 0;
     v->io_err = 0;
     uint32_t have = (uint32_t)((n->size + v->clus_bytes - 1) / v->clus_bytes);
@@ -706,7 +708,7 @@ static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* da
     return rc;
 }
 
-static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
+static int op_create_l(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
     xvol_t* v = (xvol_t*)ctx;
     if (!node_ok(v, parent) || !v->nodes[parent].is_dir || v->readonly) return -1;
     v->io_err = 0;
@@ -754,7 +756,7 @@ static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, u
     return flush(v);
 }
 
-static int op_remove(void* ctx, uint32_t node, int is_dir) {
+static int op_remove_l(void* ctx, uint32_t node, int is_dir) {
     xvol_t* v = (xvol_t*)ctx;
     (void)is_dir;
     if (node == 0 || !node_ok(v, node) || v->readonly) return -1;
@@ -768,7 +770,7 @@ static int op_remove(void* ctx, uint32_t node, int is_dir) {
     return rc || v->io_err ? -1 : 0;
 }
 
-static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
+static int op_rename_l(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
     xvol_t* v = (xvol_t*)ctx;
     (void)is_dir;
     if (node == 0 || !node_ok(v, node) || !node_ok(v, new_parent) || !v->nodes[new_parent].is_dir || v->readonly) return -1;
@@ -794,7 +796,7 @@ static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, 
     return rc || v->io_err ? -1 : 0;
 }
 
-static void op_unmount(void* ctx) {
+static void op_unmount_l(void* ctx) {
     xvol_t* v = (xvol_t*)ctx;
     flush(v);
     if (v->mnt > 0 && v->mnt <= FS_MAX_MOUNTS && g_vols[v->mnt] == v) g_vols[v->mnt] = NULL;
@@ -805,6 +807,30 @@ static void op_unmount(void* ctx) {
     kfree(v->fc);
     kfree(v->sec);
     kfree(v);
+}
+
+/* the operations fs.c calls: one at a time on a volume (a task can be
+ * switched out while it waits for the disk, kernel/iowait.c) */
+static int op_read(void* ctx, uint32_t node, uint8_t* buf, uint32_t size) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_read_l(ctx, node, buf, size); io_unlock(&v->lock); return rc;
+}
+static int op_write(void* ctx, uint32_t node, const void* data, uint32_t len) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_write_l(ctx, node, data, len); io_unlock(&v->lock); return rc;
+}
+static int op_append(void* ctx, uint32_t node, uint32_t old_size, const void* data, uint32_t len) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_append_l(ctx, node, old_size, data, len); io_unlock(&v->lock); return rc;
+}
+static int op_create(void* ctx, uint32_t parent, const char* name, int is_dir, uint32_t* node) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_create_l(ctx, parent, name, is_dir, node); io_unlock(&v->lock); return rc;
+}
+static int op_remove(void* ctx, uint32_t node, int is_dir) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_remove_l(ctx, node, is_dir); io_unlock(&v->lock); return rc;
+}
+static int op_rename(void* ctx, uint32_t node, int is_dir, uint32_t new_parent, const char* new_name) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); int rc = op_rename_l(ctx, node, is_dir, new_parent, new_name); io_unlock(&v->lock); return rc;
+}
+static void op_unmount(void* ctx) {
+    xvol_t* v = (xvol_t*)ctx; io_lock(&v->lock); op_unmount_l(ctx);       /* (v is gone after this) */
 }
 
 static const fs_mount_ops_t g_ops = {
