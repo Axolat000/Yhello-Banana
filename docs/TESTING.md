@@ -18,7 +18,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, malloc, AVX, syscall, disk, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -44,6 +44,9 @@ selftest disk            reads 32 MiB twice from the first SATA / virtio / NVMe 
                          (read only): the same data both times; a task waking every
                          1 ms must keep running meanwhile (30%); how many waits the
                          disk's interrupt ended (QEMU: DISK=disk.img or -machine q35)
+selftest heap            the kernel's heap checked through (every block, the list both
+                         ways, every free block in its bin), then 100000 kmalloc +
+                         kfree among 2000 live blocks with holes (under 2 us each)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
@@ -221,6 +224,15 @@ Linux under a stand-in for the system's call table (`vm_map` is `mmap`), by
 blocks from 16 B to 64 KiB alignment, kernel memory passed back to the kernel,
 8 threads freeing each other's blocks, and nothing left in use at the end.
 
+### `tools/test_kheap.py [BASE]`
+
+The kernel's heap (`kernel/kheap.c`) on Linux, with stand-in headers
+(`tools/tests/kheap_stub`) and its memory mapped below 4 GiB: 300000 random
+`kmalloc` / `kfree` / `krealloc` / `kmalloc_aligned` (64 B - 2 MiB) with every
+byte checked and `kheap_check()` every 5000; everything freed must merge back
+into one block. Then the same fragmented workload on it and on the `kheap.c`
+of `BASE` (default: build 193's, before the bins), timed.
+
 ## A full check before a release
 
 ```
@@ -231,6 +243,7 @@ tools/test-exfat.sh
 tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
 python3 tools/test_crashscreen.py
 python3 tools/test_malloc.py
+python3 tools/test_kheap.py
 ```
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an

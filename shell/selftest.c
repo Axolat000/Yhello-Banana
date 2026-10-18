@@ -261,6 +261,41 @@ static void t_disk(void) {
     }
 }
 
+/* ── the kernel's heap: bins (build 194) ── */
+static void t_heap(void) {
+    section("the kernel's heap (build 194)");
+    char err[128] = "", note[128];
+    int bad = kheap_check(err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%u free blocks, %u of %u KiB used", kheap_free_blocks(), kheap_used_bytes() >> 10, kheap_total_bytes() >> 10);
+    report("the heap is sound (every block, list and bin)", !bad, bad ? err : note);
+    enum { LIVE = 4000, PAIRS = 100000 };
+    void** live = (void**)kmalloc(LIVE * sizeof(void*));
+    if (!live) { report("malloc / free among many blocks", 0, "out of memory"); return; }
+    uint32_t x = 12345;
+    int fail = 0;
+    for (int i = 0; i < LIVE; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        if (!(live[i] = kmalloc(x % 2000 + 16))) fail = 1;
+    }
+    for (int i = 0; i < LIVE; i += 2) { kfree(live[i]); live[i] = NULL; }
+    uint32_t t0 = timer_ms();
+    for (int i = 0; i < PAIRS && !fail; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        void* p = kmalloc(x % 4000 + 16);
+        if (!p) fail = 1;
+        kfree(p);
+    }
+    uint32_t ms = timer_ms() - t0;
+    bad = kheap_check(err, sizeof(err));
+    for (int i = 0; i < LIVE; i++) kfree(live[i]);
+    kfree(live);
+    if (!bad) bad = kheap_check(err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%d pairs among %d live blocks: %u ms (%u ns each)", PAIRS, LIVE / 2, ms,
+              (uint32_t)((uint64_t)ms * 1000000u / PAIRS));
+    report("malloc / free among many blocks", !fail && !bad && ms * 1000u < (uint32_t)PAIRS * 2u,
+           fail ? "out of memory" : bad ? err : note);
+}
+
 /* Install the matching built-in test, even if an older package is on disk. */
 static void t_opencl(void) {
     section("OpenCL barriers, shared memory and vectors");
@@ -656,8 +691,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -695,6 +730,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "avx") ? "selftest: checking AVX" :
                      only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
                      only && !strcmp(only, "disk") ? "selftest: checking disk waits" :
+                     only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -739,6 +775,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "avx")) t_avx();
         if (!only || !strcmp(only, "syscall")) t_syscall();
         if (!only || !strcmp(only, "disk")) t_disk();
+        if (!only || !strcmp(only, "heap")) t_heap();
         if (!only) {
             t_opencl();
             browser_test_run(report);

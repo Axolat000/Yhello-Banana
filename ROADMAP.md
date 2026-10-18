@@ -95,8 +95,8 @@ Done in this order, each with its own build, `selftest` part and commit.
 | AVX (XSAVE) | **testing** (build 191) | `kernel/fpu.c`: XSAVE turned on (x87, SSE, AVX, AVX-512 when present) on every core and after a wake; task switches use `xsave` / `xrstor` (3 KiB areas); new tasks start from clean registers (fninit used to leave the SSE ones of the task before). `lscpu` shows it; `selftest avx` (QEMU: `CPU=max` or `KVM=1`). Signal frames still save the SSE part only. |
 | `syscall` / `sysret` | **testing** (build 192) | The call stubs use `syscall` (the 4th argument in r10) and return with `sysret`; the task's kernel stack through a per-core area (`swapgs`); a kernel code/data pair for syscall's selectors. `int 0x80` stays; sigreturn and non-canonical returns go back by `iretq`. `selftest syscall`. |
 | Interrupt-driven disk I/O | **testing** (build 193) | `kernel/iowait.c`: a short spin, then sleep until the disk's interrupt (AHCI, virtio-blk; a look every 2 ms if none comes) or yield between looks (NVMe, whose interrupts stay off - MSI-X is not supported). A lock per disk and per FAT32 / exFAT volume. Read-ahead left out: ext4 already reads whole extents in one request and caches metadata. `selftest disk`. |
-| A faster kernel heap | next | `kmalloc` walks one first-fit list from the start; size-class bins. |
-| Fewer TLB flushes | planned | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
+| A faster kernel heap | **testing** (build 194) | Free blocks in TLSF bins (25 levels x 16, bitmaps): a fit in a couple of bit scans; neighbours still merged; aligned blocks from the bins first. `tools/test_kheap.py`: 300000 random calls with every byte and the heap's structure checked; 27 ns vs ~200 us a malloc + free among 10000 live blocks. `selftest heap`. |
+| Fewer TLB flushes | next | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
 | TCP window scaling and SACK | planned | The receive window is capped at 64 KiB, so a download gets at most 64 KiB per round trip (about 1.3 MB/s at 50 ms). |
 
 ## Not planned
