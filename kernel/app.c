@@ -1,4 +1,5 @@
 #include "app.h"
+#include "gpu_virgl.h"
 #include "appwin.h"
 #include "audio.h"
 #include "fs.h"
@@ -1642,6 +1643,10 @@ static void a_thread_exit(int ret) {
     for (;;) task_sleep_ms(1000);
 }
 
+static int a_gpu_call(unsigned op, const void* request, unsigned request_size, void* data, unsigned size) {
+    app_proc_t* p = cur();
+    return p ? gpu_virgl_call(p->id + 1, op, request, request_size, data, size) : -1;
+}
 static int a_cpu_count(void) { return cpu_count(); }
 
 /* wait / wake: a thread sleeps while *addr == expected, until another one
@@ -1824,6 +1829,7 @@ static void spec_init(void) {
     SPEC(thread_id, "", 0);
     SPEC(thread_exit, "i", 0);
     SPEC(cpu_count, "", 0);
+    SPEC(gpu_call, "ibibi", 0);
     SPEC(wait, "Iii", 0);
     SPEC(wake, "ii", 0);                /* (addr is only compared) */
     SPEC(web_open, "ii", 0);
@@ -2356,6 +2362,7 @@ static void api_init(void) {
     g_api.thread_id = G(a_thread_id);
     g_api.thread_exit = G(a_thread_exit);
     g_api.cpu_count = a_cpu_count;
+    g_api.gpu_call = a_gpu_call;
     g_api.wait = G(a_wait);
     g_api.wake = G(a_wake);
     g_api.web_open = G(a_web_open);
@@ -2672,6 +2679,7 @@ static void release(app_proc_t* p) {
     for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
         if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
         else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
+    gpu_virgl_release(p->id + 1);
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);

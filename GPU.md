@@ -80,7 +80,49 @@ A 4 MiB VGA at 1024x768 correctly falls back to copying. BIOS/QEMU S3
 sleep/resume also passes after enabling page flipping; resume invalidates
 the damage shadow so both video pages are restored by the next full frame.
 
+## 5. VirGL / Mesa virtual 3D
+
+The optional virtio feature exposes owned application contexts and resources
+through SDK API 22. The kernel validates ownership, request sizes, resource
+boxes and backing offsets; handles are never guest-controlled host pointers.
+Limits are 32 contexts, 256 resources, 64 MiB per resource, 128 MiB total
+backing and 512 KiB per command submission. Application exit releases its
+contexts and resources. `lsgpu` reports current usage and quarantine state.
+
+Mesa's new Banana winsys submits real VirGL commands and uses fenced
+upload/readback for OSMesa windows. Three-dimensional submissions currently
+wait for completion; desktop transfers and cursor motion remain asynchronous.
+This is an initial readback-based backend: there is no direct rendering to
+compositor textures, dma-buf import, native fence FD or hardware video API.
+The GL test validates basic shaders and pixels, not full OpenGL conformance
+or compatibility with every game.
+
+Build and run:
+
+```sh
+ports/mesa/build.sh
+GPU=virgl DISK=ports/mesa/build/gl3disk.img MEM=2G KVM=1 tools/dev.sh run
+```
+
+Inside Banana OS run `selftest virgl`. It checks the kernel transport,
+installs the bundled `gl3test` and requires the actual VirGL renderer before
+checking GLSL 3.30 shaders, interpolated colors and framebuffer readback.
+The host needs QEMU's VirGL display support and a working OpenGL backend.
+`GL_DISPLAY` overrides the default `gtk,gl=on`; automated runs retain an
+EGL headless backend rather than replacing GL with a non-GL display.
+
+`GALLIUM_DRIVER=softpipe` selects CPU rendering. The library automatically
+falls back to softpipe when VirGL is unavailable. Mesa's OSMesa frontend
+now chooses a supported depth/stencil format and handles a missing screen
+without dereferencing it. The SDK example is in `sdk/examples/gl3test`;
+`gl3test window` displays its animated triangle.
+
+Validation: both kernels build. Repeated 64-bit QEMU GL runs passed shader
+and pixel checks on an AMD Radeon host, before and after starting the
+desktop. All resources were returned after each test. Standard VGA passed
+the same OpenGL tests using softpipe. A full target rebuild compiled all
+819 objects, and every strong library import resolved against the SDK.
+
 ## Remaining stages
 
-- VirGL: pending.
 - LLVMpipe: pending.

@@ -6,10 +6,27 @@
  * Needs libOSMesa.so (ports/mesa/build.sh) in /lib, /usr/lib or /mnt/<disk>/lib. */
 #include <GL/gl3.h>
 #include <math.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 
+#ifdef __x86_64__
+static void fault(int sig, siginfo_t* info, void* context) {
+    ucontext_t* u = context;
+    unsigned long ip = u->uc_mcontext.gregs[REG_RIP];
+    Dl_info d;
+    if (dladdr((void*)ip, &d))
+        printf("gl3test fault %d at %p: %s +0x%lx (%s)\n", sig, info->si_addr, d.dli_fname,
+            ip - (unsigned long)d.dli_fbase, d.dli_sname ? d.dli_sname : "?");
+    else printf("gl3test fault %d at %p, ip %lx\n", sig, info->si_addr, ip);
+    exit(1);
+}
+#endif
 static int g_fail;
+static const char* required_renderer;
 
 static void check(int ok, const char* what) {
     printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
@@ -84,6 +101,7 @@ static int offscreen(void) {
     if (!gl) { printf("gl3test: %s\nFAIL\n", bgl3_error()); return 1; }
     printf("GL_VERSION  %s\nGL_RENDERER %s\nGLSL        %s\n", (const char*)glGetString(GL_VERSION),
            (const char*)glGetString(GL_RENDERER), (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
+    if (required_renderer) check(strstr((const char*)glGetString(GL_RENDERER), required_renderer) != NULL, "requested rendering backend is active");
     GLint major = 0, minor = 0, prof = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -179,6 +197,13 @@ out:
 }
 
 int main(int argc, char** argv) {
+#ifdef __x86_64__
+    struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask); sigaction(SIGSEGV, &sa, NULL);
+#endif
+    if (argc > 1 && (!strcmp(argv[1], "virgl") || !strcmp(argv[1], "llvmpipe"))) {
+        required_renderer = argv[1];
+        setenv("GALLIUM_DRIVER", argv[1], 1);
+    }
     if (argc > 1 && !strcmp(argv[1], "window")) return window();
     return offscreen();
 }

@@ -46,3 +46,8 @@ ex_posixtest_end:
 align 16
 ex_mousetest: incbin "sdk/examples/mousetest/mousetest.bpk"
 ex_mousetest_end:
+
+align 16
+global ex_gl3test, ex_gl3test_end
+ex_gl3test: incbin "sdk/examples/gl3test/gl3test.bpk"
+ex_gl3test_end:

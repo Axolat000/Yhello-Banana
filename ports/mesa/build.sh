@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (the softpipe driver,
-# drawing on the processor; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
+# Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (VirGL when available,
+# softpipe on the processor otherwise; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
 # load from /lib, /usr/lib, /usr/java/lib (the java package) or /mnt/<disk>/lib.
 #     ports/mesa/build.sh [output dir]      (default: ports/mesa/build)
 # Out: <output>/libOSMesa.so, gl3test.bpk, and gl3disk.img - a FAT32 disk
@@ -29,29 +29,30 @@ if [ ! -d "$SRC" ]; then
     tar -C "$HERE/src" -xJf "$T"
 fi
 
+python3 "$HERE/patch.py" "$SRC"
+
 # ── the reference Linux build ─────────────────────────────────────────
-if [ ! -f "$REF/src/gallium/targets/osmesa/libOSMesa.so.8.0.0" ]; then
     [ -f "$REF/build.ninja" ] || meson setup "$REF" "$SRC" -Dbuildtype=release -Dosmesa=true \
-        -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
+        -Dgallium-drivers=softpipe,virgl -Dc_args="-DBANANA_MESA_OSMESA -include $HERE/banana/host_compat.h" -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
         -Dllvm=disabled -Dgles1=disabled -Dgles2=disabled -Dzstd=disabled -Dvalgrind=disabled \
         -Dlibunwind=disabled -Dshader-cache=disabled -Dlmsensors=disabled -Dgallium-va=disabled \
         -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dgallium-nine=false -Dgallium-opencl=disabled \
         -Dgallium-rusticl=false -Dandroid-libbacktrace=disabled -Dexpat=disabled -Dxmlconfig=disabled \
         -Ddraw-use-llvm=false -Dbuild-tests=false -Dtools=
-    ninja -C "$REF" -j"$JOBS"
-fi
+ninja -C "$REF" -j"$JOBS" src/gallium/targets/osmesa/libOSMesa.so.8.0.0
 
 # ── libOSMesa.so for Banana OS ────────────────────────────────────────
-JOBS=$JOBS python3 "$HERE/rebuild.py" "$REF" "$OUT/banana"
+KEEP=${KEEP:-1} JOBS=$JOBS python3 "$HERE/rebuild.py" "$REF" "$OUT/banana"
 cp "$OUT/banana/libOSMesa.so" "$OUT/libOSMesa.so"
 
 # ── the test app and a test disk ──────────────────────────────────────
 make -C "$HERE/gl3test"
 cp "$HERE/gl3test/gl3test.bpk" "$OUT/"
+python3 "$HERE/../../tools/check_shared_imports.py" "$OUT/libOSMesa.so" "$HERE"/gl3test/build/x86_64/*.o
 IMG=$OUT/gl3disk.img
 rm -f "$IMG"
 truncate -s 64M "$IMG"
-printf 'label: dos\nstart=2048, type=c\n' | /sbin/sfdisk -q "$IMG"
+printf 'label: dos\nstart=2048, type=c\n' | sfdisk -q "$IMG"
 mformat -i "$IMG@@1M" -F -v GL3 ::
 mmd -i "$IMG@@1M" ::/lib
 mcopy -i "$IMG@@1M" "$OUT/libOSMesa.so" ::/lib/

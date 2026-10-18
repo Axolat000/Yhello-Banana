@@ -9,6 +9,7 @@
  * pointer through the cursor queue (a 64x64 resource of its own).
  * After the virtio 1.2 specification, section 5.7. */
 #include "gpu.h"
+#include "gpu_virgl.h"
 #include "crash.h"
 #include "fb.h"
 #include "kheap.h"
@@ -89,6 +90,7 @@ typedef struct {
 
 static gpu_t g_gpu;
 static volatile uint8_t* g_common;
+static volatile uint8_t* g_device;
 static volatile uint8_t* g_notify_base;
 static uint32_t g_notify_mul;
 static vq_t g_cq, g_curq;                /* control, cursor */
@@ -102,7 +104,7 @@ static int g_w, g_h, g_res = 1;          /* its size and resource id */
 static int g_pref_w, g_pref_h;
 static uint32_t* g_curimg;               /* 64x64 pointer image */
 static int g_cursor_res;
-static int g_failed, g_cursor_pending;
+static int g_failed, g_cursor_pending, g_reset_ack;
 static uint64_t g_fence;
 static uint8_t g_cursor_latest[64];
 
@@ -162,6 +164,7 @@ static void device_failed(void) {
         klog("virtio-gpu: queue stopped; device reset, serial console remains available\n");
     }
     w8(C_STATUS, 0);
+    for (unsigned i = 0; i < 100000; i++) if (!c8(C_STATUS)) { g_reset_ack = 1; break; }
     /* Never release DMA storage on this path, even if reset is not acknowledged. */
 }
 
@@ -264,12 +267,31 @@ static int submit(vq_t* q, void* req, uint32_t rlen, void* resp, uint32_t slen) 
     if (ok && !q->qi) {
         hdr_t* reply = resp;
         ok = q->sync_len >= sizeof(hdr_t) && q->sync_len <= slen &&
-            (reply->type == RESP_OK_NODATA || reply->type == RESP_OK_DISPLAY_INFO);
+            (reply->type == RESP_OK_NODATA || reply->type == RESP_OK_DISPLAY_INFO || reply->type == 0x1102 || reply->type == 0x1103);
     }
 out:
     if (!crash_in_progress()) gpu_note_command(gpu_clock() - started, 0);
     if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
     return ok ? 0 : -1;
+}
+
+int gpu_virtio_alive(void) { return g_common && !g_failed; }
+int gpu_virtio_command(void* request, unsigned length, void* response, unsigned capacity) {
+    if (!g_common || g_failed || length < sizeof(hdr_t) || length > (512u << 10) + 32 || capacity < sizeof(hdr_t) || capacity > 8192) return -1;
+    void* req = kmalloc(length); void* resp = kmalloc(capacity);
+    if (!req || !resp) { kfree(req); kfree(resp); return -1; }
+    memcpy(req, request, length);
+    LOCK();
+    hdr_t* h = req;
+    h->flags |= 1; h->fence = ++g_fence;
+    int rc = submit(&g_cq, req, length, resp, capacity);
+    hdr_t* reply = resp;
+    if (!rc && (!(reply->flags & 1) || reply->fence != h->fence ||
+        ((h->type == 0x108 || h->type == 0x109) && g_cq.sync_len < capacity))) rc = -1;
+    if (!rc) memcpy(response, resp, capacity);
+    UNLOCK();
+    if (!g_failed || g_reset_ack) { kfree(req); kfree(resp); }
+    return rc;
 }
 
 static int ctrl(void* req, uint32_t rlen) { return submit(&g_cq, req, rlen, g_resp, sizeof(hdr_t)); }
@@ -494,7 +516,8 @@ static int find_caps(const pci_dev_t* d) {
             int io = 0;
             uintptr_t base = bar < 6 ? pci_bar(d, bar, &io) : 0;
             if (base && !io && mmio_map(base + off, len ? len : 4096)) {
-                if (type == CFG_COMMON) g_common = (volatile uint8_t*)(base + off);
+                if (type == CFG_DEVICE && len >= 16) g_device = (volatile uint8_t*)(base + off);
+                else if (type == CFG_COMMON) g_common = (volatile uint8_t*)(base + off);
                 else if (type == CFG_NOTIFY) {
                     g_notify_base = (volatile uint8_t*)(base + off);
                     g_notify_mul = pci_read32(d->bus, d->dev, d->fn, (uint8_t)(p + 16));
@@ -517,8 +540,11 @@ int gpu_virtio_probe(const pci_dev_t* d) {
     w32(C_DFSELECT, 1);
     uint32_t hi = c32(C_DF);
     if (!(hi & 1)) { w8(C_STATUS, S_FAILED); return -1; }   /* VIRTIO_F_VERSION_1 */
+    w32(C_DFSELECT, 0);
+    uint32_t features = c32(C_DF) & 0x11u; /* VIRGL and CONTEXT_INIT, when offered */
+    if (!(features & 1)) features = 0;
     w32(C_GFSELECT, 0);
-    w32(C_GF, 0);                                      /* no extra features (2D only) */
+    w32(C_GF, features);                                      /* 2D remains available independently of 3D */
     w32(C_GFSELECT, 1);
     w32(C_GF, 1);
     w8(C_STATUS, S_ACK | S_DRIVER | S_FEATURES_OK);
@@ -560,6 +586,7 @@ int gpu_virtio_probe(const pci_dev_t* d) {
     gpu_register(&g_gpu);
     gpu_register_panic(&g_gpu,vg_panic_present);
     gpu_register_service(&g_gpu, vg_service, vg_tests);
+    if ((features & 1) && g_device) gpu_virgl_init(*(volatile uint32_t*)(g_device + 12), features & 0x10);
     vg_flush_locked(0, 0, w, h);
     return 0;
 }

@@ -1,5 +1,6 @@
 #include "selftest.h"
 #include "../kernel/gpu.h"
+#include "../kernel/gpu_virgl.h"
 #include "../kernel/disk.h"
 #include "../kernel/iowait.h"
 #include "../kernel/idt.h"
@@ -38,7 +39,7 @@
 #include "datecmd.h"
 
 /*
- * selftest [gpu | ring3 | memory | limits | cores] - checks the system features
+ * selftest [virgl | gpu | ring3 | memory | limits | cores] - checks the system features
  * from inside Banana OS, one ok / FAIL line each, and a summary. What must
  * run as an app is done by systest (sdk/examples/systest), installed from
  * the copy built into the kernel: the exit code of each of its modes is
@@ -479,6 +480,21 @@ static void t_posix(const char* part) {
     report("POSIX checks", rc == 0, rc < 0 ? msg : "see the checks above");
 }
 
+static void t_gl3(const char* driver) {
+#ifndef __x86_64__
+    (void)driver; skip("Mesa OpenGL renderer", "64-bit apps only");
+#else
+    const char* tmp = "/tmp/gl3test.bpk"; char msg[160] = {0};
+    if (write_ex(tmp, "gl3test.bpk") < 0 || pkg_install(tmp, msg, sizeof(msg))) {
+        fs_delete(tmp, 0); report("install gl3test", 0, msg); return;
+    }
+    fs_delete(tmp, 0);
+    char* args[] = {"gl3test", (char*)driver};
+    int rc = pkg_run("gl3test", 2, args, 0, msg, sizeof(msg));
+    report(driver, rc == 0, rc < 0 ? msg : "OpenGL shaders, rendered pixels and framebuffer checks above");
+#endif
+}
+
 static void mouse_demo(void) {
     if(!gui_is_enabled()) { report("mouse capture demo",0,"startx first, then selftest mouse demo in a terminal");return; }
     const char* tmp="/tmp/mousetest.bpk";char msg[160]={0};
@@ -843,10 +859,11 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
+    if(only && !strcmp(only,"virgl") && argc!=2) { terminal_writeln("usage: selftest virgl");return 1; }
     if(only && !strcmp(only,"gpu") && argc!=2) { terminal_writeln("usage: selftest gpu");return 1; }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
         terminal_writeln("usage: selftest mouse [demo]");return 1;
@@ -888,7 +905,10 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
                      only && !strcmp(only, "net") ? "selftest: checking TCP" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if(only && !strcmp(only,"gpu")) {
+    if(only && !strcmp(only,"virgl")) {
+        section("VirGL contexts and host resources"); gpu_virgl_tests(report);
+        if (gpu_virgl_available()) t_gl3("virgl");
+    } else if(only && !strcmp(only,"gpu")) {
         section("GPU presentation and diagnostics");gpu_tests(report);
     } else if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);

@@ -8,6 +8,7 @@ extern const uint8_t ex_threads[], ex_threads_end[];
 extern const uint8_t ex_webview[], ex_webview_end[];
 extern const uint8_t ex_gears[], ex_gears_end[];
 extern const uint8_t ex_cltest[], ex_cltest_end[];
+extern const uint8_t ex_gl3test[], ex_gl3test_end[];
 extern const uint8_t ex_systest[], ex_systest_end[];
 extern const uint8_t ex_posixtest[], ex_posixtest_end[];
 extern const uint8_t ex_mousetest[], ex_mousetest_end[];
@@ -23,6 +24,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "webview.bpk", ex_webview, ex_webview_end },
     { "gears.bpk", ex_gears, ex_gears_end },
     { "cltest.bpk", ex_cltest, ex_cltest_end },
+    { "gl3test.bpk", ex_gl3test, ex_gl3test_end },
     { "systest.bpk", ex_systest, ex_systest_end },
     { "posixtest.bpk", ex_posixtest, ex_posixtest_end },
     { "mousetest.bpk", ex_mousetest, ex_mousetest_end },

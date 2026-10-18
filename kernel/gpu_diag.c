@@ -1,4 +1,5 @@
 #include "gpu.h"
+#include "gpu_virgl.h"
 #include "gpu_surface.h"
 #include "fb.h"
 #include "kheap.h"
@@ -10,8 +11,9 @@
 
 void gpu_diagnostics(void) {
     gpu_stats_t s; gpu_stats(&s);
+    gpu_virgl_diagnostics();
     char line[180];
-    terminal_writeln("    3D: CPU rendering (native GL / optional Mesa OSMesa); no hardware 3D backend");
+    terminal_writeln(gpu_virgl_available() ? "    3D: virgl transport available; applications choose their Mesa renderer" : "    3D: CPU rendering (native GL / optional Mesa OSMesa); virgl unavailable");
     ksnprintf(line, sizeof(line), "    presentation: %llu copies, %llu KiB, %llu us CPU copy time",
               s.frames, s.copied_bytes >> 10, s.copy_ns / 1000);
     terminal_writeln(line);
@@ -58,6 +60,7 @@ static void presentation_test(void (*report)(const char*, int, const char*)) {
 void gpu_tests(void (*report)(const char*, int, const char*)) {
     gpu_surface_tests(report);
     gpu_driver_tests(report);
+    gpu_virgl_tests(report);
     presentation_test(report);
     const fb_info_t* f = fb_info();
     if (fb_available()) {
