@@ -450,14 +450,36 @@ struct tm* localtime(const time_t* t) { static struct tm tm; return localtime_r(
 
 /* ── POSIX clocks (the system timer: milliseconds) ────────────────── */
 
+/* The wall clock in milliseconds since 1970. The clock chip only counts
+ * seconds; its seconds plus the uptime counter's milliseconds went back by
+ * up to a second whenever the two did not tick together (Minecraft: "Time
+ * ran backwards!"). So it is one line: an anchor taken from the clock chip
+ * once, and the uptime counter from there - anchored again only when the
+ * clock chip is more than 2 s away from it (set by hand, a new time zone). */
+long long __realtime_ms(void) {
+    static volatile long long base;
+    static volatile int anchored;
+    unsigned ms = __banana->ticks_ms();
+    long long chip = (long long)time(0) * 1000;
+    long long now = base + ms;
+    if (!anchored || now - chip > 2000 || chip - now > 2000) {
+        base = chip + 500 - ms;                    /* (the middle of the chip's second) */
+        anchored = 1;
+        now = base + ms;
+    }
+    return now;
+}
+
 int clock_gettime(clockid_t clk, struct timespec* ts) {
     if (!ts) { errno = EFAULT; return -1; }
     unsigned ms = __banana->ticks_ms();
     switch (clk) {
-    case CLOCK_REALTIME: case CLOCK_REALTIME_COARSE:
-        ts->tv_sec = time(0);
-        ts->tv_nsec = (long)(ms % 1000u) * 1000000L;
+    case CLOCK_REALTIME: case CLOCK_REALTIME_COARSE: {
+        long long now = __realtime_ms();
+        ts->tv_sec = (time_t)(now / 1000);
+        ts->tv_nsec = (long)(now % 1000) * 1000000L;
         return 0;
+    }
     case CLOCK_MONOTONIC: case CLOCK_MONOTONIC_RAW: case CLOCK_MONOTONIC_COARSE: case CLOCK_BOOTTIME:
         break;
     case CLOCK_PROCESS_CPUTIME_ID: case CLOCK_THREAD_CPUTIME_ID:

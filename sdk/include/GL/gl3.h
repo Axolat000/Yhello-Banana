@@ -40,6 +40,7 @@ BGL3_PROCS(X)
 typedef struct bgl3_ctx bgl3_ctx_t;
 
 bgl3_ctx_t* bgl3_create(bwin_t* win);            /* a GL 3.3 core context drawing into win */
+bgl3_ctx_t* bgl3_create_compat(bwin_t* win);     /* ... a compatibility one (fixed pipeline, glBegin...) */
 bgl3_ctx_t* bgl3_create_offscreen(int w, int h); /* no window: read the frame with bgl3_pixels() */
 int  bgl3_make_current(bgl3_ctx_t* ctx);         /* 0, or -1 */
 bgl3_ctx_t* bgl3_current(void);

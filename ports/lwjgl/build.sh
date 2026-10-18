@@ -14,6 +14,9 @@
 #   libGL.so.1          glXGetProcAddress, for LWJGL's GL.create() (native/libgl.c)
 #   libopenal.so        OpenAL 1.1's API over Banana OS's sound (native/openal.c:
 #                       a mixer of its own - Minecraft's sound)
+#   lwjgl2.jar          LWJGL 2's API over LWJGL 3 (lwjgl2/: Display, Keyboard,
+#                       Mouse... and a class loader that rewrites the calls
+#                       LWJGL 3 names otherwise) - Minecraft 1.7.2 to 1.12.2
 # and <output>/lwjgldisk.img, a FAT32 disk for QEMU (-drive file=...,if=virtio)
 # with jdk/, java.bpk, lib/libOSMesa.so, lwjgl/ and the test, which draws a
 # triangle in a window with LWJGL:
@@ -166,6 +169,15 @@ for jl in lwjgl:liblwjgl.so lwjgl-opengl:opengl/liblwjgl_opengl.so lwjgl-glfw:gl
     printf '%s\r\n' "$(sha1sum "$LW/$(basename "$p")" | cut -d' ' -f1)" > "$H/META-INF/linux/x64/org/lwjgl/$p.sha1"
     "${JB}jar" uf "$LW/$j.jar" -C "$H" "META-INF/linux/x64/org/lwjgl/$p.sha1"
 done
+
+# ── LWJGL 2 over LWJGL 3 (lwjgl2/) ────────────────────────────────────
+# (no --release: the class loader uses the JDK's own ASM, jdk.internal)
+L2=$W/lwjgl2
+rm -rf "$L2" && mkdir -p "$L2"
+"${JB}javac" -source 17 -target 17 --add-exports java.base/jdk.internal.org.objectweb.asm=ALL-UNNAMED \
+    -cp "$LW/lwjgl.jar:$LW/lwjgl-opengl.jar:$LW/lwjgl-glfw.jar:$LW/lwjgl-openal.jar" -d "$L2" $(find "$HERE/lwjgl2/java" -name '*.java')
+rm -f "$LW/lwjgl2.jar"
+"${JB}jar" cf "$LW/lwjgl2.jar" -C "$L2" .
 
 # ── the test and a test disk ──────────────────────────────────────────
 T=$W/test

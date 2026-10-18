@@ -29,7 +29,11 @@ void serial_init(void) {
     outb(COM1 + 2, 0xC7);    /* FIFO on, cleared, 14-byte threshold */
     outb(COM1 + 4, 0x13);    /* loopback test mode (DTR|RTS|LOOP) */
     outb(COM1 + 0, 0xAE);
-    if (inb(COM1 + 0) != 0xAE) { g_present = 0; return; }
+    if (inb(COM1 + 0) != 0xAE) {
+        /* (no loopback - VirtualBox's: the scratch register says a UART is there) */
+        outb(COM1 + 7, 0x5A);
+        if (inb(COM1 + 7) != 0x5A) { g_present = 0; return; }
+    }
     outb(COM1 + 4, 0x03);    /* normal operation, DTR|RTS */
     g_present = 1;
 }

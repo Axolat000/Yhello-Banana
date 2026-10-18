@@ -25,6 +25,7 @@ typedef struct osmesa_context* OSMesaContext;
 #define OSMESA_STENCIL_BITS          0x31
 #define OSMESA_PROFILE               0x33
 #define OSMESA_CORE_PROFILE          0x34
+#define OSMESA_COMPAT_PROFILE        0x35
 #define OSMESA_CONTEXT_MAJOR_VERSION 0x36
 #define OSMESA_CONTEXT_MINOR_VERSION 0x37
 static OSMesaContext (*os_create)(const int* attribs, OSMesaContext share);
@@ -104,7 +105,7 @@ static int alloc_px(bgl3_ctx_t* c, int w, int h) {
     return 0;
 }
 
-static bgl3_ctx_t* create(bwin_t* win, int w, int h) {
+static bgl3_ctx_t* create(bwin_t* win, int w, int h, int compat) {
     g_err[0] = 0;
     if (load()) return NULL;
     const int at[] = {
@@ -116,12 +117,21 @@ static bgl3_ctx_t* create(bwin_t* win, int w, int h) {
         OSMESA_CONTEXT_MINOR_VERSION, 3,
         0,
     };
+    /* the compatibility profile: no version asked - Mesa's highest, with
+     * the fixed-function pipeline (glBegin, display lists, the matrix stack) */
+    const int at_compat[] = {
+        OSMESA_FORMAT, OSMESA_BGRA,
+        OSMESA_DEPTH_BITS, 24,
+        OSMESA_STENCIL_BITS, 8,
+        OSMESA_PROFILE, OSMESA_COMPAT_PROFILE,
+        0,
+    };
     bgl3_ctx_t* c = calloc(1, sizeof(*c));
     if (!c || alloc_px(c, w, h)) { free(c); snprintf(g_err, sizeof(g_err), "OpenGL 3.3: out of memory"); return NULL; }
     c->win = win;
-    c->os = os_create(at, NULL);
+    c->os = os_create(compat ? at_compat : at, NULL);
     if (!c->os) {
-        snprintf(g_err, sizeof(g_err), "OpenGL 3.3: Mesa could not make a 3.3 core context");
+        snprintf(g_err, sizeof(g_err), compat ? "OpenGL: Mesa could not make a compatibility context" : "OpenGL 3.3: Mesa could not make a 3.3 core context");
         free(c->px);
         free(c);
         return NULL;
@@ -136,10 +146,15 @@ static bgl3_ctx_t* create(bwin_t* win, int w, int h) {
 
 bgl3_ctx_t* bgl3_create(bwin_t* win) {
     if (!win || win->id < 0) { snprintf(g_err, sizeof(g_err), "OpenGL 3.3: no window"); return NULL; }
-    return create(win, win->w, win->h);
+    return create(win, win->w, win->h, 0);
 }
 
-bgl3_ctx_t* bgl3_create_offscreen(int w, int h) { return create(NULL, w, h); }
+bgl3_ctx_t* bgl3_create_compat(bwin_t* win) {
+    if (!win || win->id < 0) { snprintf(g_err, sizeof(g_err), "OpenGL: no window"); return NULL; }
+    return create(win, win->w, win->h, 1);
+}
+
+bgl3_ctx_t* bgl3_create_offscreen(int w, int h) { return create(NULL, w, h, 0); }
 
 int bgl3_make_current(bgl3_ctx_t* c) {
     if (!c) { if (os_make_current) os_make_current(NULL, NULL, 0, 0, 0); g_cur = NULL; return 0; }
