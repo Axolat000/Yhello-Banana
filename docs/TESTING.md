@@ -26,6 +26,8 @@ selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every b
                          (skipped without RAM above 4 GiB: MEM=8G tools/dev.sh run)
 selftest limits          an app with 60 threads, an app with 60 files open,
                          24 apps at once
+selftest clock           shared HPET / ACPI / IRQ clock, counter rollovers, elapsed
+                         time against physical CMOS, and reads across migrating threads
 selftest cores           threads calling malloc / free / a lock on every core, and
                          whether they spread over the cores (SMP=4 in QEMU)
 selftest malloc          the apps' own heap (sdk/lib/malloc.c): random blocks with
@@ -358,3 +360,68 @@ validation requires a VM cycle. The wake protocol follows the
 [ACPI sleeping/waking specification](https://uefi.org/specs/ACPI/6.6/16_Waking_and_Sleeping.html);
 QEMU's wake path can reset devices, so driver restoration is required
 ([QEMU reset documentation](https://www.qemu.org/docs/master/devel/reset.html)).
+
+
+## Shared monotonic clock (build 199)
+
+Run `selftest clock` inside Banana OS. It prints the selected source and checks
+12 conversion/rollover cases, a 1200 ms sleep (with 1 ms rounding tolerance),
+elapsed time against the actual CMOS clock, and 80000 serialized user clock
+reads on a four-core guest. One-core guests use two threads and skip the
+multiple-core requirement. This command also runs as part of `selftest`.
+
+HPET is preferred, then the ACPI PM timer. Both are shared hardware counters;
+CPU TSC values and their advertised invariant/hypervisor flags are not used
+for elapsed time. The 32-bit kernel reads a 64-bit HPET with a high/low/high
+retry. Narrow HPET/PM counters are extended by the timer interrupt, with a
+sequence counter protecting readers on other cores. They must be sampled at
+least once per wrap (a 24-bit PM counter wraps in about 4.7 s). The last fallback
+counts timer interrupts and is less precise if the machine delays delivery.
+S3 rebases the selected source to its saved nanosecond epoch, excluding sleep.
+The CMOS value, rather than the timezone-adjusted display clock, sets RTC alarms.
+
+The host log showed Linux rejecting TSC after a 2470544928-cycle warp, and QEMU
+TCG reproduced large jumps even though the guest cores agreed at startup.
+The initial boot-time TSC synchronization patch did not fix the allocator's
+reported 4166170 ms runtime. With the shared clock, the same four-thread kernel
+allocator benchmark reported about 1252 ms; the app allocator reported 94 ms.
+These figures describe this host and are not general performance guarantees.
+
+The syscall entry benchmark now uses `cpu_count`, a cheap query, so hardware
+clock MMIO does not hide entry overhead. The VirtualBox workaround still checks
+real elapsed time to exit to the hypervisor periodically; raw TSC only limits
+how often that check reads hardware, with an additional call-count bound.
+The serial test runner rejects failing checks and failing final summaries even
+when a nested suite prints `0 failed`. Numeric expectations have digit boundaries,
+so `100% packet loss` cannot satisfy a `0% packet loss` assertion.
+
+A resume regression from the upstream merge was also found: e1000 probing
+cleared `present` and `ifname`, which made the network poller skip the NIC.
+Resume now retains its registration metadata. `selftest sleep cycle` checks
+that registration and reports 31 checks with a NIC present (30 without one).
+
+Host checks:
+
+```
+python3 tools/test_clock.py --sanitize
+python3 tools/test_clock.py --32
+python3 tools/tests/test_serialtest.py
+```
+
+Reference layouts: [Intel HPET specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/software-developers-hpet-spec-1-0a.pdf)
+and [ACPI hardware specification](https://uefi.org/specs/ACPI/6.5/04_ACPI_Hardware_Specification.html).
+
+
+Validation on this host (scratch kernels and ISO):
+
+| Guest/check | Result |
+|---|---|
+| Full 64-bit TCG selftest, 4 cores | 230 passed, 0 failed |
+| Full 64-bit KVM selftest, 4 cores, host CPU/AVX | 232 passed, 0 failed |
+| Full 32-bit selftest | 217 passed, 0 failed |
+| UEFI KVM clock and core checks | 17 + 2 passed, 0 failed |
+| HPET, HPET disabled (ACPI PM), ACPI/HPET disabled (IRQ fallback) | clock checks passed |
+| Clock arithmetic, ASan/UBSan and i686 | 12 checks each, 0 failed |
+| Serial runner regression tests | 8 passed |
+| BIOS 64-bit/ACPI PM resume | Three real suspend/wake cycles; clock checks before/after, FAT I/O, ping and POSIX passed |
+| BIOS 32-bit/HPET resume | Three real suspend/wake cycles; 31 cycle checks, FAT I/O, ping and POSIX passed |

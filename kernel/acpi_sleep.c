@@ -83,6 +83,7 @@ int acpi_s3_status(char* reason,int cap) {
     int found=sleep_decl(acpi_table_at(dsdt,"DSDT"),&sa,&sb);
     for(int i=0;i<8 && !found;i++)found=sleep_decl(acpi_find_table_n("SSDT",i),&sa,&sb);
     if(!found)return fail(reason,cap,"firmware does not declare a static ACPI S3 state");
+    if(!timer_has_hardware_clock())return fail(reason,cap,"S3 needs an HPET or ACPI PM clock");
     if(!sysinfo_get()->s3_wake_page)return fail(reason,cap,"no available conventional RAM page for S3 wake code");
     if(facs<4096 || facs>(1ull<<32)-64)return fail(reason,cap,"no reachable ACPI waking-vector structure");
     volatile uint8_t* fc=(volatile uint8_t*)(uintptr_t)facs;
@@ -127,7 +128,7 @@ static void cmos_write(int r,uint8_t v) { outb(0x70,(uint8_t)(0x80|r));outb(0x71
 static uint8_t encode(unsigned n,int binary) { return binary?(uint8_t)n:(uint8_t)((n/10)*16+n%10); }
 static uint8_t alarm_saved[4];
 static int arm_alarm(unsigned seconds) {
-    rtc_datetime_t now;if(rtc_read_datetime(&now))return -1;
+    rtc_datetime_t now;if(rtc_read_hardware(&now))return -1;
     alarm_saved[0]=cmos(1);alarm_saved[1]=cmos(3);alarm_saved[2]=cmos(5);alarm_saved[3]=cmos(0xb);
     unsigned future=(now.hour*3600u+now.minute*60u+now.second+seconds)%86400u;
     int binary=alarm_saved[3]&4;unsigned hour=future/3600u;
@@ -185,7 +186,7 @@ int acpi_s3_suspend(unsigned seconds,char* reason,int cap) {
     uint16_t old_cntb=pm.cntb?inw(pm.cntb)&~(uint16_t)((7u<<10)|(1u<<13)):0;
     uintptr_t flags;__asm__ volatile("pushf; pop %0; cli":"=r"(flags)::"memory");
     smp_s3_save();
-    uint32_t before=timer_ms();
+    uint64_t before=timer_counter();
     uint32_t wake=sysinfo_get()->s3_wake_page;s3_context=wake+0x800u;
     uint8_t* code=(uint8_t*)(uintptr_t)wake;
     memcpy(code,s3_wake_start,(size_t)(s3_wake_end-s3_wake_start));
@@ -217,6 +218,9 @@ int acpi_s3_suspend(unsigned seconds,char* reason,int cap) {
     if(net_if()->dev) {
         netdev_t old=*net_if()->dev;
         netdev_t* nd=e1000_probe();if(!nd)kernel_panic("S3: the network device failed to resume");
+        /* probe resets the driver's record; registration belongs to net.c
+         * and must survive, or net_poll silently skips this interface. */
+        memcpy(nd->ifname,old.ifname,sizeof(nd->ifname));nd->present=old.present;nd->is_usb=old.is_usb;
         nd->rx_packets=old.rx_packets;nd->tx_packets=old.tx_packets;nd->rx_bytes=old.rx_bytes;nd->tx_bytes=old.tx_bytes;
         nd->rx_errors=old.rx_errors;nd->tx_errors=old.tx_errors;nd->rx_dropped=old.rx_dropped;
         net_if()->dev=nd;

@@ -301,23 +301,23 @@ int tlb_selftest(char* msg, int cap, uint32_t* old_ns, uint32_t* new_ns, int* ke
     /* timed: TOUCH pages here and TOUCH of the kernel's, then the same
      * again - as before (no global pages, every CR3 load under PCID 0: each
      * forgets everything), and now */
-    uint64_t hz = timer_tsc_per_ms();
+    uint64_t hz = timer_counter_per_ms();
     if (hz) {
         const int R = 400;
         uintptr_t cr4 = rd_cr4();
         wr_cr4(cr4 & ~CR4_PGE);
-        uint64_t t0 = __builtin_ia32_rdtsc();
+        uint64_t t0 = timer_counter();
         for (int r = 0; r < R; r++) {
             wr_cr3(mine); touch(va);
             wr_cr3(kcr3); touch((uintptr_t)frames);
         }
-        uint64_t t1 = __builtin_ia32_rdtsc();
+        uint64_t t1 = timer_counter();
         wr_cr4(cr4);                    /* (and everything forgotten again) */
         for (int r = 0; r < R; r++) {
             tlb_load(mine, &tag); touch(va);
             tlb_load(kcr3, NULL); touch((uintptr_t)frames);
         }
-        uint64_t t2 = __builtin_ia32_rdtsc();
+        uint64_t t2 = timer_counter();
         *old_ns = (uint32_t)((t1 - t0) * 1000000ull / hz / (uint64_t)R);
         *new_ns = (uint32_t)((t2 - t1) * 1000000ull / hz / (uint64_t)R);
     }

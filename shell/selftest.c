@@ -20,6 +20,7 @@
 #include "../kernel/kstring.h"
 #include "../kernel/terminal.h"
 #include "../kernel/timer.h"
+#include "../kernel/timer_math.h"
 #include "../kernel/task.h"
 #include "../kernel/app.h"
 #include "../kernel/pkg.h"
@@ -157,6 +158,35 @@ static void t_cores(void) {
     report("threads calling malloc / free / a lock", 1, note);
     if (n < 2) skip("they spread over the cores", "one core here (QEMU: SMP=4)");
     else report("they spread over the cores", cores >= 2, cores >= 2 ? "" : "all stayed on one core");
+}
+
+static void t_clock(void) {
+    section("shared monotonic clock (build 199)");
+    timer_math_tests(report);
+    char note[96];
+    report("clock source selected",1,timer_clock_source());
+    rtc_datetime_t first,last;
+    int hw=rtc_read_hardware(&first)==0;
+    uint64_t start=timer_counter();
+    task_sleep_ms(1200);
+    uint64_t elapsed=(timer_counter()-start)/1000000ull;
+    ksnprintf(note,sizeof(note),"%llu ms for a 1200 ms sleep",elapsed);
+    /* task_sleep_ms uses millisecond deadlines: a fractional first tick
+     * can make its measured duration just under 1200 whole milliseconds. */
+    report("sleep respects its millisecond deadline",elapsed>=1199 && elapsed<5000,note);
+    if(hw && rtc_read_hardware(&last)==0) {
+        unsigned a=first.hour*3600u+first.minute*60u+first.second;
+        unsigned b=last.hour*3600u+last.minute*60u+last.second;
+        unsigned seconds=(b+86400u-a)%86400u;
+        ksnprintf(note,sizeof(note),"CMOS advanced %u s; monotonic clock %llu ms",seconds,elapsed);
+        report("elapsed time agrees with the independent CMOS clock",seconds>=1 && seconds<=5 && elapsed+1000>=seconds*1000ull && elapsed<=(seconds+1)*1000ull,note);
+    } else skip("elapsed time agrees with CMOS","no readable hardware RTC");
+    int rc=run("clock",NULL,NULL);
+    report("user clock reads stay monotonic across core migrations",rc>=100,"");
+    if(cpu_count()>1) {
+        ksnprintf(note,sizeof(note),"read on %d of %d cores",rc>=100?rc-100:0,cpu_count());
+        report("clock reads exercise multiple cores",rc>=102,note);
+    }
 }
 
 static void t_malloc(void) {
@@ -494,6 +524,8 @@ static void t_sleep(int cycle) {
         report("user threads are live before suspend",started,started?"":err);
         volatile uint32_t marker[64];
         for(unsigned i=0;i<64;i++)marker[i]=i*2654435761u^0x53335241u;
+        netdev_t* nic=net_if()->dev;char ifname[8]={0};
+        if(nic)memcpy(ifname,nic->ifname,sizeof(ifname));
         terminal_writeln("Sleeping for five seconds; the RTC will wake this VM...");
         int rc=acpi_s3_suspend(5,reason,sizeof(reason));
         report("S3 sleep/resume cycle",!rc && acpi_s3_resumes()==before+1,reason);
@@ -501,6 +533,7 @@ static void t_sleep(int cycle) {
         report("memory on the suspended stack survives",intact,"");
         uint32_t ticks=timer_irq_count(),ms=timer_ms();timer_sleep_ms(20);
         report("timer interrupts and monotonic time resume",timer_irq_count()!=ticks && timer_ms()-ms>=20,"");
+        if(nic)report("network interface stays registered after resume",net_if()->dev==nic && nic->present && !memcmp(ifname,nic->ifname,sizeof(ifname)),nic->ifname);
         fs_write_path(stop,"stop",4);uint32_t until=timer_ms();
         while(fs_find_file(worker)<0 && timer_ms()-until<5000)task_sleep_ms(10);
         int f=fs_find_file(worker);char text[8]={0};
@@ -809,8 +842,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -844,6 +877,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
                      only && !strcmp(only, "sleep") ? "selftest: checking ACPI S3" :
+                     only && !strcmp(only, "clock") ? "selftest: checking the monotonic clock" :
                      only && !strcmp(only, "malloc") ? "selftest: checking the apps' heap" :
                      only && !strcmp(only, "avx") ? "selftest: checking AVX" :
                      only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
@@ -893,6 +927,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "memory")) t_memory();
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
+        if (!only || !strcmp(only, "clock")) t_clock();
         if (!only || !strcmp(only, "malloc")) t_malloc();
         if (!only || !strcmp(only, "avx")) t_avx();
         if (!only || !strcmp(only, "syscall")) t_syscall();

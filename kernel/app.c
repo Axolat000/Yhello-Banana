@@ -2166,6 +2166,8 @@ static int syscall_here(sysframe_t* r) {
  * millisecond, by a write to port 0x80 (the classic I/O delay: no device). */
 static int      g_vm_exits = -1;                 /* -1: not known yet */
 static uint64_t g_vm_exit_at[SMP_MAX_CPUS];
+static uint64_t g_vm_probe_at[SMP_MAX_CPUS];
+static unsigned g_vm_probe_calls[SMP_MAX_CPUS];
 
 static void vm_exit_now_and_then(int cpu) {
     if (g_vm_exits < 0) {
@@ -2173,11 +2175,18 @@ static void vm_exit_now_and_then(int cpu) {
         __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
         g_vm_exits = (c >> 31) & 1;              /* (a hypervisor) */
     }
-    uint64_t per = timer_tsc_per_ms();
+    uint64_t per = timer_counter_per_ms();
     if (!g_vm_exits || !per || cpu <= 0 || cpu >= SMP_MAX_CPUS) return;
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t now = ((uint64_t)hi << 32) | lo;
+    /* Reading HPET/PM itself exits the VM. Avoid doing that on every
+     * cheap syscall. Raw TSC is only a sampling hint here, never a clock
+     * or deadline; backwards/jumping TSCs force an immediate resample,
+     * and a call-count bound also resamples a frozen counter. */
+    uint32_t lo,hi;
+    __asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));
+    uint64_t stamp=(uint64_t)hi<<32 | lo;
+    if(stamp-g_vm_probe_at[cpu]<100000 && ++g_vm_probe_calls[cpu]<32)return;
+    g_vm_probe_at[cpu]=stamp;g_vm_probe_calls[cpu]=0;
+    uint64_t now = timer_counter();
     if (now - g_vm_exit_at[cpu] < per) return;
     g_vm_exit_at[cpu] = now;
     __asm__ volatile("outb %%al, $0x80" : : "a"(0));

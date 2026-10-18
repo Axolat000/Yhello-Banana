@@ -99,6 +99,19 @@ Done in this order, each with its own build, `selftest` part and commit.
 | Fewer TLB flushes | **testing** (build 195) | The kernel's pages are global (kept across CR3 loads); with PCIDs each core keeps the last 63 address spaces' translations, forgotten only when a space changed (kernel/tlb.c). `selftest tlb`. |
 | TCP window scaling and SACK | **testing** (build 196) | Window scaling (RFC 7323): a 512 KiB receive window (shift 4) instead of 64 KiB, and a 256 KiB send buffer (compacted lazily, no memmove per ACK). SACK (RFC 2018): ACKs name what arrived beyond a loss, the sender resends only the holes (NewReno without it). `tools/test_tcp.py` (both ends over a simulated link): 4.87 vs 0.65 MB/s at a 50 ms round trip, every byte checked. `selftest net`. |
 
+## Clock reliability (build 199)
+
+Elapsed time and scheduler accounting use a shared HPET counter, with the
+ACPI PM timer and then interrupt counting as fallbacks. Advertising a hypervisor
+or invariant TSC does not establish that its counter is reliable: this host's
+Linux kernel marked TSC unstable, and QEMU inherited repeated counter jumps.
+Boot-time synchronization alone did not fix them. No TSC MSRs are changed.
+
+`selftest clock` checks arithmetic and rollovers, a millisecond sleep against
+an independent CMOS read, and serialized clock reads from migrating app threads.
+`python3 tools/test_clock.py --sanitize` runs the arithmetic checks on Linux.
+See `docs/TESTING.md` for the VM validation results.
+
 ## Not planned
 
 Section 3 of the original list (a CI boot test, untracking build outputs, README fixes) was left out on purpose. Two parts of it were done anyway because the build needed them: the stale tracked `.o` files are no longer tracked, and `tools/dev.sh` boots and tests the system.

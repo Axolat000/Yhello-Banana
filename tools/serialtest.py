@@ -25,6 +25,23 @@ DEFAULT_CMDS = [
 BAD = re.compile(r"PANIC|crashed|was stopped|segmentation fault|stack overflow|general protection", re.I)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
+def command_failure(output):
+    # Successful signal tests name the fault they intentionally recovered
+    # from. Actual crash messages and failing checks must still fail the run.
+    diagnostics = "\n".join(l for l in output.splitlines() if not re.match(r"\s*ok\s", l))
+    bad = BAD.search(diagnostics)
+    if bad:
+        return bad.group(0)
+    failed = re.search(r"^\s*FAIL\s+.*|^selftest: \d+ passed, [1-9]\d* failed.*", diagnostics, re.M)
+    return failed.group(0).strip() if failed else ""
+
+def expected_output_present(output, expected):
+    # A numeric expectation must not match the end of a different number:
+    # "0% packet loss" is not satisfied by "100% packet loss".
+    if expected[:1].isdigit():
+        return re.search(r"(?<![0-9])" + re.escape(expected), output) is not None
+    return expected in output
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", default="qemu-system-x86_64")
@@ -123,20 +140,17 @@ def main():
                 time.sleep(0.01)
             ok = wait_prompt(mark + len(c), a.timeout)
             out = text[mark:]
-            # Signal tests intentionally recover from faults. Their successful
-            # check labels name the fault; genuine crash lines still fail.
-            diagnostics = "\n".join(l for l in out.splitlines() if not re.match(r"\s*ok\s", l))
-            bad = BAD.search(diagnostics)
+            failure = command_failure(out)
             for l in out.splitlines()[1:-1]:
                 print("    " + l)
-            why = bad.group(0) if bad else ""
-            if ok and not bad and expect and expect not in out.encode("latin-1", "replace").decode("utf-8", "replace"):
+            why = failure
+            if ok and not failure and expect and not expected_output_present(out.encode("latin-1", "replace").decode("utf-8", "replace"), expect):
                 why = f"expected {expect!r}"
             status = "FAIL" if why or not ok else "ok"
             if not ok:
                 print("    (no prompt within %d s)" % a.timeout)
             results.append((c, status, why))
-            if bad and "PANIC" in bad.group(0).upper():
+            if "PANIC" in failure.upper():
                 break
     except EOFError:
         results.append(("(QEMU)", "FAIL", "the serial port closed - the VM stopped or reset"))

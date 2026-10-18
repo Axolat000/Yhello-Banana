@@ -412,7 +412,7 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|ram|sleep [cycle]|limits|cores|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
       "ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
@@ -420,6 +420,7 @@ static const page_t PAGES[] = {
       "memory|RAM above 4 GiB: 64 MiB for an app, given back after\n"
       "limits|60 threads, 60 open files, 24 apps at once\n"
       "cores|malloc / free / a lock from threads on every core\n"
+      "clock|shared HPET / ACPI clock, rollovers, real elapsed time and migrating user threads\n"
       "malloc|the apps' own heap: random blocks checked, and how much faster than the kernel's allocator\n"
       "avx|AVX registers kept across task switches, none left for a new thread (CPU=max in QEMU)\n"
       "syscall|the syscall / sysret entry: registers kept, stack arguments right, timed against int 0x80\n"

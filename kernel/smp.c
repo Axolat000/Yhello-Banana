@@ -360,117 +360,17 @@ static void ioapic_restore(void) {
         for (uint32_t i = 0; i < g_ioa[k].pins; i++) ioa_wr(&g_ioa[k], 0x10 + 2 * i, g_ioa[k].lo[i]);
 }
 
-static inline uint64_t tsc(void) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+static inline uint64_t counter_now(void) {
+    return timer_counter();
 }
 
-/* ── one TSC for every core ───────────────────────────────────────────
- * The kernel's clock (timer_ms) and its run-time accounting read the TSC
- * of whichever core they run on, and tasks move between cores - so the
- * cores' TSCs must agree. A core's TSC starts at its own reset (in QEMU, a
- * core's starts at 0 when it is started, seconds after the boot core's),
- * so each core, once up, compares its TSC with the boot core's - a few
- * round trips, the one that took least - and sets its own to agree
- * (IA32_TSC_ADJUST where there is one, else the TSC itself). Where they
- * agree already (real processors with an invariant TSC), nothing changes. */
-#define TS_ROUNDS 8
-static volatile uint64_t g_ts_ap, g_ts_bsp;
-static volatile int      g_ts_step;          /* 1: the core's stamp out, 2: answered, 0: next round, 3: done */
-static volatile int64_t  g_ts_off, g_ts_left;  /* what it found, and what was left after setting it */
-static volatile uint64_t g_ts_rtt;
-
-static int ts_wait(int want) {
-    for (uint32_t i = 0; g_ts_step != want; i++) {
-        if (i > 200000000u) return -1;            /* (the other side is gone: give up) */
-        __asm__ volatile("pause");
-    }
-    return 0;
-}
-
-/* (the core) its TSC against the boot core's: b - the middle of the round
- * trip, the round trip that took least */
-static int64_t ts_measure(uint64_t* rtt_out) {
-    int64_t best = 0;
-    uint64_t rtt = ~0ull;
-    for (int r = 0; r < TS_ROUNDS; r++) {
-        uint64_t a1 = tsc();
-        g_ts_ap = a1;
-        __sync_synchronize();
-        g_ts_step = 1;
-        if (ts_wait(2)) break;
-        uint64_t a2 = tsc(), b = g_ts_bsp;
-        if (a2 - a1 < rtt) { rtt = a2 - a1; best = (int64_t)(b - (a1 + (a2 - a1) / 2)); }
-        g_ts_step = 0;
-        if (ts_wait(0)) break;
-    }
-    *rtt_out = rtt;
-    return best;
-}
-
-static void tsc_sync_ap(void) {
-    uint64_t per = timer_tsc_per_ms(), rtt;
-    int64_t off = ts_measure(&rtt);
-    g_ts_off = off;
-    g_ts_rtt = rtt;
-    uint64_t mag = off < 0 ? (uint64_t)-off : (uint64_t)off;
-    /* off by more than the measure can tell (twice the round trip, 20 us at least) */
-    if (per && rtt != ~0ull && mag > 2 * rtt && mag > per / 50) {
-        uint32_t a, b, c, d;
-        __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
-        if (b & 2) {                              /* IA32_TSC_ADJUST: the TSC moves with it */
-            uint32_t lo, hi;
-            rdmsr(0x3B, &lo, &hi);
-            uint64_t v = (((uint64_t)hi << 32) | lo) + (uint64_t)off;
-            wrmsr(0x3B, (uint32_t)v, (uint32_t)(v >> 32));
-        } else {
-            uint64_t v = tsc() + (uint64_t)off;
-            wrmsr(0x10, (uint32_t)v, (uint32_t)(v >> 32));
-        }
-        g_ts_left = ts_measure(&rtt);
-    } else {
-        g_ts_left = off;
-    }
-    g_ts_step = 3;
-}
-
-/* (the boot core) answers the core's rounds; logs what it found */
-static void tsc_sync_bsp(int cpu) {
-    for (;;) {
-        for (uint32_t i = 0; g_ts_step != 1 && g_ts_step != 3; i++) {
-            if (i > 200000000u) { klog("smp: core %d did not compare its TSC\n", cpu); g_ts_step = 0; return; }
-            __asm__ volatile("pause");
-        }
-        if (g_ts_step == 3) break;
-        g_ts_bsp = tsc();
-        __sync_synchronize();
-        g_ts_step = 2;
-        for (uint32_t i = 0; g_ts_step == 2; i++) {
-            if (i > 200000000u) { klog("smp: core %d stopped comparing its TSC\n", cpu); g_ts_step = 0; return; }
-            __asm__ volatile("pause");
-        }
-    }
-    uint64_t per = timer_tsc_per_ms(), us = per / 1000 ? per / 1000 : 1;
-    int64_t off = g_ts_off, left = g_ts_left;
-    unsigned long long a = (unsigned long long)((off < 0 ? -off : off) / (int64_t)us);
-    unsigned long long l = (unsigned long long)((left < 0 ? -left : left) / (int64_t)us);
-    if (off != left)
-        klog("smp: core %d's TSC was %s%llu us off the boot core's: set to it (now %s%llu us; round trip %llu cycles)\n", cpu,
-             off < 0 ? "-" : "+", a, left < 0 ? "-" : "+", l, (unsigned long long)g_ts_rtt);
-    else
-        klog("smp: core %d's TSC agrees with the boot core's (%s%llu us; round trip %llu cycles)\n", cpu,
-             off < 0 ? "-" : "+", a, (unsigned long long)g_ts_rtt);
-    g_ts_step = 0;
-}
-
-/* n timer interrupts within max_ms (busy: no hlt, they may not come) - bounded by the TSC */
+/* n timer interrupts within max_ms (busy: no hlt, they may not come) - bounded by the shared hardware clock */
 static int ticks_arrive(uint32_t n, uint32_t max_ms) {
     uint32_t c0 = timer_irq_count();
-    uint64_t per = timer_tsc_per_ms(), t0 = tsc();
+    uint64_t per = timer_counter_per_ms(), t0 = counter_now();
     for (uint32_t i = 0;; i++) {
         if (timer_irq_count() - c0 >= n) return 1;
-        if (per ? tsc() - t0 > per * max_ms : i > 50000000u) return 0;
+        if (counter_now() - t0 > per * max_ms || i > 50000000u) return 0;
         __asm__ volatile("pause");
     }
 }
@@ -506,7 +406,6 @@ static void smp_ap_entry(uint32_t cpu) {
     lapic_wr(LAPIC_LVT_ERR, LVT_MASKED);
     lapic_wr(LAPIC_SVR, 0x100u | SMP_VEC_SPURIOUS);
     g_ap_up = 1;
-    tsc_sync_ap();                          /* (the boot core answers, once it saw g_ap_up) */
     task_ap_loop((int)cpu);
 }
 
@@ -561,7 +460,7 @@ static int lapic_on(uint32_t madt_addr) {
  * poorly - VirtualBox delivered those ticks late while the guest idled and
  * then in bursts, and the sound, the pointer and the clock stuttered with
  * them. The local APIC timer is what current systems use: counted against
- * the TSC clock (timer_ms) for 20 ms, then periodic. If it does not tick,
+ * the shared clock (timer_ms) for 20 ms, then periodic. If it does not tick,
  * the PIT stays the timer. */
 #define LAPIC_TIMER_INIT 0x380
 #define LAPIC_TIMER_CUR  0x390
@@ -734,7 +633,6 @@ void smp_init(void) {
             kfree(stack);
             continue;
         }
-        tsc_sync_bsp(cpu);
         g_cpus = cpu + 1;
     }
     memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
@@ -759,8 +657,8 @@ void smp_s3_save(void) {
     }
 }
 static void resume_delay(unsigned ms) {
-    uint64_t per=timer_tsc_per_ms(),start=tsc();
-    if(per)while(tsc()-start<per*ms)__asm__ volatile("pause");
+    uint64_t per=timer_counter_per_ms(),start=counter_now();
+    if(timer_has_hardware_clock())while(counter_now()-start<per*ms)__asm__ volatile("pause");
     else for(unsigned i=0;i<ms*1000;i++)__asm__ volatile("outb %%al,$0x80" :: "a"(0));
 }
 int smp_s3_resume(void) {
@@ -784,7 +682,6 @@ int smp_s3_resume(void) {
         icr_send(g_apic_id[cpu],0x4500);resume_delay(10);
         for(int i=0;i<2 && !g_ap_up;i++){icr_send(g_apic_id[cpu],0x4600|(TRAMP_ADDR>>12));resume_delay(i?200:2);}
         if(!g_ap_up){memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));return -1;}
-        tsc_sync_bsp(cpu);                    /* (their TSCs started again with them) */
     }
     memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
     return 0;
