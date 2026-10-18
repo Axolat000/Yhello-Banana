@@ -16,6 +16,14 @@ Inside Banana OS:
 selftest llvmpipe
 ```
 
+Source preparation verifies LLVM and its companion CMake archive separately,
+extracts into a temporary directory, and publishes only a complete tree.
+Interrupted extractions recover on the next run; the previous tree is kept
+in a `.previous-*` directory. Incomplete downloads never replace the cache.
+`ports/llvm/build.sh configure` prepares sources and checks CMake configuration
+without compiling LLVM. An explicit `LLVM_SRC` must point to a complete tree
+with the matching `../cmake/Modules` directory.
+
 The first build downloads verified LLVM and CMake source archives, builds
 native LLVM/tablegen/llvm-config and a native Mesa reference, then rebuilds
 the required LLVM/Mesa objects against the SDK. It takes considerably longer
