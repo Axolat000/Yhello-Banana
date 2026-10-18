@@ -215,7 +215,7 @@ clean:
 	for a in $(APPS); do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
-	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso
+	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
 	rm -rf isoroot
 	rm -f loader/*.o loader/*.so loader/*.bin loader/*.EFI loader/*.unsigned loader/kernel_hashes.h \
 	      loader/keys/*.esl loader/keys/*.auth loader/keys/.nokey
@@ -244,8 +244,15 @@ apps/$(1)/$(1)-i686.bpk.z apps/$(1)/$(1)-x86_64.bpk.z: $$(wildcard apps/$(1)/*.c
 	$$(MAKE) -C apps/$(1) bundle
 endef
 $(foreach a,$(APPS),$(eval $(call APP_RULE,$(a))))
-kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z)
-kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z)
+kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z) build/builtin-meta-i686.bin
+kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin
+
+# the App Store's facts about those packages and the examples (size, SHA-256,
+# manifest): made here, so the boot does not unpack and hash them all again
+build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKS)
+	mkdir -p build
+	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
+	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel
 DRIVER_EXAMPLES = edu bochsfb

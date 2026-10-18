@@ -389,6 +389,10 @@ static void t_boottime(void) {
     uint64_t total = n ? st[n - 1].ns : 0;
     ksnprintf(note, sizeof(note), "the kernel to \"%s\": %u ms", n ? st[n - 1].what : "-", (uint32_t)(total / 1000000u));
     report("steps in order, with times", ordered && total > 0, note);
+    char msg[96];
+    int agree = builtin_meta_check(msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "%d packages: size, SHA-256 and manifest as the build found them", agree);
+    report("the App Store's list made without unpacking every package", agree > 0, agree > 0 ? note : msg);
     uint64_t before = boottime_before_ns();
     if (before) {
         ksnprintf(note, sizeof(note), "about %u ms", (uint32_t)(before / 1000000u));
