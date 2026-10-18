@@ -4,6 +4,7 @@
 #include "types.h"
 #include "display.h"
 #include "pci.h"
+#include "gpu_surface.h"
 
 /*
  * Graphics drivers (kernel/gpu_*.c, and driver modules: kernel/driver.h).
@@ -74,6 +75,7 @@ typedef struct {
     uint64_t frames, copied_bytes, copy_ns, flushes, flushed_bytes, flush_ns;
     uint64_t commands, command_ns, timeouts;
     uint64_t damage_frames, candidate_bytes, damage_bytes;
+    uint64_t flips, vblank_waits, vblank_timeouts;
 } gpu_stats_t;
 void gpu_stats(gpu_stats_t* out);
 void gpu_note_present(uint64_t bytes, uint64_t ns);
@@ -83,6 +85,16 @@ void gpu_diagnostics(void);
 void gpu_bench(void);
 void gpu_tests(void (*report)(const char*, int, const char*));
 /* Optional built-in extensions, kept outside the driver-module ABI. */
+typedef struct {
+    /* 0: unavailable, 1: existing pages, 2: initialize both pages. */
+    int (*begin)(gpu_surface_t* target);
+    void (*end)(gpu_surface_t source, const gpu_rect_t* changed, int count);
+} gpu_present_ops_t;
+void gpu_register_present(gpu_t* g, const gpu_present_ops_t* ops);
+int gpu_present_begin(gpu_surface_t* target);
+void gpu_present_end(gpu_surface_t source, const gpu_rect_t* changed, int count);
+void gpu_note_flip(void);
+void gpu_note_vblank(int timeout);
 void gpu_register_service(gpu_t* g, void (*service)(void),
                           void (*tests)(void (*report)(const char*, int, const char*)));
 void gpu_driver_tests(void (*report)(const char*, int, const char*));

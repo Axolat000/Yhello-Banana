@@ -14,6 +14,7 @@
 static gpu_t* g_gpus[GPU_MAX];
 static void (*g_panic[GPU_MAX])(void);
 static void (*g_service[GPU_MAX])(void);
+static const gpu_present_ops_t* g_present[GPU_MAX];
 static void (*g_tests[GPU_MAX])(void (*)(const char*, int, const char*));
 static int    g_ngpus;
 static gpu_t* g_active;
@@ -63,6 +64,25 @@ int gpu_register(gpu_t* g) {
     klog("gpu: %s (driver %s) on %02x:%02x.%u%s\n", g->name, g->driver, g->pci.bus, g->pci.dev, g->pci.fn,
          g->flush ? ", pushed to the screen" : "");
     return 0;
+}
+
+void gpu_register_present(gpu_t* g, const gpu_present_ops_t* ops) {
+    for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g) g_present[i] = ops;
+}
+int gpu_present_begin(gpu_surface_t* target) {
+    for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g_active && g_present[i]) return g_present[i]->begin(target);
+    return 0;
+}
+void gpu_present_end(gpu_surface_t source, const gpu_rect_t* changed, int count) {
+    for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g_active && g_present[i]) { g_present[i]->end(source, changed, count); return; }
+}
+void gpu_note_flip(void) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock); g_stats.flips++; spin_unlock_irq(&g_stats_lock, f);
+}
+void gpu_note_vblank(int timeout) {
+    uintptr_t f = spin_lock_irq(&g_stats_lock);
+    g_stats.vblank_waits++; g_stats.vblank_timeouts += !!timeout;
+    spin_unlock_irq(&g_stats_lock, f);
 }
 
 void gpu_register_service(gpu_t* g, void (*service)(void),

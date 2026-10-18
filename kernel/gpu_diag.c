@@ -6,6 +6,7 @@
 #include "terminal.h"
 #include "timer.h"
 #include "task.h"
+#include "gui.h"
 
 void gpu_diagnostics(void) {
     gpu_stats_t s; gpu_stats(&s);
@@ -20,11 +21,44 @@ void gpu_diagnostics(void) {
     ksnprintf(line, sizeof(line), "    damage: %llu frames, %llu KiB changed / %llu KiB considered",
               s.damage_frames, s.damage_bytes >> 10, s.candidate_bytes >> 10);
     terminal_writeln(line);
+    ksnprintf(line, sizeof(line), "    scanout: %llu flips, %llu retrace waits (%llu timed out)", s.flips, s.vblank_waits, s.vblank_timeouts);
+    terminal_writeln(line);
+}
+
+static void presentation_test(void (*report)(const char*, int, const char*)) {
+    if (!fb_available() || gui_is_enabled()) {
+        terminal_writeln("  skip  live page flip - run selftest gpu at the console before startx"); return;
+    }
+    fb_info_t original = *fb_info();
+    uint64_t size = (uint64_t)original.width * original.height * 4;
+    if (size > 64u * 1024 * 1024) return;
+    uint32_t* image = kmalloc((size_t)size);
+    if (!image) { terminal_writeln("  skip  live page flip - snapshot allocation failed"); return; }
+    gpu_surface_t saved = {image, (int)original.width, (int)original.height, (int)original.width};
+    gpu_surface_t screen = {(uint32_t*)original.addr, saved.width, saved.height, (int)(original.pitch / 4)};
+    gpu_rect_t full = {0, 0, saved.width, saved.height};
+    gpu_surface_copy(saved, screen, full);
+    gpu_stats_t a, b; gpu_stats(&a);
+    int available = 1, good = 1;
+    for (int i = 0; i < 2; i++) {
+        gpu_surface_t target;
+        if (!gpu_present_begin(&target)) { available = 0; break; }
+        gpu_surface_copy(target, saved, full);
+        gpu_present_end(saved, &full, 1);
+        const fb_info_t* f = fb_info();
+        for (unsigned y = 0; y < f->height; y++)
+            if (memcmp((void*)(f->addr + (uintptr_t)y * f->pitch), image + (size_t)y * f->width, (size_t)f->width * 4)) good = 0;
+    }
+    gpu_stats(&b); fb_invalidate_damage(); kfree(image);
+    if (available) report("two live page flips preserve pixels and restore the visible page",
+        good && fb_info()->addr == original.addr && b.flips - a.flips == 2, "current image retained");
+    else terminal_writeln("  skip  live page flip - driver or video memory does not support two pages");
 }
 
 void gpu_tests(void (*report)(const char*, int, const char*)) {
     gpu_surface_tests(report);
     gpu_driver_tests(report);
+    presentation_test(report);
     const fb_info_t* f = fb_info();
     if (fb_available()) {
         report("live framebuffer dimensions and stride are valid", f->addr && f->width && f->height && f->bpp == 32 &&

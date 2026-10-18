@@ -237,9 +237,23 @@ void fb_present(void) {
     fb_present_rect(0, 0, (int)g_bb_w, (int)g_bb_h);
 }
 
-static void present_damage(gpu_rect_t r, void* unused) {
-    (void)unused;
-    fb_present_rect(r.x, r.y, r.w, r.h);
+void fb_scanout_addr(uintptr_t addr) { g_fb.addr = addr; }
+void fb_invalidate_damage(void) { g_previous_valid = 0; }
+#define PRESENT_RECTS 128
+typedef struct {
+    gpu_surface_t source, target;
+    gpu_rect_t rects[PRESENT_RECTS];
+    int flipping, count, overflow;
+} present_t;
+static void present_damage(gpu_rect_t r, void* opaque) {
+    present_t* p = opaque;
+    if (p->flipping) {
+        uint64_t start = timer_counter();
+        uint64_t bytes = gpu_surface_copy(p->target, p->source, r);
+        gpu_note_present(bytes, timer_counter() - start);
+        if (p->count < PRESENT_RECTS) p->rects[p->count++] = r;
+        else p->overflow = 1;
+    } else fb_present_rect(r.x, r.y, r.w, r.h);
 }
 void fb_present_damage(void) {
     if (!g_fb_ok || !g_bb) return;
@@ -252,8 +266,17 @@ void fb_present_damage(void) {
         if (!g_previous) { fb_present(); return; }
         g_previous_w = w; g_previous_h = h;
     }
-    uint64_t copied = gpu_surface_damage((gpu_surface_t){g_bb, (int)w, (int)h, (int)g_bb_w},
-        (gpu_surface_t){g_previous, (int)w, (int)h, (int)w}, g_previous_valid, present_damage, NULL);
+    present_t p = {0};
+    p.source = (gpu_surface_t){g_bb, (int)w, (int)h, (int)g_bb_w};
+    p.flipping = gpu_present_begin(&p.target);
+    if (p.flipping == 2) g_previous_valid = 0;
+    if (!p.flipping) gpu_wait_vblank();
+    uint64_t copied = gpu_surface_damage(p.source,
+        (gpu_surface_t){g_previous, (int)w, (int)h, (int)w}, g_previous_valid, present_damage, &p);
     g_previous_valid = 1;
+    if (p.flipping && p.count) {
+        if (p.overflow) { p.rects[0] = (gpu_rect_t){0, 0, (int)w, (int)h}; p.count = 1; }
+        gpu_present_end(p.source, p.rects, p.count);
+    }
     gpu_note_damage((uint64_t)w * h * 4, copied);
 }

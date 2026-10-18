@@ -57,8 +57,30 @@ recovery has not been fault-injected in QEMU.
 Use `GPU=virtio tools/dev.sh run` or `GPU=vmware tools/dev.sh run` to select
 the display adapter. Standard VGA remains the default.
 
+## 4. Frame presentation
+
+The standard VGA/DISPI driver presents desktop frames through two video
+pages when the mode fits in VRAM. It draws damage into the invisible page,
+waits at most 20 ms for retrace, switches the scanout offset, then updates
+the old front page while it is invisible. This retains incremental copies
+on both pages. Write-combining stores are fenced before switching. The
+software pointer is drawn on the visible page after presentation.
+
+Unsupported modes and insufficient VRAM use the normal copy path. Intel
+and standard VGA retrace waits have a deadline; a missing retrace signal
+cannot hang the desktop. These waits and DISPI offset changes do not
+constitute a universal tear-free guarantee across hypervisors or hardware.
+`lsgpu` reports flips, retrace waits and retrace timeouts.
+
+At the console, `selftest gpu` flips the current image twice, verifies every
+pixel and restores the original visible page. With the desktop running it
+skips that intrusive live check while retaining the offscreen checks.
+The live test, desktop and mode changes pass on 32-bit and 64-bit QEMU.
+A 4 MiB VGA at 1024x768 correctly falls back to copying. BIOS/QEMU S3
+sleep/resume also passes after enabling page flipping; resume invalidates
+the damage shadow so both video pages are restored by the next full frame.
+
 ## Remaining stages
 
-- Frame presentation: pending.
 - VirGL: pending.
 - LLVMpipe: pending.
