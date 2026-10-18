@@ -1,0 +1,2198 @@
+[
+  {
+    "id": "base-02",
+    "priority": "P0",
+    "domain": "Données",
+    "title": "Rendre fsync et fdatasync réellement durables",
+    "evidence": "Confirmé dans le code : fsync/fdatasync retournent 0 sans action. Le disque installé utilise déjà ext4 ; fsdisk_sync() appelle ext4_flush(), puis le flush du périphérique.",
+    "action": "Relier ces appels au cache, au journal et au flush du périphérique ; propager les erreurs.",
+    "acceptance": "Écrire, obtenir fsync = succès puis couper la VM : les octets promis sont présents. Les erreurs de disque remontent à l’application.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c#L211"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Quand une application annonce « enregistré », les données doivent survivre à une coupure après synchronisation réussie.",
+    "files": [
+      "sdk/lib/unix.c",
+      "sdk/include/banana_api.h",
+      "kernel/app.c",
+      "kernel/fsdisk.c",
+      "kernel/ext4.c",
+      "kernel/disk.c"
+    ],
+    "steps": [
+      "Ajouter en fin de table ABI un appel de synchronisation avec code d’erreur ; valider le descripteur côté noyau.",
+      "Pour un fichier du disque installé, raccorder cet appel au chemin fsdisk_sync()/ext4_flush() ; un flush global est un premier périmètre acceptable. Définir séparément le comportement des autres volumes et du RAM disk.",
+      "Raccorder fsync/fdatasync du SDK et propager EBADF/EIO ; définir aussi la synchronisation d’un dossier après création ou renommage."
+    ],
+    "tests": [
+      "Test à écrire : modifier un fichier de 1 Mio, appeler fsync, couper QEMU dès le retour puis redémarrer ; comparer le SHA-256 aux octets attendus. Répéter 100 fois, en conservant les logs.",
+      "Injecter une erreur dans la callback flush : fsync doit échouer ; un descripteur fermé doit donner EBADF. Une coupure avant fsync n’a pas les mêmes garanties."
+    ],
+    "deliverable": "Un appel ABI documenté, les wrappers SDK fonctionnels et un test de durabilité reproductible.",
+    "commands": [
+      "Hôte Linux : sh tools/ext4test/run.sh"
+    ],
+    "decision": "Séparer la garantie du disque installé ext4 de celle de FAT/exFAT ; aucune garantie de cache matériel ne doit être annoncée sans test du pilote correspondant.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Sans synchronisation réelle, « enregistré » ne garantit pas la présence des octets après coupure.",
+    "fileLinks": {
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/include/banana_api.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana_api.h",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c",
+      "kernel/ext4.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/ext4.c",
+      "kernel/disk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/disk.c"
+    },
+    "rank": 1
+  },
+  {
+    "id": "base-05",
+    "priority": "P0",
+    "domain": "Système",
+    "title": "Corriger les faux succès POSIX et les verrous",
+    "evidence": "chmod/fchmod sont des adaptations partielles ; flock est sans effet ; pread/pwrite déplacent puis restaurent le curseur.",
+    "action": "Implémenter flock et les effets promis par chmod/fchmod ; rendre pread/pwrite sûrs en concurrence ; échouer explicitement quand une fonction manque. Vérifier aussi sync et les fonctions utilisées par les ports.",
+    "acceptance": "Tests concurrents et tests de permissions vérifient les effets, pas seulement le code retour.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c#L195"
+      ]
+    ],
+    "depends": [
+      "base-02"
+    ],
+    "kind": "Consolider",
+    "goal": "Éviter que les logiciels croient avoir verrouillé ou modifié un fichier alors que l’appel n’a rien fait.",
+    "files": [
+      "sdk/lib/unix.c",
+      "sdk/lib/libc.c",
+      "kernel/app.c",
+      "kernel/fs.c"
+    ],
+    "steps": [
+      "Faire l’inventaire des fonctions SDK qui retournent un succès constant ; documenter implémenté / partiel / ENOSYS.",
+      "Implémenter LOCK_SH/LOCK_EX/LOCK_UN et LOCK_NB sur une identité de fichier commune ; libérer les verrous à la fermeture et à la mort du processus selon le contrat retenu.",
+      "Faire pread/pwrite sans modifier le curseur partagé ; relier chmod/fchmod aux vrais changements de métadonnées et aux contrôles d’identité."
+    ],
+    "tests": [
+      "Deux processus : A détient LOCK_EX, B reçoit EWOULDBLOCK avec LOCK_NB ; après fermeture de A, B obtient le verrou.",
+      "Deux threads font 10 000 lectures à offsets fixes ; contenus exacts et curseur courant inchangé. Un chmod SDK doit modifier le mode lu par stat, ou échouer explicitement."
+    ],
+    "deliverable": "Une matrice des fonctions SDK et des tests qui vérifient leurs effets observables.",
+    "decision": "Les tests interprocessus dépendent du chantier processus ; un premier test entre applications séparées peut utiliser le lanceur Banana existant.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Les bases et outils portés peuvent perdre leurs garanties si les verrous ou effets annoncés sont fictifs.",
+    "fileLinks": {
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/lib/libc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/libc.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c"
+    },
+    "rank": 2
+  },
+  {
+    "id": "base-01",
+    "priority": "P0",
+    "domain": "Sécurité",
+    "title": "HTTPS authentifié avec Mbed TLS",
+    "evidence": "Certificate et CertificateVerify ne sont pas validés.",
+    "action": "Porter Mbed TLS : transport, mémoire, aléatoire, heure, X.509 et CA. Vérifier CertificateVerify, chaîne, nom, dates et usages. Distribuer les autorités de certification et fournir une heure fiable.",
+    "acceptance": "Certificat expiré, mauvais nom et autorité inconnue refusés ; serveur valide accepté.",
+    "sources": [
+      [
+        "Limite TLS confirmée",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/tls.c#L537"
+      ],
+      [
+        "Mbed TLS",
+        "https://github.com/Mbed-TLS/mbedtls"
+      ]
+    ],
+    "depends": [],
+    "kind": "À porter + intégrer",
+    "goal": "Un faux serveur ne doit pas pouvoir se faire passer pour la messagerie, un dépôt ou une API.",
+    "files": [
+      "net/tls.c",
+      "net/tls.h",
+      "net/http.c",
+      "kernel/random.c",
+      "kernel/rtc.c",
+      "sdk/lib/socket.c"
+    ],
+    "steps": [
+      "Créer un port Mbed TLS versionné avec build croisé et transport Banana ; fournir mémoire, aléatoire et temps UTC.",
+      "Ajouter un bundle CA distribué comme donnée système et activer la vérification obligatoire chaîne/nom/dates/usages et CertificateVerify.",
+      "Faire passer les consommateurs HTTPS par cette implémentation ; distinguer clairement erreur DNS, connexion, horloge et certificat."
+    ],
+    "tests": [
+      "Serveur TLS de test : certificat valide accepté ; expiré, futur, mauvais nom, CA inconnue et signature invalide refusés, sans réponse applicative consommée.",
+      "Changer volontairement l’heure puis la rétablir ; vérifier qu’une erreur de date n’entraîne jamais une désactivation automatique de la validation."
+    ],
+    "deliverable": "Un client HTTPS vérifié, le bundle CA, une procédure de mise à jour et six cas négatifs automatisés.",
+    "decision": "Choisir une version maintenue de Mbed TLS lors du port et enregistrer sa version/licence ; le port n’a pas été compilé ici.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Les comptes et clés API exigent de vérifier l’identité du serveur, en plus du chiffrement.",
+    "fileLinks": {
+      "net/tls.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/tls.c",
+      "net/tls.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/tls.h",
+      "net/http.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/http.c",
+      "kernel/random.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/random.c",
+      "kernel/rtc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/rtc.c",
+      "sdk/lib/socket.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/socket.c"
+    },
+    "rank": 3
+  },
+  {
+    "id": "base-03",
+    "priority": "P0",
+    "domain": "Sécurité",
+    "title": "Permissions et privilèges effectifs par processus",
+    "evidence": "Les contrôles montrés utilisent le bit écriture du propriétaire ; utilisateur unique.",
+    "action": "Identités par processus, UID/GID effectifs, vérification lecture/écriture/traversée et opérations privilégiées.",
+    "acceptance": "Une application ordinaire ne lit pas les secrets système et ne modifie pas /etc/shadow.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c#L340"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Une application ordinaire ne doit pas accéder aux secrets ou écrire dans les fichiers système.",
+    "files": [
+      "kernel/app.c",
+      "kernel/fs.c",
+      "kernel/login.c",
+      "sdk/lib/unix.c",
+      "sdk/include/banana_api.h"
+    ],
+    "steps": [
+      "Stocker uid/gid effectifs et groupes dans le contexte de chaque application ; distinguer services administrateur et applications utilisateur.",
+      "Faire vérifier lecture, écriture et traversée de tous les dossiers du chemin dans le noyau ; vérifier aussi rename, unlink, création et liens symboliques.",
+      "Réserver chown et les modifications système aux identités autorisées ; appliquer umask à la création et transmettre les erreurs au SDK."
+    ],
+    "tests": [
+      "Créer deux identités de test : un fichier 0600 est lisible uniquement par son propriétaire et les identités privilégiées prévues.",
+      "Une app utilisateur échoue à lire /etc/shadow, à modifier un fichier système et à contourner la protection via lien symbolique ; un fichier personnel reste modifiable."
+    ],
+    "deliverable": "Une politique de permissions écrite, des contrôles dans les appels noyau et une suite de tests positifs/négatifs.",
+    "decision": "Le multiutilisateur graphique peut venir après ; les identités et permissions doivent déjà fonctionner dans les processus.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Une application ne doit pas pouvoir lire les secrets système ou écrire dans les fichiers protégés.",
+    "fileLinks": {
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "kernel/login.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/login.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/include/banana_api.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana_api.h"
+    },
+    "rank": 4
+  },
+  {
+    "id": "base-04",
+    "priority": "P0",
+    "domain": "Sécurité",
+    "title": "Isoler navigateur et décodeurs en espace utilisateur",
+    "evidence": "Le navigateur intégré est créé comme tâche du noyau.",
+    "action": "Déplacer HTML/CSS/JS et décodage en processus utilisateur ; permissions de fichiers et réseau via IPC ; quotas.",
+    "acceptance": "Une page hostile ou un décodeur qui plante ne compromet ni le noyau ni les autres applications.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c#L1745"
+      ]
+    ],
+    "depends": [
+      "base-03"
+    ],
+    "kind": "Consolider",
+    "goal": "Une page ou une image qui plante ne doit pas exécuter son traitement avec les privilèges du noyau.",
+    "files": [
+      "kernel/browser.c",
+      "kernel/webview.c",
+      "kernel/app.c",
+      "kernel/appwin.c",
+      "web/page.c",
+      "web/script.c"
+    ],
+    "steps": [
+      "Inventorier les accès directs au noyau dans le moteur web ; définir les messages pour créer une surface, envoyer les entrées et afficher le résultat.",
+      "Exécuter le parsing HTML/CSS/JS et le décodage dans un processus ring 3 ; valider les tailles et pointeurs de chaque échange.",
+      "Faire passer réseau et fichiers par des services contrôlés ; appliquer quotas mémoire/temps et redémarrage du rendu sans quitter le bureau."
+    ],
+    "tests": [
+      "Injecter division par zéro, accès invalide et image malformée dans le processus de rendu : seul ce processus doit être arrêté.",
+      "Une page avec boucle infinie et allocations répétées doit être interrompue ; le terminal continue à accepter une commande et un autre document reste utilisable."
+    ],
+    "deliverable": "Un processus de rendu ring 3 démontrable et un protocole IPC documenté.",
+    "decision": "Commencer par un seul processus de rendu isolé ; isoler chaque site est une étape supplémentaire, pas une propriété à présumer.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Le traitement de contenus distants doit perdre les privilèges du noyau avant un usage web sensible.",
+    "fileLinks": {
+      "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
+      "kernel/webview.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/webview.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "web/script.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.c"
+    },
+    "rank": 5
+  },
+  {
+    "id": "base-06",
+    "priority": "P0",
+    "domain": "Sécurité",
+    "title": "Durcir la protection mémoire et les appels système",
+    "evidence": "Isolation ring 3 en 64 bits déjà présente ; audit du durcissement nécessaire.",
+    "action": "Contrôler NX, W^X, mappings ELF, piles, validation des pointeurs et privilèges des appels ; garder le 32 bits en statut expérimental tant que ring 0.",
+    "acceptance": "Tentatives d’accès au noyau ou à une autre application refusées ; JIT compatible avec W^X.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/uspace.c"
+      ]
+    ],
+    "depends": [
+      "base-04"
+    ],
+    "kind": "Consolider",
+    "goal": "Limiter ce qu’un programme peut exécuter ou atteindre en cas de bug.",
+    "files": [
+      "kernel/uspace.c",
+      "kernel/paging.c",
+      "kernel/app.c",
+      "kernel/idt.c",
+      "sdk/lib/mman.c"
+    ],
+    "steps": [
+      "Contrôler la prise en charge NX et appliquer les permissions des segments ELF et des pages mmap ; pages de garde non accessibles.",
+      "Interdire les mappings simultanément écriture + exécution par défaut ; prévoir la transition écriture puis exécution nécessaire au JIT.",
+      "Auditer chaque entrée d’appel système : débordements de taille, pointeurs aux frontières de pages, chaînes non terminées et mémoire libérée pendant l’appel."
+    ],
+    "tests": [
+      "Une app tente d’exécuter sa pile, de modifier son code et de lire la mémoire d’une autre app : fautes contenues dans l’application.",
+      "Tester un pointeur traversant une page interdite et une longueur débordante ; le noyau retourne une erreur sans panic. Refaire les tests Java/JIT existants."
+    ],
+    "commands": [
+      "Dans Banana : selftest ring3",
+      "Dans Banana : selftest posix"
+    ],
+    "deliverable": "Une matrice de permissions mémoire et des tests de refus, plus non-régression Java.",
+    "decision": "Qualifier la cible 64 bits ; le mode 32 bits reste expérimental tant que ses applications tournent en ring 0.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "L’isolation doit résister aux accès invalides et aux mappings de mémoire dangereux.",
+    "fileLinks": {
+      "kernel/uspace.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/uspace.c",
+      "kernel/paging.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/paging.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/idt.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/idt.c",
+      "sdk/lib/mman.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/mman.c"
+    },
+    "rank": 6
+  },
+  {
+    "id": "base-15",
+    "priority": "P0",
+    "domain": "Sécurité",
+    "title": "Valider les frontières entre sites et fichiers locaux",
+    "evidence": "À auditer précisément : les cookies persistants et HttpOnly existent déjà dans browser.c. Leur présence ne démontre pas la conformité complète des origines, de Secure, de SameSite ou de CORS.",
+    "action": "Tester same-origin, CORS, cookies Secure/HttpOnly/SameSite, navigation fichier/web, permissions et limites mémoire.",
+    "acceptance": "Une origine ne lit ni les données d’une autre origine ni un fichier local non choisi.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c"
+      ]
+    ],
+    "depends": [
+      "base-01",
+      "base-04"
+    ],
+    "kind": "À auditer + compléter",
+    "goal": "Un site ne doit pas lire les données d’un autre site ou un fichier local non choisi.",
+    "files": [
+      "kernel/browser.c",
+      "web/jsdom.c",
+      "web/page.c",
+      "net/http.c"
+    ],
+    "steps": [
+      "Construire deux origines HTTPS distinctes A et B et des endpoints de test ; définir l’origine par schéma, hôte et port.",
+      "Vérifier les accès DOM, requêtes, redirects, stockage, cookies et frames ; implémenter les refus manquants dans les points communs.",
+      "Refuser l’accès file:// depuis une page réseau ; n’exposer au formulaire que le fichier explicitement choisi par l’utilisateur."
+    ],
+    "tests": [
+      "A ne peut ni lire la réponse privée de B sans autorisation CORS ni accéder à son stockage ; tester aussi les changements de port et les redirections.",
+      "Un cookie HttpOnly est invisible à document.cookie ; Secure n’est pas envoyé en HTTP ; documenter et tester SameSite et domaine/path."
+    ],
+    "deliverable": "Un serveur de test à deux origines, une matrice de résultats et des régressions pour chaque refus.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "L’authentification HTTPS ne suffit pas si deux sites peuvent lire les données l’un de l’autre.",
+    "fileLinks": {
+      "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
+      "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "net/http.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/http.c"
+    },
+    "rank": 7
+  },
+  {
+    "id": "base-07",
+    "priority": "P0",
+    "domain": "Validation",
+    "title": "Bloquer les releases stables sur les tests",
+    "evidence": "Le workflow consulté construit et publie ; pas de démarrage QEMU de validation.",
+    "action": "Ajouter boot QEMU BIOS/UEFI, selftest et POSIX, fichiers, réseau, installation, redémarrage et mise à jour avant publication stable. Étendre la matrice avec les corrections. Ce travail peut commencer immédiatement en parallèle.",
+    "acceptance": "Une régression de boot, de sauvegarde ou de reprise du journal bloque la release.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/.github/workflows/build-iso.yml"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Empêcher qu’une ISO qui compile mais ne démarre plus soit publiée comme stable.",
+    "files": [
+      ".github/workflows/build-iso.yml",
+      "tools/dev.sh",
+      "tools/serialtest.py",
+      "docs/TESTING.md",
+      "tools/ext4test/run.sh"
+    ],
+    "steps": [
+      "Créer un job QEMU BIOS et un job UEFI 64 bits ; installer les dépendances documentées et archiver les logs série.",
+      "Exécuter les commandes existantes de boot/apps et les tests ext4 hôte ; ajouter installation, boot sur disque et mise à jour sur images jetables.",
+      "Faire dépendre le canal stable du succès de ces jobs ; toute erreur, panic ou test ignoré inattendu doit bloquer ce canal."
+    ],
+    "commands": [
+      "Hôte Linux : bash tools/dev.sh apps bios",
+      "Hôte Linux : bash tools/dev.sh apps uefi",
+      "Hôte Linux : sh tools/ext4test/run.sh"
+    ],
+    "tests": [
+      "Introduire volontairement un échec de selftest dans une branche de test : job rouge et publication stable impossible.",
+      "Le même commit sans cette modification produit des logs associés au SHA et réussit BIOS/UEFI ; distinguer tests locaux et tests Internet optionnels."
+    ],
+    "deliverable": "Jobs CI exécutables et preuve qu’un échec bloque la publication stable.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Chaque amélioration doit être vérifiée sur le système démarré, et une régression bloquer la release stable.",
+    "fileLinks": {
+      ".github/workflows/build-iso.yml": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/.github/workflows/build-iso.yml",
+      "tools/dev.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/dev.sh",
+      "tools/serialtest.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/serialtest.py",
+      "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md",
+      "tools/ext4test/run.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/run.sh"
+    },
+    "rank": 8
+  },
+  {
+    "id": "base-08",
+    "priority": "P0",
+    "domain": "Données",
+    "title": "Éprouver ext4/JBD2 contre les pannes",
+    "evidence": "Déjà implémenté : format ext4, extents, cache par blocs et journal JBD2. Les tests hôte existants coupent avant/après commit. L’en-tête ext4.h contient encore une description « pas de journal » devenue obsolète.",
+    "action": "Étendre aux coupures à chaque phase, disque plein, EIO, VM tuée, cache matériel et migration depuis anciennes versions.",
+    "acceptance": "Coupures avant/après commit, EIO, disque plein et migration : remontage cohérent et erreurs visibles. Vérifier les garanties d’écriture au-delà de la présence du journal.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/run.sh"
+      ]
+    ],
+    "depends": [
+      "base-02",
+      "base-07"
+    ],
+    "kind": "Consolider",
+    "goal": "Vérifier la résistance du nouvel ext4 aux coupures et aux erreurs de stockage.",
+    "files": [
+      "kernel/ext4.c",
+      "kernel/fsdisk.c",
+      "kernel/disk.c",
+      "tools/ext4test/run.sh",
+      "tools/ext4test/crash.c"
+    ],
+    "steps": [
+      "Actualiser les descriptions obsolètes ; documenter le format ext4 produit et les fonctionnalités d’un volume externe acceptées ou refusées.",
+      "Étendre le banc de panne pour interrompre chaque étape d’une transaction, injecter lectures/écritures/flush en erreur et remplir le disque.",
+      "Rejouer sur images de VM, puis vérifier migration depuis une ancienne installation avec une copie source conservée."
+    ],
+    "commands": [
+      "Hôte Linux : sh tools/ext4test/run.sh"
+    ],
+    "tests": [
+      "Après chaque panne : remonter puis contrôler avec e2fsck et comparer les fichiers engagés à un manifeste de hashes. Les dernières écritures non synchronisées peuvent être perdues.",
+      "Tester create/rename/unlink/extension de fichier, disque plein puis libération d’espace ; aucune perte d’un fichier précédemment synchronisé."
+    ],
+    "deliverable": "Rapport de crash-tests indexé par point de coupure ; aucune tâche « créer ext4 » à refaire.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Le nouvel ext4 est déjà présent ; ses garanties aux points de panne doivent être vérifiées.",
+    "fileLinks": {
+      "kernel/ext4.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/ext4.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c",
+      "kernel/disk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/disk.c",
+      "tools/ext4test/run.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/run.sh",
+      "tools/ext4test/crash.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/crash.c"
+    },
+    "rank": 9
+  },
+  {
+    "id": "base-09",
+    "priority": "P0",
+    "domain": "Données",
+    "title": "Mises à jour système et paquets récupérables",
+    "evidence": "Index Ed25519 et hash des paquets existent ; mises à jour système à consolider.",
+    "action": "Transactions, rollback vers version précédente, clés renouvelables, métadonnées expirables et protection contre les retours malveillants.",
+    "acceptance": "Coupure pendant une mise à jour : ancien ou nouveau système amorçable, fichiers conservés.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/repo.c"
+      ]
+    ],
+    "depends": [
+      "base-02",
+      "base-08"
+    ],
+    "kind": "Consolider",
+    "goal": "Une mise à jour interrompue doit laisser un système récupérable et les documents intacts.",
+    "files": [
+      "kernel/fsdisk.c",
+      "kernel/installer.c",
+      "kernel/repo.c",
+      "kernel/pkg.c",
+      "loader/efi.c"
+    ],
+    "steps": [
+      "Distinguer mise à jour du boot/noyau, des paquets et du format disque ; documenter le retour arrière autorisé pour chacun.",
+      "Pour le système, concevoir un slot de secours ou un chemin de récupération vérifié ; pour les paquets, préparer à côté puis valider avant de basculer.",
+      "Conserver un état de transaction et vérifier signatures/hashes ; définir rotation des clés et refus des métadonnées expirées."
+    ],
+    "tests": [
+      "Sur copie de disque : couper avant, pendant et après le basculement ; l’ancien ou le nouveau système démarre, les hashes de /home sont inchangés.",
+      "Paquet tronqué, hash faux et signature invalide sont refusés ; l’application précédente reste ouvrable."
+    ],
+    "deliverable": "Un protocole de mise à jour transactionnel et une procédure de secours testée.",
+    "decision": "La disposition exacte des slots doit être conçue avant de modifier le format disque ; ne pas promettre de rollback vers un noyau incapable de lire le nouveau format.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Une mise à jour ne doit pas transformer une installation utilisable en machine irrécupérable.",
+    "fileLinks": {
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c",
+      "kernel/installer.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/installer.c",
+      "kernel/repo.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/repo.c",
+      "kernel/pkg.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/pkg.c",
+      "loader/efi.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/loader/efi.c"
+    },
+    "rank": 10
+  },
+  {
+    "id": "base-10",
+    "priority": "P0",
+    "domain": "Données",
+    "title": "Sauvegarder et restaurer réellement les données",
+    "evidence": "Journalisation et sauvegarde des documents ont des objectifs distincts.",
+    "action": "Sauvegarde versionnée vers disque externe ; restauration depuis support de secours ; tester la restauration.",
+    "acceptance": "Récupérer un dossier supprimé puis une installation complète sur un disque neuf.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md"
+      ]
+    ],
+    "depends": [
+      "base-02"
+    ],
+    "kind": "Consolider",
+    "goal": "Récupérer une suppression ou un disque perdu ; le journal ext4 ne remplace pas cette sauvegarde.",
+    "files": [
+      "kernel/fs.c",
+      "kernel/volume.c",
+      "kernel/fsdisk.c"
+    ],
+    "steps": [
+      "Définir un format de sauvegarde versionné : chemins, tailles, hashes, permissions, liens et dates ; stocker une copie sur un volume distinct.",
+      "Faire une première sauvegarde de /home et des configurations choisies ; ignorer explicitement caches et fichiers temporaires.",
+      "Ajouter restauration dans un dossier alternatif puis sur une installation neuve ; détecter une archive incomplète ou corrompue avant écrasement."
+    ],
+    "tests": [
+      "Créer un corpus de 1 000 fichiers, liens et noms accentués ; sauvegarder, supprimer la source de test, restaurer et comparer contenu et métadonnées.",
+      "Tronquer la sauvegarde : erreur explicite et destination existante préservée. Restaurer aussi depuis le support de secours."
+    ],
+    "deliverable": "Commandes/interface de sauvegarde et restauration, format documenté et rapport de restauration.",
+    "decision": "Choisir d’abord une sauvegarde complète vers disque externe ; incrémental et chiffrement peuvent être ajoutés ensuite.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Le journal du disque ne récupère pas à lui seul une suppression ou la perte du périphérique.",
+    "fileLinks": {
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "kernel/volume.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/volume.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c"
+    },
+    "rank": 11
+  },
+  {
+    "id": "base-20",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Choisir les machines et composants de référence",
+    "evidence": "Plusieurs pilotes sont surtout validés en VM.",
+    "action": "Identifier un PC fixe et un portable précis : PCI/USB IDs, firmware et mode de veille. Fixer aussi une configuration VM. Publier testé / non testé. Ce cadrage court peut commencer dès P0.",
+    "acceptance": "Liste exacte du matériel, des parcours quotidiens visés et des périphériques réellement disponibles pour les tests.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/README.md#graphics-drivers"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Savoir exactement sur quel matériel une promesse de compatibilité sera faite.",
+    "files": [
+      "kernel/pci.c",
+      "kernel/sysinfo.c",
+      "kernel/usb.c",
+      "kernel/acpi.c",
+      "docs/TESTING.md"
+    ],
+    "steps": [
+      "Créer trois fiches : VM de référence, PC fixe disponible, portable disponible ; enregistrer CPU, firmware, PCI IDs et USB VID/PID.",
+      "Pour chaque périphérique, noter pilote Banana existant, pilote Linux/BSD candidat, firmware requis et matériel réellement disponible.",
+      "Définir les tâches quotidiennes cibles : navigateur/services précis, documents, développement et appel vidéo si nécessaire."
+    ],
+    "tests": [
+      "Chaque ligne de la matrice possède un identifiant et un résultat daté : non testé / détecté / fonctionnel / charge / reprise.",
+      "Aucune case « fonctionne » fondée uniquement sur la famille commerciale ou la lecture du pilote."
+    ],
+    "deliverable": "Une matrice matériel et une liste de parcours utilisateur ; c’est un travail de cadrage à lancer immédiatement.",
+    "decision": "Les modèles physiques et leurs identifiants restent à fournir. Aucun modèle arbitraire n’est déclaré compatible.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Le choix de matériel et de parcours détermine quels pilotes et applications sont réellement nécessaires ; à lancer tôt.",
+    "fileLinks": {
+      "kernel/pci.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/pci.c",
+      "kernel/sysinfo.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/sysinfo.c",
+      "kernel/usb.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/usb.c",
+      "kernel/acpi.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/acpi.c",
+      "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
+    },
+    "rank": 12
+  },
+  {
+    "id": "virtio",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Stabiliser une cible VM avec VirtIO",
+    "evidence": "Banana possède déjà des pilotes VirtIO ; l’OS hôte peut gérer le matériel physique.",
+    "action": "Fixer une configuration QEMU/KVM et valider réseau, disque, affichage et outils invités. La VM ne remplace pas la validation native sur PC.",
+    "acceptance": "Boot, installation, réseau, sauvegarde et mise à jour reproductibles.",
+    "sources": [
+      [
+        "VirtIO",
+        "https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html"
+      ],
+      [
+        "Banana",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/README.md"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Disposer d’un environnement de référence reproductible avant les tests sur PC.",
+    "files": [
+      "tools/dev.sh",
+      "kernel/virtio_pci.c",
+      "kernel/virtio_blk.c",
+      "net/virtio_net.c",
+      "kernel/gpu_virtio.c",
+      "kernel/vmtools.c"
+    ],
+    "steps": [
+      "Enregistrer une configuration QEMU 64 bits avec version QEMU, firmware, RAM, cœurs et modèles exacts de périphériques.",
+      "Tester disque système et disque de données distincts, réseau NAT, affichage et agent invité ; ne pas mélanger toutes les variantes au premier passage.",
+      "Archiver commandes, images sources et logs ; ajouter ensuite mémoire faible, plusieurs cœurs et variantes VirtIO modernes."
+    ],
+    "commands": [
+      "Hôte Linux : bash tools/dev.sh apps bios",
+      "Hôte Linux : bash tools/dev.sh apps uefi"
+    ],
+    "tests": [
+      "Répéter dix installations/démarrages sur images jetables, puis copie et téléchargement vérifiés par hash.",
+      "Tester arrêt propre et reboot ; les fichiers synchronisés et les réglages sont conservés."
+    ],
+    "deliverable": "Un profil VM et un script de reproduction liés à la version testée.",
+    "decision": "Les paramètres finaux sont à figer dans la fiche VM ; un résultat en VM n’atteste pas le fonctionnement sur PC physique.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "tools/dev.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/dev.sh",
+      "kernel/virtio_pci.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/virtio_pci.c",
+      "kernel/virtio_blk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/virtio_blk.c",
+      "net/virtio_net.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/virtio_net.c",
+      "kernel/gpu_virtio.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gpu_virtio.c",
+      "kernel/vmtools.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/vmtools.c"
+    },
+    "rank": 13
+  },
+  {
+    "id": "base-11",
+    "priority": "P1",
+    "domain": "Système",
+    "title": "Compléter exec / spawn / wait et les processus Unix",
+    "evidence": "fork, execve et posix_spawn sont ENOSYS ; waitpid ne gère pas d’enfants.",
+    "action": "exec/spawn/wait, héritage de descripteurs, pipes interprocessus, signaux, groupes et PTY ; fork pour les ports qui le demandent.",
+    "acceptance": "Shell externe et outils réels s’enchaînent ; Java ProcessBuilder lance un programme.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c#L285"
+      ]
+    ],
+    "depends": [
+      "base-04",
+      "base-05"
+    ],
+    "kind": "Consolider",
+    "goal": "Permettre à un outil de lancer un autre programme et d’en récupérer la sortie et le code retour.",
+    "files": [
+      "sdk/lib/unix.c",
+      "sdk/lib/ufd.c",
+      "kernel/app.c",
+      "kernel/task.c",
+      "sdk/include/banana_api.h"
+    ],
+    "steps": [
+      "Définir parent/enfant, argv/envp, code de sortie et liste des descripteurs hérités ; implémenter spawn/exec/wait en premier.",
+      "Faire des pipes noyau utilisables entre processus ; implémenter dup2, CLOEXEC et fin de fichier quand tous les écrivains ferment.",
+      "Ajouter groupes de processus, signaux et PTY pour les outils interactifs ; décider séparément du besoin de fork et de son modèle mémoire."
+    ],
+    "tests": [
+      "Un programme parent lance un enfant qui sort avec 7 : waitpid récupère exactement 7 et libère les ressources.",
+      "Chaîner producteur → filtre → consommateur sur 10 Mio : résultat exact, pas de deadlock, EOF correct ; Ctrl+C arrête le groupe prévu."
+    ],
+    "deliverable": "Un exemple SDK parent/enfant et pipeline reproductible, plus tests d’héritage et nettoyage.",
+    "decision": "Un fork factice ne suffit pas ; conserver ENOSYS jusqu’à une implémentation réelle si fork est reporté.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/lib/ufd.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/ufd.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/task.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/task.c",
+      "sdk/include/banana_api.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana_api.h"
+    },
+    "rank": 14
+  },
+  {
+    "id": "base-12",
+    "priority": "P1",
+    "domain": "Applications",
+    "title": "Stabiliser ABI, SDK et outils de développement",
+    "evidence": "SDK, TinyCC, éditeur et ports Java existent.",
+    "action": "Versionner ABI et SDK, rendre la compilation croisée reproductible ; porter shell et outils puis Python selon les parcours. SQLite, client SSH et Git intégré ont des étapes dédiées plus loin.",
+    "acceptance": "Cloner un projet, éditer, construire, exécuter les tests et transférer les fichiers.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/README.md"
+      ]
+    ],
+    "depends": [
+      "base-05",
+      "base-11"
+    ],
+    "kind": "Consolider",
+    "goal": "Pouvoir reconstruire une application et faire évoluer l’OS sans casser silencieusement ses binaires.",
+    "files": [
+      "sdk/include/banana_api.h",
+      "sdk/banana.mk",
+      "sdk/lib/crt0.c",
+      "kernel/app.c",
+      "ports/tcc/build.sh",
+      "apps/code/main.c"
+    ],
+    "steps": [
+      "Documenter la version ABI et les conventions ; ajouter les services en fin de table et vérifier la taille avant accès.",
+      "Fixer compilateur, flags, versions des ports et hashes ; produire SDK et exemple depuis une machine de build propre.",
+      "Choisir un premier lot explicite d’outils : shell externe minimal, outils de fichiers, puis Python seulement après inventaire de ses besoins."
+    ],
+    "tests": [
+      "Une application construite avec le SDK précédent démarre sur le nouveau noyau ; une API trop récente provoque une erreur lisible.",
+      "Sur build propre : compiler, installer et lancer une application console et une application graphique ; archiver logs et versions."
+    ],
+    "deliverable": "SDK versionné, note de compatibilité et procédure de construction reproductible.",
+    "decision": "Python est un port distinct à cadrer, pas une sous-tâche réputée terminée après la stabilisation du SDK.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/include/banana_api.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana_api.h",
+      "sdk/banana.mk": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/banana.mk",
+      "sdk/lib/crt0.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/crt0.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "ports/tcc/build.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ports/tcc/build.sh",
+      "apps/code/main.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/apps/code/main.c"
+    },
+    "rank": 15
+  },
+  {
+    "id": "base-17",
+    "priority": "P1",
+    "domain": "Réseau",
+    "title": "Fiabiliser sockets, DNS, DHCP, IPv6 et horloges",
+    "evidence": "Pile maison ; limites et interopérabilité à éprouver.",
+    "action": "Renouvellement DHCP, DNS robuste, sockets IPv6 SDK, réseaux instables, captifs et VPN selon les besoins ; horloge réseau.",
+    "acceptance": "Téléchargement long et usages simultanés stables, erreurs et reprises compréhensibles.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/tcp.c"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Garder une connexion utilisable quand le bail DHCP expire, que le réseau tombe ou que DNS répond mal.",
+    "files": [
+      "net/netconf.c",
+      "net/dhcp.c",
+      "net/dns.c",
+      "net/tcp.c",
+      "net/ipv6.c",
+      "sdk/lib/socket.c",
+      "kernel/rtc.c"
+    ],
+    "steps": [
+      "Documenter les timers et états de DHCP : acquisition, renouvellement, perte du bail et changement de lien ; exposer l’état à l’interface.",
+      "Tester DNS A/AAAA, erreur et timeout, puis la correspondance sockets IPv4/IPv6 du SDK ; implémenter les cas requis réellement absents.",
+      "Séparer horloge monotone et heure UTC ; définir une synchronisation réseau et une correction d’heure qui ne casse pas les délais TCP."
+    ],
+    "tests": [
+      "Sur réseau contrôlé, raccourcir le bail puis couper le lien 30 secondes : renouvellement/reconnexion sans reboot, téléchargements interrompus avec erreur explicite.",
+      "Injecter DNS absent, NXDOMAIN et réponse tronquée ; aucun appel ne bloque indéfiniment. Refaire les checks IPv6 existants avant d’annoncer IPv6 complet."
+    ],
+    "commands": [
+      "Dans Banana : selftest ipv6"
+    ],
+    "deliverable": "Matrice de panne réseau et délais maximums documentés par appel.",
+    "decision": "Le client NTP, le fallback DNS TCP et les sockets IPv6 doivent être traités comme sous-livrables distincts, selon le résultat de l’inventaire.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "net/netconf.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/netconf.c",
+      "net/dhcp.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/dhcp.c",
+      "net/dns.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/dns.c",
+      "net/tcp.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/tcp.c",
+      "net/ipv6.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/ipv6.c",
+      "sdk/lib/socket.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/socket.c",
+      "kernel/rtc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/rtc.c"
+    },
+    "rank": 16
+  },
+  {
+    "id": "libcurl",
+    "priority": "P1",
+    "domain": "Réseau",
+    "title": "Porter libcurl pour les transferts communs",
+    "evidence": "Le curl maison ne constitue pas un port de libcurl.",
+    "action": "Compiler avec un backend TLS porté ; adapter sockets, DNS, poll et horloges. Exposer la bibliothèque aux applications, au store et aux téléchargements.",
+    "acceptance": "HTTPS vérifié, redirections, upload, annulation, erreurs et transferts simultanés testés.",
+    "sources": [
+      [
+        "libcurl",
+        "https://curl.se/libcurl/"
+      ],
+      [
+        "Compilation",
+        "https://curl.se/docs/install.html"
+      ]
+    ],
+    "depends": [
+      "base-01",
+      "base-17"
+    ],
+    "kind": "À porter",
+    "goal": "Partager une implémentation de transfert maintenue entre téléchargements, applications et gestionnaire de paquets.",
+    "files": [
+      "sdk/lib/socket.c",
+      "sdk/lib/unix.c",
+      "kernel/repo.c",
+      "sdk/banana.mk"
+    ],
+    "steps": [
+      "Créer un port versionné et un programme test HTTP/HTTPS ; limiter d’abord la compilation aux protocoles requis.",
+      "Connecter le backend TLS porté et vérifier sockets, DNS, poll, délais, erreurs et annulation ; interdire la désactivation implicite des certificats.",
+      "Remplacer un consommateur pilote, par exemple un téléchargement du store, puis exposer le port aux autres applications."
+    ],
+    "tests": [
+      "Serveur local : 200, redirection relative/absolue, 404, réponse chunked, coupure au milieu du corps ; résultat et fichier partiel clairement signalés.",
+      "Télécharger 100 Mio en flux et comparer le hash ; envoyer un fichier binaire, annuler un transfert, puis en lancer un autre sans fuite."
+    ],
+    "deliverable": "Bibliothèque, Makefile de port, test réseau et un consommateur Banana migré.",
+    "decision": "La prise en charge de HTTP/2 et d’autres protocoles est une extension séparée ; le premier lot HTTP/HTTPS doit déjà être correct.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/lib/socket.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/socket.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "kernel/repo.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/repo.c",
+      "sdk/banana.mk": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/banana.mk"
+    },
+    "rank": 17
+  },
+  {
+    "id": "sqlite",
+    "priority": "P1",
+    "domain": "Données",
+    "title": "Porter SQLite avec un VFS fiable",
+    "evidence": "SQLite prévoit une interface système VFS ; sa fiabilité dépend du flush et des verrous.",
+    "action": "Écrire le VFS Banana et choisir un journal supporté. Le WAL nécessite aussi une gestion correcte de mémoire partagée. Utiliser ensuite SQLite pour historique, favoris et index.",
+    "acceptance": "Transactions, concurrence, coupures et disque plein testés sans corruption silencieuse.",
+    "sources": [
+      [
+        "VFS SQLite",
+        "https://sqlite.org/vfs.html"
+      ]
+    ],
+    "depends": [
+      "base-02",
+      "base-05",
+      "base-08"
+    ],
+    "kind": "À porter",
+    "goal": "Disposer d’une base fiable pour historique et données d’application, sans serveur.",
+    "files": [
+      "sdk/lib/unix.c",
+      "sdk/lib/libc.c",
+      "kernel/app.c",
+      "kernel/fsdisk.c"
+    ],
+    "steps": [
+      "Créer un sqlite3_vfs avec open/read/write/truncate/filesize/delete/access et une traduction exacte des erreurs.",
+      "Implémenter xLock/xUnlock/xCheckReservedLock et xSync avec les garanties noyau ; commencer avec journal DELETE, sans supposer le WAL fonctionnel.",
+      "Construire un exemple CRUD et un outil d’intégrité ; migrer un seul stockage applicatif avant de généraliser."
+    ],
+    "tests": [
+      "10 000 transactions insert/update/delete, fermeture/réouverture et PRAGMA integrity_check ; comparer le contenu à un jeu attendu.",
+      "Deux processus en concurrence, disque plein et arrêt au milieu d’une transaction : seuls les commits terminés sont garantis ; aucune corruption silencieuse."
+    ],
+    "deliverable": "VFS Banana versionné, programme test et rapport intégrité/coupures.",
+    "decision": "Activer le WAL uniquement après xShmMap/xShmLock/xShmBarrier ou autre mécanisme supporté et testé.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/lib/libc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/libc.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c"
+    },
+    "rank": 18
+  },
+  {
+    "id": "base-19",
+    "priority": "P1",
+    "domain": "Données",
+    "title": "Tailles et offsets 64 bits ; fichiers de plus de 4 Gio",
+    "evidence": "Confirmé : FS_MAX_FILE_SIZE vaut 0x7FFFF000 et plusieurs tailles/offsets de l’interface FS sont uint32_t. ext4_stat_t et les opérations ext4 possèdent déjà des tailles/offsets 64 bits.",
+    "action": "Tailles/offsets 64 bits de bout en bout ; outils et téléchargements en flux ; archives ZIP64 selon besoin.",
+    "acceptance": "Copier, lire, reprendre et comparer un fichier de plus de 4 Gio.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.h#L17"
+      ]
+    ],
+    "depends": [
+      "base-02"
+    ],
+    "kind": "Consolider",
+    "goal": "Copier une vidéo ou une image disque de plus de 4 Gio sans troncature.",
+    "files": [
+      "kernel/fs.h",
+      "kernel/fs.c",
+      "kernel/app.c",
+      "sdk/include/banana_api.h",
+      "sdk/lib/libc.c",
+      "sdk/lib/unix.c",
+      "kernel/ext4.c"
+    ],
+    "steps": [
+      "Tracer les tailles du SDK jusqu’à ext4 et lister chaque conversion en 32 bits ; ajouter une variante ABI 64 bits si nécessaire.",
+      "Convertir stat/seek/read_at/write_at/truncate et les affichages de taille ; conserver les transferts par blocs bornés.",
+      "Adapter copie, téléchargement et archives au streaming ; traiter séparément les limites propres au format FAT32."
+    ],
+    "tests": [
+      "Sur ext4 : fichier de 5 Gio avec motifs avant/après 2 Gio et 4 Gio ; copie puis comparaison des hashes par blocs.",
+      "Seek/truncate autour des frontières, disque plein et valeur hors plage : erreur explicite, jamais retour à zéro de l’offset."
+    ],
+    "deliverable": "Parcours SDK → FS → ext4 en 64 bits et test de fichier supérieur à 4 Gio.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "kernel/fs.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.h",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "kernel/app.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/app.c",
+      "sdk/include/banana_api.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana_api.h",
+      "sdk/lib/libc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/libc.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "kernel/ext4.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/ext4.c"
+    },
+    "rank": 19
+  },
+  {
+    "id": "base-18",
+    "priority": "P1",
+    "domain": "Système",
+    "title": "Réactivité sous charge et manque de mémoire",
+    "evidence": "Multicœur et swap présents ; une partie du noyau reste centrée sur le cœur de démarrage.",
+    "action": "Profiler les blocages sur le cœur de démarrage ; borner les tâches longues, gérer quotas et manque de mémoire. Swap et multicœur existent : compléter selon les mesures, sans réécriture SMP générale par principe.",
+    "acceptance": "Copie et téléchargement pendant navigation : saisie et audio restent réactifs, manque de RAM sans blocage global.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/task.h"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Continuer à taper et écouter de l’audio pendant copie, réseau et manque de mémoire.",
+    "files": [
+      "kernel/task.c",
+      "kernel/taskmgr.c",
+      "kernel/zswap.c",
+      "kernel/uspace.c",
+      "kernel/fsdisk.c"
+    ],
+    "steps": [
+      "Ajouter un log de latence des entrées et durée des sections non interruptibles ; enregistrer RAM, swap et temps CPU pendant les charges.",
+      "Déplacer ou découper les tâches qui monopolisent le cœur de démarrage ; limiter files d’attente et allocations par processus.",
+      "Définir le manque de mémoire : échec d’allocation puis arrêt contrôlé d’un processus selon une politique documentée, sans bloquer le bureau."
+    ],
+    "tests": [
+      "Sur la VM de référence : copie de 1 Gio + téléchargement + audio ; cible proposée de latence entrée→traitement p95 sous 50 ms, à mesurer dans les logs.",
+      "Avec RAM réduite, une application alloue jusqu’à échec ; elle reçoit une erreur ou est arrêtée, le terminal répond encore et aucune donnée synchronisée n’est perdue."
+    ],
+    "deliverable": "Scénario de charge, mesures avant/après et politique de manque de mémoire.",
+    "decision": "Le seuil de 50 ms est un objectif proposé pour le profil choisi, pas une performance actuelle constatée.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "kernel/task.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/task.c",
+      "kernel/taskmgr.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/taskmgr.c",
+      "kernel/zswap.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/zswap.c",
+      "kernel/uspace.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/uspace.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c"
+    },
+    "rank": 20
+  },
+  {
+    "id": "driver-api",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Étendre le Driver Kit pour les ports de pilotes",
+    "evidence": "Le kit possède PCI, DMA, IRQ et tâches ; son API publique examinée reste limitée, notamment aux IRQ legacy et à l’enregistrement d’affichage.",
+    "action": "Stabiliser propriété des périphériques, MMIO/DMA, IRQ dont MSI/MSI-X selon la cible, timers, verrous et workers ; ajouter une interface réseau/bloc/USB adaptée au pilote choisi.",
+    "acceptance": "Un module de test utilise interruptions et DMA sans conflit de périphérique et gère correctement les erreurs.",
+    "sources": [
+      [
+        "Driver Kit",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/banana_driver.h"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "À porter",
+    "goal": "Donner au pilote importé les services matériels dont il a réellement besoin.",
+    "files": [
+      "sdk/driver/banana_driver.h",
+      "sdk/driver/driver_lib.c",
+      "kernel/driver.c",
+      "kernel/pci.c",
+      "net/netdev.h",
+      "sdk/driver/examples/edu/edu.c"
+    ],
+    "steps": [
+      "Partir des symboles requis par le pilote choisi ; lister allocation DMA, MMIO, IRQ, temporisations, locks et tâches manquants.",
+      "Versionner la table BDK et ajouter seulement ces services ; définir propriétaire du périphérique, fin de DMA et nettoyage après erreur.",
+      "Pour un pilote réseau, définir inscription de l’interface, envoi, livraison des paquets reçus et changement de lien ; MSI/MSI-X seulement si la cible l’exige."
+    ],
+    "tests": [
+      "Utiliser l’exemple EDU de QEMU pour vérifier DMA et interruption ; contrôler contenu du buffer et nombre de notifications.",
+      "Faire échouer chaque étape d’initialisation : pas de périphérique détenu à moitié, d’IRQ active vers mémoire libérée ou de buffer DMA encore utilisé."
+    ],
+    "deliverable": "Spécification BDK minimale liée au pilote cible et test matériel émulé.",
+    "decision": "Ne pas construire un clone complet des API Linux avant l’inventaire d’un premier pilote.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/driver/banana_driver.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/banana_driver.h",
+      "sdk/driver/driver_lib.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/driver_lib.c",
+      "kernel/driver.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/driver.c",
+      "kernel/pci.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/pci.c",
+      "net/netdev.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/netdev.h",
+      "sdk/driver/examples/edu/edu.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/examples/edu/edu.c"
+    },
+    "rank": 21
+  },
+  {
+    "id": "driver-poc",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Prouver la réutilisation sur un pilote Ethernet source",
+    "evidence": "Genode DDE Linux / lx_emul, FreeBSD LinuxKPI et NetBSD rump fournissent différentes approches ; aucune n’est prête pour Banana.",
+    "action": "Comparer les dépendances de pilotes Linux/BSD pour un chipset Ethernet disponible. Choisir UNE approche et une version, adapter les seuls services nécessaires et raccorder la pile réseau. Préserver licences et conditions des firmwares.",
+    "acceptance": "Sur matériel réel : émission/réception sous charge, perte et retour du lien, vérification des données. Résultat mesuré avant généralisation.",
+    "sources": [
+      [
+        "Genode actuel",
+        "https://genode.org/documentation/release-notes/26.05"
+      ],
+      [
+        "LinuxKPI",
+        "https://github.com/freebsd/drm-kmod"
+      ],
+      [
+        "NetBSD rump",
+        "https://wiki.netbsd.org/rumpkernel/"
+      ]
+    ],
+    "depends": [
+      "driver-api",
+      "base-17"
+    ],
+    "kind": "Prototype à évaluer",
+    "goal": "Démontrer le gain réel d’un pilote Linux/BSD réutilisé, sans promettre tous les pilotes.",
+    "files": [
+      "sdk/driver/banana_driver.h",
+      "kernel/driver.c",
+      "net/netdev.h",
+      "net/e1000.c",
+      "net/r8152.c"
+    ],
+    "steps": [
+      "Sélectionner un chipset disponible à partir de son ID exact ; fixer provenance, version et licence du pilote source. Produire la liste de ses symboles/sous-systèmes requis.",
+      "Pour ce pilote seulement, comparer environnement Genode, couche adaptée BSD ou port direct ; choisir une voie et enregistrer la décision avec ses dépendances.",
+      "Implémenter les services manquants et la connexion à netdev ; conserver un pilote de secours ou un mode sans réseau pour le diagnostic."
+    ],
+    "tests": [
+      "Sur le matériel choisi : échange bidirectionnel de 1 Gio avec hash, test de 30 minutes et 20 pertes/retours de lien ; enregistrer débit, erreurs et blocages.",
+      "Faire échouer chargement firmware et allocation DMA : refus propre, diagnostic de la cause et système encore utilisable."
+    ],
+    "deliverable": "Pilote recompilé, couche minimale, inventaire des dépendances et rapport sur un chipset identifié.",
+    "decision": "Le chipset physique reste inconnu. On peut étudier un pilote e1000 en VM comme preuve d’environnement, mais cela ne rajoute pas à lui seul du matériel couvert par Banana.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/driver/banana_driver.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/banana_driver.h",
+      "kernel/driver.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/driver.c",
+      "net/netdev.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/netdev.h",
+      "net/e1000.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/e1000.c",
+      "net/r8152.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/r8152.c"
+    },
+    "rank": 22
+  },
+  {
+    "id": "driver-framework",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Transformer le prototype en couche réutilisable",
+    "evidence": "Un pilote fonctionnel ne démontre pas une compatibilité générale Linux/BSD.",
+    "action": "Porter un second pilote source ; mutualiser les services réellement communs, versionner le contrat et suivre upstream. Étudier isolation et contrôle DMA/IOMMU selon la cible.",
+    "acceptance": "Deux pilotes utilisent la couche avec une liste explicite des matériels supportés. Aucune promesse de chargement universel de .ko ou .sys.",
+    "sources": [
+      [
+        "Genode",
+        "https://genode.org/documentation/release-notes/26.05"
+      ],
+      [
+        "Interfaces internes Linux",
+        "https://www.kernel.org/doc/html/latest/process/stable-api-nonsense.html"
+      ]
+    ],
+    "depends": [
+      "driver-poc"
+    ],
+    "kind": "Après preuve",
+    "goal": "Vérifier que le travail du premier port est réutilisable pour un deuxième.",
+    "files": [
+      "sdk/driver/banana_driver.h",
+      "kernel/driver.c",
+      "sdk/driver/driver.mk"
+    ],
+    "steps": [
+      "Choisir un second pilote avec besoins partiellement communs ; consigner les adaptations spécifiques à chacun.",
+      "Extraire les services effectivement partagés dans une couche versionnée ; conserver les contrats mémoire, IRQ et durée de vie.",
+      "Ajouter un build et une suite de régression par pilote ; documenter comment mettre à jour les sources amont et les firmwares."
+    ],
+    "tests": [
+      "Construire les deux pilotes avec la même couche et refaire le protocole de transfert/erreurs sur chacun.",
+      "Une modification de la couche casse volontairement un service : le test du pilote concerné doit échouer, avec log associé."
+    ],
+    "deliverable": "Deux pilotes et une couche commune prouvée ; liste fermée des matériels testés.",
+    "decision": "Si les deux pilotes n’ont presque aucun service commun, conserver deux ports directs et ne pas forcer un framework général.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Débloque plusieurs autres fonctions ou le profil matériel choisi.",
+    "fileLinks": {
+      "sdk/driver/banana_driver.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/banana_driver.h",
+      "kernel/driver.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/driver.c",
+      "sdk/driver/driver.mk": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/driver/driver.mk"
+    },
+    "rank": 23
+  },
+  {
+    "id": "base-16",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Wi-Fi complet sur un chipset cible",
+    "evidence": "Ethernet et USB Ethernet présents ; Wi-Fi prévu.",
+    "action": "Réutiliser un pilote source si le prototype le justifie ; prévoir firmware, couche 802.11, authentification et étude de wpa_supplicant, WPA2 puis WPA3, interface de connexion et reconnexion après veille. Bloquant sur portable ; Ethernet/USB Ethernet constitue une cible intermédiaire.",
+    "acceptance": "Connexion au démarrage, reconnexion après perte réseau et après veille sur le matériel retenu.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Connecter le portable à un réseau Wi-Fi puis le reconnecter sans redémarrer.",
+    "files": [
+      "net/netdev.h",
+      "net/netconf.c",
+      "kernel/settings.c",
+      "kernel/driver.c"
+    ],
+    "steps": [
+      "Identifier le chipset et le firmware exacts ; choisir un pilote source et l’ensemble 802.11/authentification qu’il exige. Fixer d’abord WPA2-Personal.",
+      "Exposer scan, association, déconnexion et état du lien à une interface de réglages ; stocker les identifiants via le coffre dès qu’il est disponible.",
+      "Gérer échec d’authentification, point d’accès disparu, retour de lien et reprise de veille ; ajouter WPA3 comme second périmètre testé."
+    ],
+    "tests": [
+      "Sur un point d’accès contrôlé : bon/mauvais mot de passe, SSID absent, 20 coupures/reconnexions et transfert vérifié de 1 Gio.",
+      "Sur portable : 20 cycles veille/reprise avec reconnexion automatique ; aucun mot de passe en clair dans les logs."
+    ],
+    "deliverable": "Un chipset identifié, un pilote, une pile/authentification et un panneau de connexion fonctionnels.",
+    "decision": "Le pilote peut être un port direct ou issu du prototype ; le framework générique n’est pas un prérequis universel. Aucun support de tous les adaptateurs Wi-Fi n’est annoncé.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Indispensable sur un portable utilisé sans Ethernet ; peut attendre pour le profil VM.",
+    "fileLinks": {
+      "net/netdev.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/netdev.h",
+      "net/netconf.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/netconf.c",
+      "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c",
+      "kernel/driver.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/driver.c"
+    },
+    "rank": 24
+  },
+  {
+    "id": "base-22",
+    "priority": "P1",
+    "domain": "Pilotes",
+    "title": "Veille, batterie, thermique et autonomie du portable",
+    "evidence": "Veille S3 prévue ; plateforme à choisir selon firmware.",
+    "action": "Choisir le mode réellement offert par le firmware cible, sans supposer S3 ; restaurer CPU et périphériques, gérer capot, batterie, fréquences et thermique. Bloquant pour un portable, moins urgent en VM.",
+    "acceptance": "Cycles veille/reprise répétés, réseau/audio restaurés, consommation au repos mesurée.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Fermer le capot, reprendre sa session et préserver autonomie et températures.",
+    "files": [
+      "kernel/acpi.c",
+      "kernel/pci.c",
+      "kernel/smp.c",
+      "kernel/rtc.c",
+      "kernel/sensors.c",
+      "kernel/settings.c"
+    ],
+    "steps": [
+      "Inventorier sur le modèle cible le mode de veille disponible et la méthode de réveil ; documenter les états qui sont réellement proposés par le firmware.",
+      "Définir suspend/resume pour stockage, USB, réseau, audio et affichage ; synchroniser avant veille, arrêter le DMA et réinitialiser les périphériques nécessaires.",
+      "Ajouter batterie/capot et gestion des fréquences ; mesurer consommation au repos et en veille sur ce même modèle."
+    ],
+    "tests": [
+      "Effectuer 30 cycles veille/reprise, dont dix avec fichier ouvert et audio/réseau actifs ; contrôler heure, clavier, disque et reconnexion.",
+      "Mesurer la perte de batterie sur une durée fixe et les températures en charge ; comparer à un objectif fixé pour le modèle, pas à une autonomie inventée."
+    ],
+    "deliverable": "Un modèle et un mode de veille qualifiés, plus mesures et logs de reprise.",
+    "decision": "Si le modèle ne propose pas S3, ne pas annoncer S3 ni un autre mode avant implémentation ; l’absence de machine bloque la qualification physique.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Indispensable pour un portable quotidien ; moins prioritaire pour une VM ou un fixe.",
+    "fileLinks": {
+      "kernel/acpi.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/acpi.c",
+      "kernel/pci.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/pci.c",
+      "kernel/smp.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/smp.c",
+      "kernel/rtc.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/rtc.c",
+      "kernel/sensors.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/sensors.c",
+      "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
+    },
+    "rank": 25
+  },
+  {
+    "id": "base-13",
+    "priority": "P1",
+    "domain": "Web",
+    "title": "Décider la stratégie du moteur web",
+    "evidence": "Moteur maison avec sous-ensembles HTML/CSS/JS ; démos de frameworks ≠ compatibilité générale.",
+    "action": "Comparer moteur maison et étude de port d’un moteur maintenu : mémoire, dépendances, maintenance et sites cibles. QuickJS améliore JavaScript mais ne fournit pas HTML/CSS/DOM. Choisir une voie avant d’investir dans les deux.",
+    "acceptance": "Choix documenté et scénarios Gmail/Outlook, GitHub et documents collaboratifs suivis.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/README.md#web-browser-browser"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Choisir une stratégie navigateur sur des preuves avant de lancer un port immense.",
+    "files": [
+      "web/page.c",
+      "web/script.c",
+      "web/jsdom.c",
+      "web/css.c",
+      "kernel/browser.c",
+      "tools/test_browser.py"
+    ],
+    "steps": [
+      "Fixer cinq parcours précis : par exemple login messagerie, lire/répondre, dépôt GitHub, modifier un document et upload ; utiliser des comptes de test.",
+      "Établir pour le moteur actuel les API et erreurs qui empêchent chaque parcours ; séparer JavaScript, DOM, rendu, réseau et sécurité.",
+      "Comparer une preuve QuickJS intégrée à une page de test à l’inventaire d’un moteur complet candidat. Décider sur dépendances, maintenance et résultats, sans considérer l’étude comme un port terminé."
+    ],
+    "tests": [
+      "Produire une matrice parcours × étapes réellement réussies, logs et captures ; aucune réussite sur la seule apparition de la page de connexion.",
+      "La décision précise une voie retenue, les fonctionnalités manquantes et le premier jalon démontrable ; une autre personne peut reproduire l’évaluation."
+    ],
+    "deliverable": "Document de décision et corpus web versionné, puis une seule voie de mise en œuvre.",
+    "decision": "La liste des services personnels à viser reste à confirmer. Les exemples sont des cibles proposées et ne sont pas annoncés compatibles.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Le navigateur peut bloquer la majorité des usages personnels ; décider tôt évite de porter deux architectures concurrentes.",
+    "fileLinks": {
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "web/script.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.c",
+      "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
+      "web/css.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/css.c",
+      "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
+      "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py"
+    },
+    "rank": 26
+  },
+  {
+    "id": "quickjs",
+    "priority": "P1",
+    "domain": "Web",
+    "title": "Intégrer QuickJS si le moteur maison est retenu",
+    "evidence": "QuickJS est un moteur JavaScript intégrable ; ce n’est ni un navigateur complet ni Node.js.",
+    "action": "Porter le cœur puis relier DOM, événements, microtâches/promesses, fetch, modules et quotas. Remplacer progressivement l’interpréteur maison. Ce chantier peut être remplacé par le port de moteur web choisi.",
+    "acceptance": "Tests ECMAScript et navigateur de bout en bout ; limites mémoire/temps et isolation respectées.",
+    "sources": [
+      [
+        "QuickJS",
+        "https://www.bellard.org/quickjs/quickjs.html"
+      ]
+    ],
+    "depends": [
+      "base-13",
+      "base-04"
+    ],
+    "kind": "Conditionnel",
+    "goal": "Utiliser un moteur JavaScript maintenu tout en reliant correctement les API du navigateur Banana.",
+    "files": [
+      "web/script.c",
+      "web/script.h",
+      "web/jsdom.c",
+      "web/page.c",
+      "kernel/browser.c"
+    ],
+    "steps": [
+      "Porter le cœur QuickJS et lancer expressions, modules et exceptions via un programme test ; désactiver les modules système non autorisés dans le navigateur.",
+      "Relier objets DOM, événements et promesses à la boucle de page ; traiter propriété des objets, GC et libération à la fermeture.",
+      "Implémenter limites mémoire, interruption des scripts, reporting des exceptions et fetch via les services autorisés."
+    ],
+    "tests": [
+      "Faire passer un sous-ensemble Test262 déclaré, puis les fixtures DOM/framework déjà présentes ; conserver la liste des échecs.",
+      "Boucle infinie, promesses récursives, fermeture pendant fetch et allocations répétées : arrêt contenu, pas de fuite croissante sur 100 ouvertures/fermetures."
+    ],
+    "commands": [
+      "Hôte Linux : python3 tools/test_browser.py --help"
+    ],
+    "deliverable": "Port QuickJS et adaptateur DOM avec tests de cycle de vie.",
+    "decision": "N’exécuter ce chantier que si la stratégie moteur maison est retenue ; il ne fournit ni HTML/CSS, ni WebRTC, ni Node.js.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Intégration conditionnelle : pertinente seulement si l’évaluation retient le moteur maison.",
+    "fileLinks": {
+      "web/script.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.c",
+      "web/script.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.h",
+      "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c"
+    },
+    "rank": 27
+  },
+  {
+    "id": "base-14",
+    "priority": "P1",
+    "domain": "Web",
+    "title": "Faire fonctionner les applications web de travail",
+    "evidence": "Le moteur maison a déjà DOM, fetch, formulaires et cookies persistants. Les démos de frameworks et le README ne prouvent pas les parcours complets ; plusieurs API web restent limitées.",
+    "action": "Selon le moteur choisi : WebSocket, stockage persistant par origine, canvas, polices web, téléchargements en flux, formulaires et auth ; médias et WebRTC si appels. Tester messagerie, GitHub et documents collaboratifs avec de vraies opérations, pas seulement le chargement de la page.",
+    "acceptance": "Connexion conservée après redémarrage ; upload, téléchargement, édition et notifications sur les services ciblés.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/README.md#web-browser-browser"
+      ]
+    ],
+    "depends": [
+      "base-01",
+      "base-13",
+      "base-15"
+    ],
+    "kind": "Consolider",
+    "goal": "Terminer les opérations réellement utilisées dans la messagerie et les documents en ligne.",
+    "files": [
+      "web/jsdom.c",
+      "web/page.c",
+      "web/css.c",
+      "kernel/browser.c",
+      "net/http.c",
+      "tools/test_browser.py"
+    ],
+    "steps": [
+      "À partir de la matrice des cinq parcours, classer chaque échec et créer un test local reproduisant l’API manquante.",
+      "Implémenter les bloqueurs identifiés : WebSocket, stockage par origine persistant, canvas, polices, médias ou autres API uniquement selon les traces.",
+      "Rejouer les parcours avec authentification, modification, sauvegarde, upload et redémarrage ; ajouter les protections d’origine à chaque nouvelle API."
+    ],
+    "tests": [
+      "Compte de test : se connecter, envoyer un message ou modifier un document, vérifier côté serveur, fermer puis rouvrir selon la politique de session.",
+      "Uploader et télécharger un fichier connu avec hash, tester expiration de session et coupure réseau ; aucun succès annoncé si la modification n’arrive pas au serveur."
+    ],
+    "deliverable": "Matrice de compatibilité par service et version testée, avec preuves de bout en bout.",
+    "decision": "WebRTC est bloquant si la visioconférence web est un usage cible ; il ne doit pas être promis à partir du seul support vidéo.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Un OS principal doit terminer les opérations des services retenus ; afficher leur page ne suffit pas.",
+    "fileLinks": {
+      "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "web/css.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/css.c",
+      "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
+      "net/http.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/net/http.c",
+      "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py"
+    },
+    "rank": 28
+  },
+  {
+    "id": "unicode",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Porter utf8proc pour les opérations Unicode",
+    "evidence": "utf8proc est une bibliothèque C de traitement Unicode.",
+    "action": "Intégrer normalisation, catégories et graphèmes au texte et à la recherche. Définir les règles de noms de fichiers séparément ; ne pas renommer automatiquement les fichiers existants.",
+    "acceptance": "Accents combinés, caractères multioctets et édition par graphème corrects dans les parcours ciblés.",
+    "sources": [
+      [
+        "utf8proc",
+        "https://github.com/JuliaStrings/utf8proc"
+      ]
+    ],
+    "depends": [],
+    "kind": "À porter",
+    "goal": "Ne pas couper un caractère UTF-8 ou séparer un accent de sa lettre pendant l’édition.",
+    "files": [
+      "kernel/utf8.h",
+      "kernel/textbuf.c",
+      "shell/editor.c",
+      "apps/code"
+    ],
+    "steps": [
+      "Porter utf8proc en bibliothèque SDK avec version fixée ; ajouter un petit exemple indépendant de l’éditeur.",
+      "Définir déplacements/suppression par graphème et comparaison normalisée pour la recherche ; conserver les octets des fichiers d’origine.",
+      "Raccorder un champ texte pilote puis l’éditeur ; documenter le comportement des noms de fichiers sans changer ceux du disque."
+    ],
+    "tests": [
+      "Corpus : é, e+accent combinant, emoji avec sélecteur/liaison, caractères multioctets et UTF-8 invalide ; curseur et suppression suivent la règle documentée.",
+      "Rechercher les variantes accentuées selon les options choisies ; sauvegarder/réouvrir sans altérer le texte non modifié."
+    ],
+    "deliverable": "Port utf8proc, corpus de tests et intégration dans un composant texte.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/utf8.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/utf8.h",
+      "kernel/textbuf.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/textbuf.c",
+      "shell/editor.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/shell/editor.c",
+      "apps/code": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/apps/code"
+    },
+    "rank": 29
+  },
+  {
+    "id": "fonts",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Intégrer FreeType et HarfBuzz",
+    "evidence": "Dessiner les glyphes et calculer leur placement sont des fonctions distinctes.",
+    "action": "Porter FreeType et HarfBuzz, relier polices, cache, métriques et surfaces ; ajouter bidi et fallback si les langues cibles le demandent.",
+    "acceptance": "Textes français et écritures complexes ciblées correctement dessinés, sélectionnés et mesurés.",
+    "sources": [
+      [
+        "FreeType",
+        "https://freetype.org/"
+      ],
+      [
+        "HarfBuzz",
+        "https://harfbuzz.github.io/what-is-harfbuzz.html"
+      ]
+    ],
+    "depends": [],
+    "kind": "À porter",
+    "goal": "Afficher et mesurer le texte correctement dans plusieurs tailles et écritures.",
+    "files": [
+      "kernel/font.c",
+      "kernel/ttf.c",
+      "kernel/textbuf.c",
+      "web/page.c",
+      "fonts"
+    ],
+    "steps": [
+      "Porter FreeType et rendre un atlas de glyphes à plusieurs tailles ; comparer métriques et cache avec l’interface actuelle.",
+      "Ajouter HarfBuzz pour transformer texte+police en glyphes positionnés ; conserver l’association caractères→glyphes pour sélection et curseur.",
+      "Définir fallback de police et algorithme bidi pour les langues retenues ; intégrer d’abord une vue de texte puis le moteur web."
+    ],
+    "tests": [
+      "Afficher un corpus français, ligatures, accents combinants et un texte arabe choisi avec les polices nécessaires ; comparer à une image de référence.",
+      "Tester zoom, sélection et positions du curseur ; aucun dépassement de buffer avec police malformée dans le processus isolé."
+    ],
+    "deliverable": "Rendu texte de référence, métriques testées et composants consommateurs intégrés.",
+    "decision": "Choisir et distribuer les polices de test avec leurs licences ; la compatibilité de toutes les langues n’est pas implicite.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/font.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/font.c",
+      "kernel/ttf.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/ttf.c",
+      "kernel/textbuf.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/textbuf.c",
+      "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
+      "fonts": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/fonts"
+    },
+    "rank": 30
+  },
+  {
+    "id": "archives",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Porter libarchive et ses compresseurs",
+    "evidence": "ZIP existe ; libarchive apporte davantage de formats et un traitement en flux.",
+    "action": "Sélectionner les formats utiles, leurs compresseurs et les actions dans Files. Sécuriser chemins/liens d’extraction ; grandes archives après le support des gros fichiers.",
+    "acceptance": "Archives externes extraites octet pour octet ; chemins dangereux refusés, annulation et erreurs gérées.",
+    "sources": [
+      [
+        "libarchive",
+        "https://libarchive.org/"
+      ]
+    ],
+    "depends": [
+      "base-19"
+    ],
+    "kind": "À porter",
+    "goal": "Ouvrir des archives téléchargées sans monopoliser la RAM ni écrire hors du dossier choisi.",
+    "files": [
+      "kernel/zip.c",
+      "kernel/fs.c",
+      "kernel/gui.c",
+      "sdk/lib/unix.c"
+    ],
+    "steps": [
+      "Porter libarchive avec un premier lot explicite : lecture ZIP et tar/gzip ; ajouter uniquement les compresseurs nécessaires.",
+      "Construire un outil SDK qui liste, extrait et retourne une erreur par entrée ; transmettre progression et annulation à Files.",
+      "Valider chemins absolus, .., liens, limites de taille/nombre de fichiers et collisions avant d’écrire ; les gros fichiers dépendent du chantier 64 bits."
+    ],
+    "tests": [
+      "Extraire un corpus créé sur Linux, comparer hashes et noms ; tester archive tronquée, CRC faux, disque plein et annulation.",
+      "Une archive avec ../, chemin absolu ou lien sortant ne modifie aucun fichier hors du dossier de destination ; borner aussi l’expansion décompressée."
+    ],
+    "deliverable": "Port libarchive et outil d’extraction, puis action graphique avec progression.",
+    "decision": "7z, RAR, archives chiffrées et écriture de tous les formats sont des extensions à valider séparément.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/zip.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/zip.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "kernel/gui.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gui.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c"
+    },
+    "rank": 31
+  },
+  {
+    "id": "base-23",
+    "priority": "P2",
+    "domain": "Pilotes",
+    "title": "Compléter hubs xHCI, docks et hotplug USB",
+    "evidence": "Confirmé : usbhub.c existe pour d’autres contrôleurs. Le backend xHCI ne fournit pas encore attach_child ; « aucun hub USB » serait une description trop générale.",
+    "action": "Compléter les hubs xHCI et tester docks, périphériques composites, retrait/rebranchement et éjection sûre.",
+    "acceptance": "Clavier, souris, clé et casque fonctionnent ensemble derrière le hub choisi.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/xhci.c#L15"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Utiliser clavier, souris, clé et casque derrière le même hub sans perdre le contrôle du PC.",
+    "files": [
+      "usb/xhci.c",
+      "usb/usbhub.c",
+      "usb/usbcore.c",
+      "usb/usbcore.h",
+      "kernel/volume.c"
+    ],
+    "steps": [
+      "Implémenter l’adressage des enfants et le contexte de hub xHCI, y compris ports et chemins nécessaires ; raccorder attach_child au cœur USB.",
+      "Gérer ajout/retrait de l’arbre, transferts en vol et destruction ordonnée des périphériques.",
+      "Tester un hub identifié puis le dock retenu dans la matrice ; distinguer périphériques USB et fonctions vidéo/Thunderbolt du dock."
+    ],
+    "tests": [
+      "Brancher clavier, souris, clé et casque, les utiliser simultanément puis retirer/rebrancher le hub 20 fois.",
+      "Éjecter la clé puis vérifier son contenu sur un autre OS ; un retrait sans éjection signale l’erreur sans panic ni utilisation de mémoire libérée."
+    ],
+    "deliverable": "Support des enfants sur xHCI et rapport de hotplug pour un hub précis.",
+    "decision": "La prise en charge d’un hub USB ne signifie pas support de toutes les fonctions d’un dock USB-C.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "usb/xhci.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/xhci.c",
+      "usb/usbhub.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/usbhub.c",
+      "usb/usbcore.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/usbcore.c",
+      "usb/usbcore.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/usbcore.h",
+      "kernel/volume.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/volume.c"
+    },
+    "rank": 32
+  },
+  {
+    "id": "base-24",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Entrées fiables, internationalisation et accessibilité",
+    "evidence": "Déjà présents : plusieurs dispositions clavier dont AZERTY et BÉPO, ainsi que des chemins touchpad PS/2 et I2C. La tâche porte sur validation et fonctions manquantes, pas sur leur création complète.",
+    "action": "Tester gestes et rejet de paume, Unicode/IME, échelles HiDPI, navigation clavier et accessibilité selon public cible.",
+    "acceptance": "Saisie française et raccourcis fiables ; aucune perte de contrôle après veille.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/i2chid.c"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Saisir du français et utiliser le bureau sans souris, avec une interface lisible.",
+    "files": [
+      "kernel/keyboard.c",
+      "kernel/kblayouts.c",
+      "kernel/touchpad.c",
+      "kernel/i2chid.c",
+      "kernel/gui.c",
+      "kernel/settings.c"
+    ],
+    "steps": [
+      "Fixer les dispositions et langues du profil cible ; tester toutes les touches, AltGr et accents morts, puis persistance du réglage.",
+      "Valider le touchpad physique : clic, glisser, défilement, rejet de paume et retour après veille ; implémenter seulement les gestes retenus absents.",
+      "Établir parcours clavier du bureau et des dialogues ; ajouter focus visible et échelle de texte/interface cohérente. Cadrer séparément lecteur d’écran et IME si requis."
+    ],
+    "tests": [
+      "Saisir un texte français de référence, le sauvegarder et le relire avec accents et symboles exacts après reboot.",
+      "Ouvrir, modifier, sauvegarder et fermer un document uniquement au clavier ; tester à deux échelles avec capture de l’interface."
+    ],
+    "commands": [
+      "Dans Banana : selftest keyboard"
+    ],
+    "deliverable": "Parcours d’entrée validés par profil et liste explicite des fonctions d’accessibilité couvertes.",
+    "evidenceLevel": "code inspecté",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/keyboard.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/keyboard.c",
+      "kernel/kblayouts.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/kblayouts.c",
+      "kernel/touchpad.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/touchpad.c",
+      "kernel/i2chid.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/i2chid.c",
+      "kernel/gui.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gui.c",
+      "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
+    },
+    "rank": 33
+  },
+  {
+    "id": "sdl",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Porter SDL sur fenêtres, entrées et audio Banana",
+    "evidence": "SDL3 documente le port vers une nouvelle plateforme ; les applications SDL2 ne deviennent pas automatiquement compatibles SDL3.",
+    "action": "Choisir la version selon les premières applications ; backends vidéo, événements, audio, timers et threads, rendu logiciel d’abord. SDL ne fournit pas de pilote GPU physique.",
+    "acceptance": "Une application multimédia et un jeu ciblé fonctionnent avec son, entrées, redimensionnement et fermeture sans fuite.",
+    "sources": [
+      [
+        "Port SDL3",
+        "https://wiki.libsdl.org/SDL3/README-porting"
+      ]
+    ],
+    "depends": [],
+    "kind": "À porter",
+    "goal": "Porter plusieurs jeux ou outils multimédias au moyen d’un backend commun.",
+    "files": [
+      "kernel/appwin.c",
+      "kernel/audio.h",
+      "sdk/include/banana.h",
+      "sdk/lib/pthread.c",
+      "sdk/lib/gl3.c"
+    ],
+    "steps": [
+      "Choisir un premier programme cible et la version SDL qu’il utilise ; créer le port correspondant au lieu de supposer SDL2/SDL3 interchangeables.",
+      "Implémenter fenêtre, surface logicielle, événements clavier/souris, horloge monotone et threads ; compléter audio et manettes selon le programme.",
+      "Relier l’accélération OpenGL uniquement après tests du chemin logiciel ; gérer destruction et perte de focus."
+    ],
+    "tests": [
+      "Démo : dessiner, redimensionner, changer le focus, saisir du texte et fermer 100 fois sans croissance mémoire continue.",
+      "Programme cible : 30 minutes avec son et entrées, pas de répétition de touches bloquée ni audio continu après fermeture."
+    ],
+    "deliverable": "Backend SDL Banana, exemples et premier programme porté.",
+    "decision": "Le programme et la version SDL restent à choisir ; aucune promesse de compatibilité de tous les jeux SDL.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
+      "kernel/audio.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h",
+      "sdk/include/banana.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/include/banana.h",
+      "sdk/lib/pthread.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/pthread.c",
+      "sdk/lib/gl3.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/gl3.c"
+    },
+    "rank": 34
+  },
+  {
+    "id": "ssh",
+    "priority": "P2",
+    "domain": "Réseau",
+    "title": "Porter libssh2 pour un client SSH et SFTP",
+    "evidence": "libssh2 est une bibliothèque cliente ; le serveur SSH de Banana a un autre rôle.",
+    "action": "Adapter crypto et sockets, clés utilisateur et known_hosts ; construire les interfaces terminal et Files. Prévoir la gestion du terminal selon les usages.",
+    "acceptance": "Connexion par clé, changement de clé hôte traité explicitement, transfert binaire aller-retour vérifié.",
+    "sources": [
+      [
+        "libssh2",
+        "https://libssh2.org/"
+      ]
+    ],
+    "depends": [
+      "base-17"
+    ],
+    "kind": "À porter",
+    "goal": "Ouvrir une session distante et transférer des fichiers depuis Banana avec authentification du serveur.",
+    "files": [
+      "sdk/lib/socket.c",
+      "sdk/lib/unix.c",
+      "kernel/tty.c",
+      "kernel/terminal.c",
+      "kernel/gui.c"
+    ],
+    "steps": [
+      "Porter libssh2 avec backend crypto versionné ; ajouter un client minimal et gestion des erreurs réseau.",
+      "Créer/charger les clés utilisateur, gérer known_hosts et refuser silencieusement aucune clé hôte changée ; demander une décision explicite.",
+      "Ajouter session terminal interactive puis SFTP dans une interface de transfert avec progression et annulation."
+    ],
+    "tests": [
+      "Serveur de test : connexion par clé, commande distante avec code retour, redimensionnement terminal et interruption.",
+      "Clé hôte inconnue puis changée : avertissement/action explicites ; fichier binaire de 100 Mio envoyé et récupéré avec hash identique."
+    ],
+    "deliverable": "Client SSH et transfert SFTP documentés ; le serveur SSH existant reste un composant distinct.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "sdk/lib/socket.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/socket.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "kernel/tty.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/tty.c",
+      "kernel/terminal.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/terminal.c",
+      "kernel/gui.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gui.c"
+    },
+    "rank": 35
+  },
+  {
+    "id": "git",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "Intégrer libgit2 à Banana Code",
+    "evidence": "libgit2 expose Git en C ; transports et programmes externes ajoutent des dépendances.",
+    "action": "Adapter fichiers, permissions, verrous et threads ; commencer par diff/commit/branches puis clone/fetch/push. Hooks et filtres externes seulement avec processus supportés.",
+    "acceptance": "Dépôt, commit, branche, fusion et échanges avec un dépôt de test sans altérer les fichiers.",
+    "sources": [
+      [
+        "libgit2",
+        "https://libgit2.org/"
+      ]
+    ],
+    "depends": [
+      "base-05",
+      "base-12"
+    ],
+    "kind": "À porter",
+    "goal": "Versionner un projet dans Banana Code et échanger avec un dépôt distant de test.",
+    "files": [
+      "apps/code",
+      "sdk/lib/unix.c",
+      "sdk/lib/pthread.c",
+      "kernel/fs.c"
+    ],
+    "steps": [
+      "Porter libgit2 avec opérations locales d’abord : init/status/diff/add/commit/branch et gestion des erreurs.",
+      "Ajouter transports HTTPS vérifié puis SSH si nécessaire ; gérer identifiants et clés sans les écrire dans les logs.",
+      "Raccorder la vue Git de l’éditeur : changements, diff, commit et conflits ; hooks/filtres externes dépendent des processus et restent signalés s’ils sont absents."
+    ],
+    "tests": [
+      "Créer un dépôt, deux branches, fusion sans conflit puis conflit explicite ; vérifier les commits avec Git sur un autre OS.",
+      "Clone/fetch/push vers dépôt de test, coupure réseau pendant transfert et disque plein ; dépôt précédent toujours contrôlable."
+    ],
+    "deliverable": "Bibliothèque et outil de test, puis fonctions Git de l’éditeur vérifiées.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "apps/code": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/apps/code",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/lib/pthread.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/pthread.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c"
+    },
+    "rank": 36
+  },
+  {
+    "id": "base-21",
+    "priority": "P2",
+    "domain": "Pilotes",
+    "title": "Accélération graphique sur une cible précise",
+    "evidence": "Mesa et OpenGL sont déjà portés avec softpipe sur CPU ; le pilote virtio-gpu d’affichage ne démontre pas un chemin 3D accéléré complet.",
+    "action": "Mesurer softpipe puis étudier virtio-gpu 3D en VM et un GPU physique choisi. Un pilote Linux/BSD implique aussi DRM, gestion mémoire, IRQ et interfaces vers Mesa ; porter un fichier pilote ne suffit pas.",
+    "acceptance": "Interface et médias fluides sur matériel cible, avec mesures de latence et charge CPU.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ports/mesa/build.sh"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Accélérer un rendu réel sans confondre affichage framebuffer et accélération 3D.",
+    "files": [
+      "kernel/gpu_virtio.c",
+      "kernel/gpu.c",
+      "sdk/lib/gl3.c",
+      "ports/mesa/build.sh",
+      "ports/mesa/gl3test"
+    ],
+    "steps": [
+      "Mesurer une même scène Mesa et un défilement d’interface sur la VM figée : temps CPU, temps par image et mémoire.",
+      "Faire une étude exécutable du chemin 3D virtuel : commandes virtio-gpu, partage de buffers, fences et backend Mesa requis ; choisir le protocole supporté des deux côtés.",
+      "Implémenter une première scène accélérée puis resize/destruction ; le GPU physique devient un autre port avec DRM/mémoire/firmware selon le modèle retenu."
+    ],
+    "tests": [
+      "Sur scène identique, contrôler le renderer utilisé et comparer les images et les temps à softpipe ; pas d’accélération annoncée sur le seul nom du GPU.",
+      "Redimensionner et fermer pendant rendu 100 fois ; ni buffer encore utilisé après libération, ni blocage de la file GPU."
+    ],
+    "deliverable": "Scène accélérée démontrée et mesures reproductibles, ou décision documentée que le chemin manque encore.",
+    "decision": "Le protocole 3D et le GPU physique ne sont pas choisis ; ce sont des décisions de port, pas des composants déjà disponibles.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/gpu_virtio.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gpu_virtio.c",
+      "kernel/gpu.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gpu.c",
+      "sdk/lib/gl3.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/gl3.c",
+      "ports/mesa/build.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ports/mesa/build.sh",
+      "ports/mesa/gl3test": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ports/mesa/gl3test"
+    },
+    "rank": 37
+  },
+  {
+    "id": "base-25",
+    "priority": "P2",
+    "domain": "Pilotes",
+    "title": "Micro, webcam et appels audio/vidéo",
+    "evidence": "La lecture audio existe. L’API audio examinée expose surtout la lecture ; la capture et les appels complets nécessitent un inventaire et de nouveaux chemins.",
+    "action": "Microphone, choix des entrées/sorties, webcam UVC, permissions ; synchronisation audio/vidéo et accélération ensuite.",
+    "acceptance": "Appel de 30 minutes avec casque, micro et caméra sur la plateforme cible.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h"
+      ]
+    ],
+    "depends": [
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Faire un appel avec microphone et caméra sur le matériel de référence.",
+    "files": [
+      "kernel/audio.c",
+      "kernel/audio.h",
+      "usb/uaudio.c",
+      "usb/usbcore.c",
+      "kernel/settings.c"
+    ],
+    "steps": [
+      "Ajouter capture PCM : buffers, choix d’entrée, lecture bornée, arrêt et gestion d’overrun ; commencer par un microphone identifié.",
+      "Implémenter ou porter le support d’une webcam UVC précise ; formats, négociation et transfert à tester sur ce modèle.",
+      "Ajouter choix des périphériques, indicateur et permission d’accès ; relier la visioconférence web seulement si WebRTC est implémenté."
+    ],
+    "tests": [
+      "Enregistrer puis relire 60 secondes avec fréquence et durée vérifiées ; débrancher le micro pendant capture sans bloquer l’application.",
+      "Appel de 30 minutes avec casque et caméra choisis : audio intelligible, image et arrêt de capture effectif après fermeture."
+    ],
+    "deliverable": "Capture audio, un modèle de webcam et un programme de test ; preuve séparée pour un appel web.",
+    "decision": "Le modèle de caméra et l’application d’appel restent à choisir. Une lecture vidéo ne prouve pas la visioconférence.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/audio.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.c",
+      "kernel/audio.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h",
+      "usb/uaudio.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/uaudio.c",
+      "usb/usbcore.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/usb/usbcore.c",
+      "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
+    },
+    "rank": 38
+  },
+  {
+    "id": "base-26",
+    "priority": "P2",
+    "domain": "Applications",
+    "title": "PDF, bureautique et impression",
+    "evidence": "Applications de base présentes ; scénarios bureautiques non validés par cet audit.",
+    "action": "Porter MuPDF pour un lecteur PDF : affichage, recherche, sélection ; tenir compte de sa licence AGPL ou commerciale. Choisir une bureautique locale/web réellement validée, export PDF puis impression réseau.",
+    "acceptance": "Lire, modifier, exporter et partager les documents utilisés chaque semaine.",
+    "sources": [
+      [
+        "MuPDF",
+        "https://mupdf.readthedocs.io/en/latest/"
+      ],
+      [
+        "Licence",
+        "https://mupdf.readthedocs.io/en/latest/license.html"
+      ]
+    ],
+    "depends": [
+      "base-02"
+    ],
+    "kind": "Consolider",
+    "goal": "Lire les documents utiles puis choisir une solution réelle pour les modifier et les exporter.",
+    "files": [
+      "apps",
+      "kernel/appwin.c",
+      "sdk/lib/unix.c",
+      "sdk/banana.mk"
+    ],
+    "steps": [
+      "Premier livrable : porter MuPDF et construire un lecteur avec page suivante/précédente, zoom, recherche, sélection et erreurs de document.",
+      "Créer un corpus représentatif : PDF texte, scan, polices intégrées, rotations et document chiffré selon le périmètre ; vérifier la licence AGPL ou commerciale.",
+      "Deuxième décision : formats à modifier (par exemple ODT/DOCX/XLSX) et solution locale ou web. Planifier export PDF puis impression IPP seulement après cette décision."
+    ],
+    "tests": [
+      "Ouvrir le corpus PDF, rechercher une expression, copier le texte et tester 25/100/200 % ; comparer le rendu à une référence.",
+      "Pour la bureautique choisie : modifier, enregistrer, rouvrir ailleurs et vérifier texte/tableaux ; un fichier seulement affiché ne compte pas comme éditable."
+    ],
+    "deliverable": "Lecteur PDF testable, puis choix documenté de la bureautique et des formats effectivement validés.",
+    "decision": "Bureautique et impression ne sont pas réputées couvertes par le seul port de MuPDF ; leurs formats et imprimante restent à préciser.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "apps": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/apps",
+      "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
+      "sdk/lib/unix.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/lib/unix.c",
+      "sdk/banana.mk": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/sdk/banana.mk"
+    },
+    "rank": 39
+  },
+  {
+    "id": "base-27",
+    "priority": "P2",
+    "domain": "Données",
+    "title": "Gestion quotidienne des fichiers et disques externes",
+    "evidence": "Explorateur, FAT32/exFAT et ext4 natif existent.",
+    "action": "Corbeille, annulation, conflits de copie, progression/annulation, disques chiffrés et systèmes externes selon besoins.",
+    "acceptance": "Copier un dossier complexe, gérer un conflit et récupérer une suppression sans terminal.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c"
+      ]
+    ],
+    "depends": [
+      "base-02"
+    ],
+    "kind": "Consolider",
+    "goal": "Copier, déplacer et supprimer des documents avec une possibilité de récupération.",
+    "files": [
+      "kernel/gui.c",
+      "kernel/fs.c",
+      "kernel/volume.c",
+      "kernel/blockdev.c"
+    ],
+    "steps": [
+      "Ajouter une corbeille par volume compatible : métadonnées du chemin d’origine et restauration sans écraser silencieusement une collision.",
+      "Faire copie/déplacement avec progression, annulation et choix explicite ignorer/remplacer/renommer en cas de conflit.",
+      "Tester les volumes FAT32/exFAT et ext4 supportés ; traiter lecture NTFS et volumes ext4 externes comme des capacités distinctes selon leurs features."
+    ],
+    "tests": [
+      "Copier un arbre de 1 000 fichiers et dossiers ; comparer hashes ; annuler puis vérifier la politique de fichiers partiels.",
+      "Supprimer/restaurer un dossier, créer une collision avant restauration et retirer un volume pendant copie : erreur claire, aucun écrasement implicite."
+    ],
+    "deliverable": "Corbeille, protocole de conflits et opérations longues contrôlables.",
+    "decision": "Le support de l’ext4 produit par Banana ne signifie pas compatibilité avec toutes les features des volumes Linux existants.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/gui.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gui.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "kernel/volume.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/volume.c",
+      "kernel/blockdev.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/blockdev.c"
+    },
+    "rank": 40
+  },
+  {
+    "id": "base-28",
+    "priority": "P2",
+    "domain": "Sécurité",
+    "title": "Coffre de secrets et données du portable",
+    "evidence": "Mot de passe de connexion et secrets sur disque ne suffisent pas à couvrir le vol du matériel.",
+    "action": "Évaluer libsodium pour le coffre et les données applicatives : aléatoire sûr, gestion des clés et protections mémoire effectives. Ajouter un verrouillage fiable. Le chiffrement du disque reste un chantier distinct avec récupération des clés. Bloquant si des données sensibles sont stockées sur un portable.",
+    "acceptance": "Un disque retiré ne révèle pas les données protégées ; verrouillage ne tue pas la session.",
+    "sources": [
+      [
+        "libsodium",
+        "https://doc.libsodium.org/"
+      ],
+      [
+        "Login Banana",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/login.c"
+      ]
+    ],
+    "depends": [
+      "base-04"
+    ],
+    "kind": "Consolider",
+    "goal": "Éviter qu’un autre utilisateur du PC ou le vol du disque révèle les secrets personnels.",
+    "files": [
+      "kernel/login.c",
+      "kernel/random.c",
+      "kernel/fs.c",
+      "apps/code"
+    ],
+    "steps": [
+      "Inventorier les secrets stockés : mots de passe réseau, clés SSH et clés API ; définir leur propriétaire et l’accès après verrouillage.",
+      "Porter libsodium, gérer génération/dérivation des clés et chiffrement authentifié ; ajouter un coffre avec format versionné, déverrouillage et verrouillage.",
+      "Définir séparément le chiffrement des documents ou du disque, son déverrouillage au boot et la récupération de clé ; vérifier la protection du swap et des sauvegardes."
+    ],
+    "tests": [
+      "Un fichier de coffre copié hors ligne ne contient aucun secret lisible ; mauvais mot de passe et modification d’un octet sont refusés.",
+      "Verrouiller pendant une application active : pas de saisie transmise à l’application et pas d’accès aux secrets verrouillés ; récupération sur une copie de test."
+    ],
+    "deliverable": "Coffre de secrets et modèle de menace documentés ; chiffrement disque distinct si retenu.",
+    "decision": "Ne pas annoncer un disque chiffré après le seul port de libsodium. La menace « disque retiré » exige une solution complète couvrant aussi les copies et le swap.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "À remonter parmi les blocages avant de stocker des secrets sur un portable exposé au vol.",
+    "fileLinks": {
+      "kernel/login.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/login.c",
+      "kernel/random.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/random.c",
+      "kernel/fs.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fs.c",
+      "apps/code": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/apps/code"
+    },
+    "rank": 41
+  },
+  {
+    "id": "base-29",
+    "priority": "P2",
+    "domain": "Données",
+    "title": "Installation, réparation et dual boot si souhaité",
+    "evidence": "Installation dédiée et choix du disque présents.",
+    "action": "Diagnostic avant installation, sauvegarde, partitionnement prudent si dual boot souhaité, récupération du chargeur et mode sans échec.",
+    "acceptance": "Installer, mettre à jour et réparer sans altérer les autres partitions.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/README.md#installing-to-a-hard-disk-installsync"
+      ]
+    ],
+    "depends": [
+      "base-09",
+      "base-10",
+      "base-20"
+    ],
+    "kind": "Consolider",
+    "goal": "Installer et réparer Banana sans écrire sur un disque qui n’a pas été choisi.",
+    "files": [
+      "kernel/installer.c",
+      "kernel/fsdisk.c",
+      "kernel/disk.c",
+      "kernel/volume.c",
+      "loader"
+    ],
+    "steps": [
+      "Afficher modèle, capacité, identifiant, partitions et rôle du disque ; faire confirmer la cible avec ces mêmes informations juste avant écriture.",
+      "Créer un support de secours capable de monter le disque Banana, copier les données et réparer le boot selon la version supportée.",
+      "Avant dual boot, définir partitionnement, sauvegarde de table, gestion ESP et espace réservé ; tant que non testé, rester sur installation dédiée."
+    ],
+    "tests": [
+      "VM à trois disques : installer/mettre à jour le disque choisi et comparer bit à bit les deux disques non ciblés.",
+      "Corrompre uniquement le boot sur une copie : démarrer le secours, récupérer /home puis réparer ; la version réparée relit les données."
+    ],
+    "deliverable": "Installation dédiée qualifiée et procédure de secours ; dual boot seulement avec sa propre matrice de tests.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "fileLinks": {
+      "kernel/installer.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/installer.c",
+      "kernel/fsdisk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/fsdisk.c",
+      "kernel/disk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/disk.c",
+      "kernel/volume.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/volume.c",
+      "loader": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/loader"
+    },
+    "rank": 42
+  },
+  {
+    "id": "base-30",
+    "priority": "P3",
+    "domain": "Applications",
+    "title": "Confort du bureau et restauration de session",
+    "evidence": "Fenêtrage, bureaux virtuels et historique presse-papiers déjà présents.",
+    "action": "Notifications, captures d’écran, presse-papiers images/fichiers, associations MIME et restauration de session.",
+    "acceptance": "Les actions courantes restent accessibles au clavier et via une interface cohérente.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md"
+      ]
+    ],
+    "depends": [],
+    "kind": "Consolider",
+    "goal": "Terminer les actions de bureau courantes sans perdre la session de travail.",
+    "files": [
+      "kernel/gui.c",
+      "kernel/clipboard.c",
+      "kernel/appwin.c",
+      "kernel/settings.c"
+    ],
+    "steps": [
+      "Créer un service de notification avec titre, texte, application et action ; limiter la fréquence et conserver un historique borné.",
+      "Ajouter capture d’écran PNG avec choix du dossier et retour visible ; étendre le presse-papiers aux images/fichiers avec formats et limites définis.",
+      "Définir la restauration de session : fenêtres/apps et documents rouverts ; signaler les données non enregistrées plutôt que prétendre restaurer l’état mémoire complet."
+    ],
+    "tests": [
+      "Notification en arrière-plan puis action vers la bonne fenêtre ; une application qui spamme n’empêche pas le bureau de répondre.",
+      "Capture vérifiée à la résolution courante ; reboot puis réouverture des documents enregistrés sans lancer automatiquement une application supprimée."
+    ],
+    "deliverable": "Notification, capture et liste de restauration avec exemples SDK ; fonctions livrables séparément.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "À réaliser selon les usages observés après les fondations.",
+    "fileLinks": {
+      "kernel/gui.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/gui.c",
+      "kernel/clipboard.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/clipboard.c",
+      "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
+      "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
+    },
+    "rank": 43
+  },
+  {
+    "id": "base-31",
+    "priority": "P3",
+    "domain": "Validation",
+    "title": "Maintenance de l’écosystème et canal stable",
+    "evidence": "Mesa, OpenJDK, LWJGL et FFmpeg ajoutent des dépendances à maintenir.",
+    "action": "Suivre mises à jour et licences des ports existants et nouveaux ; versionner ABI, canaux stable/test et rapports de crash. La maintenance de sécurité minimale commence dès le premier port, même si le confort des outils arrive plus tard.",
+    "acceptance": "Un correctif de dépendance est distribué, testé et réversible.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/THIRD-PARTY-NOTICES"
+      ]
+    ],
+    "depends": [
+      "base-07"
+    ],
+    "kind": "Consolider",
+    "goal": "Distribuer des corrections sans perdre la trace des versions, licences et régressions.",
+    "files": [
+      "THIRD-PARTY-NOTICES",
+      ".github/workflows/build-iso.yml",
+      "ports",
+      "kernel/crash.c",
+      "kernel/repo.c"
+    ],
+    "steps": [
+      "Inventorier pour chaque dépendance : source, version/commit, hash, licence, patchs locaux et procédure de reconstruction.",
+      "Définir canaux test/stable, version ABI et compatibilité du format disque ; joindre les résultats CI à chaque release.",
+      "Ajouter export volontaire d’un rapport de crash avec version, stack et matériel, puis outil pour masquer données personnelles avant partage."
+    ],
+    "tests": [
+      "Reconstruire une dépendance à partir du manifeste et vérifier que les patchs s’appliquent ; un hash source différent bloque le build.",
+      "Un crash de test produit un rapport attribuable au commit ; l’utilisateur peut le lire et l’exporter sans envoi automatique."
+    ],
+    "commands": [
+      "Dans Banana : crashtest report"
+    ],
+    "deliverable": "Manifeste de dépendances, procédure stable/test et rapport de crash exportable.",
+    "decision": "Le suivi sécurité et licences commence dès le premier port ; seuls les outils de confort de maintenance peuvent attendre P3.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "À réaliser selon les usages observés après les fondations.",
+    "fileLinks": {
+      "THIRD-PARTY-NOTICES": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/THIRD-PARTY-NOTICES",
+      ".github/workflows/build-iso.yml": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/.github/workflows/build-iso.yml",
+      "ports": "https://github.com/qcom-toolbox/Banana-OS/tree/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ports",
+      "kernel/crash.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/crash.c",
+      "kernel/repo.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/repo.c"
+    },
+    "rank": 44
+  },
+  {
+    "id": "base-32",
+    "priority": "P3",
+    "domain": "Applications",
+    "title": "Bluetooth, synchronisation et extensions selon usage",
+    "evidence": "Fonctions à prioriser selon les besoins réels.",
+    "action": "Bluetooth, partage réseau, synchronisation, jeux et compatibilité Windows/Linux après les parcours quotidiens retenus.",
+    "acceptance": "Chaque ajout répond à un scénario utilisateur et possède un test de bout en bout.",
+    "sources": [
+      [
+        "Code / documentation Banana OS",
+        "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md"
+      ]
+    ],
+    "depends": [],
+    "kind": "Décision de périmètre",
+    "goal": "Choisir les extensions réellement nécessaires après validation des parcours prioritaires.",
+    "files": [
+      "ROADMAP.md",
+      "docs/TESTING.md"
+    ],
+    "steps": [
+      "Recenser pendant la semaine d’essai les tâches bloquées : casque Bluetooth, partage SMB, synchronisation ou jeu précis ; classer chacune par besoin réel.",
+      "Pour la première retenue, créer une fiche séparée avec matériel/protocole, dépendances, bibliothèque candidate et critère de succès.",
+      "Garder les autres dans le backlog avec statut non planifié ; ne pas les faire passer comme une étape technique unique terminable."
+    ],
+    "tests": [
+      "Chaque extension retenue possède un parcours reproductible, un matériel/service de test et une dépendance identifiée.",
+      "Aucune case « Bluetooth + synchro + compatibilité Windows » déclarée terminée à partir d’un seul exemple."
+    ],
+    "deliverable": "Une liste arbitrée et des fiches de port distinctes pour les seules extensions retenues.",
+    "decision": "Les usages précis ne sont pas encore fournis ; cette ligne est une décision de périmètre, pas une implémentation prête à démarrer.",
+    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "priorityReason": "À réaliser selon les usages observés après les fondations.",
+    "fileLinks": {
+      "ROADMAP.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/ROADMAP.md",
+      "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
+    },
+    "rank": 45
+  }
+]
