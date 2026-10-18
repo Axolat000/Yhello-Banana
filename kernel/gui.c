@@ -1,4 +1,5 @@
 #include "crash.h"
+#include "boottime.h"
 #include "acpi_sleep.h"
 #include "gui.h"
 #include "serial.h"
@@ -2269,6 +2270,8 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
         fb_present_rect(g_ptr_drawn_x + CURSOR_X0, g_ptr_drawn_y + CURSOR_Y0, CURSOR_W, CURSOR_H);
     fb_present_damage();
     draw_cursor(mx, my);
+    static int shown;
+    if (!shown) { shown = 1; boottime_mark("the desktop's first frame"); }
 }
 
 /* ── right-click menus ─────────────────────────────────────────────── */

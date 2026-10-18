@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "../kernel/boottime.h"
 #include "editor.h"
 #include "../kernel/terminal.h"
 #include "../kernel/keyboard.h"
@@ -482,6 +483,42 @@ static void cmd_uptime(void) {
               la[1] / 100, la[1] % 100, la[2] / 100, la[2] % 100);
     terminal_write(b);
     terminal_putchar('\n');
+}
+
+/* the boot, step by step (kernel/boottime.c): when each started, how long
+ * it took, the longest ones marked */
+static void cmd_boottime(void) {
+    static boot_step_t st[64];
+    int n = boottime_steps(st, 64);
+    if (!n) { terminal_writeln("boottime: no boot steps recorded"); return; }
+    uint64_t total = st[n - 1].ns, longest[3] = { 0, 0, 0 };
+    for (int i = 0; i + 1 < n; i++) {               /* the three longest steps */
+        uint64_t d = st[i + 1].ns - st[i].ns;
+        for (int k = 0; k < 3; k++) if (d > longest[k]) {
+            for (int j = 2; j > k; j--) longest[j] = longest[j - 1];
+            longest[k] = d;
+            break;
+        }
+    }
+    char b[128];
+    uint64_t before = boottime_before_ns();
+    if (before) {
+        ksnprintf(b, sizeof(b), "before the kernel (firmware, boot menu, loading it): about %u ms", (uint32_t)(before / 1000000u));
+        terminal_writeln(b);
+    }
+    terminal_write_color("    at ms   took ms  step\n", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
+    for (int i = 0; i < n; i++) {
+        uint64_t d = i + 1 < n ? st[i + 1].ns - st[i].ns : 0;
+        if (i + 1 < n) ksnprintf(b, sizeof(b), "  %7u   %7u  %s", (uint32_t)(st[i].ns / 1000000u), (uint32_t)(d / 1000000u), st[i].what);
+        else ksnprintf(b, sizeof(b), "  %7u         -  %s", (uint32_t)(st[i].ns / 1000000u), st[i].what);
+        int slow = i + 1 < n && d >= longest[2] && d >= 50000000u;      /* (one of the 3 longest, 50 ms or more) */
+        if (slow) terminal_write_color(b, VGA_COLOR_YELLOW, VGA_COLOR_BLACK);
+        else terminal_write(b);
+        terminal_putchar('\n');
+    }
+    ksnprintf(b, sizeof(b), "the kernel to the last step: %u ms%s", (uint32_t)(total / 1000000u),
+              before ? "" : " (the time before the kernel is not known here)");
+    terminal_writeln(b);
 }
 
 static void cmd_proc_info(const char* args) {
@@ -1199,7 +1236,7 @@ static void cmd_history(void) {
 static const char* const known_cmds[] = {
     "help", "neofetch", "echo", "clear", "uname", "whoami", "hostname", "date", "timezone",
     "ls", "cd", "pwd", "mkdir", "rm", "touch", "cp", "mv", "edit", "cat", "run",
-    "uptime", "top", "exit", "start", "stop", "startx", "stopx",
+    "uptime", "boottime", "top", "exit", "start", "stop", "startx", "stopx",
     "keyboardctl", "loadctl", "usbctl", "proc_info", "ram_info", "gpu_info",
     "hw_info", "shutdown", "reboot", "halt", "sleep", "install", "sync", "drop_caches", "update", "installer", "disks", "history", "which", "type",
     "alias", "unalias", "export", "unset", "env", "chsh", "autologin",
@@ -2413,6 +2450,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (k_strcmp(line, "history")  == 0) { cmd_history();    return; }
     if (k_strcmp(line, "find")     == 0) { cmd_find("");     return; }
     if (k_strcmp(line, "uptime")   == 0) { cmd_uptime();     return; }
+    if (k_strcmp(line, "boottime") == 0) { cmd_boottime();   return; }
     if (k_strcmp(line, "top")      == 0) { cmd_top();        return; }
     if (k_strcmp(line, "exit")     == 0) { cmd_exit();       return; }
     if (k_strcmp(line, "start")    == 0) { cmd_startx();     return; }
@@ -2715,7 +2753,7 @@ void shell_run(void) {
     /* Started from the CD: the live system, fresh - an installed disk is
      * left alone (no login, no autosave onto it); `update` can update it. */
     int live = sysinfo_live_boot();
-    klog("boot: disks (an installed Banana OS?)\n");
+    boottime_mark("disks (an installed Banana OS?)");
     int loaded = live ? 0 : fsdisk_try_load();
     if (loaded <= 0) {
         fs_init();
@@ -2742,13 +2780,13 @@ void shell_run(void) {
             "Type 'update' to update that installation with this CD (files kept), or boot from the disk.\n\n",
             VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
 
-    klog("boot: built-in apps\n");
+    boottime_mark("built-in apps");
     builtin_apps_install();         /* Media Player, Music (kernel/builtin_apps.c) */
     builtin_release();              /* installed: the packages on the disk, their RAM to the heap */
-    klog("boot: driver modules\n");
+    boottime_mark("driver modules");
     drivers_load_installed();       /* (installed with pkg: sdk/driver) */
 
-    klog("boot: settings, servers\n");
+    boottime_mark("settings, servers");
     /* saved network settings, services enabled at boot (shell/srvcmds.c) */
     services_boot();
     vmtools_init();                 /* guest tools: VMware, VirtualBox, the QEMU / Proxmox agent (kernel/vmtools.c) */
@@ -2758,9 +2796,10 @@ void shell_run(void) {
             g_default_shell_kind = persona = (k_strcmp(sk, "bash") == 0) ? SHELL_KIND_BASH : SHELL_KIND_SH;
     }
 
-    klog("boot: ready\n");
+    boottime_mark("ready");
     splash_end();                 /* ready: the boot screen gives way to the console */
     login_screen();               /* the password, when one is set */
+    boottime_mark("logged in");
     if (services_desktop_at_boot()) gui_set_enabled(1);
 
     run_init_file(persona);

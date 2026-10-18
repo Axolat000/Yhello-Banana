@@ -31,6 +31,7 @@
 #include "paging.h"
 #include "fpu.h"
 #include "tlb.h"
+#include "boottime.h"
 #include "hmem.h"
 #include "smp.h"
 #include "splash.h"
@@ -40,7 +41,7 @@
 #define MULTIBOOT2_MAGIC 0x36D76289
 
 /* a boot step, in the log (and on the screen with "verbose") */
-#define STEP(what) klog("boot: %s\n", what)
+#define STEP(what) boottime_mark(what)      /* (kernel/boottime.c: `boottime`) */
 
 /* The x87 FPU (the browser's JavaScript and httpd's PHP compute with it -
  * the kernel is built without SSE), SSE and, where the processor has it,
@@ -59,6 +60,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
 
     serial_init();
     klog("Banana OS 0.6 booting\n");
+    STEP("kernel");           /* (the boot's timeline starts here: `boottime`) */
 
     /* Parse Multiboot2 info first so the console can choose framebuffer mode. */
     if (magic == MULTIBOOT2_MAGIC) {
@@ -68,14 +70,17 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
         sysinfo_log_boot();
     }
     /* After every Multiboot2 consumer above: the heap may reuse that memory. */
+    STEP("heap");
     kheap_init(magic == MULTIBOOT2_MAGIC ? mb_info : 0);
     klog("heap: %u KiB free\n", kheap_total_bytes() / 1024u);
     paging_guard_null();      /* NULL pointers fault (64-bit), after every Multiboot2 reader */
     hmem_init(magic == MULTIBOOT2_MAGIC ? mb_info : 0);   /* RAM above 4 GiB, for apps (64-bit) */
+    STEP("graphics");
     gpu_init();               /* graphics drivers: one may set the screen up (kernel/gpu.h) */
     paging_pat_init();        /* write-combining (64-bit): a framebuffer without a driver gets it */
     gpu_firmware_init();      /* AMD, NVIDIA, Intel Arc / Xe without a driver: named, faster screen */
 
+    STEP("console");
     terminal_init();
     /* "verbose" (GRUB's "boot messages" entry): no boot screen, every step on
      * the screen - so a computer that stops during the boot shows where */
@@ -83,6 +88,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     if (verbose) klog_to_screen(1);
     STEP("timer");
     timer_init();
+    boottime_clock_started();
     __asm__ volatile("sti");  /* timer IRQ from here on */
     if (!verbose) splash_start();   /* the boot screen until the system is ready */
     STEP("clock");

@@ -11,6 +11,7 @@
 #include "../kernel/sysinfo.h"
 #include "../kernel/kheap.h"
 #include "../kernel/tlb.h"
+#include "../kernel/boottime.h"
 #include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/gui.h"
@@ -370,6 +371,31 @@ static void t_tlb(void) {
 #else
     skip("the TLB", "the 32-bit kernel runs without paging");
 #endif
+}
+
+/* ── the boot's timeline (boottime) ── */
+static void t_boottime(void) {
+    section("the boot's timeline (boottime)");
+    static boot_step_t st[64];
+    int n = boottime_steps(st, 64), ordered = 1, have_ready = 0, have_timer = 0;
+    for (int i = 0; i < n; i++) {
+        if (i && st[i].ns < st[i - 1].ns) ordered = 0;
+        if (!strcmp(st[i].what, "ready")) have_ready = 1;
+        if (!strcmp(st[i].what, "timer")) have_timer = 1;
+    }
+    char note[96];
+    ksnprintf(note, sizeof(note), "%d steps, the first \"%s\"", n, n ? st[0].what : "-");
+    report("every boot step recorded, from the kernel's start", n >= 10 && !strcmp(st[0].what, "kernel") && have_timer && have_ready, note);
+    uint64_t total = n ? st[n - 1].ns : 0;
+    ksnprintf(note, sizeof(note), "the kernel to \"%s\": %u ms", n ? st[n - 1].what : "-", (uint32_t)(total / 1000000u));
+    report("steps in order, with times", ordered && total > 0, note);
+    uint64_t before = boottime_before_ns();
+    if (before) {
+        ksnprintf(note, sizeof(note), "about %u ms", (uint32_t)(before / 1000000u));
+        report("the time before the kernel (firmware, menu, loading) estimated", 1, note);
+    } else {
+        skip("the time before the kernel", "the time stamp counter was not reset at power-on here");
+    }
 }
 
 /* ── TCP: window scaling, SACK (build 196) ── */
@@ -866,8 +892,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "llvmpipe") && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [llvmpipe | virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "llvmpipe") && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "boottime") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [llvmpipe | virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | boottime | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && (!strcmp(only,"virgl") || !strcmp(only,"llvmpipe")) && argc!=2) { terminal_writeln("usage: selftest virgl | llvmpipe");return 1; }
@@ -911,6 +937,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
                      only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
                      only && !strcmp(only, "net") ? "selftest: checking TCP" :
+                     only && !strcmp(only, "boottime") ? "selftest: checking the boot's timeline" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"llvmpipe")) {
         section("LLVMpipe CPU rendering (optional Mesa/LLVM libraries)");t_gl3("llvmpipe");
@@ -948,6 +975,8 @@ int selftest_cmd(int argc, char** argv) {
         }
     } else if (only && !strcmp(only, "net")) {
         t_net();
+    } else if (only && !strcmp(only, "boottime")) {
+        t_boottime();
     } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "posix")) {
@@ -968,6 +997,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "heap")) t_heap();
         if (!only || !strcmp(only, "tlb")) t_tlb();
         if (!only) t_net();
+        if (!only) t_boottime();
         if (!only) {
             t_opencl();
             browser_test_run(report);

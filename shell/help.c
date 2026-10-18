@@ -229,6 +229,12 @@ static const page_t PAGES[] = {
       "USA's, Australia's...). Apps get it too: localtime(), strftime %z / %Z; Java reads /etc/timezone.",
       NULL, "timezone list europe\ntimezone new york\ntimezone UTC", "date" },
     { "uptime", "system", "uptime", "how long it has been running, the load average", NULL, NULL, NULL, "top" },
+    { "boottime", "system", "boottime", "where the boot's time went, step by step",
+      "Each step of the boot - the kernel's (heap, graphics, timer, cores, network, disks...), the shell's (the "
+      "installed disk, apps, servers), the login and the desktop's first frame - with when it started and how "
+      "long it took; the three longest are highlighted. Before the kernel, the firmware, the boot menu and "
+      "the loading took about as long as the first line says (from the processor's time stamp counter).",
+      NULL, NULL, "uptime" },
     { "neofetch", "system", "neofetch", "a summary of the system", NULL, NULL, NULL, "hw_info" },
     { "sleep", "system", "sleep [status | SECONDS]", "ACPI S3 suspend to RAM",
       "Sleep retains the session in RAM. The first supported profile is QEMU PC/PIIX4 with standard VGA, e1000 and optional virtio-blk. Unsupported platforms/devices are refused before suspend. Files are synced first. Use the VM wake/power control to resume, or specify 1..3600 seconds for an RTC wake. This is not hibernation.",
