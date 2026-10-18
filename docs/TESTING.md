@@ -366,9 +366,13 @@ QEMU's wake path can reset devices, so driver restoration is required
 
 Run `selftest clock` inside Banana OS. It prints the selected source and checks
 12 conversion/rollover cases, a 1200 ms sleep (with 1 ms rounding tolerance),
-elapsed time against the actual CMOS clock, and 80000 serialized user clock
-reads on a four-core guest. One-core guests use two threads and skip the
-multiple-core requirement. This command also runs as part of `selftest`.
+elapsed time against the actual CMOS clock, and at least 80000 serialized user
+clock reads on a four-core guest. Workers start together and remain runnable
+for at least 250 ms, beginning with 50 ms of app computation sampled between
+batches so timer interrupts can offload them. The previous 1 ms sleep every
+256 reads could keep every burst on the boot core, making the multicore
+coverage check fail on a healthy clock. One-core guests use two threads and
+skip the multiple-core requirement. This command also runs as part of `selftest`.
 
 HPET is preferred, then the ACPI PM timer. Both are shared hardware counters;
 CPU TSC values and their advertised invariant/hypervisor flags are not used
@@ -423,5 +427,6 @@ Validation on this host (scratch kernels and ISO):
 | HPET, HPET disabled (ACPI PM), ACPI/HPET disabled (IRQ fallback) | clock checks passed |
 | Clock arithmetic, ASan/UBSan and i686 | 12 checks each, 0 failed |
 | Serial runner regression tests | 8 passed |
+| Clock multicore coverage regression, 512 MiB/4 cores | Old test failed 3/3 TCG runs; corrected test passed 5/5 TCG and 3/3 KVM runs, all on 4 cores; i686 passed |
 | BIOS 64-bit/ACPI PM resume | Three real suspend/wake cycles; clock checks before/after, FAT I/O, ping and POSIX passed |
 | BIOS 32-bit/HPET resume | Three real suspend/wake cycles; 31 cycle checks, FAT I/O, ping and POSIX passed |

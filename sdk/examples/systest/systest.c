@@ -360,31 +360,62 @@ static int t_suspend(const char* path) {
     return bad;
 }
 
-/* A serialized stream of clock reads from migrating user threads. */
+/* A serialized stream of clock reads from migrating user threads. Short
+ * bursts followed by sleep can finish before a user-mode timer interrupt
+ * ever offloads a thread. Start together and keep user work runnable long
+ * enough to exercise the AP scheduler, without changing its policy. */
+#define CLOCK_THREADS 8
+#define CLOCK_READS 20000u
+#define CLOCK_MIN_MS 250u
 static banana_mutex_t clock_lock = BANANA_MUTEX_INIT;
-static unsigned clock_last;
+static unsigned clock_last,clock_begin;
+static volatile int clock_ready,clock_go;
+static unsigned clock_reads[CLOCK_THREADS];
 static volatile unsigned long long clock_seen;
+static unsigned clock_sample(int* bad,int track_core) {
+    banana_lock(&clock_lock);
+    int cpu=track_core?core_id():-1;
+    unsigned now=banana_ticks();
+    if((int)(now-clock_last)<0)*bad=1;
+    clock_last=now;
+    if(cpu>=0 && cpu<64 && core_id()==cpu)clock_seen|=1ull<<cpu;
+    banana_unlock(&clock_lock);
+    return now;
+}
 static int clock_worker(void* arg) {
-    (void)arg;int bad=0;
-    for(int i=0;i<20000;i++) {
-        banana_lock(&clock_lock);
-        unsigned now=banana_ticks();
-        if((int)(now-clock_last)<0)bad=1;
-        clock_last=now;
-        banana_unlock(&clock_lock);
-        int cpu=core_id();if(cpu<64)__sync_fetch_and_or(&clock_seen,1ull<<cpu);
-        if(!(i%256))banana_sleep(1);
-    }
+    unsigned index=(unsigned)(uintptr_t)arg,noise=index+1,reads=0;
+    int bad=0;
+    __atomic_add_fetch(&clock_ready,1,__ATOMIC_RELEASE);
+    while(!__atomic_load_n(&clock_go,__ATOMIC_ACQUIRE))banana_yield();
+    unsigned now,start=banana_ticks();
+    /* A real user-mode compute interval, sampled between batches. A
+     * syscall-heavy loop alone can take every tick inside the kernel and
+     * never reach app_preempt, even if it runs for hundreds of ms. */
+    do {
+        for(int j=0;j<250000;j++)xs(&noise);
+        __asm__ volatile("" : "+r"(noise));
+        now=clock_sample(&bad,1);reads++;
+    } while((unsigned)(now-start)<50);
+    do {
+        now=clock_sample(&bad,!(reads%64));reads++;
+    } while(reads<CLOCK_READS || (unsigned)(now-clock_begin)<CLOCK_MIN_MS);
+    clock_reads[index]=reads;
     return bad;
 }
 static int t_clock(void) {
-    int n=banana_cpus();if(n<2)n=2;if(n>8)n=8;
-    int ids[8],bad=0;clock_last=banana_ticks();unsigned start=clock_last;
-    for(int i=0;i<n;i++){ids[i]=banana_thread(clock_worker,NULL);if(ids[i]<=0)bad=1;}
+    int n=banana_cpus();if(n<2)n=2;if(n>CLOCK_THREADS)n=CLOCK_THREADS;
+    int ids[CLOCK_THREADS],bad=0;unsigned total=0;
+    for(int i=0;i<n;i++){ids[i]=banana_thread(clock_worker,(void*)(uintptr_t)i);if(ids[i]<=0)bad=1;}
+    unsigned wait=banana_ticks();
+    while(__atomic_load_n(&clock_ready,__ATOMIC_ACQUIRE)<n && banana_ticks()-wait<2000)banana_sleep(1);
+    if(__atomic_load_n(&clock_ready,__ATOMIC_ACQUIRE)!=n)bad=1;
+    clock_last=clock_begin=banana_ticks();
+    __atomic_store_n(&clock_go,1,__ATOMIC_RELEASE);
     for(int i=0;i<n;i++)if(ids[i]>0 && banana_join(ids[i]))bad=1;
-    unsigned elapsed=banana_ticks()-start;int cores=0;
+    for(int i=0;i<n;i++){total+=clock_reads[i];if(clock_reads[i]<CLOCK_READS)bad=1;}
+    unsigned elapsed=banana_ticks()-clock_begin;int cores=0;
     for(int i=0;i<64;i++)if(clock_seen&(1ull<<i))cores++;
-    printf("clock: %d threads, %d serialized reads, %d cores, %u ms; %s\n",n,n*20000,cores,elapsed,bad?"clock moved backwards":"monotonic");
+    printf("clock: %d threads, %u serialized reads, %d cores, %u ms; %s\n",n,total,cores,elapsed,bad?"clock check failed":"monotonic");
     return bad?1:100+cores;
 }
 
