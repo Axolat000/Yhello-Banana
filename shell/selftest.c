@@ -12,6 +12,7 @@
 #include "../kernel/kheap.h"
 #include "../kernel/tlb.h"
 #include "../kernel/boottime.h"
+#include "../kernel/pci.h"
 #include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/gui.h"
@@ -393,6 +394,9 @@ static void t_boottime(void) {
     int agree = builtin_meta_check(msg, sizeof(msg));
     ksnprintf(note, sizeof(note), "%d packages: size, SHA-256 and manifest as the build found them", agree);
     report("the App Store's list made without unpacking every package", agree > 0, agree > 0 ? note : msg);
+    int nf = pci_check_list(msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "%d functions; %u scans since boot read the bus once", nf, pci_scan_count());
+    report("PCI: the bus walked once, every probe after that from the list", nf > 0, nf > 0 ? note : msg);
     uint64_t before = boottime_before_ns();
     if (before) {
         ksnprintf(note, sizeof(note), "about %u ms", (uint32_t)(before / 1000000u));
