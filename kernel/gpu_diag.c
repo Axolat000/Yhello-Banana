@@ -24,6 +24,7 @@ void gpu_diagnostics(void) {
 
 void gpu_tests(void (*report)(const char*, int, const char*)) {
     gpu_surface_tests(report);
+    gpu_driver_tests(report);
     const fb_info_t* f = fb_info();
     if (fb_available()) {
         report("live framebuffer dimensions and stride are valid", f->addr && f->width && f->height && f->bpp == 32 &&

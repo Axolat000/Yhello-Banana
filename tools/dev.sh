@@ -19,6 +19,7 @@
 # NIC (QEMU NIC model, default e1000), OVMF (UEFI firmware file),
 # DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio),
 # CPU (QEMU's processor model: CPU=max has AVX / AVX2 / AVX-512),
+# GPU (std, virtio or vmware; default std),
 # KVM=1 (hardware virtualization: much faster, your processor's own features).
 
 set -uo pipefail
@@ -89,6 +90,10 @@ qemu_args() {
             args+=(-bios "$ovmf") ;;
         32)   qemu=qemu-system-i386; args=(-cdrom "$ROOT/Banana_OS.iso" -m "$MEM" -nic "user,model=$NIC") ;;
         *)    red "unknown firmware '$fw' (bios, uefi or 32)"; exit 1 ;;
+    esac
+    case "${GPU:-std}" in
+        std|virtio|vmware) args+=(-vga "${GPU:-std}") ;;
+        *) red "unknown GPU '${GPU}' (std, virtio or vmware)"; exit 1 ;;
     esac
     # (-boot d: the CD first - the firmware would try the disk before it)
     if [ -n "${DISK:-}" ]; then args+=(-drive "file=$DISK,format=raw,if=virtio" -boot d); fi

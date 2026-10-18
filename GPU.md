@@ -34,9 +34,31 @@ kernels link. A virtio desktop passes all checks, changes resolution,
 returns to the console and reports no GPU timeouts. In one run 5 MiB
 changed out of 74 MiB considered; actual savings depend on the workload.
 
+## 3. Asynchronous virtual GPU updates
+
+Virtio screen updates and cursor movement use owned DMA command slots and
+return after notifying the device. Completions are polled by the existing
+GPU task. Control-queue replies validate descriptor IDs, response sizes
+and fence IDs before reusing storage. Backpressure retains a full update
+for the next tick. Mode/resource changes drain queued DMA first. A stalled
+queue is reset with bounded waits; DMA memory is retained on a failed reset.
+Boot, panic and resource-control operations still use bounded synchronous
+commands. VMware frame updates also enqueue and kick without waiting for
+host completion; its cursor-definition control path remains synchronous.
+
+`selftest gpu` on virtio sends three full batches of 31 requests, checks
+owned-buffer lifetimes, matching fences and descriptor reuse. These pass
+in 64-bit and 32-bit QEMU guests, before and after starting the desktop.
+The 64-bit test also changes resolution with pending screen work. VMware
+passes its 64-update drain test. Live virtio counters showed 31 requests
+in flight, zero protocol errors and zero timeouts. Actual device-hang/reset
+recovery has not been fault-injected in QEMU.
+
+Use `GPU=virtio tools/dev.sh run` or `GPU=vmware tools/dev.sh run` to select
+the display adapter. Standard VGA remains the default.
+
 ## Remaining stages
 
-- Asynchronous commands: pending.
 - Frame presentation: pending.
 - VirGL: pending.
 - LLVMpipe: pending.

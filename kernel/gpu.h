@@ -82,6 +82,10 @@ void gpu_note_command(uint64_t ns, int timeout);
 void gpu_diagnostics(void);
 void gpu_bench(void);
 void gpu_tests(void (*report)(const char*, int, const char*));
+/* Optional built-in extensions, kept outside the driver-module ABI. */
+void gpu_register_service(gpu_t* g, void (*service)(void),
+                          void (*tests)(void (*report)(const char*, int, const char*)));
+void gpu_driver_tests(void (*report)(const char*, int, const char*));
 
 void   gpu_list(void);                  /* lsgpu */
 /* after gpu_init: a card with no driver here (AMD, NVIDIA, Intel Arc / Xe)

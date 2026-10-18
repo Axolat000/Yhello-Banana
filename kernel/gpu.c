@@ -13,6 +13,8 @@
 #define GPU_MAX 4
 static gpu_t* g_gpus[GPU_MAX];
 static void (*g_panic[GPU_MAX])(void);
+static void (*g_service[GPU_MAX])(void);
+static void (*g_tests[GPU_MAX])(void (*)(const char*, int, const char*));
 static int    g_ngpus;
 static gpu_t* g_active;
 
@@ -61,6 +63,15 @@ int gpu_register(gpu_t* g) {
     klog("gpu: %s (driver %s) on %02x:%02x.%u%s\n", g->name, g->driver, g->pci.bus, g->pci.dev, g->pci.fn,
          g->flush ? ", pushed to the screen" : "");
     return 0;
+}
+
+void gpu_register_service(gpu_t* g, void (*service)(void),
+                          void (*tests)(void (*)(const char*, int, const char*))) {
+    for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g) { g_service[i] = service; g_tests[i] = tests; }
+}
+void gpu_driver_tests(void (*report)(const char*, int, const char*)) {
+    for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g_active && g_tests[i]) { g_tests[i](report); return; }
+    terminal_writeln("  skip  asynchronous GPU queue - this driver has no queue test");
 }
 
 void gpu_register_panic(gpu_t* g, void (*present)(void)) {
@@ -113,6 +124,7 @@ static void flusher_task(void) {
     for (;;) {
         gpu_t* g = g_active;
         task_sleep_ms(g && g->flush ? 16 : 500);
+        for (int i = 0; i < g_ngpus; i++) if (g_gpus[i] == g && g_service[i]) g_service[i]();
         if (!g || !g->flush) continue;
         gpu_rect_t dirty[DIRTY_MAX];
         uintptr_t fl;
