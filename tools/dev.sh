@@ -17,7 +17,9 @@
 #
 # Environment: MEM (QEMU memory, default 512M), SMP (cores, default 4),
 # NIC (QEMU NIC model, default e1000), OVMF (UEFI firmware file),
-# DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio).
+# DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio),
+# CPU (QEMU's processor model: CPU=max has AVX / AVX2 / AVX-512),
+# KVM=1 (hardware virtualization: much faster, your processor's own features).
 
 set -uo pipefail
 
@@ -90,6 +92,8 @@ qemu_args() {
     esac
     # (-boot d: the CD first - the firmware would try the disk before it)
     if [ -n "${DISK:-}" ]; then args+=(-drive "file=$DISK,format=raw,if=virtio" -boot d); fi
+    if [ "${KVM:-0}" = 1 ]; then args+=(-enable-kvm -cpu "${CPU:-host}")
+    elif [ -n "${CPU:-}" ]; then args+=(-cpu "$CPU"); fi
     QEMU_BIN="$qemu"
     QEMU_ARGS=("${args[@]}")
 }

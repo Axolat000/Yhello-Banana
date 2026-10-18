@@ -388,6 +388,88 @@ static int t_malloc(void) {
     return 100 + (int)speed;                            /* (selftest: 100 + how many times faster) */
 }
 
+/* ── AVX: the YMM registers survive task switches, and a new thread finds
+ * none of another's in them ─────────────────────────────────────────── */
+#ifdef __x86_64__
+static int avx_usable(void) {
+    unsigned a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    if (!((c >> 27) & 1) || !((c >> 28) & 1)) return 0;   /* OSXSAVE (the system turned it on), AVX */
+    unsigned lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return (lo & 6) == 6;                                 /* SSE and AVX state saved by the system */
+}
+
+/* fills YMM0-15 from in (16 x 32 bytes), spins `spins` times touching only
+ * a counter, then writes them back to out: a task switch that loses any
+ * part of a YMM register shows in out */
+static void ymm_hold(const unsigned char* in, unsigned char* out, unsigned long spins) {
+    __asm__ volatile(
+        "vmovdqu   0(%0), %%ymm0\n vmovdqu  32(%0), %%ymm1\n vmovdqu  64(%0), %%ymm2\n vmovdqu  96(%0), %%ymm3\n"
+        "vmovdqu 128(%0), %%ymm4\n vmovdqu 160(%0), %%ymm5\n vmovdqu 192(%0), %%ymm6\n vmovdqu 224(%0), %%ymm7\n"
+        "vmovdqu 256(%0), %%ymm8\n vmovdqu 288(%0), %%ymm9\n vmovdqu 320(%0), %%ymm10\n vmovdqu 352(%0), %%ymm11\n"
+        "vmovdqu 384(%0), %%ymm12\n vmovdqu 416(%0), %%ymm13\n vmovdqu 448(%0), %%ymm14\n vmovdqu 480(%0), %%ymm15\n"
+        "1: dec %2\n jnz 1b\n"
+        "vmovdqu %%ymm0,   0(%1)\n vmovdqu %%ymm1,  32(%1)\n vmovdqu %%ymm2,  64(%1)\n vmovdqu %%ymm3,  96(%1)\n"
+        "vmovdqu %%ymm4, 128(%1)\n vmovdqu %%ymm5, 160(%1)\n vmovdqu %%ymm6, 192(%1)\n vmovdqu %%ymm7, 224(%1)\n"
+        "vmovdqu %%ymm8, 256(%1)\n vmovdqu %%ymm9, 288(%1)\n vmovdqu %%ymm10, 320(%1)\n vmovdqu %%ymm11, 352(%1)\n"
+        "vmovdqu %%ymm12, 384(%1)\n vmovdqu %%ymm13, 416(%1)\n vmovdqu %%ymm14, 448(%1)\n vmovdqu %%ymm15, 480(%1)\n"
+        "vzeroupper\n"
+        : "+r"(in), "+r"(out), "+r"(spins)
+        :
+        : "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+          "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+}
+
+static volatile int g_avx_bad, g_avx_leak;
+
+static int avx_worker(void* arg) {
+    unsigned char in[512], out[512];
+    unsigned x = 0xA5000000u + (unsigned)(long)arg * 7919u;
+    for (int round = 0; round < 6; round++) {
+        for (int i = 0; i < 512; i++) in[i] = (unsigned char)xs(&x);
+        ymm_hold(in, out, 30000000ul);                    /* long enough to be switched out many times */
+        if (memcmp(in, out, 512)) __sync_fetch_and_add(&g_avx_bad, 1);
+    }
+    return 0;
+}
+
+/* a new thread: are the upper halves of its YMM registers clean? */
+static int avx_fresh(void* arg) {
+    (void)arg;
+    unsigned char up[16 * 16];
+    __asm__ volatile(
+        "vextractf128 $1, %%ymm0,   0(%0)\n vextractf128 $1, %%ymm1,  16(%0)\n vextractf128 $1, %%ymm2,  32(%0)\n"
+        "vextractf128 $1, %%ymm3,  48(%0)\n vextractf128 $1, %%ymm4,  64(%0)\n vextractf128 $1, %%ymm5,  80(%0)\n"
+        "vextractf128 $1, %%ymm6,  96(%0)\n vextractf128 $1, %%ymm7, 112(%0)\n vextractf128 $1, %%ymm8, 128(%0)\n"
+        "vextractf128 $1, %%ymm9, 144(%0)\n vextractf128 $1, %%ymm10, 160(%0)\n vextractf128 $1, %%ymm11, 176(%0)\n"
+        "vextractf128 $1, %%ymm12, 192(%0)\n vextractf128 $1, %%ymm13, 208(%0)\n vextractf128 $1, %%ymm14, 224(%0)\n"
+        "vextractf128 $1, %%ymm15, 240(%0)\n"
+        :: "r"(up) : "memory");
+    for (int i = 0; i < 256; i++) if (up[i]) { __sync_fetch_and_add(&g_avx_leak, 1); break; }
+    return 0;
+}
+
+static int t_avx(void) {
+    if (!avx_usable()) { printf("avx: not usable here (no AVX, or the system did not turn it on)\n"); return 2; }
+    int n = banana_cpus() * 2;
+    if (n < 4) n = 4;
+    if (n > 16) n = 16;
+    int ids[16];
+    unsigned t0 = banana_ticks();
+    for (int i = 0; i < n; i++) ids[i] = banana_thread(avx_worker, (void*)(long)i);
+    for (int i = 0; i < n; i++) if (ids[i] > 0) banana_join(ids[i]);
+    unsigned ms = banana_ticks() - t0;
+    for (int i = 0; i < n; i++) ids[i] = banana_thread(avx_fresh, NULL);
+    for (int i = 0; i < n; i++) if (ids[i] > 0) banana_join(ids[i]);
+    printf("avx: %d threads x 6 rounds holding YMM0-15 (%u ms): %d changed; %d new threads, %d found old AVX state\n",
+           n, ms, g_avx_bad, n, g_avx_leak);
+    return g_avx_bad ? 1 : g_avx_leak ? 3 : 0;
+}
+#else
+static int t_avx(void) { printf("avx: the 32-bit build does not check it\n"); return 2; }
+#endif
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
@@ -400,7 +482,8 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
     if (!strcmp(m, "malloc")) return t_malloc();
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc\n"
+    if (!strcmp(m, "avx")) return t_avx();
+    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc | avx\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }

@@ -18,7 +18,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, malloc, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, malloc, AVX, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -32,6 +32,10 @@ selftest malloc          the apps' own heap (sdk/lib/malloc.c): random blocks wi
                          every byte checked, realloc, aligned blocks; then 200000
                          malloc + free on one thread and on every core, timed against
                          the kernel's allocator (64-bit: must be at least 2x as fast)
+selftest avx             2 threads per core fill YMM0-15 and spin until switched out
+                         and moved between cores many times: every byte must be
+                         back; then new threads must find their YMM upper halves
+                         clean (skipped without AVX: CPU=max or KVM=1 in QEMU)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /

@@ -8,6 +8,7 @@
 #include "app.h"
 #include "serial.h"
 #include "paging.h"
+#include "fpu.h"
 
 #define KSTACK_GUARD (16u << 10)
 
@@ -83,7 +84,7 @@ typedef struct task {
     uintptr_t    fault_ip, fault_addr;
     kjmp_buf_t*  recover;                 /* where a crash in its own code goes (task_set_recover) */
     char         crash[112];              /* what the last one was */
-    uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
+    uint8_t      fpu[FPU_AREA] __attribute__((aligned(64)));   /* FPU/SSE/AVX registers while switched out (xsave: 64-byte aligned) */
     uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
     uintptr_t    fs_base;                 /* ... and its thread pointer (TLS, 64-bit): task_set_fs */
@@ -159,30 +160,9 @@ static void task_exit_stub(void) {
     for (;;) __asm__ volatile("hlt");
 }
 
-/* Every task has its own FPU/SSE registers (apps compute with float and
- * double; the browser's JavaScript uses the x87): saved when a task is
- * switched out, restored when it comes back. fxsave when the CPU has it
- * (it also covers SSE), the older fnsave otherwise. */
-static int g_fxsr = -1;
-
-static int have_fxsr(void) {
-    if (g_fxsr < 0) {
-        uint32_t a = 1, b, c, d;
-        __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-        g_fxsr = (d >> 24) & 1;
-    }
-    return g_fxsr;
-}
-
-static void fpu_save(uint8_t* area) {
-    if (have_fxsr()) __asm__ volatile("fxsave (%0)" :: "r"(area) : "memory");
-    else __asm__ volatile("fnsave (%0)" :: "r"(area) : "memory");
-}
-
-static void fpu_restore(uint8_t* area) {
-    if (have_fxsr()) __asm__ volatile("fxrstor (%0)" :: "r"(area) : "memory");
-    else __asm__ volatile("frstor (%0)" :: "r"(area) : "memory");
-}
+/* Every task has its own FPU/SSE/AVX registers (apps compute with float
+ * and double, maybe AVX; the browser's JavaScript uses the x87): saved when
+ * a task is switched out, restored when it comes back - kernel/fpu.c. */
 
 /* ── tasks waiting for another core ──────────────────────────────── */
 
@@ -472,12 +452,9 @@ static void switch_to(task_t* cur, task_t* nxt) {
  * normal 0-argument call - no arguments need passing here. */
 static void task_trampoline(void) {
     finish_switch();
-    /* a fresh task starts with clean FPU/SSE registers */
-    __asm__ volatile("fninit");
-    if (have_fxsr()) {
-        uint32_t mxcsr = 0x1F80;
-        __asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
-    }
+    /* a fresh task starts with clean FPU/SSE/AVX registers - nothing of
+     * the task that ran before it (fninit alone left the SSE ones) */
+    fpu_reset();
     g_current->run_start = rdtsc();
     g_current->switched_in = g_current->run_start;
     terminal_vt_set_active(g_current->vt);
@@ -1051,7 +1028,7 @@ void task_smp_unpause(void) {
 /* the boot core takes over a task that faulted elsewhere: app_fault() stops the app */
 static void ap_fault_landing(void) {
     finish_switch();
-    __asm__ volatile("fninit");
+    fpu_reset();
     task_t* self = g_current;
     self->run_start = rdtsc();
     terminal_vt_set_active(self->vt);

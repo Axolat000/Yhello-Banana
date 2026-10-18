@@ -1,6 +1,7 @@
 /* Initial S3 target: QEMU's PC/PIIX4, std VGA, e1000 and optional virtio-blk.
  * Other platforms need AML method execution and their own driver PM hooks. */
 #include "acpi_sleep.h"
+#include "fpu.h"
 #include "smp.h"
 #include "idt.h"
 #include "task.h"
@@ -198,6 +199,7 @@ int acpi_s3_suspend(unsigned seconds,char* reason,int cap) {
     for(int i=0;i<ndevices;i++) { pci_dev_t* d=&devices[i].dev;pci_write16(d->bus,d->dev,d->fn,4,(uint16_t)devices[i].cfg[1]&~4u); }
     klog("acpi: entering S3; wake vector %x%s\n",wake,armed?", RTC alarm armed":"");serial_kick();
     rc=s3_arch_suspend();
+    fpu_cpu_init();                         /* (the wake reset XCR0: AVX state cannot be restored without it) */
     serial_init();pci_restore();idt_s3_resume();timer_s3_resume(before);
     int ap_rc=smp_s3_resume();
     outw(pm.cnta,old_cnta);if(pm.cntb)outw(pm.cntb,old_cntb);

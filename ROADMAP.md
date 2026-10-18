@@ -92,8 +92,8 @@ Done in this order, each with its own build, `selftest` part and commit.
 | Optimization | Status | Notes |
 |---|---|---|
 | malloc inside the app | **testing** (build 190) | `sdk/lib/malloc.c`: size classes in 64 KiB spans, a cache of free blocks per thread (no lock, no system call for most calls), large blocks mapped, memory given back; the heap is mapped memory, so swap compresses it. `selftest malloc`; `tools/test_malloc.py` passes on Linux (1.2M random calls, 8 threads, aligned blocks, nothing left in use). |
-| AVX (XSAVE) | next | The kernel never enables XSAVE, so apps cannot use AVX/AVX2 (FFmpeg, Mesa, HotSpot fall back to SSE); task switches save with `fxsave`, which would lose the upper halves of AVX registers. |
-| `syscall` / `sysret` | planned | System calls enter through `int 0x80`, the slowest way; the 8-byte stubs can change without rebuilding apps. |
+| AVX (XSAVE) | **testing** (build 191) | `kernel/fpu.c`: XSAVE turned on (x87, SSE, AVX, AVX-512 when present) on every core and after a wake; task switches use `xsave` / `xrstor` (3 KiB areas); new tasks start from clean registers (fninit used to leave the SSE ones of the task before). `lscpu` shows it; `selftest avx` (QEMU: `CPU=max` or `KVM=1`). Signal frames still save the SSE part only. |
+| `syscall` / `sysret` | next | System calls enter through `int 0x80`, the slowest way; the 8-byte stubs can change without rebuilding apps. |
 | Interrupt-driven disk I/O | planned | AHCI and virtio-blk are polled; interrupts and some read-ahead free the CPU while the disk works. |
 | A faster kernel heap | planned | `kmalloc` walks one first-fit list from the start; size-class bins. |
 | Fewer TLB flushes | planned | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
