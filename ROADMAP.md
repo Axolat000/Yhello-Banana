@@ -93,8 +93,8 @@ Done in this order, each with its own build, `selftest` part and commit.
 |---|---|---|
 | malloc inside the app | **testing** (build 190) | `sdk/lib/malloc.c`: size classes in 64 KiB spans, a cache of free blocks per thread (no lock, no system call for most calls), large blocks mapped, memory given back; the heap is mapped memory, so swap compresses it. `selftest malloc`; `tools/test_malloc.py` passes on Linux (1.2M random calls, 8 threads, aligned blocks, nothing left in use). |
 | AVX (XSAVE) | **testing** (build 191) | `kernel/fpu.c`: XSAVE turned on (x87, SSE, AVX, AVX-512 when present) on every core and after a wake; task switches use `xsave` / `xrstor` (3 KiB areas); new tasks start from clean registers (fninit used to leave the SSE ones of the task before). `lscpu` shows it; `selftest avx` (QEMU: `CPU=max` or `KVM=1`). Signal frames still save the SSE part only. |
-| `syscall` / `sysret` | next | System calls enter through `int 0x80`, the slowest way; the 8-byte stubs can change without rebuilding apps. |
-| Interrupt-driven disk I/O | planned | AHCI and virtio-blk are polled; interrupts and some read-ahead free the CPU while the disk works. |
+| `syscall` / `sysret` | **testing** (build 192) | The call stubs use `syscall` (the 4th argument in r10) and return with `sysret`; the task's kernel stack through a per-core area (`swapgs`); a kernel code/data pair for syscall's selectors. `int 0x80` stays; sigreturn and non-canonical returns go back by `iretq`. `selftest syscall`. |
+| Interrupt-driven disk I/O | next | AHCI and virtio-blk are polled; interrupts and some read-ahead free the CPU while the disk works. |
 | A faster kernel heap | planned | `kmalloc` walks one first-fit list from the start; size-class bins. |
 | Fewer TLB flushes | planned | Every switch between apps drops all cached translations, the kernel's too: global kernel pages, then PCID. |
 | TCP window scaling and SACK | planned | The receive window is capped at 64 KiB, so a download gets at most 64 KiB per round trip (about 1.3 MB/s at 50 ms). |

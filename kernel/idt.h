@@ -34,5 +34,8 @@ int  lapic_x2apic_locked(void);
 void tss_set_rsp0(int cpu, uintptr_t rsp0);
 /* the system call vector: int 0x80 from ring 3 (kernel/isr64.asm) */
 #define SYSCALL_VECTOR 0x80
+/* 64-bit: the processor has the syscall instruction (set up on every core:
+ * the apps' call stubs use it - faster than int 0x80, which stays too) */
+int idt_has_syscall(void);
 
 #endif

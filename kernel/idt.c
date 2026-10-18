@@ -429,15 +429,67 @@ static struct tss64 g_tss[SMP_MAX_CPUS];
 #define FAULT_STACK 16384u
 static uint8_t g_fault_stack0[FAULT_STACK] __attribute__((aligned(16)));
 /* null, 64-bit code (0x08), a TSS (16 bytes) per core, then ring 3's data
- * and code (apps: kernel/app.c) */
+ * and code (apps: kernel/app.c) - in that order, which sysret needs - then
+ * a kernel code and data pair for the syscall instruction (it loads SS from
+ * the selector after its CS: after 0x08 comes core 0's TSS, which iretq
+ * would refuse as a stack segment) */
 #define GDT_USER (2 + 2 * SMP_MAX_CPUS)
-static uint64_t g_gdt[GDT_USER + 2];
+#define GDT_KSYS (GDT_USER + 2)
+static uint64_t g_gdt[GDT_KSYS + 2];
 /* the selectors apps run with (kernel/appcall64.asm) */
 uint64_t g_user_ss = (GDT_USER * 8) | 3;
 uint64_t g_user_cs = ((GDT_USER + 1) * 8) | 3;
 
+/* each core's area for syscall_entry (kernel/isr64.asm), reached through
+ * GS (swapgs): the kernel stack of the task running there - the TSS's
+ * rsp0 - and a place to keep the app's stack pointer */
+typedef struct { uint64_t kstack; uint64_t ustack; uint64_t pad[6]; } percpu_t;
+static percpu_t g_percpu[SMP_MAX_CPUS] __attribute__((aligned(64)));
+
 void tss_set_rsp0(int cpu, uintptr_t rsp0) {
-    if (cpu >= 0 && cpu < SMP_MAX_CPUS) g_tss[cpu].rsp[0] = rsp0;
+    if (cpu < 0 || cpu >= SMP_MAX_CPUS) return;
+    g_tss[cpu].rsp[0] = rsp0;
+    g_percpu[cpu].kstack = rsp0;
+}
+
+static void wrmsr64(uint32_t msr, uint64_t v) {
+    __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)));
+}
+static uint64_t rdmsr64(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return lo | ((uint64_t)hi << 32);
+}
+
+int idt_has_syscall(void) {
+    static int has = -1;
+    if (has < 0) {
+        uint32_t a = 0x80000000u, b, c, d;
+        __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+        has = 0;
+        if (a >= 0x80000001u) {
+            a = 0x80000001u;
+            __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+            has = (d >> 11) & 1;                        /* SYSCALL / SYSRET */
+        }
+    }
+    return has;
+}
+
+extern void syscall_entry(void);
+
+/* the syscall instruction on this core: where it goes, with which
+ * selectors and flags cleared, and this core's area for swapgs */
+static void syscall_cpu_init(int cpu) {
+    if (!idt_has_syscall()) return;
+    wrmsr64(0xC0000080, rdmsr64(0xC0000080) | 1);       /* EFER.SCE */
+    /* STAR: syscall loads CS = GDT_KSYS, SS = the next one; sysret
+     * CS = base + 16 (ring 3's 64-bit code), SS = base + 8 (its data) */
+    wrmsr64(0xC0000081, ((uint64_t)((GDT_USER * 8 - 8) | 3) << 48) | ((uint64_t)(GDT_KSYS * 8) << 32));
+    wrmsr64(0xC0000082, (uint64_t)(uintptr_t)syscall_entry);           /* LSTAR */
+    wrmsr64(0xC0000084, 0x47700);                       /* FMASK: IF, TF, DF, IOPL, NT, AC off on entry */
+    wrmsr64(0xC0000101, 0);                             /* GS base: the app's (none) */
+    wrmsr64(0xC0000102, (uint64_t)(uintptr_t)&g_percpu[cpu]);          /* KERNEL_GS_BASE: swapgs's */
 }
 
 static void gdt_load_cpu(int cpu) {
@@ -449,6 +501,7 @@ static void gdt_load_cpu(int cpu) {
     __asm__ volatile("xor %%eax, %%eax; mov %%ax, %%ss; mov %%ax, %%ds; mov %%ax, %%es; mov %%ax, %%fs; mov %%ax, %%gs"
                      ::: "rax", "memory");
     __asm__ volatile("ltr %w0" :: "r"((uint16_t)(0x10 + 16 * cpu)));
+    syscall_cpu_init(cpu);                  /* (at boot, on each core as it starts, after a wake) */
 }
 
 static void tss_init(void) {
@@ -466,6 +519,8 @@ static void tss_init(void) {
     }
     g_gdt[GDT_USER] = 0x00CFF2000000FFFFull;        /* data, ring 3 */
     g_gdt[GDT_USER + 1] = 0x00AFFA000000FFFFull;    /* 64-bit code, ring 3 */
+    g_gdt[GDT_KSYS] = 0x00AF9A000000FFFFull;        /* 64-bit code, ring 0 (as 0x08): syscall's */
+    g_gdt[GDT_KSYS + 1] = 0x00CF92000000FFFFull;    /* data, ring 0: syscall's stack segment */
     gdt_load_cpu(0);
 }
 
@@ -509,6 +564,7 @@ void irq_timer_from_lapic(int on) {
 }
 #else
 void tss_set_rsp0(int cpu, uintptr_t rsp0) { (void)cpu; (void)rsp0; }   /* (apps stay in ring 0) */
+int idt_has_syscall(void) { return 0; }
 #endif
 
 void idt_s3_resume(void) {

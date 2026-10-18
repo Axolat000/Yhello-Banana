@@ -470,6 +470,69 @@ static int t_avx(void) {
 static int t_avx(void) { printf("avx: the 32-bit build does not check it\n"); return 2; }
 #endif
 
+/* ── system calls: the syscall entry (stubs "mov r10, rcx; mov eax, slot;
+ * syscall; ret") against int 0x80, which stays for comparison ─────────── */
+#ifdef __x86_64__
+#define SC_CALLS 200000
+
+/* a call through the table keeps rbx and r12-r15 (callee-saved) */
+static int sc_saved(void) {
+    unsigned long bad;
+    void* fn = (void*)__banana->ticks_ms;
+    __asm__ volatile(
+        "mov $0x1111111111111111, %%rbx\n mov $0x1212121212121212, %%r12\n mov $0x1313131313131313, %%r13\n"
+        "mov $0x1414141414141414, %%r14\n mov $0x1515151515151515, %%r15\n"
+        "call *%1\n"
+        "xor %0, %0\n"
+        "mov $0x1111111111111111, %%rax\n cmp %%rax, %%rbx\n setne %b0\n"
+        "mov $0x1212121212121212, %%rax\n cmp %%rax, %%r12\n jne 1f\n"
+        "mov $0x1313131313131313, %%rax\n cmp %%rax, %%r13\n jne 1f\n"
+        "mov $0x1414141414141414, %%rax\n cmp %%rax, %%r14\n jne 1f\n"
+        "mov $0x1515151515151515, %%rax\n cmp %%rax, %%r15\n jne 1f\n"
+        "jmp 2f\n 1: mov $1, %0\n 2:\n"
+        : "=&r"(bad), "+r"(fn)
+        :
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "rbx", "r12", "r13", "r14", "r15", "memory", "cc");
+    return bad ? 0 : 1;
+}
+
+/* draw_text: 9 arguments - the 4th (h) in r10 now, 3 on the stack */
+static int sc_args(void) {
+    static unsigned px[16 * 8];
+    for (int i = 0; i < 16 * 8; i++) px[i] = 0x123456;
+    __banana->draw_text(px, 16, 16, 5, 0, 0, "A", 0xFFFFFF, 0);    /* h = 5: rows 5..7 stay */
+    const unsigned char* g = __banana->font8x8 + 'A' * 8;  /* (128 glyphs of 8 rows, bit 0 leftmost) */
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++) {
+            unsigned want = y >= 5 ? 0x123456u : ((g[y] >> x) & 1) ? 0xFFFFFFu : 0u;
+            if (px[y * 16 + x] != want) return 0;
+        }
+    return 1;
+}
+
+static int t_syscall(void) {
+    int ok_saved = sc_saved(), ok_args = sc_args();
+    unsigned slot = (unsigned)(__builtin_offsetof(banana_api_t, ticks_ms) / sizeof(void*));
+    unsigned t0 = banana_ticks();
+    for (int i = 0; i < SC_CALLS; i++) (void)__banana->ticks_ms();
+    unsigned t_sc = banana_ticks() - t0;
+    t0 = banana_ticks();
+    for (int i = 0; i < SC_CALLS; i++) {
+        unsigned long rax = slot;
+        __asm__ volatile("int $0x80" : "+a"(rax) :: "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "memory");
+    }
+    unsigned t_int = banana_ticks() - t0;
+    unsigned ratio10 = t_sc ? (t_int * 10u + t_sc / 2) / t_sc : 99u;   /* (tenths) */
+    printf("syscall: registers kept %s, 9-argument call %s; %d calls: stubs %u ms, int 0x80 %u ms (%u.%ux)\n",
+           ok_saved ? "yes" : "NO", ok_args ? "right" : "WRONG", SC_CALLS, t_sc, t_int, ratio10 / 10, ratio10 % 10);
+    if (!ok_saved || !ok_args) return 1;
+    if (ratio10 > 155) ratio10 = 155;
+    return 100 + (int)ratio10;                          /* (selftest: 100 + tenths of how much faster) */
+}
+#else
+static int t_syscall(void) { printf("syscall: the 32-bit build has no system call entry to check\n"); return 2; }
+#endif
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
@@ -483,7 +546,8 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
     if (!strcmp(m, "malloc")) return t_malloc();
     if (!strcmp(m, "avx")) return t_avx();
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc | avx\n"
+    if (!strcmp(m, "syscall")) return t_syscall();
+    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS | malloc | avx | syscall\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }

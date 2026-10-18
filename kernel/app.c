@@ -1955,6 +1955,7 @@ typedef struct {
  * back from the frame (maybe changed by the handler). */
 
 #define SYS_SIGRETURN (API_SLOTS + 1)
+#define STUB 16                         /* bytes per call stub in the app's table (make_uapi) */
 
 static void __attribute__((noreturn)) bad_call(app_proc_t* p, uint64_t slot, const char* why);
 
@@ -2179,6 +2180,7 @@ void app_syscall(sysframe_t* r) {
     }
     if (slot == SYS_SIGRETURN) {                /* a signal handler returned */
         sig_return(p, r);
+        r->int_no = 0x81;                       /* back by iretq: rcx / r11 too (sysret would not) */
         sig_check(p, r);
         __asm__ volatile("cli");
         return;
@@ -2196,36 +2198,51 @@ void app_syscall(sysframe_t* r) {
  * a stub; the font and the strings copied; the return stub after them */
 static int make_uapi(app_proc_t* p) {
     size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
-    size_t stubs = API_SLOTS * 8 + 32;              /* (+ the return and sigreturn stubs) */
+    size_t stubs = API_SLOTS * STUB + 2 * STUB;     /* (+ the return and sigreturn stubs) */
     uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
     if (!m) return -1;
     banana_api_t* ua = (banana_api_t*)m;
     memcpy(ua, &g_api, sizeof(g_api));
     void** slot = (void**)ua;
     uint8_t* st = m + tab;
-    for (uint32_t k = 0; k < API_SLOTS; k++, st += 8) {
-        st[0] = 0xB8;                                   /* mov eax, k */
-        memcpy(st + 1, &k, 4);
-        st[5] = 0xCD; st[6] = SYSCALL_VECTOR;           /* int 0x80 */
-        st[7] = 0xC3;                                   /* ret */
+    int sc = idt_has_syscall();
+    for (uint32_t k = 0; k < API_SLOTS; k++, st += STUB) {
+        memset(st, 0xCC, STUB);                         /* (int3 in the gaps) */
+        if (sc) {
+            /* mov r10, rcx; mov eax, k; syscall; ret - syscall keeps the
+             * return address in rcx, so the 4th argument goes in r10 */
+            st[0] = 0x49; st[1] = 0x89; st[2] = 0xCA;
+            st[3] = 0xB8; memcpy(st + 4, &k, 4);
+            st[8] = 0x0F; st[9] = 0x05;
+            st[10] = 0xC3;
+        } else {
+            st[0] = 0xB8;                               /* mov eax, k */
+            memcpy(st + 1, &k, 4);
+            st[5] = 0xCD; st[6] = SYSCALL_VECTOR;       /* int 0x80 */
+            st[7] = 0xC3;                               /* ret */
+        }
         if (g_spec[k].args) slot[k] = st;
     }
-    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * 8;
+    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * STUB;
     /* A C function returns its int in eax. Preserve it as the syscall's
      * first argument BEFORE loading the syscall number into eax. Ordinary
      * call stubs leave rdi alone; it is not the function's return value. */
+    memset(st, 0xCC, 2 * STUB);
     st[0] = 0x89; st[1] = 0xC7;                         /* mov edi, eax */
     st[2] = 0xB8;                                      /* mov eax, SYS_RETURN */
     uint32_t ret_slot = SYS_RETURN;
     memcpy(st + 3, &ret_slot, 4);
-    st[7] = 0xCD; st[8] = SYSCALL_VECTOR;
+    if (sc) { st[7] = 0x0F; st[8] = 0x05; }            /* syscall */
+    else { st[7] = 0xCD; st[8] = SYSCALL_VECTOR; }      /* int 0x80 */
     st[9] = 0x0F; st[10] = 0x0B;                        /* ud2: must not return */
-    /* where a signal handler returns to (sig_deliver): the frame is under rsp */
-    st += 16;
+    /* where a signal handler returns to (sig_deliver): the frame is under rsp
+     * (rcx and r11, which syscall overwrites, come back from it: iretq) */
+    st += STUB;
     st[0] = 0xB8;                                       /* mov eax, SYS_SIGRETURN */
     uint32_t sr_slot = SYS_SIGRETURN;
     memcpy(st + 1, &sr_slot, 4);
-    st[5] = 0xCD; st[6] = SYSCALL_VECTOR;
+    if (sc) { st[5] = 0x0F; st[6] = 0x05; }
+    else { st[5] = 0xCD; st[6] = SYSCALL_VECTOR; }
     st[7] = 0x0F; st[8] = 0x0B;                         /* ud2: does not return here */
     p->sigret_stub = (uintptr_t)st;
     uint8_t* font = m + tab + stubs;

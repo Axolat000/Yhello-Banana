@@ -1,4 +1,5 @@
 #include "selftest.h"
+#include "../kernel/idt.h"
 #include "../kernel/fpu.h"
 #include "../kernel/bootmenu_test.h"
 #include "../kernel/bootmem_test.h"
@@ -179,6 +180,21 @@ static void t_avx(void) {
     int rc = run("avx", NULL, NULL);
     report("YMM registers kept across task switches", rc == 0 || rc == 3, rc == 1 ? "a thread's registers changed" : fp);
     report("a new thread finds no other thread's AVX state", rc == 0, rc == 3 ? "old YMM halves were left" : "");
+}
+
+static void t_syscall(void) {
+    section("system calls through syscall / sysret (build 192)");
+#ifdef __x86_64__
+    int rc = run("syscall", NULL, NULL);
+    report("registers kept, a 9-argument call right", rc >= 100, rc >= 100 ? "" : "see the line above");
+    if (rc < 100) return;
+    char note[96];
+    ksnprintf(note, sizeof(note), "%d.%dx as fast as int 0x80 (times above)", (rc - 100) / 10, (rc - 100) % 10);
+    if (!idt_has_syscall()) skip("faster than int 0x80", "this processor has no syscall instruction: the stubs use int 0x80");
+    else report("faster than int 0x80", rc - 100 >= 11, note);
+#else
+    skip("the syscall entry", "the 32-bit kernel calls the system directly (ring 0)");
+#endif
 }
 
 /* Install the matching built-in test, even if an older package is on disk. */
@@ -576,8 +592,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | malloc | avx | syscall | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -613,6 +629,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "sleep") ? "selftest: checking ACPI S3" :
                      only && !strcmp(only, "malloc") ? "selftest: checking the apps' heap" :
                      only && !strcmp(only, "avx") ? "selftest: checking AVX" :
+                     only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"sleep")) {
         t_sleep(argc==3);
@@ -655,6 +672,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "cores")) t_cores();
         if (!only || !strcmp(only, "malloc")) t_malloc();
         if (!only || !strcmp(only, "avx")) t_avx();
+        if (!only || !strcmp(only, "syscall")) t_syscall();
         if (!only) {
             t_opencl();
             browser_test_run(report);
