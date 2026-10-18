@@ -37,6 +37,10 @@ selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
                          incremental updates preserve unchanged options and header pixels
 selftest ram             firmware RAM reporting: complete maps before/after legacy counts,
                          8/24/64 GiB totals, reserved holes, malformed input and live totals
+selftest sleep           static ACPI sleep-package and wake-page checks; capability status;
+                         does not suspend (also included in the default selftest)
+selftest sleep cycle     actually enter S3, wake by RTC, check live user threads, FPU/stack
+                         retention, the resumed timer and the wake trampoline's return
 selftest mouse           deterministic relative-movement, ownership and release-state checks
 selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
                          click to capture, look around, Escape releases, Q exits
@@ -263,3 +267,37 @@ Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
 64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
 BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
 maps; those larger guest sizes were not run on this host.
+
+### ACPI S3 sleep (QEMU first)
+
+The initial profile is QEMU's PC/PIIX4 machine, standard VGA, e1000 (or no
+NIC), and optional virtio-blk storage. `sleep status` checks the firmware's
+S3 package, FACS, usable waking-vector RAM, display and device support.
+Unsupported configurations return a reason before entering sleep. This
+does not provide generic physical-PC ACPI power management or an AML
+interpreter; Q35/AHCI, other GPUs/NICs, USB controllers and audio-controller
+resume need additional driver support.
+
+Rebuild with `tools/dev.sh run`, then use `selftest sleep cycle`. The safe
+`selftest sleep` runs 24 parser/memory-map checks plus the platform check
+(or a skip when unavailable). The cycle adds live user threads that retain
+their stack and floating-point values across S3, a stack marker in the
+caller, resumed interrupts/monotonic time, and the actual firmware return:
+30 checks on a supported guest. It uses a five-second RTC alarm, with the
+clock's one-second granularity. Repeating the cycle checks reuse of CPU
+stacks and device buffers. A default `selftest` never suspends the machine.
+
+`sleep 5` is a simple timed sleep. `sleep` without a delay, Start's power
+menu > Sleep, and Settings > About > Sleep wait for a host wake request.
+In QEMU, Ctrl+Alt+2 opens the monitor: enter `system_wakeup`, then use
+Ctrl+Alt+1 to return to the display. A host test can also issue QMP
+`system_wakeup`. Installed filesystem data is synced before suspend;
+monotonic timers pause while asleep and the wall clock is reread on wake.
+This keeps the session in RAM, rather than saving a hibernation image.
+
+`python3 tools/test_sleep.py --sanitize` or `--32` runs the same 24 static
+checks on the host without suspending any machine. Firmware/device
+validation requires a VM cycle. The wake protocol follows the
+[ACPI sleeping/waking specification](https://uefi.org/specs/ACPI/6.6/16_Waking_and_Sleeping.html);
+QEMU's wake path can reset devices, so driver restoration is required
+([QEMU reset documentation](https://www.qemu.org/docs/master/devel/reset.html)).

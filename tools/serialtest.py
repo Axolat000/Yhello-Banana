@@ -91,7 +91,10 @@ def main():
             if got:
                 quiet = None
                 continue
-            if text[since:].rstrip(" ").endswith("$") and text.endswith("$ "):
+            # Async daemon messages can arrive immediately after the prompt.
+            # A line editor also echoes prompts while typing: accept only an
+            # empty prompt or one followed by a daemon's "name:" prefix.
+            if re.search(r"banana@banana-os[^$\n]*\$ (?=\n|$|[A-Za-z0-9_-]+:|app \S+ exited \()", text[since:]):
                 quiet = quiet or time.time()
                 if time.time() - quiet > 0.7:
                     return True
@@ -120,7 +123,10 @@ def main():
                 time.sleep(0.01)
             ok = wait_prompt(mark + len(c), a.timeout)
             out = text[mark:]
-            bad = BAD.search(out)
+            # Signal tests intentionally recover from faults. Their successful
+            # check labels name the fault; genuine crash lines still fail.
+            diagnostics = "\n".join(l for l in out.splitlines() if not re.match(r"\s*ok\s", l))
+            bad = BAD.search(diagnostics)
             for l in out.splitlines()[1:-1]:
                 print("    " + l)
             why = bad.group(0) if bad else ""

@@ -211,6 +211,8 @@ typedef struct {
 #define AP_HOME_MS  100           /* the boot core sees each task this often (Ctrl+C, End task, painting) */
 
 static ap_t g_ap[SMP_MAX_CPUS];
+static volatile int g_sleep_pause;
+static volatile int g_sleep_parked[SMP_MAX_CPUS];
 static uint32_t g_core_pct[SMP_MAX_CPUS];   /* per core, from sysmon's last sample */
 
 /* The idle core to wake for queued work: best one whose hardware-thread
@@ -220,6 +222,7 @@ static uint32_t g_core_pct[SMP_MAX_CPUS];   /* per core, from sysmon's last samp
  * efficient one. The boot core counts as busy (it runs the kernel). */
 static int core_busy(int c) { return c == 0 || !g_ap[c].idle; }
 static int pick_idle_core(void) {
+    if(g_sleep_pause)return -1;
     int best = -1, best_score = -1, n = cpu_count();
     for (int c = 1; c < n; c++) {
         if (!g_ap[c].idle) continue;
@@ -946,6 +949,12 @@ void task_ap_loop(int cpu) {
     ap_t* a = &g_ap[cpu];
     for (;;) {
         __asm__ volatile("cli");
+        if(g_sleep_pause) {
+            a->idle=1;__sync_synchronize();g_sleep_parked[cpu]=1;
+            __asm__ volatile("sti; hlt; cli" ::: "memory");
+            continue;
+        }
+        g_sleep_parked[cpu]=0;
         task_t* t = q_pop();
         if (!t) {
             a->idle = 1;
@@ -997,6 +1006,7 @@ void task_ipi(void) {
     ap_t* a = &g_ap[c];
     task_t* t = a->task;
     if (!t) return;                         /* the idle loop looks at the queue itself */
+    if(g_sleep_pause){ap_switch_out(a,t,AP_HOME);return;}
     uint32_t ran = timer_ms() - a->since;
     if (ran >= AP_HOME_MS) ap_switch_out(a, t, AP_HOME);
     else if (g_qlen && ran >= ap_slice(t)) ap_switch_out(a, t, AP_REQUEUE);
@@ -1018,6 +1028,24 @@ void task_smp_tick(void) {
         if (!t) continue;
         if (ran >= AP_HOME_MS || (g_qlen && ran >= ap_slice(t))) smp_send_ipi(c, SMP_VEC_KICK);
     }
+}
+
+int task_smp_pause(void) {
+    g_sleep_pause=1;__sync_synchronize();
+    for(int c=1;c<cpu_count();c++)smp_send_ipi(c,SMP_VEC_KICK);
+    uint32_t start=timer_ms();
+    for(;;) {
+        int all=1;
+        for(int c=1;c<cpu_count();c++)if(!g_sleep_parked[c])all=0;
+        if(all)return 0;
+        if(timer_ms()-start>1000){task_smp_unpause();return -1;}
+        timer_idle();
+    }
+}
+void task_smp_unpause(void) {
+    g_current->run_start=rdtsc();g_current->switched_in=g_current->run_start;
+    g_sleep_pause=0;__sync_synchronize();
+    for(int c=1;c<cpu_count();c++){g_sleep_parked[c]=0;smp_send_ipi(c,SMP_VEC_KICK);}
 }
 
 /* the boot core takes over a task that faulted elsewhere: app_fault() stops the app */

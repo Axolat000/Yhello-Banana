@@ -19,6 +19,7 @@
 #include <string.h>
 #include <banana.h>
 #include <sys/mman.h>
+#include <stdint.h>
 
 static unsigned xs(unsigned* x) {
     *x ^= *x << 13; *x ^= *x >> 17; *x ^= *x << 5;
@@ -262,6 +263,44 @@ static int t_swap(int mib, int wait) {
     return bad ? 1 : 0;
 }
 
+/* Keep actual user-mode work live across a kernel S3 cycle. The shell owns
+ * unique ready/stop/result paths; a monotonic timeout also ends the helper. */
+static volatile int pm_running,pm_started,pm_bad;
+static int pm_worker(void* arg) {
+    unsigned id=(unsigned)(uintptr_t)arg,n=0;
+    volatile unsigned marker[128];
+    for(unsigned i=0;i<128;i++)marker[i]=0x53330000u^(id<<12)^i;
+    double initial=1.25+id,value=initial;
+    __sync_add_and_fetch(&pm_started,1);
+    while(__atomic_load_n(&pm_running,__ATOMIC_ACQUIRE)) {
+        value+=0.5;n++;
+        if(n==1000000) {
+            if(value!=initial+n*0.5)__atomic_store_n(&pm_bad,1,__ATOMIC_RELEASE);
+            value=initial;n=0;
+        }
+    }
+    if(value!=initial+n*0.5)return 1;
+    for(unsigned i=0;i<128;i++)if(marker[i]!=(0x53330000u^(id<<12)^i))return 1;
+    return 0;
+}
+static int t_suspend(const char* path) {
+    char ready[96],stop[96];snprintf(ready,sizeof(ready),"%s.ready",path);snprintf(stop,sizeof(stop),"%s.stop",path);
+    int ids[8],n=banana_cpus();if(n<2)n=2;if(n>8)n=8;
+    __atomic_store_n(&pm_running,1,__ATOMIC_RELEASE);unsigned start=banana_ticks();int bad=0;
+    for(int i=0;i<n;i++){ids[i]=banana_thread(pm_worker,(void*)(uintptr_t)i);if(ids[i]<=0)bad=1;}
+    while(__atomic_load_n(&pm_started,__ATOMIC_ACQUIRE)<n && banana_ticks()-start<2000)banana_sleep(10);
+    if(__atomic_load_n(&pm_started,__ATOMIC_ACQUIRE)!=n)bad=1;
+    FILE* f=fopen(ready,"w");if(f){fputs(bad?"failed":"ready",f);fclose(f);}else bad=1;
+    while(banana_ticks()-start<10000) {
+        f=fopen(stop,"r");if(f){fclose(f);break;}banana_sleep(10);
+    }
+    __atomic_store_n(&pm_running,0,__ATOMIC_RELEASE);
+    for(int i=0;i<n;i++)if(ids[i]<=0 || banana_join(ids[i]))bad=1;
+    bad|=__atomic_load_n(&pm_bad,__ATOMIC_ACQUIRE);
+    f=fopen(path,"w");if(f){fputs(bad?"failed":"ok",f);fclose(f);}else bad=1;
+    return bad;
+}
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
@@ -270,6 +309,7 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "threads")) return t_threads(a > 0 ? a : 8);
     if (!strcmp(m, "files")) return t_files(a > 0 ? a : 8);
     if (!strcmp(m, "cores")) return t_cores();
+    if (!strcmp(m, "suspend") && argc>2) return t_suspend(argv[2]);
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
     printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"

@@ -19,6 +19,7 @@ void irq_install(int irq, void (*handler)(void));
 /* another processor core, starting (kernel/smp.c, 64-bit): the kernel's
  * GDT with that core's own TSS, and the IDT */
 void idt_ap_init(int cpu);
+void idt_s3_resume(void); /* retain gates/handlers/TSS, restore CPU and PIC state */
 /* 64-bit: the timer (IRQ 0's handlers) runs from the local APIC timer (1) or the PIT (0) */
 void irq_timer_from_lapic(int on);
 /* before a restart (in a VM): the local APIC as a BIOS expects it */

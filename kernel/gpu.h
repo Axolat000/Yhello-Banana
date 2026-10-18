@@ -76,6 +76,7 @@ const char* gpu_family_name(uint16_t vendor, uint16_t device);   /* "NVIDIA GeFo
 
 /* the built-in drivers: 0 if it took the device */
 int gpu_bga_probe(const pci_dev_t* d);
+int gpu_bga_s3_resume(void);
 int gpu_vmsvga_probe(const pci_dev_t* d);
 int gpu_virtio_probe(const pci_dev_t* d);
 int gpu_intel_probe(const pci_dev_t* d);

@@ -170,6 +170,9 @@ void task_recover_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t a
 const char* task_crash_msg(void);
 /* the boot core's timer, every millisecond */
 void task_smp_tick(void);
+/* Park app cores with their task contexts saved before platform suspend. */
+int task_smp_pause(void);
+void task_smp_unpause(void);
 /* another core's loop (kernel/smp.c), interrupts off: never returns */
 void task_ap_loop(int cpu) __attribute__((noreturn));
 

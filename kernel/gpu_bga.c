@@ -82,6 +82,11 @@ static int bga_set_mode(gpu_t* g, int w, int h) {
     else gpu_set_framebuffer(g_bga.lfb, w, h, w * 4);
     return 0;
 }
+int gpu_bga_s3_resume(void) {
+    if(!fb_available())return 0;
+    if(gpu_active()!=&g_gpu)return -1;
+    const fb_info_t* f=fb_info();return program((int)f->width,(int)f->height);
+}
 
 static void bga_info(gpu_t* g, char* buf, int cap) {
     (void)g;

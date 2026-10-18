@@ -441,6 +441,7 @@ void tss_set_rsp0(int cpu, uintptr_t rsp0) {
 }
 
 static void gdt_load_cpu(int cpu) {
+    g_gdt[2+2*cpu]&=~(2ull<<40); /* CPU reset cleared TR, not the busy bit in RAM */
     struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gp = { sizeof(g_gdt) - 1, (uint64_t)(uintptr_t)g_gdt };
     __asm__ volatile("lgdt %0" :: "m"(gp));
     /* long mode ignores the data segments, but iretq reloads SS from the
@@ -509,6 +510,14 @@ void irq_timer_from_lapic(int on) {
 #else
 void tss_set_rsp0(int cpu, uintptr_t rsp0) { (void)cpu; (void)rsp0; }   /* (apps stay in ring 0) */
 #endif
+
+void idt_s3_resume(void) {
+#ifdef __x86_64__
+    gdt_load_cpu(0);
+#endif
+    __asm__ volatile("lidt %0" :: "m"(idtp));
+    pic_remap();
+}
 
 void idt_init(void) {
     idtp.limit = (uint16_t)(sizeof(idt) - 1);

@@ -14,6 +14,8 @@
 #define SMP_VEC_SPURIOUS 0xFF
 
 void smp_init(void);
+void smp_s3_save(void);
+int smp_s3_resume(void);
 /* cores in use (1 until the others are started) */
 int  cpu_count(void);
 /* the core this runs on: 0 = the boot core */

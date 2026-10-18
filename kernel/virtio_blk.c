@@ -35,6 +35,7 @@ typedef struct __attribute__((packed)) { uint32_t type, reserved; uint64_t secto
 
 typedef struct {
     vio_t    vio;
+    pci_dev_t pci;
     uint8_t* ring;                /* VIO_QBYTES, page aligned */
     vio_desc_t* desc;
     volatile uint16_t* avail;
@@ -161,6 +162,7 @@ static int bd_write(blockdev_t* bd, uint32_t lba, uint32_t count, const void* bu
 }
 
 static int start(vblk_t* v, const pci_dev_t* pd) {
+    v->pci=*pd;
     if (vio_open(&v->vio, pd) != 0) return -1;
     uint32_t feat = vio_features(&v->vio);
     if (vio_set_features(&v->vio, feat & (F_RO | F_FLUSH)) != 0) { vio_failed(&v->vio); return -1; }
@@ -168,9 +170,9 @@ static int start(vblk_t* v, const pci_dev_t* pd) {
     v->flush = (feat & F_FLUSH) != 0;
     uint64_t cap = (uint64_t)vio_cfg32(&v->vio, 0) | (uint64_t)vio_cfg32(&v->vio, 4) << 32;
     v->sectors = cap > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)cap;
-    v->ring = (uint8_t*)page_alloc(VIO_QBYTES);
-    v->bounce = (uint8_t*)page_alloc(CHUNK);
-    v->req = (vreq_t*)page_alloc(64);
+    if(!v->ring)v->ring = (uint8_t*)page_alloc(VIO_QBYTES);
+    if(!v->bounce)v->bounce = (uint8_t*)page_alloc(CHUNK);
+    if(!v->req)v->req = (vreq_t*)page_alloc(64);
     if (!v->ring || !v->bounce || !v->req) { vio_failed(&v->vio); return -1; }
     volatile uint8_t* used;
     uint16_t size = vio_queue(&v->vio, 0, v->ring, 128, &v->desc, &v->avail, &used);
@@ -178,6 +180,7 @@ static int start(vblk_t* v, const pci_dev_t* pd) {
     v->used = used;
     v->status = (volatile uint8_t*)v->req + 32;
     v->size = size;
+    v->last_used=0;v->avail_idx=0;
     v->avail[0] = 1;                                  /* no interrupts: polled */
     vio_driver_ok(&v->vio);
     uint32_t mb = v->sectors / 2048;
@@ -202,4 +205,11 @@ static int scan_cb(const pci_dev_t* d, void* ctx) {
 
 void virtio_blk_init(void) {
     pci_scan(scan_cb, NULL);
+}
+int virtio_blk_s3_resume(void) {
+    for(int i=0;i<g_count;i++) {
+        pci_dev_t d=g_vb[i].pci;
+        if(start(&g_vb[i],&d))return -1;
+    }
+    return 0;
 }

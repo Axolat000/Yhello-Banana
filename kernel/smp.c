@@ -76,7 +76,7 @@ static const rsdp_t* find_rsdp(void) {
 }
 
 static const sdt_t* table_at(uint64_t a, const char* sig) {
-    if (!a || a + sizeof(sdt_t) > (4ull << 30)) return NULL;    /* (the low 4 GiB are mapped) */
+    if (a < 4096 || a > (4ull << 30)-sizeof(sdt_t)) return NULL; /* low 4 GiB, excluding the NULL guard */
     const sdt_t* t = (const sdt_t*)(uintptr_t)a;
     return memcmp(t->sig, sig, 4) == 0 ? t : NULL;
 }
@@ -130,6 +130,8 @@ void smp_init(void) {}
 void smp_send_ipi(int cpu, int vector) { (void)cpu; (void)vector; }
 void smp_panic_stop_others(void) {}
 void smp_eoi(void) {}
+void smp_s3_save(void) {}
+int smp_s3_resume(void) { return 0; }
 
 #else
 
@@ -155,6 +157,8 @@ static volatile int       g_apic_on;
 static int                g_x2;
 static uint32_t           g_apic_id[SMP_MAX_CPUS];
 static volatile int       g_ap_up;
+static uint64_t          g_ap_stack[SMP_MAX_CPUS];
+static uint8_t           g_firmware_tramp[4096];
 
 static void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
@@ -587,6 +591,9 @@ void smp_init(void) {
     /* the start code, at 0x8000 */
     uint32_t len = (uint32_t)(smp_tramp_end - smp_tramp_start);
     if (len > 4096) { klog("smp: start code too big\n"); return; }
+    /* OVMF keeps its S3 transfer code here. Borrow the page only while
+     * starting CPUs; every AP loads the kernel GDT before acknowledging. */
+    memcpy(g_firmware_tramp,(const void*)(uintptr_t)TRAMP_ADDR,sizeof(g_firmware_tramp));
     memcpy((void*)(uintptr_t)TRAMP_ADDR, smp_tramp_start, len);
     tramp_data_t* td = (tramp_data_t*)(uintptr_t)(TRAMP_ADDR + (uint32_t)(smp_tramp_data - smp_tramp_start));
     uintptr_t cr0, cr3, cr4;
@@ -606,6 +613,7 @@ void smp_init(void) {
         uint8_t* stack = (uint8_t*)kmalloc(16384);
         if (!stack) break;
         td->stack = ((uint64_t)(uintptr_t)stack + 16384) & ~15ull;
+        g_ap_stack[cpu]=td->stack;
         td->cpu = (uint32_t)cpu;
         g_apic_id[cpu] = ids[i];
         g_ap_up = 0;
@@ -624,6 +632,7 @@ void smp_init(void) {
         }
         g_cpus = cpu + 1;
     }
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
     topo_link(g_cpus);
     klog("smp: %d of %d logical processors running (%s): %d physical cores, %d thread%s per core\n", g_cpus, n,
          g_x2 ? "x2APIC" : "xAPIC", g_nphys, g_tpc, g_tpc == 1 ? "" : "s");
@@ -631,6 +640,48 @@ void smp_init(void) {
         klog("smp:   cpu %d: APIC id %u, package %u, core %u, thread %u%s\n", i, g_topo[i].apic, g_topo[i].pkg,
              g_topo[i].core, g_topo[i].smt, g_topo[i].type == CPU_TYPE_PERF ? ", performance core" :
              g_topo[i].type == CPU_TYPE_EFF ? ", efficient core" : "");
+}
+
+static const uint32_t sleep_regs[]={LAPIC_TPR,LAPIC_SVR,LAPIC_LVT_TIMER,LAPIC_LVT_LINT0,
+    LAPIC_LVT_LINT1,LAPIC_LVT_ERR,LAPIC_TIMER_DIV,LAPIC_TIMER_INIT};
+static uint32_t sleep_lapic[8],sleep_ioa[4][IOAPIC_PINS][2];
+void smp_s3_save(void) {
+    if(!g_apic_on)return;
+    for(unsigned i=0;i<8;i++)sleep_lapic[i]=lapic_rd(sleep_regs[i]);
+    for(int k=0;k<g_nioa;k++)for(uint32_t i=0;i<g_ioa[k].pins;i++) {
+        sleep_ioa[k][i][0]=ioa_rd(&g_ioa[k],0x10+2*i);
+        sleep_ioa[k][i][1]=ioa_rd(&g_ioa[k],0x11+2*i);
+    }
+}
+static void resume_delay(unsigned ms) {
+    uint64_t per=timer_tsc_per_ms(),start=tsc();
+    if(per)while(tsc()-start<per*ms)__asm__ volatile("pause");
+    else for(unsigned i=0;i<ms*1000;i++)__asm__ volatile("outb %%al,$0x80" :: "a"(0));
+}
+int smp_s3_resume(void) {
+    if(!g_apic_on)return 0;
+    for(unsigned i=0;i<8;i++)lapic_wr(sleep_regs[i],sleep_lapic[i]);
+    for(int k=0;k<g_nioa;k++)for(uint32_t i=0;i<g_ioa[k].pins;i++) {
+        ioa_wr(&g_ioa[k],0x11+2*i,sleep_ioa[k][i][1]);
+        ioa_wr(&g_ioa[k],0x10+2*i,sleep_ioa[k][i][0]);
+    }
+    uint32_t len=(uint32_t)(smp_tramp_end-smp_tramp_start);
+    memcpy(g_firmware_tramp,(const void*)(uintptr_t)TRAMP_ADDR,sizeof(g_firmware_tramp));
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,smp_tramp_start,len);
+    tramp_data_t* td=(tramp_data_t*)(uintptr_t)(TRAMP_ADDR+(smp_tramp_data-smp_tramp_start));
+    uintptr_t cr0,cr3,cr4;
+    __asm__ volatile("mov %%cr0,%0; mov %%cr3,%1; mov %%cr4,%2":"=r"(cr0),"=r"(cr3),"=r"(cr4));
+    uint32_t elo,ehi;rdmsr(0xc0000080,&elo,&ehi);
+    td->cr0=(uint32_t)cr0;td->cr3=(uint32_t)cr3;td->cr4=(uint32_t)cr4;
+    td->efer=elo&((1u<<0)|(1u<<8)|(1u<<11));td->entry=(uintptr_t)smp_ap_entry;
+    for(int cpu=1;cpu<g_cpus;cpu++) {
+        td->stack=g_ap_stack[cpu];td->cpu=(uint32_t)cpu;g_ap_up=0;__sync_synchronize();
+        icr_send(g_apic_id[cpu],0x4500);resume_delay(10);
+        for(int i=0;i<2 && !g_ap_up;i++){icr_send(g_apic_id[cpu],0x4600|(TRAMP_ADDR>>12));resume_delay(i?200:2);}
+        if(!g_ap_up){memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));return -1;}
+    }
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
+    return 0;
 }
 
 #endif

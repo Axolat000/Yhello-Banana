@@ -1,6 +1,7 @@
 #include "selftest.h"
 #include "../kernel/bootmenu_test.h"
 #include "../kernel/bootmem_test.h"
+#include "../kernel/acpi_sleep.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/kheap.h"
 #include "../kernel/mouse_capture.h"
@@ -205,6 +206,45 @@ static void t_ram(void) {
     ksnprintf(note,sizeof(note),"%u MiB usable RAM; %llu MiB above 4 GiB managed for apps",
               kb/1024u,hmem_total_bytes()>>20);
     report("live firmware total covers the managed RAM",kb>0 && kb>=managed,note);
+}
+static void sleep_unlink(const char* path) { if(fs_find_file(path)>=0)fs_delete(path,0); }
+static void t_sleep(int cycle) {
+    section("ACPI S3 sleep (QEMU PC)");acpi_sleep_tests(report);
+    char reason[160];int available=!acpi_s3_status(reason,sizeof(reason));
+    if(!available){skip("ACPI S3 capability",reason);if(cycle)report("S3 sleep/resume cycle",0,reason);return;}
+    report("ACPI S3 capability",1,reason);
+    if(cycle) {
+        unsigned before=acpi_s3_resumes();
+        char worker[64],ready[80],stop[80],err[96]="test app did not become ready";
+        ksnprintf(worker,sizeof(worker),"/tmp/s3-worker-%d",task_current_pid());
+        ksnprintf(ready,sizeof(ready),"%s.ready",worker);ksnprintf(stop,sizeof(stop),"%s.stop",worker);
+        sleep_unlink(worker);sleep_unlink(ready);sleep_unlink(stop);
+        int started=0;
+        if(!install()) {
+            char* argv[]={"systest","suspend",worker};
+            if(app_spawn("/apps/systest/app-" BANANA_ARCH,3,argv,err,sizeof(err))>=0) {
+                uint32_t t=timer_ms();
+                while(fs_find_file(ready)<0 && timer_ms()-t<3000)task_sleep_ms(10);
+                int f=fs_find_file(ready);char text[8]={0};
+                started=f>=0 && fs_read(f,0,text,5)==5 && !memcmp(text,"ready",5);
+            }
+        }
+        report("user threads are live before suspend",started,started?"":err);
+        volatile uint32_t marker[64];
+        for(unsigned i=0;i<64;i++)marker[i]=i*2654435761u^0x53335241u;
+        terminal_writeln("Sleeping for five seconds; the RTC will wake this VM...");
+        int rc=acpi_s3_suspend(5,reason,sizeof(reason));
+        report("S3 sleep/resume cycle",!rc && acpi_s3_resumes()==before+1,reason);
+        int intact=1;for(unsigned i=0;i<64;i++)if(marker[i]!=(i*2654435761u^0x53335241u))intact=0;
+        report("memory on the suspended stack survives",intact,"");
+        uint32_t ticks=timer_irq_count(),ms=timer_ms();timer_sleep_ms(20);
+        report("timer interrupts and monotonic time resume",timer_irq_count()!=ticks && timer_ms()-ms>=20,"");
+        fs_write_path(stop,"stop",4);uint32_t until=timer_ms();
+        while(fs_find_file(worker)<0 && timer_ms()-until<5000)task_sleep_ms(10);
+        int f=fs_find_file(worker);char text[8]={0};
+        report("user threads retain their stacks and floating-point state",started && f>=0 && fs_read(f,0,text,2)==2 && !memcmp(text,"ok",2),"");
+        sleep_unlink(worker);sleep_unlink(ready);sleep_unlink(stop);
+    }
 }
 
 /* ── ZIP archives (kernel/zip.c, kernel/deflate.c) ─────────────────── */
@@ -507,8 +547,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | sleep [cycle] | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -516,6 +556,7 @@ int selftest_cmd(int argc, char** argv) {
     }
     if(only && !strcmp(only,"boot") && argc!=2) { terminal_writeln("usage: selftest boot");return 1; }
     if(only && !strcmp(only,"ram") && argc!=2) { terminal_writeln("usage: selftest ram");return 1; }
+    if(only && !strcmp(only,"sleep") && (argc>3 || (argc==3 && strcmp(argv[2],"cycle")))) { terminal_writeln("usage: selftest sleep [cycle]");return 1; }
     uint16_t ipv6_port = 80;
     if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
         terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
@@ -540,8 +581,11 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
+                     only && !strcmp(only, "sleep") ? "selftest: checking ACPI S3" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if(only && !strcmp(only,"ram")) {
+    if(only && !strcmp(only,"sleep")) {
+        t_sleep(argc==3);
+    } else if(only && !strcmp(only,"ram")) {
         t_ram();
     } else if (only && !strcmp(only, "zip")) {
         t_zip();
@@ -584,6 +628,7 @@ int selftest_cmd(int argc, char** argv) {
             mouse_capture_tests(report);
             bootmenu_tests_run(report);
             t_ram();
+            t_sleep(0);
             t_posix(NULL);
             t_zip();
             t_clip();

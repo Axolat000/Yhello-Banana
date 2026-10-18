@@ -22,6 +22,7 @@
 #include "pkg.h"
 #include "timer.h"
 #include "ctxmenu.h"
+#include "acpi_sleep.h"
 #include "utf8.h"
 #include "fileicons.h"
 
@@ -561,10 +562,12 @@ static void power_menu(const fb_info_t* fi) {
     ctx_item_t items[6];
     int n = 0;
     items[n++] = (ctx_item_t){ "Restart", SM_RESTART, 0 };
+    char reason[160];
+    items[n++] = (ctx_item_t){ "Sleep", SM_SLEEP, acpi_s3_status(reason,sizeof(reason))!=0 };
     items[n++] = (ctx_item_t){ "Lock", SM_LOCK, 0 };
     items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
     items[n++] = (ctx_item_t){ "Exit to the shell", SM_QUIT, 0 };
-    ctxmenu_open(x + w, y - 4 * 22, items, n, power_cb, NULL);
+    ctxmenu_open(x + w, y - n * 22, items, n, power_cb, NULL);
 }
 
 void startmenu_click(const fb_info_t* fi, int mx, int my) {

@@ -38,6 +38,7 @@
 #include "../kernel/passwd.h"
 #include "../kernel/idt.h"
 #include "../kernel/acpi.h"
+#include "../kernel/acpi_sleep.h"
 #include "../kernel/gpu.h"
 #include "../kernel/driver.h"
 #include "../kernel/builtin_apps.h"
@@ -341,6 +342,25 @@ void shell_power(int restart) {
     timer_sleep_ms(150);
     if (restart) do_reboot();
     else acpi_poweroff();
+}
+
+void shell_sleep(void) {
+    char reason[160];
+    if(acpi_s3_status(reason,sizeof(reason))){terminal_writeln(reason);return;}
+    terminal_writeln("Entering ACPI S3 sleep; use the VM's wake/power control to resume.");
+    acpi_s3_suspend(0,reason,sizeof(reason));terminal_writeln(reason);
+}
+static void cmd_sleep(const char* args) {
+    char reason[160];
+    if(!strcmp(args,"status")) { acpi_s3_status(reason,sizeof(reason));terminal_writeln(reason);return; }
+    unsigned seconds=0;
+    if(*args) {
+        int n=k_parse_u32(args,&seconds);
+        if(!n || args[n] || !seconds || seconds>3600){terminal_writeln("usage: sleep [status | SECONDS (1..3600)]");return;}
+    }
+    if(acpi_s3_status(reason,sizeof(reason))){terminal_writeln(reason);return;}
+    terminal_writeln(seconds?"Entering ACPI S3; RTC wake is armed...":"Entering ACPI S3; wake through the VM power control...");
+    acpi_s3_suspend(seconds,reason,sizeof(reason));terminal_writeln(reason);
 }
 
 /* Installing and updating are the live CD's (or USB stick's) work: on an
@@ -1181,7 +1201,7 @@ static const char* const known_cmds[] = {
     "ls", "cd", "pwd", "mkdir", "rm", "touch", "cp", "mv", "edit", "cat", "run",
     "uptime", "top", "exit", "start", "stop", "startx", "stopx",
     "keyboardctl", "loadctl", "usbctl", "proc_info", "ram_info", "gpu_info",
-    "hw_info", "shutdown", "reboot", "halt", "install", "sync", "drop_caches", "update", "installer", "disks", "history", "which", "type",
+    "hw_info", "shutdown", "reboot", "halt", "sleep", "install", "sync", "drop_caches", "update", "installer", "disks", "history", "which", "type",
     "alias", "unalias", "export", "unset", "env", "chsh", "autologin",
     "grep", "wc", "head", "tail", "find", "time", "nice",
     /* shell/netcmds.c + shell/wpcmd.c */
@@ -2514,6 +2534,8 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     }
 
     /* shutdown / reboot with optional arg */
+    if (k_strcmp(line,"sleep")==0) { cmd_sleep("");return; }
+    if (k_strncmp(line,"sleep ",6)==0) { cmd_sleep(k_skip_spaces(line+6));return; }
     if (k_strcmp(line, "shutdown")       == 0) { cmd_shutdown("");    return; }
     if (k_strncmp(line, "shutdown ", 9)  == 0) { cmd_shutdown(k_skip_spaces(line+9)); return; }
     if (k_strcmp(line, "reboot")         == 0) { cmd_reboot("");      return; }

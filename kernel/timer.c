@@ -118,6 +118,12 @@ uint32_t timer_ms(void) {
     return g_ms;
 }
 
+void timer_s3_resume(uint32_t before_ms) {
+    if(g_tsc_clock)g_tsc0=tsc_now()-(uint64_t)before_ms*g_tsc_per_ms;
+    uint32_t divisor=PIT_BASE/PIT_HZ;
+    outb(PIT_CMD,0x34);outb(PIT_CH0,(uint8_t)divisor);outb(PIT_CH0,(uint8_t)(divisor>>8));
+}
+
 uint32_t timer_ticks(void) {
     return timer_ms() / 10u;
 }

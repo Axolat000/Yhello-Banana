@@ -4,6 +4,7 @@
 #include "types.h"
 
 void     timer_init(void);          /* PIT channel 0 at 1 kHz, driven by IRQ0 */
+void     timer_s3_resume(uint32_t before_ms); /* rearm PIT; monotonic time excludes sleep */
 uint32_t timer_ticks(void);         /* 100 Hz ticks since init (10 ms each) */
 uint32_t timer_ms(void);            /* milliseconds since init (from the TSC when it is usable) */
 uint64_t timer_tsc_per_ms(void);    /* the TSC's rate, measured at init (0: not usable) */

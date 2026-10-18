@@ -385,6 +385,14 @@ void vmtools_capture_pointer(int capture) {
     }
 }
 
+void vmtools_s3_resume(void) {
+    g_pointer_captured=0;
+    if(g_bd && g_vmmouse) {
+        if(vmmouse_enable())g_vmmouse=0;
+        mouse_ps2_mute(g_vmmouse);
+    }
+}
+
 void vmtools_poll_pointer(void) {
     if (g_vmmouse) vmmouse_poll();
     else if (g_vbox) vbox_poll();

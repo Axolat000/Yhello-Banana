@@ -1,4 +1,5 @@
 #include "crash.h"
+#include "acpi_sleep.h"
 #include "gui.h"
 #include "serial.h"
 #include "terminal.h"
@@ -54,7 +55,7 @@
  * down, Lock, Exit to shell). */
 /* (About and Wallpaper live in Settings now: reached from the desktop's menu) */
 enum { ACT_TERMINAL = 0, ACT_FILES, ACT_BROWSER, ACT_NOTEPAD, ACT_APPS, ACT_TASKMGR, ACT_SETTINGS, ACT_QUIT, ACT_ABOUT,
-       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP };
+       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP, ACT_SLEEP };
 /* slots: the installer's ("Install Banana OS") is there only on the live CD */
 #define MENU_ITEMS_MAX 10
 #define MENU_SLOT_INSTALL 8
@@ -1976,6 +1977,7 @@ static void sm_action(int sm) {
     case SM_RESTART:  act = ACT_RESTART; break;
     case SM_LOCK:     act = ACT_LOCK; break;
     case SM_QUIT:     act = ACT_QUIT; break;
+    case SM_SLEEP:    act = ACT_SLEEP; break;
     }
     g_menu_open = 0;
     g_force_redraw = 1;
@@ -2066,6 +2068,8 @@ static void open_submenu(const fb_info_t* fi, int slot) {
     } else {
         items[n++] = (ctx_item_t){ "Restart", ACT_RESTART, 0 };
         items[n++] = (ctx_item_t){ "Shut down", ACT_SHUTDOWN, 0 };
+        char reason[160];
+        items[n++] = (ctx_item_t){ "Sleep", ACT_SLEEP, acpi_s3_status(reason,sizeof(reason))!=0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Lock the screen", ACT_LOCK, 0 };
         items[n++] = (ctx_item_t){ "Exit to the shell", ACT_QUIT, 0 };
@@ -3105,6 +3109,7 @@ static void do_action(int act) {
     case ACT_INSTALL: installer_open(); g_app_min[APP_INSTALLER] = 0; raise_app(APP_INSTALLER); break;
     case ACT_RESTART: shell_power(1); break;          /* (saves the files first) */
     case ACT_SHUTDOWN: shell_power(0); break;
+    case ACT_SLEEP: shell_sleep();g_force_redraw=1;break;
     case ACT_LOCK:
         if (passwd_is_set(PASSWD_USER)) {
             g_lock_pending = 1;            /* gui_poll() shows it, outside any menu */

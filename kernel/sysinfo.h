@@ -19,6 +19,7 @@ typedef struct {
     int      has_biosdev;
     uint8_t  rsdp[36];          /* GRUB's copy of the ACPI RSDP (kernel/smp.c), if has_rsdp */
     int      has_rsdp;
+    uint32_t s3_wake_page;      /* available conventional RAM reserved for the wake trampoline */
 } sysinfo_t;
 
 void sysinfo_init(uint32_t mb_info_addr);

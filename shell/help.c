@@ -230,6 +230,10 @@ static const page_t PAGES[] = {
       NULL, "timezone list europe\ntimezone new york\ntimezone UTC", "date" },
     { "uptime", "system", "uptime", "how long it has been running, the load average", NULL, NULL, NULL, "top" },
     { "neofetch", "system", "neofetch", "a summary of the system", NULL, NULL, NULL, "hw_info" },
+    { "sleep", "system", "sleep [status | SECONDS]", "ACPI S3 suspend to RAM",
+      "Sleep retains the session in RAM. The first supported profile is QEMU PC/PIIX4 with standard VGA, e1000 and optional virtio-blk. Unsupported platforms/devices are refused before suspend. Files are synced first. Use the VM wake/power control to resume, or specify 1..3600 seconds for an RTC wake. This is not hibernation.",
+      "status|show whether the current platform can suspend\nSECONDS|arm an RTC wake after this many seconds",
+      "sleep status\nsleep 5\nselftest sleep\nselftest sleep cycle", "selftest, shutdown, reboot" },
     { "top", "system", "top", "a live view of the processor, memory and tasks", "q quits.", NULL, NULL, "htop" },
     { "htop", "system", "htop", "the colour monitor",
       "A meter per processor core, memory and disk, then the tasks. P sorts by processor use, N by number, "
@@ -408,7 +412,7 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [ring3|memory|ram|sleep [cycle]|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
       "ring3, memory, limits, cores, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
@@ -420,6 +424,7 @@ static const page_t PAGES[] = {
       "browser|offline Tailwind, React, Vue, Alpine, Astro, grid and WebP checks\n"
       "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"
       "ram|firmware RAM totals, above-4-GiB maps and live accounting\n"
+      "sleep [cycle]|ACPI S3 checks; cycle sleeps for five seconds and wakes by RTC\n"
       "mouse [demo]|relative mouse capture tests; demo opens a look-around window\n"
       "browser swm|live checks against https://swm.mxtpasontop.fr/\n"
       "posix [PART]|mmap, threads, sockets, signals and dlopen (the posixtest example)\n"
