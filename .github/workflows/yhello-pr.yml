@@ -54,14 +54,14 @@ jobs:
           def safe_title(message):
               # Treat commit text as display data, never Markdown or executable input.
               lines = message.splitlines()
-              title = lines[0][:240] if lines else '(sans titre)'
+              title = lines[0][:240] if lines else '(untitled)'
               title = ''.join(c for c in title if c.isprintable())
               title = html.escape(title, quote=True).replace('@', '&#64;')
               return re.sub(r'([\\`*_{}\[\]()#+.!|~-])', r'\\\1', title)
 
           comparison = request('/compare/main...codex%2Fintegration?per_page=100')
           if not comparison.get('files') or not comparison.get('total_commits'):
-              print('Aucune différence effective à proposer vers main.')
+              print('No effective changes to propose against main.')
               raise SystemExit(0)
 
           commits = comparison['commits']
@@ -73,27 +73,26 @@ jobs:
               rows.append('- `' + sha[:12] + '` — ' + safe_title(commit['commit']['message']))
           total = comparison['total_commits']
           if total > len(commits):
-              rows.append('- Liste limitée aux ' + str(len(commits)) + ' premiers commits sur '
-                          + str(total) + ' ; liste complète dans l’onglet Commits de la PR.')
+              rows.append('- Showing the first ' + str(len(commits)) + ' of '
+                          + str(total) + ' commits; see the PR Commits tab for the full list.')
 
           body = (
-              'Cette PR propose les changements de `codex/integration` vers `main`.\n\n'
-              'Commits proposés :\n' + '\n'.join(rows) + '\n\n'
-              'Pour les commits OS intégrés par le superviseur, celui-ci valide le build '
-              'et les tests avant intégration. Les commits de configuration ou de mise en '
-              'place du workflow ne constituent pas une validation du build OS. '
-              'Ce workflow crée ou actualise uniquement la PR ; il n’exécute aucun code '
-              'du dépôt et ne relance pas ces validations.\n\n'
-              'La fusion reste une décision manuelle de l’utilisateur dans GitHub.'
+              'This PR proposes changes from `codex/integration` to `main`.\n\n'
+              'Proposed commits:\n' + '\n'.join(rows) + '\n\n'
+              'For OS commits integrated by the supervisor, the supervisor checks the build '
+              'and tests before integration. Configuration and workflow setup commits do '
+              'not constitute OS build validation. This workflow only creates or updates '
+              'the PR; it does not execute repository code or repeat those checks.\n\n'
+              'Merging remains a manual decision by the user in GitHub.'
           )
-          title = 'Changements Banana OS proposés par les agents'
+          title = 'Agent-reviewed Banana OS changes'
           query = urllib.parse.urlencode({
               'state': 'open', 'head': owner + ':codex/integration',
               'base': 'main', 'per_page': 100,
           })
           existing = request('/pulls?' + query)
           if len(existing) > 1:
-              raise RuntimeError('Plusieurs PR ouvertes pour cette branche ; aucune nouvelle PR créée')
+              raise RuntimeError('Multiple open PRs for this branch; no new PR created')
           if existing:
               pr = existing[0]
               if pr['title'] != title or pr.get('body') != body:
@@ -104,5 +103,5 @@ jobs:
                   'title': title, 'body': body,
                   'head': 'codex/integration', 'base': 'main',
               })
-          print('PR prête pour revue et fusion manuelle : ' + pr['html_url'])
+          print('PR ready for review and manual merge: ' + pr['html_url'])
           PY
