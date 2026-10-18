@@ -5,8 +5,9 @@
  * the window functions come from the app's export table (the java app),
  * bgl3 is compiled in (sdk/lib/gl3.c).
  *
- * What there is: windows with a 3.3 core context (any requested version up
- * to 3.3, the core profile whatever the hints), swap, resize, close, focus,
+ * What there is: windows with a 3.3 core context (asked for: 3.2 or 3.3
+ * core) or else a compatibility one (Mesa's highest version, with the
+ * fixed pipeline), swap, resize, close, focus,
  * keys (press from the window's events, release when banana_key_down() says
  * the key is up), characters, mouse buttons, motion, wheel, the captured
  * mouse (GLFW_CURSOR_DISABLED), dropped files, the clipboard, time, one
@@ -85,6 +86,7 @@
 #define GLFW_NO_API 0
 #define GLFW_OPENGL_API 0x30001
 #define GLFW_OPENGL_CORE_PROFILE 0x32001
+#define GLFW_OPENGL_COMPAT_PROFILE 0x32002
 #define GLFW_OSMESA_CONTEXT_API 0x36003
 #define GLFW_CURSOR 0x33001
 #define GLFW_STICKY_KEYS 0x33002
@@ -133,6 +135,7 @@ struct GLFWwindow {
     bgl3_ctx_t* gl;
     int should_close, focused, visible, resizable, hovered;
     int fwd_compat, debug;
+    int compat, gl_major, gl_minor;      /* the context: a compatibility one? its version */
     void* user;
     char title[256];
     int cursor_mode, sticky_keys, sticky_buttons, raw_motion;
@@ -319,7 +322,12 @@ API GLFWwindow* glfwCreateWindow(int width, int height, const char* title, GLFWm
     bwin_wheel(&w->win);
     if (h_client_api == GLFW_OPENGL_API) {
         bgl3_ctx_t* prev = bgl3_current();
-        w->gl = bgl3_create(&w->win);             /* (made current: put the previous one back) */
+        /* a core context when one is asked for (3.2 and up: Minecraft 1.17+);
+         * else a compatibility one, as GLFW gives elsewhere - the fixed
+         * pipeline older programs draw with (Minecraft 1.7.10 to 1.16) */
+        w->compat = h_profile != GLFW_OPENGL_CORE_PROFILE && !h_fwd &&
+                    (h_profile == GLFW_OPENGL_COMPAT_PROFILE || h_major < 3 || (h_major == 3 && h_minor < 2));
+        w->gl = w->compat ? bgl3_create_compat(&w->win) : bgl3_create(&w->win);   /* (made current: put the previous one back) */
         if (!w->gl) {
             error(GLFW_API_UNAVAILABLE, "%s", bgl3_error());
             bwin_close(&w->win);
@@ -327,6 +335,10 @@ API GLFWwindow* glfwCreateWindow(int width, int height, const char* title, GLFWm
             bgl3_make_current(prev);
             return NULL;
         }
+        w->gl_major = 3;
+        w->gl_minor = 3;
+        bgl3_glGetIntegerv(0x821B, &w->gl_major);                 /* GL_MAJOR_VERSION */
+        bgl3_glGetIntegerv(0x821C, &w->gl_minor);
         bgl3_make_current(prev);
     }
     w->fwd_compat = h_fwd;
@@ -405,10 +417,10 @@ API int glfwGetWindowAttrib(GLFWwindow* w, int a) {
     case GLFW_DOUBLEBUFFER: return 1;
     case GLFW_CLIENT_API: return w->gl ? GLFW_OPENGL_API : GLFW_NO_API;
     case GLFW_CONTEXT_CREATION_API: return GLFW_OSMESA_CONTEXT_API;
-    case GLFW_CONTEXT_VERSION_MAJOR: return w->gl ? 3 : 0;
-    case GLFW_CONTEXT_VERSION_MINOR: return w->gl ? 3 : 0;
+    case GLFW_CONTEXT_VERSION_MAJOR: return w->gl ? w->gl_major : 0;
+    case GLFW_CONTEXT_VERSION_MINOR: return w->gl ? w->gl_minor : 0;
     case GLFW_CONTEXT_REVISION: return 0;
-    case GLFW_OPENGL_PROFILE: return w->gl ? GLFW_OPENGL_CORE_PROFILE : 0;
+    case GLFW_OPENGL_PROFILE: return !w->gl ? 0 : w->compat ? GLFW_OPENGL_COMPAT_PROFILE : GLFW_OPENGL_CORE_PROFILE;
     case GLFW_OPENGL_FORWARD_COMPAT: return w->fwd_compat;
     case GLFW_CONTEXT_DEBUG: return w->debug;
     case GLFW_CONTEXT_ROBUSTNESS: return 0;

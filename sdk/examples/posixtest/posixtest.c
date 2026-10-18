@@ -10,6 +10,7 @@
  *   posixtest signals  handlers, faults as signals, masks, pthread_kill
  *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
  *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR)
+ *   posixtest memory   posix_memalign with malloc / free, from several threads
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@
 #include <semaphore.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -1030,6 +1032,23 @@ static void t_time(void) {
     check("strftime %z", !strcmp(z, want), z);
     tzset();
     check("tzset: timezone is minus the winter offset", timezone == -(l.tm_gmtoff - (l.tm_isdst ? 3600 : 0)), "");
+
+    /* the wall clock never runs backwards (across the clock chip's seconds) */
+    long long last_tv = 0, last_ts = 0;
+    int back = 0;
+    unsigned t0 = banana_ticks();
+    while (banana_ticks() - t0 < 2500) {
+        struct timeval tv;
+        struct timespec ts;
+        gettimeofday(&tv, NULL);
+        clock_gettime(CLOCK_REALTIME, &ts);
+        long long a1 = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000, a2 = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        if (a1 < last_tv || a2 < last_ts) back++;
+        last_tv = a1;
+        last_ts = a2;
+    }
+    snprintf(note, sizeof(note), "%d steps back in 2.5 s", back);
+    check("gettimeofday / CLOCK_REALTIME never go back", back == 0, note);
 }
 
 static void t_files(void) {
@@ -1057,6 +1076,79 @@ static void t_files(void) {
     rmdir(dir);
 }
 
+/* ── memory: posix_memalign next to malloc/free ───────────────────── */
+
+#define MEM_THREADS 4
+#define MEM_ROUNDS  100000
+
+/* aligned and plain blocks mixed, kept a while and freed, from several threads at once */
+static void* mem_worker(void* arg) {
+    unsigned seed = (unsigned)(long)arg * 2654435761u + 1;
+    void* keep[64] = { 0 };
+    long bad = 0;
+    for (int i = 0; i < MEM_ROUNDS; i++) {
+        seed = seed * 1103515245u + 12345u;
+        int k = (int)(seed >> 8) & 63;
+        if (keep[k]) {
+            if (*(unsigned char*)keep[k] != (unsigned char)k) bad++;
+            free(keep[k]);
+            keep[k] = NULL;
+        }
+        size_t align = (size_t)16 << ((seed >> 20) & 7);          /* 16 .. 2048 */
+        void* p = NULL;
+        if ((seed >> 4) & 1) { if (posix_memalign(&p, align, 24 + (seed & 255))) p = NULL; }
+        else p = malloc(24 + (seed & 255));
+        if (!p || ((seed >> 4) & 1 && ((uintptr_t)p & (align - 1)))) { bad++; continue; }
+        *(unsigned char*)p = (unsigned char)k;
+        keep[k] = p;
+    }
+    for (int k = 0; k < 64; k++) free(keep[k]);
+    return (void*)bad;
+}
+
+static void t_memory(void) {
+    printf("memory:\n");
+    int ok = 1;
+    for (size_t a = 32; a <= 4096; a *= 2) {
+        void* p = NULL;
+        if (posix_memalign(&p, a, 100) || ((uintptr_t)p & (a - 1))) { ok = 0; break; }
+        memset(p, 0x5a, 100);
+        free(p);
+    }
+    check("posix_memalign 32 .. 4096: aligned, usable, freed", ok, NULL);
+
+    void* p = NULL;
+    ok = posix_memalign(&p, 64, 50) == 0;
+    if (ok) { memset(p, 7, 50); p = realloc(p, 5000); }
+    ok = ok && p && ((unsigned char*)p)[0] == 7 && ((unsigned char*)p)[49] == 7;
+    free(p);
+    check("realloc of an aligned block keeps its bytes", ok, NULL);
+
+    enum { N = 20000 };
+    void** v = malloc(N * sizeof(void*));
+    ok = v != NULL;
+    for (int i = 0; ok && i < N; i++) {
+        if (posix_memalign(&v[i], 32 << (i % 4), 40)) { ok = 0; break; }
+        *(int*)v[i] = i;
+    }
+    for (int i = 0; ok && i < N; i++) {
+        int j = (int)(((unsigned)i * 7919u) % N);            /* (another order than they came) */
+        if (*(int*)v[j] != j) ok = 0;
+        free(v[j]);
+    }
+    free(v);
+    check("20000 aligned blocks at once, freed in another order", ok, NULL);
+
+    pthread_t t[MEM_THREADS];
+    unsigned t0 = banana_ticks();
+    for (long i = 0; i < MEM_THREADS; i++) pthread_create(&t[i], NULL, mem_worker, (void*)i);
+    long bad = 0;
+    for (int i = 0; i < MEM_THREADS; i++) { void* r; pthread_join(t[i], &r); bad += (long)r; }
+    char note[64];
+    snprintf(note, sizeof(note), "%d threads x %d, %u ms", MEM_THREADS, MEM_ROUNDS, banana_ticks() - t0);
+    check("aligned and plain blocks from several threads at once", bad == 0, note);
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (!only || !strcmp(only, "mmap")) t_mmap();
@@ -1067,6 +1159,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "dlopen")) t_dlopen();
     if (!only || !strcmp(only, "files")) t_files();
     if (!only || !strcmp(only, "time")) t_time();
+    if (!only || !strcmp(only, "memory")) t_memory();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

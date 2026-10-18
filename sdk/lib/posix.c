@@ -126,26 +126,87 @@ int mkdir(const char* path, mode_t mode) {
 }
 
 /* ── aligned memory ───────────────────────────────────────────────── */
-/* Keep a list of aligned allocations instead of probing below every pointer
- * passed to free/realloc: an ordinary allocation can start at a user mapping
- * boundary, with kernel-only memory immediately before it. Headers live at
- * the start of their own raw allocation and are read only through this list.
- * No allocation, syscall or copy takes place while the list lock is held. */
-typedef struct aligned_block {
-    struct aligned_block* next;
-    void* ptr;
-    size_t size;
-} aligned_block_t;
+/* An alignment over 16: a bigger block, the pointer moved up into it. free
+ * and realloc must give back the block itself, so the aligned pointers are
+ * kept in a table (pointer -> block, size) - nothing is probed below a
+ * pointer passed to free: an ordinary allocation can start at a user
+ * mapping boundary, with kernel-only memory immediately before it.
+ * Every free asks the table, so asking is cheap: a pointer not aligned to
+ * 32 cannot be in it (no lock), the rest is one hash lookup. The lock spins
+ * a little, then yields: its holder may have been preempted, and pure
+ * spinning kept every core busy waiting for it (the JVM and Mesa free from
+ * many threads at once - the whole system froze). No allocation, syscall
+ * or copy takes place while the lock is held. */
+typedef struct { void* ptr; void* raw; size_t size; } aligned_slot_t;
+#define SLOT_GONE ((void*)1)                     /* (a removed entry: lookups go on past it) */
 
-static aligned_block_t* g_aligned;
-static volatile int g_aligned_lock;
+static aligned_slot_t* g_atab;
+static size_t g_acap, g_aused, g_alive;          /* slots (a power of 2), taken (live + gone), live */
+static volatile int g_alock;
 
 static void aligned_lock(void) {
-    while (__sync_lock_test_and_set(&g_aligned_lock, 1))
-        while (g_aligned_lock) __asm__ volatile("pause");
+    int spins = 0;
+    while (__sync_lock_test_and_set(&g_alock, 1)) {
+        while (g_alock) {
+            if (++spins > 100) { __banana->yield(); spins = 0; }   /* the holder needs the CPU */
+            __asm__ volatile("pause");
+        }
+    }
 }
 
-static void aligned_unlock(void) { __sync_lock_release(&g_aligned_lock); }
+static void aligned_unlock(void) { __sync_lock_release(&g_alock); }
+
+static size_t aligned_hash(const void* p, size_t cap) {
+    uintptr_t x = (uintptr_t)p >> 5;
+    x ^= x >> 15;
+    x *= (uintptr_t)0x9E3779B97F4A7C15ull;
+    return (size_t)(x ^ (x >> 16)) & (cap - 1);
+}
+
+/* the live entries into tab (cap slots, zeroed) */
+static void aligned_rehash(aligned_slot_t* tab, size_t cap) {
+    for (size_t i = 0; i < g_acap; i++) {
+        void* p = g_atab[i].ptr;
+        if (!p || p == SLOT_GONE) continue;
+        size_t k = aligned_hash(p, cap);
+        while (tab[k].ptr) k = (k + 1) & (cap - 1);
+        tab[k] = g_atab[i];
+    }
+}
+
+static int aligned_add(void* p, void* raw, size_t size) {
+    aligned_lock();
+    while ((g_aused + 1) * 4 > g_acap * 3) {             /* over 3/4 full: a bigger table */
+        size_t cap = g_acap, want = 64;
+        while (want < (g_alive + 1) * 4) want *= 2;
+        aligned_unlock();
+        aligned_slot_t* tab = calloc(want, sizeof(*tab));
+        if (!tab) return -1;
+        aligned_lock();
+        aligned_slot_t* old = NULL;
+        if (g_acap == cap) {                             /* (nobody grew it meanwhile) */
+            aligned_rehash(tab, want);
+            old = g_atab;
+            g_atab = tab;
+            g_acap = want;
+            g_aused = g_alive;
+        } else {
+            old = tab;
+        }
+        aligned_unlock();
+        free(old);
+        aligned_lock();
+    }
+    size_t k = aligned_hash(p, g_acap);
+    while (g_atab[k].ptr && g_atab[k].ptr != SLOT_GONE) k = (k + 1) & (g_acap - 1);
+    if (!g_atab[k].ptr) g_aused++;
+    g_atab[k].ptr = p;
+    g_atab[k].raw = raw;
+    g_atab[k].size = size;
+    g_alive++;
+    aligned_unlock();
+    return 0;
+}
 
 int __malloc_heap(void);                           /* malloc.c */
 void* __malloc_aligned(size_t align, size_t n);
@@ -165,18 +226,12 @@ int posix_memalign(void** out, size_t align, size_t size) {
         *out = p;
         return 0;
     }
-    size_t extra = sizeof(aligned_block_t) + align - 1;
-    if (extra < align || size > (size_t)-1 - extra) return ENOMEM;
-    aligned_block_t* h = malloc(size + extra);
-    if (!h) return ENOMEM;
-    uintptr_t p = ((uintptr_t)h + sizeof(*h) + align - 1) & ~(uintptr_t)(align - 1);
-    h->ptr = (void*)p;
-    h->size = size;
-    aligned_lock();
-    h->next = g_aligned;
-    g_aligned = h;
-    aligned_unlock();
-    *out = (void*)p;
+    if (size > (size_t)-1 - align) return ENOMEM;
+    void* raw = malloc(size + align - 1);
+    if (!raw) return ENOMEM;
+    void* p = (void*)(((uintptr_t)raw + align - 1) & ~(uintptr_t)(align - 1));
+    if (aligned_add(p, raw, size)) { free(raw); return ENOMEM; }
+    *out = p;
     return 0;
 }
 void* aligned_alloc(size_t align, size_t size) { void* p; return posix_memalign(&p, align, size) ? NULL : p; }
@@ -184,16 +239,20 @@ void* memalign(size_t align, size_t size) { return aligned_alloc(align, size); }
 
 /* (libc.c: free and realloc know these blocks) */
 int __aligned_block(void* p, void** raw, size_t* size, int remove) {
+    /* (only pointers aligned to 32 or more are ever added; g_alive is read
+     * unlocked: p's own entry, if any, was added before p was handed out) */
+    if (((uintptr_t)p & 31) || !g_alive) return 0;
     int found = 0;
     aligned_lock();
-    for (aligned_block_t** pp = &g_aligned; *pp; pp = &(*pp)->next) {
-        aligned_block_t* h = *pp;
-        if (h->ptr != p) continue;
-        if (raw) *raw = h;
-        if (size) *size = h->size;
-        if (remove) *pp = h->next;
-        found = 1;
-        break;
+    if (g_acap) {
+        for (size_t k = aligned_hash(p, g_acap); g_atab[k].ptr; k = (k + 1) & (g_acap - 1)) {
+            if (g_atab[k].ptr != p) continue;
+            if (raw) *raw = g_atab[k].raw;
+            if (size) *size = g_atab[k].size;
+            if (remove) { g_atab[k].ptr = SLOT_GONE; g_alive--; }
+            found = 1;
+            break;
+        }
     }
     aligned_unlock();
     return found;
@@ -202,10 +261,26 @@ int __aligned_block(void* p, void** raw, size_t* size, int remove) {
 intmax_t strtoimax(const char* s, char** end, int base) { return strtoll(s, end, base); }
 uintmax_t strtoumax(const char* s, char** end, int base) { return strtoull(s, end, base); }
 
-/* seconds from the clock chip, the sub-second part from the uptime counter */
+/* interval timers (SIGALRM and the like): none here - getitimer says none
+ * is armed, setitimer only disarms (OpenJDK's awt asks, for a debug option) */
+int getitimer(int which, struct itimerval* cur) {
+    (void)which;
+    if (cur) memset(cur, 0, sizeof(*cur));
+    return 0;
+}
+
+int setitimer(int which, const struct itimerval* val, struct itimerval* old) {
+    (void)which;
+    if (old) memset(old, 0, sizeof(*old));
+    if (val && (val->it_value.tv_sec || val->it_value.tv_usec)) { errno = ENOSYS; return -1; }
+    return 0;
+}
+
+/* the wall clock (libc.c: __realtime_ms - it never runs backwards) */
+long long __realtime_ms(void);                  /* (libc.c: never runs backwards) */
 int gettimeofday(struct timeval* tv, void* tz) {
     (void)tz;
-    if (tv) { tv->tv_sec = (long)time(0); tv->tv_usec = (long)(__banana->ticks_ms() % 1000u) * 1000; }
+    if (tv) { long long now = __realtime_ms(); tv->tv_sec = (long)(now / 1000); tv->tv_usec = (long)(now % 1000) * 1000; }
     return 0;
 }
 

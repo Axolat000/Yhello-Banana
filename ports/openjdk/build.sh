@@ -106,12 +106,29 @@ if JOBS=$JOBS python3 "$HERE/rebuild.py" "$REFB/support/native/java.management/l
 else
     echo "warning: libmanagement did not build (logs: $W/libmanagement/logs) - left out"
 fi
+# java.desktop's, headless (no X11, no printing): images - ImageIO, BufferedImage
+# and drawing into one (Minecraft up to 1.12 loads its textures that way).
+# libawt is built HEADLESS (it is that or X11's here); in libawt_headless the
+# X11, GLX, CUPS and fontconfig parts do not compile without their headers and
+# are left out (rebuild.py reports them) - none of them is used headless
+D=$REFB/support/native/java.desktop
+for l in libmlib_image libawt libawt_headless liblcms libjavajpeg; do
+    extra=
+    [ $l = libawt ] && extra=-DHEADLESS
+    echo "== $l"
+    EXTRA="$extra" JOBS=$JOBS python3 "$HERE/rebuild.py" "$D/$l" "$W/$l" || true
+done
+so libmlib_image "$W"/libmlib_image/objs/*.o -ljava -ljvm
+so libawt "$W"/libawt/objs/*.o -ljvm -ljava
+so libawt_headless "$W"/libawt_headless/objs/*.o -lawt -ljvm -ljava
+so liblcms "$W"/liblcms/objs/*.o -lawt -ljvm -ljava
+so libjavajpeg "$W"/libjavajpeg/objs/*.o -ljava -ljvm
 
 # ── the image ─────────────────────────────────────────────────────────
 # java.base; jdk.unsupported (sun.misc.Unsafe: LWJGL); and for Minecraft:
 # java.logging, java.management (its MXBeans), java.naming + jdk.naming.dns
 # (server address lookups), java.desktop (javax.sound.sampled.AudioFormat
-# for its sounds - pure Java: AWT itself, which needs native code, is not built),
+# for its sounds; and, headless, ImageIO and BufferedImage - their native code built above),
 # jdk.zipfs (it opens its own jar as a file system: 1.16+), java.scripting
 # (log4j 2.8's ScriptManager: 1.13-1.17) and java.sql (gson 2.8's dates).
 # Checked with Minecraft 1.13 to 1.20.4 on a desktop JDK jlinked with these.

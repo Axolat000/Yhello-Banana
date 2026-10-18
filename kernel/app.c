@@ -2156,12 +2156,40 @@ static int syscall_here(sysframe_t* r) {
     return 1;
 }
 
-/* kernel/isr64.asm: int 0x80 from an app, on its thread's kernel stack */
+/* In a virtual machine, a core that runs app code may never leave the
+ * guest: system calls made there stay there, and a busy app thread gives
+ * the hypervisor no exit for seconds. VirtualBox on Hyper-V (its "NEM"
+ * mode - every Windows PC with WSL 2) runs the machine's timers on such a
+ * busy virtual CPU when the others halt: they waited for it, the boot
+ * core's tick stopped, and the whole system froze while Minecraft ran.
+ * So a core running app code exits to the hypervisor at least once a
+ * millisecond, by a write to port 0x80 (the classic I/O delay: no device). */
+static int      g_vm_exits = -1;                 /* -1: not known yet */
+static uint64_t g_vm_exit_at[SMP_MAX_CPUS];
+
+static void vm_exit_now_and_then(int cpu) {
+    if (g_vm_exits < 0) {
+        uint32_t a, b, c, d;
+        __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+        g_vm_exits = (c >> 31) & 1;              /* (a hypervisor) */
+    }
+    uint64_t per = timer_tsc_per_ms();
+    if (!g_vm_exits || !per || cpu <= 0 || cpu >= SMP_MAX_CPUS) return;
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    uint64_t now = ((uint64_t)hi << 32) | lo;
+    if (now - g_vm_exit_at[cpu] < per) return;
+    g_vm_exit_at[cpu] = now;
+    __asm__ volatile("outb %%al, $0x80" : : "a"(0));
+}
+
+/* kernel/isr64.asm: int 0x80 (or syscall) from an app, on its thread's kernel stack */
 void app_syscall(sysframe_t* r) {
     /* the kernel runs on the boot core: a call made elsewhere moves there,
      * unless it may run where it was made (interrupts are still off, as the
      * gate left them - and stay off for those) */
     if (cpu_id() != 0) {
+        vm_exit_now_and_then(cpu_id());
         if ((r->cs & 3) == 3 && syscall_here(r)) return;
         task_ap_go_home();
     }
