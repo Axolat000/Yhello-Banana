@@ -1,0 +1,107 @@
+name: Propose reviewed Banana OS changes
+
+on:
+  push:
+    branches: [codex/integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: codex-integration-pull-request
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create or update the integration pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_API_URL: ${{ github.api_url }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import html
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ['GH_REPOSITORY']
+          owner = repository.split('/', 1)[0]
+          api = os.environ['GH_API_URL'].rstrip('/') + '/repos/' + repository
+          headers = {
+              'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'yhello-integration-pr',
+          }
+
+          def request(path, method='GET', data=None):
+              payload = None if data is None else json.dumps(data).encode('utf-8')
+              req = urllib.request.Request(api + path, data=payload,
+                                           headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          def safe_title(message):
+              # Treat commit text as display data, never Markdown or executable input.
+              lines = message.splitlines()
+              title = lines[0][:240] if lines else '(untitled)'
+              title = ''.join(c for c in title if c.isprintable())
+              title = html.escape(title, quote=True).replace('@', '&#64;')
+              return re.sub(r'([\\`*_{}\[\]()#+.!|~-])', r'\\\1', title)
+
+          comparison = request('/compare/main...codex%2Fintegration?per_page=100')
+          if not comparison.get('files') or not comparison.get('total_commits'):
+              print('No effective changes to propose against main.')
+              raise SystemExit(0)
+
+          commits = comparison['commits']
+          rows = []
+          for commit in commits:
+              sha = commit['sha']
+              if not re.fullmatch(r'[0-9a-f]{40,64}', sha):
+                  raise RuntimeError('Unexpected commit SHA from GitHub')
+              rows.append('- `' + sha[:12] + '` — ' + safe_title(commit['commit']['message']))
+          total = comparison['total_commits']
+          if total > len(commits):
+              rows.append('- Showing the first ' + str(len(commits)) + ' of '
+                          + str(total) + ' commits; see the PR Commits tab for the full list.')
+
+          body = (
+              'This PR proposes changes from `codex/integration` to `main`.\n\n'
+              'Proposed commits:\n' + '\n'.join(rows) + '\n\n'
+              'For OS commits integrated by the supervisor, the supervisor checks the build '
+              'and tests before integration. Configuration and workflow setup commits do '
+              'not constitute OS build validation. This workflow only creates or updates '
+              'the PR; it does not execute repository code or repeat those checks.\n\n'
+              'Merging remains a manual decision by the user in GitHub.'
+          )
+          title = 'Agent-reviewed Banana OS changes'
+          query = urllib.parse.urlencode({
+              'state': 'open', 'head': owner + ':codex/integration',
+              'base': 'main', 'per_page': 100,
+          })
+          existing = request('/pulls?' + query)
+          if len(existing) > 1:
+              raise RuntimeError('Multiple open PRs for this branch; no new PR created')
+          if existing:
+              pr = existing[0]
+              if pr['title'] != title or pr.get('body') != body:
+                  pr = request('/pulls/' + str(pr['number']), 'PATCH',
+                               {'title': title, 'body': body})
+          else:
+              pr = request('/pulls', 'POST', {
+                  'title': title, 'body': body,
+                  'head': 'codex/integration', 'base': 'main',
+              })
+          print('PR ready for review and manual merge: ' + pr['html_url'])
+          PY
