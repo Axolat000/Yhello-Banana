@@ -46,3 +46,28 @@ uint32_t bootmem_kb_mb2(const void* data, uint32_t size) {
     }
     return mapped?mapped:fallback;
 }
+
+uint32_t bootmem_wake_page_mb2(const void* data,uint32_t size) {
+    if(!data || size<8)return 0;
+    const uint8_t* p=data;uint32_t total=rd32(p),page=0;
+    if(total<8 || total>size)return 0;
+    for(uint32_t off=8;total-off>=8;) {
+        uint32_t type=rd32(p+off),n=rd32(p+off+4);
+        if(n<8 || n>total-off || !type)break;
+        if(type==6 && n>=16) {
+            uint32_t stride=rd32(p+off+8);
+            if(stride>=24 && !rd32(p+off+12) && (n-16)%stride==0)
+                for(uint32_t pos=16;n-pos>=stride;pos+=stride) {
+                    const uint8_t* e=p+off+pos;uint64_t base=rd64(e),len=rd64(e+8);
+                    if(rd32(e+16)!=1 || len>~(uint64_t)0-base)continue;
+                    uint64_t end=base+len;if(end>0x90000)end=0x90000;
+                    if(end<0x11000)continue;
+                    uint32_t candidate=(uint32_t)(end-4096)&~4095u;
+                    if(candidate>=0x10000 && candidate>=base && candidate>page)page=candidate;
+                }
+        }
+        if(n>0xfffffff8u)break;
+        uint32_t advance=(n+7)&~7u;if(advance>total-off)break;off+=advance;
+    }
+    return page;
+}

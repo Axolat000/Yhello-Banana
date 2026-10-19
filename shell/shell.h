@@ -19,5 +19,6 @@ void shell_run_remote(int tty);
 /* the desktop's Start > Shut down: saves the files to the installed disk,
  * then powers off (0) or restarts (1); does not return */
 void shell_power(int restart);
+void shell_sleep(void);
 
 #endif

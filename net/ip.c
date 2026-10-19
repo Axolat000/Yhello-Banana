@@ -13,7 +13,7 @@ uint32_t g_ip_rx_dropped;
 /* Loopback: packets to 127.0.0.0/8 or to our own address are queued and
  * fed back through ip_rx() from net_poll() - never recursively, since
  * the receive path itself sends (e.g. an echo reply). */
-#define LOOP_MAX 8
+#define LOOP_MAX 128                    /* (a TCP window's worth: net/tcp.c offers 512 KiB) */
 static struct { uint8_t* pkt; uint32_t len; } g_loop[LOOP_MAX];
 
 static int is_local(ip4_t dst) {

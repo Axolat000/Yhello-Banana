@@ -71,11 +71,54 @@ static inline int u8_encode(uint32_t cp, char* out) {
     return 4;
 }
 
-/* the 8x8 cell for a character: Latin-1 as one byte, anything else '?' */
-static inline char u8_cell(uint32_t cp) {
-    if (cp < 0x80) return (char)cp;
-    if (cp >= 0xA0 && cp <= 0xFF) return (char)cp;
-    return '?';
+/* UTF-8 (len bytes) -> UTF-16 units, characters past U+FFFF as surrogate
+ * pairs: how many units (at most cap), -1 if they do not fit */
+static inline int u8_to_utf16(const char* s, int len, uint16_t* out, int cap) {
+    int n = 0;
+    for (int i = 0; i < len; ) {
+        uint32_t cp = u8_decode(s, len, &i);
+        if (cp >= 0x10000 && cp <= 0x10FFFF) {
+            if (n + 2 > cap) return -1;
+            cp -= 0x10000;
+            out[n++] = (uint16_t)(0xD800 | (cp >> 10));
+            out[n++] = (uint16_t)(0xDC00 | (cp & 0x3FF));
+        } else {
+            if (n + 1 > cap) return -1;
+            out[n++] = (uint16_t)(cp > 0xFFFF ? 0xFFFD : cp);
+        }
+    }
+    return n;
+}
+
+/* UTF-16 units -> UTF-8 in out (cap bytes, NUL-terminated, cut short at a
+ * whole character): the byte count. A lone surrogate becomes U+FFFD */
+static inline int u8_from_utf16(const uint16_t* in, int n, char* out, int cap) {
+    int o = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t cp = in[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n && in[i + 1] >= 0xDC00 && in[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (in[i + 1] - 0xDC00);
+            i++;
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+        }
+        char u[4];
+        int k = u8_encode(cp, u);
+        if (o + k + 1 > cap) break;
+        for (int j = 0; j < k; j++) out[o++] = u[j];
+    }
+    if (cap > 0) out[o] = 0;
+    return o;
+}
+
+/* cuts s (NUL-terminated) to fewer than cap bytes, at a whole character */
+static inline void u8_truncate(char* s, int cap) {
+    int n = 0;
+    while (s[n]) n++;
+    if (n < cap) return;
+    n = cap - 1;
+    while (n > 0 && u8_cont(s[n])) n--;
+    s[n] = 0;
 }
 
 /* drops the last character of a NUL-terminated string of n bytes; the new length */

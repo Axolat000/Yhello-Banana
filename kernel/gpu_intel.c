@@ -17,6 +17,7 @@
  * resolution): reprogramming the clocks and timings of real panels is
  * not done. */
 #include "gpu.h"
+#include "timer.h"
 #include "fb.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -117,7 +118,12 @@ static uint32_t frame_count(void) {
 static void it_wait_vblank(gpu_t* g) {
     (void)g;
     uint32_t f = frame_count();
-    for (uint32_t i = 0; i < 3000000u && frame_count() == f; i++) __asm__ volatile("pause");
+    uint64_t start = timer_counter();
+    for (uint32_t i = 0; i < 3000000u && frame_count() == f; i++) {
+        if (!(i & 255) && timer_counter() - start >= 20000000) break;
+        __asm__ volatile("pause");
+    }
+    gpu_note_vblank(frame_count() == f);
 }
 
 /* ── the hardware pointer ─────────────────────────────────────────── */

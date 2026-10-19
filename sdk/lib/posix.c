@@ -208,8 +208,18 @@ static int aligned_add(void* p, void* raw, size_t size) {
     return 0;
 }
 
+int __malloc_heap(void);                           /* malloc.c */
+void* __malloc_aligned(size_t align, size_t n);
+
 int posix_memalign(void** out, size_t align, size_t size) {
     if (!out || align < sizeof(void*) || (align & (align - 1))) return EINVAL;
+    if (__malloc_heap()) {                              /* (the app's heap aligns blocks itself) */
+        void* p = __malloc_aligned(align, size);
+        if (!p) return ENOMEM;
+        *out = p;
+        return 0;
+    }
+    /* the kernel's allocator: a bigger block, and where the aligned part is noted */
     if (align <= 16) {
         void* p = malloc(size);
         if (!p) return ENOMEM;

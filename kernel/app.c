@@ -1,4 +1,5 @@
 #include "app.h"
+#include "gpu_virgl.h"
 #include "appwin.h"
 #include "audio.h"
 #include "fs.h"
@@ -31,6 +32,11 @@
 #include "uspace.h"
 #include "idt.h"
 #include "uvm.h"
+
+#ifdef __x86_64__
+/* the SDK's heap tells kernel memory from mapped memory by this address */
+_Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must be kernel/uvm.h's UVM_BASE");
+#endif
 #include "meminfo.h"
 #include "hmem.h"
 #include "upage.h"
@@ -1365,10 +1371,10 @@ static int enter_user(app_proc_t* p, uintptr_t fn, uintptr_t a0, uintptr_t a1, u
     /* where fn returns to: a system call that ends the thread (at 8 mod 16,
      * as after a call) */
     uintptr_t usp = (((uintptr_t)stack + size) & ~(uintptr_t)15) - 8;
-    task_set_user(uspace_cr3(p->us), kstack_top(kstack));
+    task_set_user(uspace_cr3(p->us), uspace_tag(p->us), kstack_top(kstack));
     *(uintptr_t*)usp = p->ret_stub;         /* (a stack it mapped: its tables are loaded now) */
     int rc = app_enter_user(fn, a0, a1, a2, usp, saved_sp);
-    task_set_user(0, 0);                    /* the kernel's tables: the app's may go now */
+    task_set_user(0, NULL, 0);              /* the kernel's tables: the app's may go now */
     task_set_fs(0);
     return rc;
 }
@@ -1637,6 +1643,10 @@ static void a_thread_exit(int ret) {
     for (;;) task_sleep_ms(1000);
 }
 
+static int a_gpu_call(unsigned op, const void* request, unsigned request_size, void* data, unsigned size) {
+    app_proc_t* p = cur();
+    return p ? gpu_virgl_call(p->id + 1, op, request, request_size, data, size) : -1;
+}
 static int a_cpu_count(void) { return cpu_count(); }
 
 /* wait / wake: a thread sleeps while *addr == expected, until another one
@@ -1819,6 +1829,7 @@ static void spec_init(void) {
     SPEC(thread_id, "", 0);
     SPEC(thread_exit, "i", 0);
     SPEC(cpu_count, "", 0);
+    SPEC(gpu_call, "ibibi", 0);
     SPEC(wait, "Iii", 0);
     SPEC(wake, "ii", 0);                /* (addr is only compared) */
     SPEC(web_open, "ii", 0);
@@ -1950,6 +1961,7 @@ typedef struct {
  * back from the frame (maybe changed by the handler). */
 
 #define SYS_SIGRETURN (API_SLOTS + 1)
+#define STUB 16                         /* bytes per call stub in the app's table (make_uapi) */
 
 static void __attribute__((noreturn)) bad_call(app_proc_t* p, uint64_t slot, const char* why);
 
@@ -2150,7 +2162,6 @@ static int syscall_here(sysframe_t* r) {
     return 1;
 }
 
-/* kernel/isr64.asm: int 0x80 from an app, on its thread's kernel stack */
 /* In a virtual machine, a core that runs app code may never leave the
  * guest: system calls made there stay there, and a busy app thread gives
  * the hypervisor no exit for seconds. VirtualBox on Hyper-V (its "NEM"
@@ -2161,6 +2172,8 @@ static int syscall_here(sysframe_t* r) {
  * millisecond, by a write to port 0x80 (the classic I/O delay: no device). */
 static int      g_vm_exits = -1;                 /* -1: not known yet */
 static uint64_t g_vm_exit_at[SMP_MAX_CPUS];
+static uint64_t g_vm_probe_at[SMP_MAX_CPUS];
+static unsigned g_vm_probe_calls[SMP_MAX_CPUS];
 
 static void vm_exit_now_and_then(int cpu) {
     if (g_vm_exits < 0) {
@@ -2168,16 +2181,24 @@ static void vm_exit_now_and_then(int cpu) {
         __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
         g_vm_exits = (c >> 31) & 1;              /* (a hypervisor) */
     }
-    uint64_t per = timer_tsc_per_ms();
+    uint64_t per = timer_counter_per_ms();
     if (!g_vm_exits || !per || cpu <= 0 || cpu >= SMP_MAX_CPUS) return;
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t now = ((uint64_t)hi << 32) | lo;
+    /* Reading HPET/PM itself exits the VM. Avoid doing that on every
+     * cheap syscall. Raw TSC is only a sampling hint here, never a clock
+     * or deadline; backwards/jumping TSCs force an immediate resample,
+     * and a call-count bound also resamples a frozen counter. */
+    uint32_t lo,hi;
+    __asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));
+    uint64_t stamp=(uint64_t)hi<<32 | lo;
+    if(stamp-g_vm_probe_at[cpu]<100000 && ++g_vm_probe_calls[cpu]<32)return;
+    g_vm_probe_at[cpu]=stamp;g_vm_probe_calls[cpu]=0;
+    uint64_t now = timer_counter();
     if (now - g_vm_exit_at[cpu] < per) return;
     g_vm_exit_at[cpu] = now;
     __asm__ volatile("outb %%al, $0x80" : : "a"(0));
 }
 
+/* kernel/isr64.asm: int 0x80 (or syscall) from an app, on its thread's kernel stack */
 void app_syscall(sysframe_t* r) {
     /* the kernel runs on the boot core: a call made elsewhere moves there,
      * unless it may run where it was made (interrupts are still off, as the
@@ -2202,6 +2223,7 @@ void app_syscall(sysframe_t* r) {
     }
     if (slot == SYS_SIGRETURN) {                /* a signal handler returned */
         sig_return(p, r);
+        r->int_no = 0x81;                       /* back by iretq: rcx / r11 too (sysret would not) */
         sig_check(p, r);
         __asm__ volatile("cli");
         return;
@@ -2219,36 +2241,51 @@ void app_syscall(sysframe_t* r) {
  * a stub; the font and the strings copied; the return stub after them */
 static int make_uapi(app_proc_t* p) {
     size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
-    size_t stubs = API_SLOTS * 8 + 32;              /* (+ the return and sigreturn stubs) */
+    size_t stubs = API_SLOTS * STUB + 2 * STUB;     /* (+ the return and sigreturn stubs) */
     uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
     if (!m) return -1;
     banana_api_t* ua = (banana_api_t*)m;
     memcpy(ua, &g_api, sizeof(g_api));
     void** slot = (void**)ua;
     uint8_t* st = m + tab;
-    for (uint32_t k = 0; k < API_SLOTS; k++, st += 8) {
-        st[0] = 0xB8;                                   /* mov eax, k */
-        memcpy(st + 1, &k, 4);
-        st[5] = 0xCD; st[6] = SYSCALL_VECTOR;           /* int 0x80 */
-        st[7] = 0xC3;                                   /* ret */
+    int sc = idt_has_syscall();
+    for (uint32_t k = 0; k < API_SLOTS; k++, st += STUB) {
+        memset(st, 0xCC, STUB);                         /* (int3 in the gaps) */
+        if (sc) {
+            /* mov r10, rcx; mov eax, k; syscall; ret - syscall keeps the
+             * return address in rcx, so the 4th argument goes in r10 */
+            st[0] = 0x49; st[1] = 0x89; st[2] = 0xCA;
+            st[3] = 0xB8; memcpy(st + 4, &k, 4);
+            st[8] = 0x0F; st[9] = 0x05;
+            st[10] = 0xC3;
+        } else {
+            st[0] = 0xB8;                               /* mov eax, k */
+            memcpy(st + 1, &k, 4);
+            st[5] = 0xCD; st[6] = SYSCALL_VECTOR;       /* int 0x80 */
+            st[7] = 0xC3;                               /* ret */
+        }
         if (g_spec[k].args) slot[k] = st;
     }
-    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * 8;
+    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * STUB;
     /* A C function returns its int in eax. Preserve it as the syscall's
      * first argument BEFORE loading the syscall number into eax. Ordinary
      * call stubs leave rdi alone; it is not the function's return value. */
+    memset(st, 0xCC, 2 * STUB);
     st[0] = 0x89; st[1] = 0xC7;                         /* mov edi, eax */
     st[2] = 0xB8;                                      /* mov eax, SYS_RETURN */
     uint32_t ret_slot = SYS_RETURN;
     memcpy(st + 3, &ret_slot, 4);
-    st[7] = 0xCD; st[8] = SYSCALL_VECTOR;
+    if (sc) { st[7] = 0x0F; st[8] = 0x05; }            /* syscall */
+    else { st[7] = 0xCD; st[8] = SYSCALL_VECTOR; }      /* int 0x80 */
     st[9] = 0x0F; st[10] = 0x0B;                        /* ud2: must not return */
-    /* where a signal handler returns to (sig_deliver): the frame is under rsp */
-    st += 16;
+    /* where a signal handler returns to (sig_deliver): the frame is under rsp
+     * (rcx and r11, which syscall overwrites, come back from it: iretq) */
+    st += STUB;
     st[0] = 0xB8;                                       /* mov eax, SYS_SIGRETURN */
     uint32_t sr_slot = SYS_SIGRETURN;
     memcpy(st + 1, &sr_slot, 4);
-    st[5] = 0xCD; st[6] = SYSCALL_VECTOR;
+    if (sc) { st[5] = 0x0F; st[6] = 0x05; }
+    else { st[5] = 0xCD; st[6] = SYSCALL_VECTOR; }
     st[7] = 0x0F; st[8] = 0x0B;                         /* ud2: does not return here */
     p->sigret_stub = (uintptr_t)st;
     uint8_t* font = m + tab + stubs;
@@ -2325,6 +2362,7 @@ static void api_init(void) {
     g_api.thread_id = G(a_thread_id);
     g_api.thread_exit = G(a_thread_exit);
     g_api.cpu_count = a_cpu_count;
+    g_api.gpu_call = a_gpu_call;
     g_api.wait = G(a_wait);
     g_api.wake = G(a_wake);
     g_api.web_open = G(a_web_open);
@@ -2641,6 +2679,7 @@ static void release(app_proc_t* p) {
     for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
         if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
         else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
+    gpu_virgl_release(p->id + 1);
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);
@@ -2820,6 +2859,16 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     return 0;
 }
 
+/* what an app holds: its blocks' memory, and (64-bit) the pages of its
+ * mapped memory in RAM - where its malloc heap is now (sdk/lib/malloc.c) */
+static uint32_t app_mem_bytes(app_proc_t* p) {
+    uint64_t n = umem_used(p->mem);
+#ifdef __x86_64__
+    n += uvm_resident(p->us);
+#endif
+    return n > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
 int app_count(void) {
     int n = 0;
     for (int i = 0; i < APP_MAX; i++) if (g_procs[i].used) n++;
@@ -2832,7 +2881,7 @@ void app_list(void) {
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
         if (!p->used) continue;
-        uint32_t mem = umem_used(p->mem);
+        uint32_t mem = app_mem_bytes(p);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
         terminal_writeln(line);
@@ -2850,7 +2899,7 @@ int app_snapshot(app_info_t* out, int max) {
         kstrlcpy(out[n].name, p->name, sizeof(out[n].name));
         out[n].pid = p->pid;
         out[n].desktop = p->own_task;
-        out[n].mem = umem_used(p->mem);
+        out[n].mem = app_mem_bytes(p);
         out[n].threads = 1;
         for (int t = 0; t < APP_THREADS; t++) if (p->threads[t].used && !p->threads[t].done) out[n].threads++;
         n++;

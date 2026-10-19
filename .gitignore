@@ -22,6 +22,7 @@ loader/keys/.nokey
 # SDK build outputs
 sdk/examples/*/build/
 *.bpk
+*.bpk.z
 banana-sdk.tar.gz
 
 # Python
@@ -31,3 +32,5 @@ __pycache__/
 build/logs/
 build/test/
 sdk/examples/posixtest/*.so
+# the App Store's facts about the built-in packages (tools/mkbuiltinmeta.py)
+build/builtin-meta-*.bin

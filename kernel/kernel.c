@@ -29,6 +29,9 @@
 #include "acpi.h"
 #include "virtio_blk.h"
 #include "paging.h"
+#include "fpu.h"
+#include "tlb.h"
+#include "boottime.h"
 #include "hmem.h"
 #include "smp.h"
 #include "splash.h"
@@ -38,32 +41,13 @@
 #define MULTIBOOT2_MAGIC 0x36D76289
 
 /* a boot step, in the log (and on the screen with "verbose") */
-#define STEP(what) klog("boot: %s\n", what)
+#define STEP(what) boottime_mark(what)      /* (kernel/boottime.c: `boottime`) */
 
-/* The x87 FPU: the web browser's JavaScript and httpd's PHP compute with
- * it (the kernel is built without SSE). No emulation, no lazy switching
- * (tasks are cooperative and the x87 stack is empty across calls), FPU
- * errors reported natively, all exceptions masked by fninit. */
-static void fpu_init(void) {
-    uintptr_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 &= ~((uintptr_t)1 << 2 | (uintptr_t)1 << 3);   /* EM, TS */
-    cr0 |= (uintptr_t)1 << 1 | (uintptr_t)1 << 5;      /* MP, NE */
-    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
-    __asm__ volatile("fninit");
-    /* SSE for apps (the kernel itself is built without it): the scheduler
-     * saves every task's FPU/SSE registers with fxsave (kernel/task.c) */
-    uint32_t a = 1, b, c, d;
-    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-    if ((d & (1u << 24)) && (d & (1u << 25))) {          /* FXSR + SSE */
-        uintptr_t cr4;
-        __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-        cr4 |= (uintptr_t)1 << 9 | (uintptr_t)1 << 10;  /* OSFXSR, OSXMMEXCPT */
-        __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
-        uint32_t mxcsr = 0x1F80;                        /* all SSE exceptions masked */
-        __asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
-    }
-}
+/* The x87 FPU (the browser's JavaScript and httpd's PHP compute with it -
+ * the kernel is built without SSE), SSE and, where the processor has it,
+ * AVX for apps: kernel/fpu.c (no emulation, no lazy switching, FPU errors
+ * reported natively, every exception masked). */
+static void fpu_init(void) { fpu_cpu_init(); }
 
 void kernel_main(uint32_t magic, uint32_t mb_info) {
     /* Install exception handlers before anything else: a fault before
@@ -72,9 +56,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
      * triple-faulting into a VM reset. */
     idt_init();
     fpu_init();
+    tlb_cpu_init();           /* the kernel's pages global, PCIDs where there are (kernel/tlb.c) */
 
     serial_init();
     klog("Banana OS 0.6 booting\n");
+    STEP("kernel");           /* (the boot's timeline starts here: `boottime`) */
 
     /* Parse Multiboot2 info first so the console can choose framebuffer mode. */
     if (magic == MULTIBOOT2_MAGIC) {
@@ -84,14 +70,17 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
         sysinfo_log_boot();
     }
     /* After every Multiboot2 consumer above: the heap may reuse that memory. */
+    STEP("heap");
     kheap_init(magic == MULTIBOOT2_MAGIC ? mb_info : 0);
     klog("heap: %u KiB free\n", kheap_total_bytes() / 1024u);
     paging_guard_null();      /* NULL pointers fault (64-bit), after every Multiboot2 reader */
     hmem_init(magic == MULTIBOOT2_MAGIC ? mb_info : 0);   /* RAM above 4 GiB, for apps (64-bit) */
+    STEP("graphics");
     gpu_init();               /* graphics drivers: one may set the screen up (kernel/gpu.h) */
     paging_pat_init();        /* write-combining (64-bit): a framebuffer without a driver gets it */
     gpu_firmware_init();      /* AMD, NVIDIA, Intel Arc / Xe without a driver: named, faster screen */
 
+    STEP("console");
     terminal_init();
     /* "verbose" (GRUB's "boot messages" entry): no boot screen, every step on
      * the screen - so a computer that stops during the boot shows where */
@@ -99,6 +88,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     if (verbose) klog_to_screen(1);
     STEP("timer");
     timer_init();
+    boottime_clock_started();
     __asm__ volatile("sti");  /* timer IRQ from here on */
     if (!verbose) splash_start();   /* the boot screen until the system is ready */
     STEP("clock");

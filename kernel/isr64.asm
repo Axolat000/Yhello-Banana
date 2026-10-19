@@ -199,3 +199,51 @@ syscall_stub:
     POP_ALL
     add rsp, 16
     iretq
+
+; ── system calls from apps (ring 3): the syscall instruction ──────────
+; The stubs are "mov r10, rcx; mov eax, slot; syscall; ret": syscall
+; keeps the return address in rcx (so the 4th argument travels in r10) and
+; the flags in r11, and leaves the stack alone. GS (swapgs) reaches this
+; core's per-core area (kernel/idt.c): the task's kernel stack, and a place
+; for the app's stack pointer. From here on it is the same frame as
+; int 0x80's - app_syscall() cannot tell them apart. The way back is
+; sysret, unless app_syscall() marked the frame for iretq (int_no changed:
+; a signal handler's return restores every register, rcx and r11 too) or
+; the return address is not in the app's (lower) half of the addresses -
+; sysret to a non-canonical one faults in ring 0 on the app's stack.
+global syscall_entry
+extern g_user_ss
+extern g_user_cs
+
+syscall_entry:
+    swapgs
+    mov [gs:8], rsp                 ; the app's stack
+    mov rsp, [gs:0]                 ; this task's kernel stack (the TSS's rsp0)
+    push qword [rel g_user_ss]      ; the frame int 0x80 would have: ss, rsp, rflags, cs, rip
+    push qword [gs:8]
+    swapgs                          ; (GS as the app had it again: the kernel does not use it)
+    push r11
+    push qword [rel g_user_cs]
+    push rcx
+    push qword 0
+    push qword 0x80
+    mov rcx, r10                    ; the 4th argument where int 0x80's frame has it
+    PUSH_ALL
+    cld
+    mov rdi, rsp
+    call app_syscall                ; (returns with interrupts off)
+    mov rax, [rsp + 17 * 8]         ; where it returns to (rax comes back from the frame)
+    sar rax, 47
+    jz .app_half
+    mov qword [rsp + 15 * 8], 0x81  ; not in the app's half of the addresses: iretq
+.app_half:
+    POP_ALL
+    add rsp, 16
+    cmp qword [rsp - 16], 0x80      ; int_no: still a plain call?
+    jne .iret
+    mov rcx, [rsp]                  ; rip
+    mov r11, [rsp + 16]             ; rflags
+    mov rsp, [rsp + 24]             ; the app's stack (interrupts are off)
+    o64 sysret
+.iret:
+    iretq

@@ -9,8 +9,8 @@ objects and libOSMesa.so is linked the way ninja links it, without the
 system's C library (its functions come from the app: the SDK's dlopen).
 Objects go to OUT/objs, errors to OUT/logs/<object>.log; a summary is
 printed. EXTRA (environment): more compiler flags; JOBS: parallel jobs;
-KEEP=1: objects already compiled are kept."""
-import collections, json, os, re, shlex, subprocess, sys
+KEEP=1: reuse objects whose compiler arguments, source and headers match."""
+import collections, hashlib, json, os, re, shlex, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,10 +21,20 @@ GCC = subprocess.run(["gcc", "-dumpversion"], capture_output=True, text=True).st
 GCCINC = subprocess.run(["gcc", "-print-file-name=include"], capture_output=True, text=True).stdout.strip()
 PRE = ["-nostdinc", "-isystem", SDK + "/include", "-isystem", HERE + "/include", "-fdiagnostics-color=never",
        "-isystem", GCCINC, "-D__BANANA_OS__", "-mno-red-zone", "-fno-stack-protector"]
-PRE_CXX = ["-nostdinc++", "-isystem", "/usr/include/c++/" + GCC, "-isystem", "/usr/include/x86_64-linux-gnu/c++/" + GCC]
+TRIPLE = subprocess.check_output(["gcc", "-dumpmachine"], text=True).strip()
+CXX_DIRS = ["/usr/include/c++/" + GCC, "/usr/include/c++/" + GCC + "/" + TRIPLE,
+            "/usr/include/" + TRIPLE + "/c++/" + GCC, "/usr/include/x86_64-linux-gnu/c++/" + GCC]
+PRE_CXX = ["-nostdinc++"] + [arg for directory in CXX_DIRS if os.path.isdir(directory) for arg in ["-isystem", directory]]
+
+LLVM_LIBRARY = os.environ.get("LLVM_LIBRARY")
+if LLVM_LIBRARY:
+    llvm_include = os.path.join(HERE, "../llvm/include")
+    PRE += ["-isystem", llvm_include]
+    PRE_CXX += ["-include", os.path.join(llvm_include, "cxx_compat.h")]
+
 # what the build machine had and Banana OS has not: zlib (Mesa then uses its
 # own CRC-32), SPIRV-Tools (only for printing SPIR-V); plain diagnostics
-POST = ["-UHAVE_ZLIB", "-UHAVE_COMPRESSION", "-UHAVE_SPIRV_TOOLS", "-fdiagnostics-color=never",
+POST = ["-UHAVE_ZLIB", "-UHAVE_COMPRESSION", "-UHAVE_SPIRV_TOOLS", "-UHAVE_LIBDRM", "-DNO_REGEX", "-fdiagnostics-color=never",
         "-mtls-dialect=gnu"]                 # (the SDK loader has no TLS descriptors)
 POST_CXX = ["-fno-exceptions"]               # (nor a C++ unwinder)
 EXTRA = os.environ.get("EXTRA", "").split()
@@ -59,7 +69,7 @@ def inputs(target):                          # what ninja builds target from
 
 
 archives = [a for a in largs if a.endswith(".a") and not a.startswith("/")]
-members = {a: [x for x in inputs(a) if x.endswith(".o")] for a in archives}   # archive -> its objects
+members = {a: [x for x in inputs(a) if x.endswith(".o") and not x.endswith("renderonly_renderonly.c.o")] for a in archives}   # archive -> its objects
 direct = [a for a in largs if a.endswith(".o") and not a.startswith("/")]
 # Mesa's own shared libraries (libglapi.so): their objects go into libOSMesa.so
 # itself (Banana OS loads one library)
@@ -84,6 +94,7 @@ if ONLY:
 
 def rewrite(cmd, out):
     a = shlex.split(cmd)
+    while os.path.basename(a[0]) in ("ccache", "sccache"): a.pop(0)
     cxx = a[0].endswith("++")
     pre = PRE[:1] + (PRE_CXX if cxx else []) + PRE[1:]
     res, i = [a[0]] + pre, 1
@@ -104,15 +115,36 @@ def rewrite(cmd, out):
     return res + POST + (POST_CXX if cxx else []) + EXTRA
 
 
+# The reference build targets host headers. SDK or port header changes must
+# also invalidate the target cache, even when the source file stayed put.
+roots = [SDK + "/include", HERE + "/include", HERE + "/../llvm/include", os.path.abspath(REF + "/../../src"), REF]
+header_hash = hashlib.sha256()
+for base in roots:
+    if not os.path.isdir(base): continue
+    for directory, dirs, files in os.walk(base):
+        dirs.sort()
+        for filename in sorted(files):
+            if filename.endswith((".h", ".inc")):
+                path = os.path.join(directory, filename)
+                header_hash.update(path.encode()); header_hash.update(open(path, "rb").read())
+header_stamp = header_hash.hexdigest()
+compiler_id = subprocess.check_output(["gcc", "--version"], text=True).splitlines()[0]
+
 def build(o):
     e = cmds.get(o)
     if not e:
         return o, False, "no compile command"
-    if KEEP and os.path.exists(OUT + "/objs/" + objname(o)):
+    artifact = OUT + "/objs/" + objname(o)
+    source = os.path.join(e["directory"], e["file"])
+    argv = rewrite(e["command"], o)
+    signature = hashlib.sha256((json.dumps(argv) + str(header_stamp) + compiler_id).encode()).hexdigest()
+    stamp = artifact + ".signature"
+    if KEEP and os.path.exists(artifact) and os.path.exists(stamp) and open(stamp).read() == signature and os.path.getmtime(artifact) >= os.path.getmtime(source):
         return o, True, ""
-    r = subprocess.run(rewrite(e["command"], o), cwd=e["directory"], capture_output=True, text=True)
+    r = subprocess.run(argv, cwd=e["directory"], capture_output=True, text=True)
     log = OUT + "/logs/" + objname(o) + ".log"
     if r.returncode == 0:
+        open(stamp, "w").write(signature)
         if os.path.exists(log):
             os.remove(log)
         return o, True, ""
@@ -177,6 +209,7 @@ libgcc = subprocess.run([cc, "-print-libgcc-file-name"], capture_output=True, te
 libstdcxx = subprocess.run([cc, "-print-file-name=libstdc++.a"], capture_output=True, text=True).stdout.strip()
 subprocess.run(["ar", "x", "--output=" + OUT + "/lib", libstdcxx, "hashtable_c++0x.o"], check=True)
 final = [newargs[0], "-nostdlib", crt[0]] + newargs[1:] + [OUT + "/lib/hashtable_c++0x.o", libgcc, crt[1]]
+if LLVM_LIBRARY: final += [os.path.abspath(LLVM_LIBRARY)]
 r = subprocess.run(final, cwd=REF, capture_output=True, text=True)
 if r.returncode:
     print(r.stderr[-4000:])

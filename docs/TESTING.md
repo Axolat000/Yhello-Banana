@@ -18,7 +18,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -26,8 +26,40 @@ selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every b
                          (skipped without RAM above 4 GiB: MEM=8G tools/dev.sh run)
 selftest limits          an app with 60 threads, an app with 60 files open,
                          24 apps at once
+selftest clock           shared HPET / ACPI / IRQ clock, counter rollovers, elapsed
+                         time against physical CMOS, and reads across migrating threads
 selftest cores           threads calling malloc / free / a lock on every core, and
                          whether they spread over the cores (SMP=4 in QEMU)
+selftest malloc          the apps' own heap (sdk/lib/malloc.c): random blocks with
+                         every byte checked, realloc, aligned blocks; then 200000
+                         malloc + free on one thread and on every core, timed against
+                         the kernel's allocator (64-bit: must be at least 2x as fast)
+selftest avx             2 threads per core fill YMM0-15 and spin until switched out
+                         and moved between cores many times: every byte must be
+                         back; then new threads must find their YMM upper halves
+                         clean (skipped without AVX: CPU=max or KVM=1 in QEMU)
+selftest syscall         the syscall / sysret entry: rbx and r12-r15 kept through a
+                         call, a 9-argument call (4th argument in r10, 3 on the
+                         stack) drawing a glyph checked pixel by pixel; then 200000
+                         calls timed against int 0x80 (must be at least 1.1x as fast)
+selftest disk            reads 32 MiB twice from the first SATA / virtio / NVMe disk
+                         (read only): the same data both times; a task waking every
+                         1 ms must keep running meanwhile (30%); how many waits the
+                         disk's interrupt ended (QEMU: DISK=disk.img or -machine q35)
+selftest heap            the kernel's heap checked through (every block, the list both
+                         ways, every free block in its bin), then 100000 kmalloc +
+                         kfree among 2000 live blocks with holes (under 2 us each)
+selftest tlb             global kernel pages and PCIDs: a private address space whose
+                         page is changed under it must never be seen as it was; switches
+                         timed against forgetting everything; threads on every core
+                         mapping / write-protecting / unmapping pages (fresh pages read 0)
+selftest net             TCP over loopback: window scaling and SACK agreed (window over
+                         64 KiB), 8 MiB checked byte for byte, then 2 MiB with 1 data
+                         segment in 25 dropped (holes resent; still every byte right)
+selftest utf8            a terminal's cells hold any character (é € Ω Ж ─ and one past
+                         U+FFFF, a stray byte as U+FFFD); DejaVu Sans Mono draws what
+                         the 8x8 font has not; VGA text mode's code page 437; UTF-8 to
+                         UTF-16 and back (FAT32 / exFAT names, surrogate pairs)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
@@ -37,6 +69,10 @@ selftest boot            render the shared BIOS/UEFI menu into a guarded buffer;
                          incremental updates preserve unchanged options and header pixels
 selftest ram             firmware RAM reporting: complete maps before/after legacy counts,
                          8/24/64 GiB totals, reserved holes, malformed input and live totals
+selftest sleep           static ACPI sleep-package and wake-page checks; capability status;
+                         does not suspend (also included in the default selftest)
+selftest sleep cycle     actually enter S3, wake by RTC, check live user threads, FPU/stack
+                         retention, the resumed timer and the wake trampoline's return
 selftest mouse           deterministic relative-movement, ownership and release-state checks
 selftest mouse demo      also launch the interactive mouse demo (desktop must be running);
                          click to capture, look around, Escape releases, Q exits
@@ -192,6 +228,34 @@ flags, long messages, clipped and padded framebuffers (nothing drawn outside
 them). It writes preview PNGs and reports to `build/test/crashscreen/` without
 booting anything; prints `PASS` when every check holds.
 
+### `tools/test_malloc.py`
+
+The apps' heap (`sdk/lib/malloc.c`), built with the SDK's own flags and run on
+Linux under a stand-in for the system's call table (`vm_map` is `mmap`), by
+`tools/tests/malloc.c`: 1.2 million random `malloc` / `calloc` / `realloc` /
+`free` with every byte checked (without and with the thread cache), aligned
+blocks from 16 B to 64 KiB alignment, kernel memory passed back to the kernel,
+8 threads freeing each other's blocks, and nothing left in use at the end.
+
+### `tools/test_kheap.py [BASE]`
+
+The kernel's heap (`kernel/kheap.c`) on Linux, with stand-in headers
+(`tools/tests/kheap_stub`) and its memory mapped below 4 GiB: 300000 random
+`kmalloc` / `kfree` / `krealloc` / `kmalloc_aligned` (64 B - 2 MiB) with every
+byte checked and `kheap_check()` every 5000; everything freed must merge back
+into one block. Then the same fragmented workload on it and on the `kheap.c`
+of `BASE` (default: build 193's, before the bins), timed.
+
+### `tools/test_tcp.py [BASE]`
+
+TCP (`net/tcp.c`) on Linux with stand-in headers (`tools/tests/tcp_stub`):
+both ends of a connection in one process over a simulated link
+(`tools/tests/tcp_sim.c`: a one-way delay, a bandwidth, a bottleneck queue,
+random loss, a virtual clock). Downloads from 2 to 300 ms round trips, with
+0 to 2% loss, checked byte for byte; window scaling and SACK must be agreed,
+and at a 100 ms round trip it must be at least 4x the `tcp.c` of `BASE`
+(default: build 195's, before window scaling and SACK).
+
 ## A full check before a release
 
 ```
@@ -201,6 +265,9 @@ MEM=8G tools/dev.sh apps
 tools/test-exfat.sh
 tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
 python3 tools/test_crashscreen.py
+python3 tools/test_malloc.py
+python3 tools/test_kheap.py
+python3 tools/test_tcp.py
 ```
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an
@@ -263,3 +330,107 @@ Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
 64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
 BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
 maps; those larger guest sizes were not run on this host.
+
+### ACPI S3 sleep (QEMU first)
+
+The initial profile is QEMU's PC/PIIX4 machine, standard VGA, e1000 (or no
+NIC), and optional virtio-blk storage. `sleep status` checks the firmware's
+S3 package, FACS, usable waking-vector RAM, display and device support.
+Unsupported configurations return a reason before entering sleep. This
+does not provide generic physical-PC ACPI power management or an AML
+interpreter; Q35/AHCI, other GPUs/NICs, USB controllers and audio-controller
+resume need additional driver support.
+
+Rebuild with `tools/dev.sh run`, then use `selftest sleep cycle`. The safe
+`selftest sleep` runs 24 parser/memory-map checks plus the platform check
+(or a skip when unavailable). The cycle adds live user threads that retain
+their stack and floating-point values across S3, a stack marker in the
+caller, resumed interrupts/monotonic time, and the actual firmware return:
+30 checks on a supported guest. It uses a five-second RTC alarm, with the
+clock's one-second granularity. Repeating the cycle checks reuse of CPU
+stacks and device buffers. A default `selftest` never suspends the machine.
+
+`sleep 5` is a simple timed sleep. `sleep` without a delay, Start's power
+menu > Sleep, and Settings > About > Sleep wait for a host wake request.
+In QEMU, Ctrl+Alt+2 opens the monitor: enter `system_wakeup`, then use
+Ctrl+Alt+1 to return to the display. A host test can also issue QMP
+`system_wakeup`. Installed filesystem data is synced before suspend;
+monotonic timers pause while asleep and the wall clock is reread on wake.
+This keeps the session in RAM, rather than saving a hibernation image.
+
+`python3 tools/test_sleep.py --sanitize` or `--32` runs the same 24 static
+checks on the host without suspending any machine. Firmware/device
+validation requires a VM cycle. The wake protocol follows the
+[ACPI sleeping/waking specification](https://uefi.org/specs/ACPI/6.6/16_Waking_and_Sleeping.html);
+QEMU's wake path can reset devices, so driver restoration is required
+([QEMU reset documentation](https://www.qemu.org/docs/master/devel/reset.html)).
+
+
+## Shared monotonic clock (build 199)
+
+Run `selftest clock` inside Banana OS. It prints the selected source and checks
+12 conversion/rollover cases, a 1200 ms sleep (with 1 ms rounding tolerance),
+elapsed time against the actual CMOS clock, and at least 80000 serialized user
+clock reads on a four-core guest. Workers start together and remain runnable
+for at least 250 ms, beginning with 50 ms of app computation sampled between
+batches so timer interrupts can offload them. The previous 1 ms sleep every
+256 reads could keep every burst on the boot core, making the multicore
+coverage check fail on a healthy clock. One-core guests use two threads and
+skip the multiple-core requirement. This command also runs as part of `selftest`.
+
+HPET is preferred, then the ACPI PM timer. Both are shared hardware counters;
+CPU TSC values and their advertised invariant/hypervisor flags are not used
+for elapsed time. The 32-bit kernel reads a 64-bit HPET with a high/low/high
+retry. Narrow HPET/PM counters are extended by the timer interrupt, with a
+sequence counter protecting readers on other cores. They must be sampled at
+least once per wrap (a 24-bit PM counter wraps in about 4.7 s). The last fallback
+counts timer interrupts and is less precise if the machine delays delivery.
+S3 rebases the selected source to its saved nanosecond epoch, excluding sleep.
+The CMOS value, rather than the timezone-adjusted display clock, sets RTC alarms.
+
+The host log showed Linux rejecting TSC after a 2470544928-cycle warp, and QEMU
+TCG reproduced large jumps even though the guest cores agreed at startup.
+The initial boot-time TSC synchronization patch did not fix the allocator's
+reported 4166170 ms runtime. With the shared clock, the same four-thread kernel
+allocator benchmark reported about 1252 ms; the app allocator reported 94 ms.
+These figures describe this host and are not general performance guarantees.
+
+The syscall entry benchmark now uses `cpu_count`, a cheap query, so hardware
+clock MMIO does not hide entry overhead. The VirtualBox workaround still checks
+real elapsed time to exit to the hypervisor periodically; raw TSC only limits
+how often that check reads hardware, with an additional call-count bound.
+The serial test runner rejects failing checks and failing final summaries even
+when a nested suite prints `0 failed`. Numeric expectations have digit boundaries,
+so `100% packet loss` cannot satisfy a `0% packet loss` assertion.
+
+A resume regression from the upstream merge was also found: e1000 probing
+cleared `present` and `ifname`, which made the network poller skip the NIC.
+Resume now retains its registration metadata. `selftest sleep cycle` checks
+that registration and reports 31 checks with a NIC present (30 without one).
+
+Host checks:
+
+```
+python3 tools/test_clock.py --sanitize
+python3 tools/test_clock.py --32
+python3 tools/tests/test_serialtest.py
+```
+
+Reference layouts: [Intel HPET specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/software-developers-hpet-spec-1-0a.pdf)
+and [ACPI hardware specification](https://uefi.org/specs/ACPI/6.5/04_ACPI_Hardware_Specification.html).
+
+
+Validation on this host (scratch kernels and ISO):
+
+| Guest/check | Result |
+|---|---|
+| Full 64-bit TCG selftest, 4 cores | 230 passed, 0 failed |
+| Full 64-bit KVM selftest, 4 cores, host CPU/AVX | 232 passed, 0 failed |
+| Full 32-bit selftest | 217 passed, 0 failed |
+| UEFI KVM clock and core checks | 17 + 2 passed, 0 failed |
+| HPET, HPET disabled (ACPI PM), ACPI/HPET disabled (IRQ fallback) | clock checks passed |
+| Clock arithmetic, ASan/UBSan and i686 | 12 checks each, 0 failed |
+| Serial runner regression tests | 8 passed |
+| Clock multicore coverage regression, 512 MiB/4 cores | Old test failed 3/3 TCG runs; corrected test passed 5/5 TCG and 3/3 KVM runs, all on 4 cores; i686 passed |
+| BIOS 64-bit/ACPI PM resume | Three real suspend/wake cycles; clock checks before/after, FAT I/O, ping and POSIX passed |
+| BIOS 32-bit/HPET resume | Three real suspend/wake cycles; 31 cycle checks, FAT I/O, ping and POSIX passed |

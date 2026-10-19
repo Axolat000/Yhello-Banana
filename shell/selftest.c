@@ -1,17 +1,32 @@
 #include "selftest.h"
+#include "../kernel/gpu.h"
+#include "../kernel/gpu_virgl.h"
+#include "../kernel/disk.h"
+#include "../kernel/iowait.h"
+#include "../kernel/idt.h"
+#include "../kernel/fpu.h"
 #include "../kernel/bootmenu_test.h"
 #include "../kernel/bootmem_test.h"
+#include "../kernel/acpi_sleep.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/kheap.h"
+#include "../kernel/tlb.h"
+#include "../kernel/boottime.h"
+#include "../kernel/font.h"
+#include "../kernel/utf8.h"
+#include "../kernel/pci.h"
+#include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/gui.h"
 #include "../kernel/browser_test.h"
 #include "ipv6test.h"
 #include "../net/ipv6.h"
+#include "../net/tcp.h"
 #include "../kernel/fs.h"
 #include "../kernel/kstring.h"
 #include "../kernel/terminal.h"
 #include "../kernel/timer.h"
+#include "../kernel/timer_math.h"
 #include "../kernel/task.h"
 #include "../kernel/app.h"
 #include "../kernel/pkg.h"
@@ -28,7 +43,7 @@
 #include "datecmd.h"
 
 /*
- * selftest [ring3 | memory | limits | cores] - checks the system features
+ * selftest [virgl | gpu | ring3 | memory | limits | cores] - checks the system features
  * from inside Banana OS, one ok / FAIL line each, and a summary. What must
  * run as an app is done by systest (sdk/examples/systest), installed from
  * the copy built into the kernel: the exit code of each of its modes is
@@ -151,6 +166,396 @@ static void t_cores(void) {
     else report("they spread over the cores", cores >= 2, cores >= 2 ? "" : "all stayed on one core");
 }
 
+static void t_clock(void) {
+    section("shared monotonic clock (build 199)");
+    timer_math_tests(report);
+    char note[96];
+    report("clock source selected",1,timer_clock_source());
+    rtc_datetime_t first,last;
+    int hw=rtc_read_hardware(&first)==0;
+    uint64_t start=timer_counter();
+    task_sleep_ms(1200);
+    uint64_t elapsed=(timer_counter()-start)/1000000ull;
+    ksnprintf(note,sizeof(note),"%llu ms for a 1200 ms sleep",elapsed);
+    /* task_sleep_ms uses millisecond deadlines: a fractional first tick
+     * can make its measured duration just under 1200 whole milliseconds. */
+    report("sleep respects its millisecond deadline",elapsed>=1199 && elapsed<5000,note);
+    if(hw && rtc_read_hardware(&last)==0) {
+        unsigned a=first.hour*3600u+first.minute*60u+first.second;
+        unsigned b=last.hour*3600u+last.minute*60u+last.second;
+        unsigned seconds=(b+86400u-a)%86400u;
+        ksnprintf(note,sizeof(note),"CMOS advanced %u s; monotonic clock %llu ms",seconds,elapsed);
+        report("elapsed time agrees with the independent CMOS clock",seconds>=1 && seconds<=5 && elapsed+1000>=seconds*1000ull && elapsed<=(seconds+1)*1000ull,note);
+    } else skip("elapsed time agrees with CMOS","no readable hardware RTC");
+    int rc=run("clock",NULL,NULL);
+    report("user clock reads stay monotonic across core migrations",rc>=100,"");
+    if(cpu_count()>1) {
+        ksnprintf(note,sizeof(note),"read on %d of %d cores",rc>=100?rc-100:0,cpu_count());
+        report("clock reads exercise multiple cores",rc>=102,note);
+    }
+}
+
+static void t_malloc(void) {
+    section("malloc in the app (build 190)");
+    int rc = run("malloc", NULL, NULL);
+    if (rc < 100) { report("random blocks, realloc and alignment", 0, "a block changed, out of memory or a crash"); return; }
+    report("random blocks, realloc and alignment", 1, "");
+#ifdef __x86_64__
+    char note[96];
+    ksnprintf(note, sizeof(note), "%dx as fast as the kernel's allocator (times above)", rc - 100);
+    report("faster than a system call per malloc", rc - 100 >= 2, note);
+#else
+    skip("faster than a system call per malloc", "the 32-bit kernel keeps the kernel's allocator");
+#endif
+}
+
+static void t_avx(void) {
+    section("AVX for apps (build 191)");
+    char fp[64];
+    fpu_describe(fp, sizeof(fp));
+    if (!fpu_avx()) {
+        skip("YMM registers kept across task switches", "no AVX on this processor (QEMU: CPU=max tools/dev.sh run)");
+        terminal_write("        registers for apps: "); terminal_writeln(fp);
+        return;
+    }
+    int rc = run("avx", NULL, NULL);
+    report("YMM registers kept across task switches", rc == 0 || rc == 3, rc == 1 ? "a thread's registers changed" : fp);
+    report("a new thread finds no other thread's AVX state", rc == 0, rc == 3 ? "old YMM halves were left" : "");
+}
+
+static void t_syscall(void) {
+    section("system calls through syscall / sysret (build 192)");
+#ifdef __x86_64__
+    int rc = run("syscall", NULL, NULL);
+    report("registers kept, a 9-argument call right", rc >= 100, rc >= 100 ? "" : "see the line above");
+    if (rc < 100) return;
+    char note[96];
+    ksnprintf(note, sizeof(note), "%d.%dx as fast as int 0x80 (times above)", (rc - 100) / 10, (rc - 100) % 10);
+    if (!idt_has_syscall()) skip("faster than int 0x80", "this processor has no syscall instruction: the stubs use int 0x80");
+    else report("faster than int 0x80", rc - 100 >= 11, note);
+#else
+    skip("the syscall entry", "the 32-bit kernel calls the system directly (ring 0)");
+#endif
+}
+
+/* ── disks: interrupt-driven waits (build 193) ── */
+static volatile int g_tick_run, g_ticks;
+
+/* tries to wake every millisecond while the disk is read */
+static void disk_ticker(void) {
+    while (g_tick_run == 1) { task_sleep_ms(1); g_ticks++; }
+    g_tick_run = 2;
+}
+
+static uint32_t sum32(const uint8_t* b, uint32_t n) {
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+static void t_disk(void) {
+    section("disks: waiting without stopping the system (build 193)");
+    static ata_disk_t d[8];
+    int n = disk_probe(d, 8), pick = -1;
+    for (int i = 0; i < n && pick < 0; i++)
+        if (d[i].present && !d[i].is_atapi && (d[i].nvme || d[i].vblk || d[i].ahci_port >= 0) && d[i].sectors >= 65536) pick = i;
+    if (pick < 0) { skip("reads while other tasks run", "no SATA, virtio or NVMe disk (QEMU: DISK=disk.img, or -machine q35)"); return; }
+    const char* kind = d[pick].nvme ? "NVMe" : d[pick].vblk ? "virtio" : "SATA";
+    enum { CH = 2048, CHUNKS = 32 };                /* 1 MiB at a time, 32 MiB */
+    uint8_t* buf = (uint8_t*)kmalloc(CH * 512);
+    if (!buf) { report("reads while other tasks run", 0, "out of memory"); return; }
+    uint32_t s0, w0, s1, w1;
+    io_stats(&s0, &w0);
+    uint32_t sums[2] = { 0, 0 }, ms[2] = { 0, 0 };
+    int ok = 1;
+    int concurrent_ticks = 0;
+    for (int pass = 0; pass < 2 && ok; pass++) {
+        g_ticks = 0;
+        g_tick_run = pass == 0 ? 1 : 0;             /* (the first pass with the ticker beside it) */
+        if (pass == 0 && task_create("disktick", disk_ticker) < 0) g_tick_run = 0;
+        uint32_t t0 = timer_ms();
+        for (int c = 0; c < CHUNKS && ok; c++) {
+            if (disk_read(&d[pick], (uint32_t)c * CH, CH, buf) != 0) ok = 0;
+            else sums[pass] = sums[pass] * 31u + sum32(buf, CH * 512);
+        }
+        ms[pass] = timer_ms() - t0;
+        /* Capture progress before stopping/joining the ticker, and before
+         * the comparison pass resets its counter. A wake during join is
+         * not evidence of progress while the read loop was running. */
+        if (pass == 0) concurrent_ticks = g_ticks;
+        if (pass == 0 && g_tick_run == 1) { g_tick_run = 0; while (g_tick_run != 2) task_sleep_ms(1); }
+    }
+    kfree(buf);
+    io_stats(&s1, &w1);
+    char note[128];
+    ksnprintf(note, sizeof(note), "%s disk, 32 MiB twice: %u ms, %u ms", kind, ms[0], ms[1]);
+    report("the same data read twice", ok && sums[0] == sums[1], ok ? note : "a read failed");
+    if (!ok) return;
+    if (ms[0] < 20) {
+        skip("other tasks run while it reads", "the reads took under 20 ms: nothing to measure");
+    } else {
+        ksnprintf(note, sizeof(note), "a 1 ms task woke %d times during the %u ms read/checksum loop", concurrent_ticks, ms[0]);
+        /* This checks concurrent progress, not a wake-rate guarantee:
+         * checksum work in the cooperative kernel cannot be preempted. */
+        report("other tasks run while it reads", concurrent_ticks > 0, note);
+    }
+    if (d[pick].nvme) skip("woken by the disk's interrupt", "NVMe waits let the others run between looks (its interrupts stay off)");
+    else {
+        ksnprintf(note, sizeof(note), "%u waits slept, %u woken by the interrupt", s1 - s0, w1 - w0);
+        if (s1 == s0) skip("woken by the disk's interrupt", "every command was done within the short spin");
+        else report("woken by the disk's interrupt", w1 > w0, w1 > w0 ? note : "no interrupt arrived: 2 ms polling instead");
+    }
+}
+
+/* ── the kernel's heap: bins (build 194) ── */
+static void t_heap(void) {
+    section("the kernel's heap (build 194)");
+    char err[128] = "", note[128];
+    int bad = kheap_check(err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%u free blocks, %u of %u KiB used", kheap_free_blocks(), kheap_used_bytes() >> 10, kheap_total_bytes() >> 10);
+    report("the heap is sound (every block, list and bin)", !bad, bad ? err : note);
+    enum { LIVE = 4000, PAIRS = 100000 };
+    void** live = (void**)kmalloc(LIVE * sizeof(void*));
+    if (!live) { report("malloc / free among many blocks", 0, "out of memory"); return; }
+    uint32_t x = 12345;
+    int fail = 0;
+    for (int i = 0; i < LIVE; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        if (!(live[i] = kmalloc(x % 2000 + 16))) fail = 1;
+    }
+    for (int i = 0; i < LIVE; i += 2) { kfree(live[i]); live[i] = NULL; }
+    uint32_t t0 = timer_ms();
+    for (int i = 0; i < PAIRS && !fail; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        void* p = kmalloc(x % 4000 + 16);
+        if (!p) fail = 1;
+        kfree(p);
+    }
+    uint32_t ms = timer_ms() - t0;
+    bad = kheap_check(err, sizeof(err));
+    for (int i = 0; i < LIVE; i++) kfree(live[i]);
+    kfree(live);
+    if (!bad) bad = kheap_check(err, sizeof(err));
+    ksnprintf(note, sizeof(note), "%d pairs among %d live blocks: %u ms (%u ns each)", PAIRS, LIVE / 2, ms,
+              (uint32_t)((uint64_t)ms * 1000000u / PAIRS));
+    report("malloc / free among many blocks", !fail && !bad && ms * 1000u < (uint32_t)PAIRS * 2u,
+           fail ? "out of memory" : bad ? err : note);
+}
+
+/* ── the TLB: global kernel pages, PCIDs (build 195) ── */
+static void t_tlb(void) {
+    section("fewer TLB flushes: global kernel pages, PCIDs (build 195)");
+#ifdef __x86_64__
+    char msg[128] = "", note[128];
+    uint32_t old_ns, new_ns;
+    int kept;
+    int rc = tlb_selftest(msg, sizeof(msg), &old_ns, &new_ns, &kept);
+    ksnprintf(note, sizeof(note), "%s, %s", tlb_has_global() ? "global kernel pages" : "no global pages (no PGE)",
+              tlb_has_pcid() ? "PCIDs" : "no PCIDs");
+    report("a changed address space is never seen as it was", rc == 0, rc ? msg : note);
+    if (rc) return;
+    if (!tlb_has_pcid())
+        skip("a space's translations kept across switches", "this processor has no PCIDs (QEMU: CPU=max, or KVM=1)");
+    else
+        report("a space's translations kept across switches", 1,
+               kept ? "an untold change stayed unseen: the processor kept them"
+                    : "the processor forgot them anyway (QEMU without KVM does)");
+    if (old_ns && new_ns) {
+        ksnprintf(note, sizeof(note), "there and back, 128 pages touched: %u ns, %u ns forgetting everything (%u.%ux)",
+                  new_ns, old_ns, old_ns / new_ns, old_ns * 10u / new_ns % 10u);
+        report("switches no slower", (uint64_t)new_ns * 4 <= (uint64_t)old_ns * 5, note);
+    }
+    int arc = run("tlb", NULL, NULL);
+    tlb_stats_t st;
+    tlb_stats(&st);
+    ksnprintf(note, sizeof(note), "%d cores; since boot %llu of %llu loads kept the TLB, %llu full flushes, %u stale faults",
+              arc - 100, st.kept, st.loads, st.full, uspace_stale_faults());
+    report("threads remapping pages on every core: every fresh page zero", arc >= 100, arc >= 100 ? note : "see the line above");
+#else
+    skip("the TLB", "the 32-bit kernel runs without paging");
+#endif
+}
+
+/* ── UTF-8 everywhere: terminal cells, drawing, VGA, FAT names ── */
+static void t_utf8(void) {
+    section("UTF-8: any character in the terminal, the editor and file names");
+    /* the terminal: each UTF-8 character one cell, holding its code point */
+    static const uint32_t want[] = { 'a', 0xE9, 0x20AC, 0x3A9, 0x416, 0x2500, 0x1F34C, 0xFFFD, 'z' };
+    const char* text = "a\xC3\xA9\xE2\x82\xAC\xCE\xA9\xD0\x96\xE2\x94\x80\xF0\x9F\x8D\x8C\x80z";  /* (\x80: a stray byte) */
+    int vt = terminal_vt_alloc(), was = terminal_vt_get_active();
+    if (vt < 0) {
+        skip("terminal cells hold any character", "no free virtual terminal to write to");
+    } else {
+        terminal_vt_set_active(vt);
+        terminal_write(text);
+        terminal_vt_set_active(was);
+        const uint32_t* ch;
+        const uint8_t* co;
+        int w, h, stride;
+        terminal_vt_get_buffer(vt, &ch, &co, &w, &h, &stride);
+        int ok = ch != NULL, at = -1;
+        for (unsigned i = 0; ok && i < sizeof(want) / sizeof(want[0]); i++) if (ch[i] != want[i]) { ok = 0; at = (int)i; }
+        char note[96];
+        if (ok) ksnprintf(note, sizeof(note), "a e-acute euro Omega Zhe box-line banana, a stray byte as U+FFFD");
+        else ksnprintf(note, sizeof(note), "cell %d holds U+%04X", at, ch ? ch[at] : 0);
+        report("terminal cells hold any character", ok, note);
+        terminal_vt_free(vt);
+    }
+    /* drawing: the 8x8 font has Latin-1, DejaVu Sans Mono the rest */
+    static const char* const drawn[] = { "\xE2\x82\xAC", "\xCE\xA9", "\xD0\x96", "\xE2\x94\x80" };
+    int glyphs = 0;
+    if (font_available(FONT_MONO)) {
+        static uint32_t buf[32 * 32];
+        for (unsigned g = 0; g < 4; g++) {
+            memset(buf, 0, sizeof(buf));
+            font_draw(buf, 32, 0, 0, 32, 32, FONT_MONO, 20, 4, 24, drawn[g], (uint32_t)strlen(drawn[g]), 0x00FFFFFFu, 0);
+            int lit = 0;
+            for (int i = 0; i < 32 * 32; i++) if (buf[i]) lit++;
+            if (lit > 8) glyphs++;
+        }
+        report("beyond Latin-1 drawn with DejaVu Sans Mono (euro, Omega, Zhe, box line)", glyphs == 4, glyphs == 4 ? "" : "a glyph came out empty");
+    } else {
+        skip("beyond Latin-1 drawn with DejaVu Sans Mono", "the font is not loaded");
+    }
+    /* VGA text mode: code page 437 has some of it */
+    int vga = terminal_cp437(0xE9) == (char)0x82 && terminal_cp437(0x2500) == (char)0xC4 &&
+              terminal_cp437(0x3A9) == (char)0xEA && terminal_cp437(0x2591) == (char)0xB0 && terminal_cp437(0x1F34C) == '?';
+    report("VGA text mode shows what code page 437 has (e-acute, box lines, Omega, shades)", vga, "");
+    /* FAT32 / exFAT names are UTF-16: there and back, a surrogate pair included */
+    uint16_t u16[16];
+    char back[32];
+    const char* name = "caf\xC3\xA9 \xF0\x9F\x8D\x8C";
+    int n16 = u8_to_utf16(name, (int)strlen(name), u16, 16);
+    u8_from_utf16(u16, n16, back, sizeof(back));
+    uint16_t lone[2] = { 'x', 0xD800 };
+    char lb[8];
+    u8_from_utf16(lone, 2, lb, sizeof(lb));
+    int conv = n16 == 7 && u16[3] == 0xE9 && u16[5] == 0xD83C && u16[6] == 0xDF4C && !strcmp(back, name) &&
+               !strcmp(lb, "x\xEF\xBF\xBD");
+    report("UTF-8 to UTF-16 and back (file names on FAT32 / exFAT)", conv, conv ? "" : "the name came back different");
+}
+
+/* ── the boot's timeline (boottime) ── */
+static void t_boottime(void) {
+    section("the boot's timeline (boottime)");
+    static boot_step_t st[64];
+    int n = boottime_steps(st, 64), ordered = 1, have_ready = 0, have_timer = 0;
+    for (int i = 0; i < n; i++) {
+        if (i && st[i].ns < st[i - 1].ns) ordered = 0;
+        if (!strcmp(st[i].what, "ready")) have_ready = 1;
+        if (!strcmp(st[i].what, "timer")) have_timer = 1;
+    }
+    char note[96];
+    ksnprintf(note, sizeof(note), "%d steps, the first \"%s\"", n, n ? st[0].what : "-");
+    report("every boot step recorded, from the kernel's start", n >= 10 && !strcmp(st[0].what, "kernel") && have_timer && have_ready, note);
+    uint64_t total = n ? st[n - 1].ns : 0;
+    ksnprintf(note, sizeof(note), "the kernel to \"%s\": %u ms", n ? st[n - 1].what : "-", (uint32_t)(total / 1000000u));
+    report("steps in order, with times", ordered && total > 0, note);
+    char msg[96];
+    int agree = builtin_meta_check(msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "%d packages: size, SHA-256 and manifest as the build found them", agree);
+    report("the App Store's list made without unpacking every package", agree > 0, agree > 0 ? note : msg);
+    int nf = pci_check_list(msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "%d functions; %u scans since boot read the bus once", nf, pci_scan_count());
+    report("PCI: the bus walked once, every probe after that from the list", nf > 0, nf > 0 ? note : msg);
+    uint64_t before = boottime_before_ns();
+    if (before) {
+        ksnprintf(note, sizeof(note), "about %u ms", (uint32_t)(before / 1000000u));
+        report("the time before the kernel (firmware, menu, loading) estimated", 1, note);
+        uint64_t fw, menu, load, other;
+        if (boottime_loader(&fw, &menu, &load, &other)) {
+            ksnprintf(note, sizeof(note), "firmware %u, menu %u, loading %u, other %u ms", (uint32_t)(fw / 1000000u),
+                      (uint32_t)(menu / 1000000u), (uint32_t)(load / 1000000u), (uint32_t)(other / 1000000u));
+            report("the loader's part split (Banana Boot's timestamps)", fw + menu + load + other <= before + before / 50 + 1000000u, note);
+        } else {
+            skip("the loader's part split", "no timestamps from the loader (GRUB, or a TSC not reset at power-on)");
+        }
+    } else {
+        skip("the time before the kernel", "the time stamp counter was not reset at power-on here");
+    }
+}
+
+/* ── TCP: window scaling, SACK (build 196) ── */
+static uint8_t net_byte(uint32_t i) { return (uint8_t)(i * 7u + (i >> 11)); }
+
+/* bytes through a loopback connection (127.0.0.1 to itself), checked
+ * byte for byte: 0 and *ms, or -1 and what went wrong in msg */
+static int net_move(tcp_conn_t* s, tcp_conn_t* c, uint32_t total, uint32_t* ms, char* msg, int cap) {
+    enum { CH = 16384 };
+    uint8_t* buf = (uint8_t*)kmalloc(CH);
+    if (!buf) { ksnprintf(msg, (size_t)cap, "out of memory"); return -1; }
+    uint32_t sent = 0, got = 0, t0 = timer_ms();
+    int rc = 0;
+    while (got < total) {
+        if (timer_ms() - t0 > 60000) { ksnprintf(msg, (size_t)cap, "only %u of %u bytes in 60 s", got, total); rc = -1; break; }
+        uint32_t space = tcp_send_space(s);
+        if (sent < total && space) {
+            uint32_t n = total - sent < space ? total - sent : space;
+            if (n > CH) n = CH;
+            for (uint32_t k = 0; k < n; k++) buf[k] = net_byte(sent + k);
+            if (tcp_send(s, buf, n, 0) != (int)n) { ksnprintf(msg, (size_t)cap, "tcp_send failed"); rc = -1; break; }
+            sent += n;
+        }
+        int n = tcp_recv(c, buf, CH, 0);
+        if (n > 0) {
+            for (int k = 0; k < n && !rc; k++)
+                if (buf[k] != net_byte(got + (uint32_t)k)) { ksnprintf(msg, (size_t)cap, "byte %u wrong", got + (uint32_t)k); rc = -1; }
+            if (rc) break;
+            got += (uint32_t)n;
+            continue;
+        }
+        if (n != NET_ERR_TIMEOUT) { ksnprintf(msg, (size_t)cap, "tcp_recv: %s after %u bytes", net_strerror(n), got); rc = -1; break; }
+        net_wait(1);
+    }
+    *ms = timer_ms() - t0;
+    kfree(buf);
+    return rc;
+}
+
+static void t_net(void) {
+    section("TCP: window scaling and SACK (build 196)");
+    if (!net_if()->dev) { skip("a loopback connection", "no network card (loopback needs one: QEMU has e1000)"); return; }
+    int err;
+    const uint16_t port = 47196;
+    tcp_listener_t* l = tcp_listen(port, &err);
+    if (!l) { report("a loopback connection", 0, net_strerror(err)); return; }
+    tcp_conn_t* c = tcp_connect(IP4(127, 0, 0, 1), port, 3000, &err);
+    tcp_conn_t* s = c ? tcp_accept(l, 1000) : NULL;
+    if (!c || !s) {
+        report("a loopback connection", 0, c ? "not accepted" : net_strerror(err));
+        if (c) tcp_abort(c);
+        tcp_unlisten(l);
+        return;
+    }
+    tcp_info_t ci, si;
+    tcp_info(c, &ci);
+    tcp_info(s, &si);
+    char note[128], msg[96];
+    ksnprintf(note, sizeof(note), "window %u KiB (shift %u), SACK %s", ci.rcv_window >> 10, ci.rcv_ws, ci.sack ? "on" : "off");
+    report("window scaling and SACK agreed", ci.wscale && si.wscale && ci.sack && si.sack && ci.rcv_window > 65535u &&
+           si.snd_window == ci.rcv_window, note);
+    uint32_t ms;
+    const uint32_t MB = 1u << 20;
+    int rc = net_move(s, c, 8 * MB, &ms, msg, sizeof(msg));
+    ksnprintf(note, sizeof(note), "8 MiB in %u ms (%u MB/s)", ms, ms ? (uint32_t)(8ull * 1000 / ms) : 0);
+    report("8 MiB through loopback, every byte right", rc == 0, rc ? msg : note);
+    /* every 25th data segment lost: SACK says what got through, only the
+     * holes go again */
+    tcp_stats_t a, b;
+    tcp_stats(&a);
+    tcp_test_loss(25);
+    rc = net_move(s, c, 2 * MB, &ms, msg, sizeof(msg));
+    tcp_test_loss(0);
+    tcp_stats(&b);
+    ksnprintf(note, sizeof(note), "2 MiB in %u ms: %u lost, %u holes resent by SACK, %u fast, %u timeouts",
+              ms, b.test_dropped - a.test_dropped, b.sack_rexmit - a.sack_rexmit, b.fast_rexmit - a.fast_rexmit, b.rto_rexmit - a.rto_rexmit);
+    report("1 segment in 25 lost: every byte right, holes resent", rc == 0 && b.sack_rexmit + b.fast_rexmit > a.sack_rexmit + a.fast_rexmit,
+           rc ? msg : note);
+    tcp_abort(c);
+    tcp_abort(s);
+    tcp_unlisten(l);
+}
+
 /* Install the matching built-in test, even if an older package is on disk. */
 static void t_opencl(void) {
     section("OpenCL barriers, shared memory and vectors");
@@ -185,6 +590,21 @@ static void t_posix(const char* part) {
     report("POSIX checks", rc == 0, rc < 0 ? msg : "see the checks above");
 }
 
+static void t_gl3(const char* driver) {
+#ifndef __x86_64__
+    (void)driver; skip("Mesa OpenGL renderer", "64-bit apps only");
+#else
+    const char* tmp = "/tmp/gl3test.bpk"; char msg[160] = {0};
+    if (write_ex(tmp, "gl3test.bpk") < 0 || pkg_install(tmp, msg, sizeof(msg))) {
+        fs_delete(tmp, 0); report("install gl3test", 0, msg); return;
+    }
+    fs_delete(tmp, 0);
+    char* args[] = {"gl3test", (char*)driver};
+    int rc = pkg_run("gl3test", 2, args, 0, msg, sizeof(msg));
+    report(driver, rc == 0, rc < 0 ? msg : "OpenGL shaders, rendered pixels and framebuffer checks above");
+#endif
+}
+
 static void mouse_demo(void) {
     if(!gui_is_enabled()) { report("mouse capture demo",0,"startx first, then selftest mouse demo in a terminal");return; }
     const char* tmp="/tmp/mousetest.bpk";char msg[160]={0};
@@ -205,6 +625,48 @@ static void t_ram(void) {
     ksnprintf(note,sizeof(note),"%u MiB usable RAM; %llu MiB above 4 GiB managed for apps",
               kb/1024u,hmem_total_bytes()>>20);
     report("live firmware total covers the managed RAM",kb>0 && kb>=managed,note);
+}
+static void sleep_unlink(const char* path) { if(fs_find_file(path)>=0)fs_delete(path,0); }
+static void t_sleep(int cycle) {
+    section("ACPI S3 sleep (QEMU PC)");acpi_sleep_tests(report);
+    char reason[160];int available=!acpi_s3_status(reason,sizeof(reason));
+    if(!available){skip("ACPI S3 capability",reason);if(cycle)report("S3 sleep/resume cycle",0,reason);return;}
+    report("ACPI S3 capability",1,reason);
+    if(cycle) {
+        unsigned before=acpi_s3_resumes();
+        char worker[64],ready[80],stop[80],err[96]="test app did not become ready";
+        ksnprintf(worker,sizeof(worker),"/tmp/s3-worker-%d",task_current_pid());
+        ksnprintf(ready,sizeof(ready),"%s.ready",worker);ksnprintf(stop,sizeof(stop),"%s.stop",worker);
+        sleep_unlink(worker);sleep_unlink(ready);sleep_unlink(stop);
+        int started=0;
+        if(!install()) {
+            char* argv[]={"systest","suspend",worker};
+            if(app_spawn("/apps/systest/app-" BANANA_ARCH,3,argv,err,sizeof(err))>=0) {
+                uint32_t t=timer_ms();
+                while(fs_find_file(ready)<0 && timer_ms()-t<3000)task_sleep_ms(10);
+                int f=fs_find_file(ready);char text[8]={0};
+                started=f>=0 && fs_read(f,0,text,5)==5 && !memcmp(text,"ready",5);
+            }
+        }
+        report("user threads are live before suspend",started,started?"":err);
+        volatile uint32_t marker[64];
+        for(unsigned i=0;i<64;i++)marker[i]=i*2654435761u^0x53335241u;
+        netdev_t* nic=net_if()->dev;char ifname[8]={0};
+        if(nic)memcpy(ifname,nic->ifname,sizeof(ifname));
+        terminal_writeln("Sleeping for five seconds; the RTC will wake this VM...");
+        int rc=acpi_s3_suspend(5,reason,sizeof(reason));
+        report("S3 sleep/resume cycle",!rc && acpi_s3_resumes()==before+1,reason);
+        int intact=1;for(unsigned i=0;i<64;i++)if(marker[i]!=(i*2654435761u^0x53335241u))intact=0;
+        report("memory on the suspended stack survives",intact,"");
+        uint32_t ticks=timer_irq_count(),ms=timer_ms();timer_sleep_ms(20);
+        report("timer interrupts and monotonic time resume",timer_irq_count()!=ticks && timer_ms()-ms>=20,"");
+        if(nic)report("network interface stays registered after resume",net_if()->dev==nic && nic->present && !memcmp(ifname,nic->ifname,sizeof(ifname)),nic->ifname);
+        fs_write_path(stop,"stop",4);uint32_t until=timer_ms();
+        while(fs_find_file(worker)<0 && timer_ms()-until<5000)task_sleep_ms(10);
+        int f=fs_find_file(worker);char text[8]={0};
+        report("user threads retain their stacks and floating-point state",started && f>=0 && fs_read(f,0,text,2)==2 && !memcmp(text,"ok",2),"");
+        sleep_unlink(worker);sleep_unlink(ready);sleep_unlink(stop);
+    }
 }
 
 /* ── ZIP archives (kernel/zip.c, kernel/deflate.c) ─────────────────── */
@@ -507,15 +969,18 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "llvmpipe") && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "boottime") && strcmp(only, "utf8") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [llvmpipe | virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | boottime | utf8 | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
+    if(only && (!strcmp(only,"virgl") || !strcmp(only,"llvmpipe")) && argc!=2) { terminal_writeln("usage: selftest virgl | llvmpipe");return 1; }
+    if(only && !strcmp(only,"gpu") && argc!=2) { terminal_writeln("usage: selftest gpu");return 1; }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
         terminal_writeln("usage: selftest mouse [demo]");return 1;
     }
     if(only && !strcmp(only,"boot") && argc!=2) { terminal_writeln("usage: selftest boot");return 1; }
     if(only && !strcmp(only,"ram") && argc!=2) { terminal_writeln("usage: selftest ram");return 1; }
+    if(only && !strcmp(only,"sleep") && (argc>3 || (argc==3 && strcmp(argv[2],"cycle")))) { terminal_writeln("usage: selftest sleep [cycle]");return 1; }
     uint16_t ipv6_port = 80;
     if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
         terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
@@ -540,8 +1005,28 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
+                     only && !strcmp(only, "sleep") ? "selftest: checking ACPI S3" :
+                     only && !strcmp(only, "clock") ? "selftest: checking the monotonic clock" :
+                     only && !strcmp(only, "malloc") ? "selftest: checking the apps' heap" :
+                     only && !strcmp(only, "avx") ? "selftest: checking AVX" :
+                     only && !strcmp(only, "syscall") ? "selftest: checking the system call entry" :
+                     only && !strcmp(only, "disk") ? "selftest: checking disk waits" :
+                     only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
+                     only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
+                     only && !strcmp(only, "net") ? "selftest: checking TCP" :
+                     only && !strcmp(only, "boottime") ? "selftest: checking the boot's timeline" :
+                     only && !strcmp(only, "utf8") ? "selftest: checking UTF-8" :
                      "selftest: checking the system (it runs the systest app a few times)");
-    if(only && !strcmp(only,"ram")) {
+    if(only && !strcmp(only,"llvmpipe")) {
+        section("LLVMpipe CPU rendering (optional Mesa/LLVM libraries)");t_gl3("llvmpipe");
+    } else if(only && !strcmp(only,"virgl")) {
+        section("VirGL contexts and host resources"); gpu_virgl_tests(report);
+        if (gpu_virgl_available()) t_gl3("virgl");
+    } else if(only && !strcmp(only,"gpu")) {
+        section("GPU presentation and diagnostics");gpu_tests(report);
+    } else if(only && !strcmp(only,"sleep")) {
+        t_sleep(argc==3);
+    } else if(only && !strcmp(only,"ram")) {
         t_ram();
     } else if (only && !strcmp(only, "zip")) {
         t_zip();
@@ -566,6 +1051,12 @@ int selftest_cmd(int argc, char** argv) {
             section("Tailwind CSS, React, Vue, Alpine, Astro and DOM observers");
             browser_test_run(report);
         }
+    } else if (only && !strcmp(only, "net")) {
+        t_net();
+    } else if (only && !strcmp(only, "boottime")) {
+        t_boottime();
+    } else if (only && !strcmp(only, "utf8")) {
+        t_utf8();
     } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "posix")) {
@@ -578,12 +1069,24 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "memory")) t_memory();
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
+        if (!only || !strcmp(only, "clock")) t_clock();
+        if (!only || !strcmp(only, "malloc")) t_malloc();
+        if (!only || !strcmp(only, "avx")) t_avx();
+        if (!only || !strcmp(only, "syscall")) t_syscall();
+        if (!only || !strcmp(only, "disk")) t_disk();
+        if (!only || !strcmp(only, "heap")) t_heap();
+        if (!only || !strcmp(only, "tlb")) t_tlb();
+        if (!only) t_net();
+        if (!only) t_boottime();
+        if (!only) t_utf8();
         if (!only) {
             t_opencl();
             browser_test_run(report);
+            gpu_tests(report);
             mouse_capture_tests(report);
             bootmenu_tests_run(report);
             t_ram();
+            t_sleep(0);
             t_posix(NULL);
             t_zip();
             t_clip();

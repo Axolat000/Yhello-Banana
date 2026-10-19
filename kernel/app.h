@@ -12,7 +12,8 @@
  * An app runs on its own 1 MiB stack, with guard pages under it. On the
  * 64-bit kernel it runs in ring 3, in an address space of its own
  * (kernel/uspace.c) where only its memory (kernel/umem.c) is open to it,
- * and calls the system through int 0x80 (app_syscall); the 32-bit kernel
+ * and calls the system through the syscall instruction (int 0x80 where the
+ * processor has none; both end in app_syscall); the 32-bit kernel
  * runs it in ring 0. A CPU exception while it runs stops just the app
  * (app_fault), and everything it allocated, opened or put on screen is
  * released when it exits.

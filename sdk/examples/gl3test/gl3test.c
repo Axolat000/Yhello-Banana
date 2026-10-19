@@ -6,10 +6,27 @@
  * Needs libOSMesa.so (ports/mesa/build.sh) in /lib, /usr/lib or /mnt/<disk>/lib. */
 #include <GL/gl3.h>
 #include <math.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 
+#ifdef __x86_64__
+static void fault(int sig, siginfo_t* info, void* context) {
+    ucontext_t* u = context;
+    unsigned long ip = u->uc_mcontext.gregs[REG_RIP];
+    Dl_info d;
+    if (dladdr((void*)ip, &d))
+        printf("gl3test fault %d at %p: %s +0x%lx (%s)\n", sig, info->si_addr, d.dli_fname,
+            ip - (unsigned long)d.dli_fbase, d.dli_sname ? d.dli_sname : "?");
+    else printf("gl3test fault %d at %p, ip %lx\n", sig, info->si_addr, ip);
+    exit(1);
+}
+#endif
 static int g_fail;
+static const char* required_renderer;
 
 static void check(int ok, const char* what) {
     printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
@@ -84,6 +101,15 @@ static int offscreen(void) {
     if (!gl) { printf("gl3test: %s\nFAIL\n", bgl3_error()); return 1; }
     printf("GL_VERSION  %s\nGL_RENDERER %s\nGLSL        %s\n", (const char*)glGetString(GL_VERSION),
            (const char*)glGetString(GL_RENDERER), (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
+    if (required_renderer) check(strstr((const char*)glGetString(GL_RENDERER), required_renderer) != NULL, "requested rendering backend is active");
+    if (required_renderer && !strcmp(required_renderer,"llvmpipe")) {
+        void* lib=dlopen("libLLVM.so",RTLD_NOW|RTLD_NOLOAD);
+        int (*runtime)(void)=lib?(int(*)(void))dlsym(lib,"banana_llvm_runtime_check"):NULL;
+        int rc=runtime?runtime():-1;
+        if(rc)printf("LLVM C++ runtime check: %d\n",rc);
+        check(rc==0,"C++ narrow/wide streams and fragmented UTF-8 state");
+        if(lib)dlclose(lib);
+    }
     GLint major = 0, minor = 0, prof = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -115,18 +141,32 @@ static int offscreen(void) {
     GLuint tex, fbo;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE, "framebuffer object complete");
-    glViewport(0, 0, 16, 16);
+    glViewport(0, 0, 256, 256);
     glClearColor(0.0f, 0.5f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     unsigned char rgba[4] = { 0 };
     glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     check(rgba[0] == 0 && rgba[1] >= 0x7e && rgba[1] <= 0x81 && rgba[2] == 0xff, "glReadPixels from the FBO");
+    /* Many tiles and repeated readbacks exercise the CPU worker pool and
+     * the virtual GPU completion path, with new uniforms every frame. */
+    unsigned begin=banana_ticks();int burst_ok=1;
+    for(int frame=0;frame<24;frame++) {
+        float tint=(frame&1)?1.0f:0.0f;
+        glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(p);glUniform1f(glGetUniformLocation(p,"angle"),0);
+        glUniform3f(glGetUniformLocation(p,"tint"),tint,tint,tint);
+        glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
+        glReadPixels(128,128,1,1,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+        if((frame&1)?(rgba[0]<0x20||rgba[1]<0x20||rgba[2]<0x20):(rgba[0]||rgba[1]||rgba[2]))burst_ok=0;
+    }
+    printf("  24 frames at 256x256 with completion/readback: %u ms\n",banana_ticks()-begin);
+    check(burst_ok,"repeated tiled rendering sees every uniform update");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     check(glGetError() == GL_NO_ERROR, "no GL error");
     bgl3_destroy(gl);
@@ -179,6 +219,13 @@ out:
 }
 
 int main(int argc, char** argv) {
+#ifdef __x86_64__
+    struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask); sigaction(SIGSEGV, &sa, NULL);
+#endif
+    if (argc > 1 && (!strcmp(argv[1], "virgl") || !strcmp(argv[1], "llvmpipe"))) {
+        required_renderer = argv[1];
+        setenv("GALLIUM_DRIVER", argv[1], 1);
+    }
     if (argc > 1 && !strcmp(argv[1], "window")) return window();
     return offscreen();
 }

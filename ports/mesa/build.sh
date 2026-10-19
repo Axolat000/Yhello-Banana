@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (the softpipe driver,
-# drawing on the processor; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
+# Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (VirGL when available,
+# softpipe on the processor otherwise; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
 # load from /lib, /usr/lib, /usr/java/lib (the java package) or /mnt/<disk>/lib.
 #     ports/mesa/build.sh [output dir]      (default: ports/mesa/build)
 # Out: <output>/libOSMesa.so, gl3test.bpk, and gl3disk.img - a FAT32 disk
@@ -14,7 +14,10 @@
 # sfdisk.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=$(realpath -m "${1:-$HERE/build}")
+LLVMPIPE=${LLVMPIPE:-0}
+DEFAULT_OUT=$HERE/build
+[ "$LLVMPIPE" = 0 ] || DEFAULT_OUT=$HERE/build-llvmpipe
+OUT=$(realpath -m "${1:-$DEFAULT_OUT}")
 VER=24.3.4
 SHA=e641ae27191d387599219694560d221b7feaa91c900bcec46bf444218ed66025
 SRC=${MESA_SRC:-$HERE/src/mesa-$VER}
@@ -29,31 +32,61 @@ if [ ! -d "$SRC" ]; then
     tar -C "$HERE/src" -xJf "$T"
 fi
 
+python3 "$HERE/patch.py" "$SRC"
+
+DRIVERS=softpipe,virgl
+LLVM_MODE=disabled
+DRAW_LLVM=false
+if [ "$LLVMPIPE" != 0 ]; then
+    "$HERE/../llvm/build.sh" native
+    LLVM_CONFIG="${LLVM_REF:-${LLVM_BUILD:-$HERE/../llvm/build}/ref}/bin/llvm-config"
+    export LLVM_CONFIG
+    DRIVERS=softpipe,llvmpipe,virgl
+    LLVM_MODE=enabled
+    DRAW_LLVM=true
+fi
+
 # ── the reference Linux build ─────────────────────────────────────────
-if [ ! -f "$REF/src/gallium/targets/osmesa/libOSMesa.so.8.0.0" ]; then
     [ -f "$REF/build.ninja" ] || meson setup "$REF" "$SRC" -Dbuildtype=release -Dosmesa=true \
-        -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
-        -Dllvm=disabled -Dgles1=disabled -Dgles2=disabled -Dzstd=disabled -Dvalgrind=disabled \
+        -Dgallium-drivers="$DRIVERS" -Dc_args="-DBANANA_MESA_OSMESA -include $HERE/banana/host_compat.h" -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
+        -Dllvm="$LLVM_MODE" -Dcpp_rtti=false -Dgles1=disabled -Dgles2=disabled -Dzstd=disabled -Dvalgrind=disabled \
         -Dlibunwind=disabled -Dshader-cache=disabled -Dlmsensors=disabled -Dgallium-va=disabled \
         -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dgallium-nine=false -Dgallium-opencl=disabled \
         -Dgallium-rusticl=false -Dandroid-libbacktrace=disabled -Dexpat=disabled -Dxmlconfig=disabled \
-        -Ddraw-use-llvm=false -Dbuild-tests=false -Dtools=
-    ninja -C "$REF" -j"$JOBS"
+        -Ddraw-use-llvm="$DRAW_LLVM" -Dbuild-tests=false -Dtools=
+ninja -C "$REF" -j"$JOBS" src/gallium/targets/osmesa/libOSMesa.so.8.0.0
+
+if [ "$LLVMPIPE" != 0 ]; then
+    # Native Mesa determines the exact LLVM symbol closure to cross-compile.
+    make -C "$HERE/gl3test"
+    "$HERE/../llvm/build.sh" target "$REF/src/gallium/targets/osmesa/libOSMesa.so.8.0.0"
+    LLVM_LIBRARY="${LLVM_BUILD:-$HERE/../llvm/build}/libLLVM.so"
+    export LLVM_LIBRARY
+    cp "$LLVM_LIBRARY" "$OUT/libLLVM.so"
 fi
 
 # ── libOSMesa.so for Banana OS ────────────────────────────────────────
-JOBS=$JOBS python3 "$HERE/rebuild.py" "$REF" "$OUT/banana"
+KEEP=${KEEP:-1} JOBS=$JOBS python3 "$HERE/rebuild.py" "$REF" "$OUT/banana"
 cp "$OUT/banana/libOSMesa.so" "$OUT/libOSMesa.so"
 
 # ── the test app and a test disk ──────────────────────────────────────
 make -C "$HERE/gl3test"
 cp "$HERE/gl3test/gl3test.bpk" "$OUT/"
+if [ "$LLVMPIPE" != 0 ]; then
+    python3 "$HERE/../../tools/check_shared_imports.py" "$OUT/libLLVM.so" "$HERE"/gl3test/build/x86_64/*.o
+    python3 "$HERE/../../tools/check_shared_imports.py" "$OUT/libOSMesa.so" "$OUT/libLLVM.so" "$HERE"/gl3test/build/x86_64/*.o
+else
+    python3 "$HERE/../../tools/check_shared_imports.py" "$OUT/libOSMesa.so" "$HERE"/gl3test/build/x86_64/*.o
+fi
 IMG=$OUT/gl3disk.img
 rm -f "$IMG"
-truncate -s 64M "$IMG"
-printf 'label: dos\nstart=2048, type=c\n' | /sbin/sfdisk -q "$IMG"
+SIZE=64M
+[ "$LLVMPIPE" = 0 ] || SIZE=256M
+truncate -s "$SIZE" "$IMG"
+printf 'label: dos\nstart=2048, type=c\n' | sfdisk -q "$IMG"
 mformat -i "$IMG@@1M" -F -v GL3 ::
 mmd -i "$IMG@@1M" ::/lib
 mcopy -i "$IMG@@1M" "$OUT/libOSMesa.so" ::/lib/
+[ "$LLVMPIPE" = 0 ] || mcopy -i "$IMG@@1M" "$OUT/libLLVM.so" ::/lib/
 mcopy -i "$IMG@@1M" "$OUT/gl3test.bpk" ::/
 echo "OpenGL 3.3 for Banana OS: $OUT/libOSMesa.so ($(du -h "$OUT/libOSMesa.so" | cut -f1)), test disk $IMG"

@@ -34,8 +34,8 @@ WEBP_SRCS = $(wildcard third_party/libwebp/src/dec/*.c third_party/libwebp/src/d
 C_SRCS   = $(wildcard kernel/*.c) $(wildcard shell/*.c) $(wildcard net/*.c) \
            $(wildcard crypto/*.c) $(wildcard usb/*.c) $(wildcard web/*.c) $(wildcard media/*.c) \
            third_party/stb/stb_image_impl.c $(WEBP_SRCS)
-ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm
-ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm
+ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/s3_resume.asm
+ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm kernel/s3_resume.asm
 kernel/frameworkbin.o kernel/frameworkbin.o64: $(wildcard web/fixtures/* web/fixtures/astro/* web/fixtures/astro/_astro/*) $(wildcard web/test/cases/mutation_observer*.html)
 
 # the boot object must come first: it carries the Multiboot2 header
@@ -212,27 +212,33 @@ run-tap: Banana_OS.iso
 
 clean:
 	for e in $(EXAMPLES); do $(MAKE) -s -C sdk/examples/$$e clean; done
+	rm -f $(EXAMPLE_BPKZ)
 	for a in $(APPS); do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
-	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso
+	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
 	rm -rf isoroot
 	rm -f loader/*.o loader/*.so loader/*.bin loader/*.EFI loader/*.unsigned loader/kernel_hashes.h \
 	      loader/keys/*.esl loader/keys/*.auth loader/keys/.nokey
 
 
 # ── SDK: example apps (embedded in the kernel: ~/Examples) and the tarball ──
-EXAMPLES     = hello guess paint clock tones mandel threads webview gears cltest systest posixtest mousetest
+EXAMPLES     = gl3test hello guess paint clock tones mandel threads webview gears cltest systest posixtest mousetest
 EXAMPLE_BPKS = $(foreach e,$(EXAMPLES),sdk/examples/$(e)/$(e).bpk)
+EXAMPLE_BPKZ = $(EXAMPLE_BPKS:.bpk=.bpk.z)
 SDK_DEPS     = $(wildcard sdk/lib/*.c sdk/lib/*.h sdk/lib/*.py sdk/include/*.h sdk/include/*/*.h) sdk/banana.mk sdk/tools/bpkg sdk/tools/mkexports
 
 define EXAMPLE_RULE
 sdk/examples/$(1)/$(1).bpk: $$(wildcard sdk/examples/$(1)/*.c sdk/examples/$(1)/*.h) sdk/examples/$(1)/Makefile $$(SDK_DEPS)
 	$$(MAKE) -s -C sdk/examples/$(1)
+# (in the kernel compressed, as the apps: 6.7 MB of the kernel's 19 were the
+# examples, and the loader reads it through the BIOS)
+sdk/examples/$(1)/$(1).bpk.z: sdk/examples/$(1)/$(1).bpk
+	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $$< $$@
 endef
 $(foreach e,$(EXAMPLES),$(eval $(call EXAMPLE_RULE,$(e))))
 
-kernel/exbin.o kernel/exbin.o64: $(EXAMPLE_BPKS)
+kernel/exbin.o kernel/exbin.o64: $(EXAMPLE_BPKZ)
 
 # ── the apps that come with Banana OS (apps/): FFmpeg-based, built into the
 # kernel compressed and installed at boot (kernel/builtin_apps.c). FFmpeg
@@ -244,8 +250,15 @@ apps/$(1)/$(1)-i686.bpk.z apps/$(1)/$(1)-x86_64.bpk.z: $$(wildcard apps/$(1)/*.c
 	$$(MAKE) -C apps/$(1) bundle
 endef
 $(foreach a,$(APPS),$(eval $(call APP_RULE,$(a))))
-kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z)
-kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z)
+kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z) build/builtin-meta-i686.bin
+kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin
+
+# the App Store's facts about those packages and the examples (size, SHA-256,
+# manifest): made here, so the boot does not unpack and hash them all again
+build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
+	mkdir -p build
+	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
+	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel
 DRIVER_EXAMPLES = edu bochsfb

@@ -26,6 +26,7 @@
 
 /* at boot, after the network and the disks */
 void vmtools_init(void);
+void vmtools_s3_resume(void); /* renegotiate the QEMU pointer after device reset */
 /* "KVM", "VMware", "VirtualBox", "Hyper-V", "QEMU (TCG)"... or "" (none found) */
 const char* vmtools_hypervisor(void);
 /* the absolute pointer, every frame (kernel/usb.c mouse_read) */

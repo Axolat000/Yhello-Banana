@@ -229,7 +229,17 @@ static const page_t PAGES[] = {
       "USA's, Australia's...). Apps get it too: localtime(), strftime %z / %Z; Java reads /etc/timezone.",
       NULL, "timezone list europe\ntimezone new york\ntimezone UTC", "date" },
     { "uptime", "system", "uptime", "how long it has been running, the load average", NULL, NULL, NULL, "top" },
+    { "boottime", "system", "boottime", "where the boot's time went, step by step",
+      "Each step of the boot - the kernel's (heap, graphics, timer, cores, network, disks...), the shell's (the "
+      "installed disk, apps, servers), the login and the desktop's first frame - with when it started and how "
+      "long it took; the three longest are highlighted. Before the kernel, the firmware, the boot menu and "
+      "the loading took about as long as the first line says (from the processor's time stamp counter).",
+      NULL, NULL, "uptime" },
     { "neofetch", "system", "neofetch", "a summary of the system", NULL, NULL, NULL, "hw_info" },
+    { "sleep", "system", "sleep [status | SECONDS]", "ACPI S3 suspend to RAM",
+      "Sleep retains the session in RAM. The first supported profile is QEMU PC/PIIX4 with standard VGA, e1000 and optional virtio-blk. Unsupported platforms/devices are refused before suspend. Files are synced first. Use the VM wake/power control to resume, or specify 1..3600 seconds for an RTC wake. This is not hibernation.",
+      "status|show whether the current platform can suspend\nSECONDS|arm an RTC wake after this many seconds",
+      "sleep status\nsleep 5\nselftest sleep\nselftest sleep cycle", "selftest, shutdown, reboot" },
     { "top", "system", "top", "a live view of the processor, memory and tasks", "q quits.", NULL, NULL, "htop" },
     { "htop", "system", "htop", "the colour monitor",
       "A meter per processor core, memory and disk, then the tasks. P sorts by processor use, N by number, "
@@ -363,6 +373,8 @@ static const page_t PAGES[] = {
     { "usb", "hardware", "usb rescan", "look for USB devices plugged in or out", NULL, NULL, NULL, "lsusb" },
     { "usbctl", "hardware", "usbctl", "USB legacy handoff state", NULL, NULL, NULL, NULL },
     { "lsgpu", "hardware", "lsgpu", "graphics cards: driver, mode, video memory", NULL, NULL, NULL, "resolution" },
+    { "gpubench", "hardware", "gpubench", "offscreen framebuffer bandwidth and GPU counters",
+      "Measures CPU copies in RAM, checks pixels and reports presentation counters. This is not GPU 3D performance.", NULL, NULL, "lsgpu, selftest" },
     { "gpu_info", "hardware", "gpu_info [-n -r -b -p -m]", "the framebuffer", NULL, NULL, NULL, "lsgpu" },
     { "brightness", "hardware", "brightness [0-100]", "a laptop panel's backlight (Intel graphics)", NULL, NULL, NULL, NULL },
     { "keyboardctl", "hardware", "keyboardctl [layout]", "the keyboard layout",
@@ -408,18 +420,25 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [llvmpipe|virgl|gpu|ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
-      "ring3, memory, limits, cores, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
+      "ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
       "ring3|an app runs in user mode (64-bit kernel)\n"
       "memory|RAM above 4 GiB: 64 MiB for an app, given back after\n"
       "limits|60 threads, 60 open files, 24 apps at once\n"
       "cores|malloc / free / a lock from threads on every core\n"
+      "clock|shared HPET / ACPI clock, rollovers, real elapsed time and migrating user threads\n"
+      "malloc|the apps' own heap: random blocks checked, and how much faster than the kernel's allocator\n"
+      "avx|AVX registers kept across task switches, none left for a new thread (CPU=max in QEMU)\n"
+      "syscall|the syscall / sysret entry: registers kept, stack arguments right, timed against int 0x80\n"
+      "disk|32 MiB read twice from a SATA / virtio / NVMe disk while a 1 ms task keeps running (read only)\n"
+      "heap|the kernel's heap checked block by block, and timed among thousands of live blocks\n"
       "opencl|the cltest example: barriers, local memory, vectors...\n"
       "browser|offline Tailwind, React, Vue, Alpine, Astro, grid and WebP checks\n"
       "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"
       "ram|firmware RAM totals, above-4-GiB maps and live accounting\n"
+      "sleep [cycle]|ACPI S3 checks; cycle sleeps for five seconds and wakes by RTC\n"
       "mouse [demo]|relative mouse capture tests; demo opens a look-around window\n"
       "browser swm|live checks against https://swm.mxtpasontop.fr/\n"
       "posix [PART]|mmap, threads, sockets, signals and dlopen (the posixtest example)\n"
@@ -436,7 +455,7 @@ void help_set_known(const char* const* names) { g_known = names; }
 /* ── output ───────────────────────────────────────────────────────────── */
 
 static int cols(void) {
-    const char* ch;
+    const uint32_t* ch;
     const uint8_t* co;
     int w = 80, h = 25, stride = 80;
     terminal_vt_get_buffer(terminal_vt_get_active(), &ch, &co, &w, &h, &stride);
@@ -647,7 +666,7 @@ static int key_wait(void) {
 }
 
 static void all_commands(void) {
-    const char* ch;
+    const uint32_t* ch;
     const uint8_t* co;
     int w = 80, h = 25, stride = 80;
     terminal_vt_get_buffer(terminal_vt_get_active(), &ch, &co, &w, &h, &stride);

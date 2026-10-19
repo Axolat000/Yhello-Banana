@@ -17,7 +17,10 @@
 #
 # Environment: MEM (QEMU memory, default 512M), SMP (cores, default 4),
 # NIC (QEMU NIC model, default e1000), OVMF (UEFI firmware file),
-# DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio).
+# DISK (a disk image attached as a virtio disk: mounted at /mnt/virtio),
+# CPU (QEMU's processor model: CPU=max has AVX / AVX2 / AVX-512),
+# GPU (std, virtio, vmware or virgl; default std),
+# KVM=1 (hardware virtualization: much faster, your processor's own features).
 
 set -uo pipefail
 
@@ -88,8 +91,15 @@ qemu_args() {
         32)   qemu=qemu-system-i386; args=(-cdrom "$ROOT/Banana_OS.iso" -m "$MEM" -nic "user,model=$NIC") ;;
         *)    red "unknown firmware '$fw' (bios, uefi or 32)"; exit 1 ;;
     esac
+    case "${GPU:-std}" in
+        virgl) args+=(-vga none -device virtio-vga-gl -display "${GL_DISPLAY:-gtk,gl=on}") ;;
+        std|virtio|vmware) args+=(-vga "${GPU:-std}") ;;
+        *) red "unknown GPU '${GPU}' (std, virtio, vmware or virgl)"; exit 1 ;;
+    esac
     # (-boot d: the CD first - the firmware would try the disk before it)
     if [ -n "${DISK:-}" ]; then args+=(-drive "file=$DISK,format=raw,if=virtio" -boot d); fi
+    if [ "${KVM:-0}" = 1 ]; then args+=(-enable-kvm -cpu "${CPU:-host}")
+    elif [ -n "${CPU:-}" ]; then args+=(-cpu "$CPU"); fi
     QEMU_BIN="$qemu"
     QEMU_ARGS=("${args[@]}")
 }
@@ -106,10 +116,12 @@ do_run() {
 do_test() {
     local fw="${1:-bios}" secs="${2:-60}"
     do_build
-    qemu_args "$fw"
+    if [ "${GPU:-std}" = virgl ]; then GL_DISPLAY="${GL_DISPLAY:-egl-headless}" qemu_args "$fw"; else qemu_args "$fw"; fi
+    local display_args=()
+    [ "${GPU:-std}" = virgl ] || display_args=(-display none)
     local log="$LOGS/serial-$fw.log"
     bold "== Booting headless ($fw) for $secs s - serial log: build/logs/serial-$fw.log"
-    timeout "$secs" "$QEMU_BIN" "${QEMU_ARGS[@]}" -display none -serial "file:$log" -no-reboot
+    timeout "$secs" "$QEMU_BIN" "${QEMU_ARGS[@]}" "${display_args[@]}" -serial "file:$log" -no-reboot
     local lines; lines=$(wc -l < "$log")
     if grep -q 'PANIC' "$log"; then
         red "== PANIC during boot:"
@@ -127,9 +139,13 @@ do_test() {
 do_apps() {
     local fw="${1:-bios}"
     do_build
-    qemu_args "$fw"
+    local display_args=()
+    if [ "${GPU:-std}" = virgl ]; then
+        GL_DISPLAY="${GL_DISPLAY:-egl-headless}" qemu_args "$fw"
+        display_args=(--window) # retain the GL backend rather than overriding it with -display none
+    else qemu_args "$fw"; fi
     bold "== Running apps over the serial console ($fw) - log: build/logs/apps-$fw.log"
-    python3 "$ROOT/tools/serialtest.py" --qemu "$QEMU_BIN" --log "$LOGS/apps-$fw.log" -- "${QEMU_ARGS[@]}"
+    python3 "$ROOT/tools/serialtest.py" "${display_args[@]}" --qemu "$QEMU_BIN" --log "$LOGS/apps-$fw.log" -- "${QEMU_ARGS[@]}"
     local rc=$?
     if [ $rc -eq 0 ]; then green "== Every app ran"; else red "== Something failed (see above and build/logs/apps-$fw.log)"; fi
     return $rc

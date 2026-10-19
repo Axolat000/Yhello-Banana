@@ -96,7 +96,7 @@ typedef struct {
     int      failed;                       /* the card in the slot would not start */
     int      emmc;                         /* an eMMC / MMC card (not SD) */
     int      embedded;                     /* the slot is wired to a chip on the board: always there */
-    volatile int lock;                     /* one command at a time */
+    iowait_t lock;                     /* one command at a time */
     uint32_t* adma;                        /* ADMA2 descriptors (NULL: programmed I/O only) */
 } slot_t;
 
@@ -531,6 +531,7 @@ static int scan_cb(const pci_dev_t* d, void* ctx) {
         if (!bar || io) continue;
         slot_t* s = &g_slot[g_count];
         memset(s, 0, sizeof(*s));
+        s->lock = (iowait_t)IOWAIT_INIT;
         s->r = (volatile uint8_t*)bar;
         s->version = (uint8_t)(r16(s, R_VERSION) & 0xFF);
         uint32_t caps = r32(s, R_CAPS);

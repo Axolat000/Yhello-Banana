@@ -6,7 +6,15 @@
 /* Every block (free or used) starts with this header; blocks tile the
  * whole heap in address order, so neighbours are found through prev/next
  * and merging on free is O(1). The header is 16 bytes, keeping payloads
- * 16-byte aligned. */
+ * 16-byte aligned.
+ *
+ * Finding a free block: every free block is also in one of the bins of a
+ * two-level segregated fit (TLSF) - 25 power-of-two levels of 16 bins each,
+ * with bitmaps of the bins that hold something - linked through its own
+ * payload (a free block has at least 16 bytes of it: two pointers). A
+ * malloc looks in the first bin whose every block is big enough: a couple
+ * of bit scans, however many blocks the heap has. (It used to walk the
+ * list of all blocks, used ones too, from the start.) */
 typedef struct block {
     uint32_t      size;   /* payload bytes (excludes header) */
     uint32_t      used;   /* 0 = free, HEAP_MAGIC = allocated */
@@ -22,6 +30,78 @@ typedef struct block {
 extern char _kernel_end[];  /* boot/linker.ld */
 
 static block_t* g_head = NULL;
+
+/* ── the bins ── */
+#define SL_LOG   4                     /* 16 bins per level */
+#define SL_N     (1u << SL_LOG)
+#define FL_SHIFT 8                     /* sizes under 256 bytes: level 0, 16-byte steps */
+#define FL_N     25                    /* up to 4 GiB */
+
+typedef struct { block_t* next; block_t* prev; } flink_t;     /* in a free block's payload */
+#define LINKS(b) ((flink_t*)((uint8_t*)(b) + HDR))
+
+static block_t* g_bin[FL_N][SL_N];
+static uint32_t g_flmap, g_slmap[FL_N];
+
+static unsigned log2u(uint32_t v) { return 31u - (unsigned)__builtin_clz(v); }
+
+/* the bin of a block of `size` payload bytes */
+static void bin_of(uint32_t size, unsigned* fl, unsigned* sl) {
+    if (size < (1u << FL_SHIFT)) { *fl = 0; *sl = size >> (FL_SHIFT - SL_LOG); return; }
+    unsigned f = log2u(size);
+    *fl = f - (FL_SHIFT - 1);
+    *sl = (size >> (f - SL_LOG)) ^ SL_N;
+}
+
+static void bin_insert(block_t* b) {
+    unsigned fl, sl;
+    bin_of(b->size, &fl, &sl);
+    flink_t* l = LINKS(b);
+    l->prev = NULL;
+    l->next = g_bin[fl][sl];
+    if (l->next) LINKS(l->next)->prev = b;
+    g_bin[fl][sl] = b;
+    g_flmap |= 1u << fl;
+    g_slmap[fl] |= 1u << sl;
+}
+
+static void bin_remove(block_t* b) {
+    unsigned fl, sl;
+    bin_of(b->size, &fl, &sl);
+    flink_t* l = LINKS(b);
+    if (l->prev) LINKS(l->prev)->next = l->next;
+    else g_bin[fl][sl] = l->next;
+    if (l->next) LINKS(l->next)->prev = l->prev;
+    if (!g_bin[fl][sl]) {
+        g_slmap[fl] &= ~(1u << sl);
+        if (!g_slmap[fl]) g_flmap &= ~(1u << fl);
+    }
+}
+
+/* a free block of at least `need` bytes (removed from its bin), or NULL:
+ * the search starts at the bin above need's, whose every block is big enough */
+static block_t* bin_take(uint32_t need) {
+    uint32_t want = need;
+    if (want >= (1u << FL_SHIFT)) {
+        uint32_t round = (1u << (log2u(want) - SL_LOG)) - 1;
+        if (want + round < want) return NULL;
+        want += round;
+    }
+    unsigned fl, sl;
+    bin_of(want, &fl, &sl);
+    if (fl >= FL_N) return NULL;
+    uint32_t slm = g_slmap[fl] & (~0u << sl);
+    if (!slm) {
+        uint32_t flm = fl + 1 < 32 ? g_flmap & (~0u << (fl + 1)) : 0;
+        if (!flm) return NULL;
+        fl = (unsigned)__builtin_ctz(flm);
+        slm = g_slmap[fl];
+    }
+    sl = (unsigned)__builtin_ctz(slm);
+    block_t* b = g_bin[fl][sl];
+    bin_remove(b);
+    return b;
+}
 /* the heap is used on other cores too (apps' system calls there,
  * kernel/app.c) and from interrupt handlers: held with interrupts off */
 static spinlock_t g_lock = SPINLOCK_INIT;
@@ -90,8 +170,6 @@ static int pick_region(uint32_t mb2, uint64_t* out_lo, uint64_t* out_hi) {
     return 1;
 }
 
-static void heap_bins_reset(struct block* first);
-
 void kheap_init(uint32_t mb2_info_addr) {
     /* Every Multiboot2 consumer (fb.c, sysinfo.c) has copied what it needs
      * by now, but the info block is kept out of the heap anyway. */
@@ -114,44 +192,11 @@ void kheap_init(uint32_t mb2_info_addr) {
     g_head->next = NULL;
     g_total = g_head->size;
     g_used = 0;
-    heap_bins_reset(g_head);
+    bin_insert(g_head);
 }
 
-/* ── free blocks by size ─────────────────────────────────────────────
- * Each free block is also in the list of its size class (2^k .. 2^(k+1)-1
- * bytes), linked through its own payload: an allocation looks at the
- * classes that can hold it, not at every block of the heap (with the
- * block cache's thousands of 4 KiB blocks, walking them all - interrupts
- * off - made every kmalloc slower than a disk read). */
-
-#define NBINS 32
-typedef struct { block_t* prev; block_t* next; } links_t;
-static block_t* g_bins[NBINS];
-
-static links_t* L(block_t* b) { return (links_t*)((uint8_t*)b + HDR); }
-static int bin_of(uint32_t size) { return size ? 31 - __builtin_clz(size) : 0; }
-
-static void bin_insert(block_t* b) {
-    int i = bin_of(b->size);
-    links_t* l = L(b);
-    l->prev = NULL;
-    l->next = g_bins[i];
-    if (g_bins[i]) L(g_bins[i])->prev = b;
-    g_bins[i] = b;
-}
-
-static void heap_bins_reset(block_t* first) {
-    for (int i = 0; i < NBINS; i++) g_bins[i] = NULL;
-    bin_insert(first);
-}
-
-static void bin_remove(block_t* b) {
-    links_t* l = L(b);
-    if (l->prev) L(l->prev)->next = l->next; else g_bins[bin_of(b->size)] = l->next;
-    if (l->next) L(l->next)->prev = l->prev;
-}
-
-/* b (out of the bins) cut to size: the rest a free block of its own */
+/* b (being handed out: in no bin) keeps size bytes; the rest becomes a
+ * free block of its own - merged with a free block after it - in its bin */
 static void split(block_t* b, uint32_t size) {
     if (b->size < size + HDR + MIN_SPLIT) return;
     block_t* n = (block_t*)((uint8_t*)b + HDR + size);
@@ -162,10 +207,18 @@ static void split(block_t* b, uint32_t size) {
     if (b->next) b->next->prev = n;
     b->next = n;
     b->size = size;
+    block_t* after = n->next;
+    if (after && !after->used) {                /* (krealloc's tail: two free blocks would meet) */
+        bin_remove(after);
+        n->size += HDR + after->size;
+        n->next = after->next;
+        if (after->next) after->next->prev = n;
+    }
     bin_insert(n);
 }
 
-/* b (out of the bins) and its following block, if that one is free */
+/* merges b with its following block if that one is free (taking that one
+ * out of its bin; b's own bin is the caller's business) */
 static void merge_next(block_t* b) {
     block_t* n = b->next;
     if (!n || n->used) return;
@@ -175,25 +228,13 @@ static void merge_next(block_t* b) {
     if (n->next) n->next->prev = b;
 }
 
-static void* take(block_t* b, uint32_t need) {
-    bin_remove(b);
+static void* find_fit(uint32_t need) {
+    block_t* b = bin_take(need);
+    if (!b) return NULL;
     split(b, need);
     b->used = HEAP_MAGIC;
     g_used += b->size;
     return (uint8_t*)b + HDR;
-}
-
-static void* find_fit(uint32_t need) {
-    int i = bin_of(need);
-    /* its own class: the blocks there may be smaller - a few looked at */
-    int k = 0;
-    for (block_t* b = g_bins[i]; b && k < 64; b = L(b)->next, k++)
-        if (b->size >= need) return take(b, need);
-    /* a bigger class: its first block will do */
-    for (i++; i < NBINS; i++) if (g_bins[i]) return take(g_bins[i], need);
-    /* (the class's other blocks, past the few looked at) */
-    for (block_t* b = g_bins[bin_of(need)]; b; b = L(b)->next) if (b->size >= need) return take(b, need);
-    return NULL;
 }
 
 /* what gives memory back when it runs out: files cached in RAM (fs.c) */
@@ -227,35 +268,57 @@ void* kmalloc(size_t size) {
     return p;
 }
 
+/* where in free block b (in no bin) need bytes at a multiple of align
+ * fit, leaving the part before it a block worth keeping: 0 if they do not */
+static uintptr_t aligned_spot(block_t* b, uint32_t need, uint32_t align) {
+    uintptr_t s = (uintptr_t)b + HDR, end = s + b->size;
+    uintptr_t a = (s + align - 1) & ~(uintptr_t)(align - 1);
+    /* room for the front block's header and a payload worth keeping */
+    while (a != s && a - s < HDR + MIN_SPLIT) a += align;
+    return a + need <= end ? a : 0;
+}
+
+/* hands out need bytes at a in free block b: the part before stays free */
+static void* take_aligned(block_t* b, uintptr_t a, uint32_t need) {
+    uintptr_t s = (uintptr_t)b + HDR, end = s + b->size;
+    if (a != s) {
+        block_t* n = (block_t*)(a - HDR);
+        n->size = (uint32_t)(end - a);
+        n->used = 0;
+        n->prev = b;
+        n->next = b->next;
+        if (b->next) b->next->prev = n;
+        b->next = n;
+        b->size = (uint32_t)((uintptr_t)n - s);
+        bin_insert(b);                              /* (the front part) */
+        b = n;
+    }
+    split(b, need);
+    b->used = HEAP_MAGIC;
+    g_used += b->size;
+    return (uint8_t*)b + HDR;
+}
+
 /* a free block holding `need` bytes that start at a multiple of `align`:
- * the part before that start stays a free block of its own */
+ * from the bins, a block that has room whatever its alignment (need +
+ * align + a front block); else every free block is looked at (a smaller
+ * one may happen to be aligned well) */
 static void* find_fit_aligned(uint32_t need, uint32_t align) {
-    for (int i = bin_of(need); i < NBINS; i++) {
-        for (block_t* b = g_bins[i]; b; b = L(b)->next) {
-            if (b->size < need) continue;
-            uintptr_t s = (uintptr_t)b + HDR, end = s + b->size;
-            uintptr_t a = (s + align - 1) & ~(uintptr_t)(align - 1);
-            /* room for the front block's header and a payload worth keeping */
-            while (a != s && a - s < HDR + MIN_SPLIT) a += align;
-            if (a + need > end) continue;
-            bin_remove(b);
-            if (a != s) {
-                block_t* n = (block_t*)(a - HDR);
-                n->size = (uint32_t)(end - a);
-                n->used = 0;
-                n->prev = b;
-                n->next = b->next;
-                if (b->next) b->next->prev = n;
-                b->next = n;
-                b->size = (uint32_t)((uintptr_t)n - s);
-                bin_insert(b);                       /* (the front part: free) */
-                b = n;
-            }
-            split(b, need);
-            b->used = HEAP_MAGIC;
-            g_used += b->size;
-            return (uint8_t*)b + HDR;
+    uint64_t room = (uint64_t)need + align + HDR + MIN_SPLIT;
+    if (room < 0xF0000000u) {
+        block_t* b = bin_take((uint32_t)room);
+        if (b) {
+            uintptr_t a = aligned_spot(b, need, align);
+            if (a) return take_aligned(b, a, need);
+            bin_insert(b);                          /* (cannot happen: it has room) */
         }
+    }
+    for (block_t* b = g_head; b; b = b->next) {
+        if (b->used || b->size < need) continue;
+        uintptr_t a = aligned_spot(b, need, align);
+        if (!a) continue;
+        bin_remove(b);
+        return take_aligned(b, a, need);
     }
     return NULL;
 }
@@ -296,16 +359,17 @@ void kfree(void* ptr) {
     if (b) {                    /* (else a double free or a garbage pointer: ignored) */
         g_used -= b->size;
         b->used = 0;
-        merge_next(b);
+        merge_next(b);                          /* (a free block after it) */
         block_t* p = b->prev;
-        if (p && !p->used) {                  /* (into the free block before it) */
+        if (p && !p->used) {                    /* into the free block before it */
             bin_remove(p);
             p->size += HDR + b->size;
             p->next = b->next;
             if (b->next) b->next->prev = p;
-            b = p;
+            bin_insert(p);
+        } else {
+            bin_insert(b);
         }
-        bin_insert(b);
     }
     spin_unlock_irq(&g_lock, f);
 }
@@ -339,14 +403,65 @@ void* krealloc(void* ptr, size_t size) {
     return np;
 }
 
+/* the heap's own check: every block's header, the list both ways, no two
+ * free blocks side by side, every free block in its bin exactly once, the
+ * bitmaps as the bins are. 0, or the number of problems (err: the first) */
+int kheap_check(char* err, int cap) {
+    int bad = 0;
+    uint32_t nfree = 0, inbins = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    block_t* prev = NULL;
+    for (block_t* b = g_head; b; prev = b, b = b->next) {
+        const char* why = NULL;
+        if (b->used != 0 && b->used != HEAP_MAGIC) why = "a block header was overwritten";
+        else if (b->prev != prev) why = "the list's back links are wrong";
+        else if (prev && (uintptr_t)b <= (uintptr_t)prev) why = "the blocks are not in address order";
+        else if (prev && !prev->used && !b->used) why = "two free blocks side by side";
+        else if (!b->used) {
+            nfree++;
+            unsigned fl, sl;
+            bin_of(b->size, &fl, &sl);
+            block_t* x = g_bin[fl][sl];
+            while (x && x != b) x = LINKS(x)->next;
+            if (!x) why = "a free block is not in its bin";
+        }
+        if (why) { if (!bad && err) ksnprintf(err, (size_t)cap, "%s (at %p)", why, (void*)b); bad++; }
+        if (bad > 100) break;
+    }
+    for (unsigned fl = 0; fl < FL_N; fl++)
+        for (unsigned sl = 0; sl < SL_N; sl++) {
+            int has = g_bin[fl][sl] != NULL;
+            if (has != (int)((g_slmap[fl] >> sl) & 1) || (has && !((g_flmap >> fl) & 1))) {
+                if (!bad && err) ksnprintf(err, (size_t)cap, "a bin's bitmap bit is wrong (%u, %u)", fl, sl);
+                bad++;
+            }
+            for (block_t* x = g_bin[fl][sl]; x && inbins <= nfree + 1; x = LINKS(x)->next) inbins++;
+        }
+    if (inbins != nfree) {
+        if (!bad && err) ksnprintf(err, (size_t)cap, "%u blocks in the bins, %u free blocks", inbins, nfree);
+        bad++;
+    }
+    spin_unlock_irq(&g_lock, f);
+    return bad;
+}
+
+/* the free blocks (how fragmented the heap is) */
+uint32_t kheap_free_blocks(void) {
+    uint32_t n = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    for (block_t* b = g_head; b; b = b->next) if (!b->used) n++;
+    spin_unlock_irq(&g_lock, f);
+    return n;
+}
+
 uint32_t kheap_total_bytes(void) { return g_total; }
 uint32_t kheap_used_bytes(void)  { return g_used; }
 
 uint32_t kheap_largest_free(void) {
     uint32_t best = 0;
     uintptr_t f = spin_lock_irq(&g_lock);
-    for (int i = NBINS - 1; i >= 0 && !best; i--)           /* (the biggest class holding one) */
-        for (block_t* b = g_bins[i]; b; b = L(b)->next) if (b->size > best) best = b->size;
+    for (block_t* b = g_head; b; b = b->next)
+        if (!b->used && b->size > best) best = b->size;
     spin_unlock_irq(&g_lock, f);
     return best;
 }
@@ -378,7 +493,7 @@ void kheap_add_region(uintptr_t lo, uintptr_t hi) {
     b->next = tail;
     tail->prev = b;
     tail->next = NULL;
-    bin_insert(b);
     g_total += b->size;
+    bin_insert(b);
     spin_unlock_irq(&g_lock, f);
 }

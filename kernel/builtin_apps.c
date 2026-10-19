@@ -7,6 +7,7 @@
 #include "examples.h"
 #include "repo.h"
 #include "crc32c.h"
+#include "../crypto/sha256.h"
 #include "timer.h"
 #include "fsdisk.h"
 
@@ -163,15 +164,15 @@ static uint32_t g_released_bytes;
 
 uint32_t builtin_released_bytes(void) { return g_released_bytes; }
 
-/* package k (an app: its compressed .bpk.z; then the examples' .bpk): its
- * name in STORE, and where the kernel has it */
+/* package k (the apps, then the examples - every one a compressed .bpk.z):
+ * its name in STORE, and where the kernel has it */
 static void blob_of(int k, char* name, int cap, const uint8_t** p, uint32_t* n) {
     if (k < NAPPS) {
         ksnprintf(name, (size_t)cap, "%s.bpk.z", APPS[k].name);
         *p = APPS[k].start;
         *n = (uint32_t)(APPS[k].end - APPS[k].start);
     } else {
-        kstrlcpy(name, examples_file(k - NAPPS), (size_t)cap);
+        ksnprintf(name, (size_t)cap, "%s.z", examples_file(k - NAPPS));
         *p = examples_data(k - NAPPS, n);
     }
 }
@@ -213,6 +214,10 @@ void builtin_release(void) {
         const uint8_t* p;
         uint32_t n;
         blob_of(k, name, sizeof(name), &p, &n);
+        if (k >= NAPPS) {                                    /* (kernels before build 203 kept the examples unpacked) */
+            ksnprintf(path, sizeof(path), STORE "/%s", examples_file(k - NAPPS));
+            if (fs_find_file(path) >= 0) fs_delete(path, 0);
+        }
         ksnprintf(path, sizeof(path), STORE "/%s", name);
         /* (there already from an earlier boot: the same bytes - the index has
          * their CRC, and the file its size; it is not read) */
@@ -241,14 +246,15 @@ void builtin_release(void) {
          g_released_bytes >> 10, timer_ms() - t0);
 }
 
-int builtin_package(const char* file, char** data, uint32_t* len) {
+int builtin_package(const char* file_in, char** data, uint32_t* len) {
+    char file[40];                                           /* (file_in may be builtin_package_file's buffer, reused below) */
+    kstrlcpy(file, file_in, sizeof(file));
     for (int k = 0; k < builtin_package_count(); k++) {
         if (strcmp(builtin_package_file(k), file)) continue;
         uint32_t n = 0;
         char* b = blob_copy(k, &n);
         if (!b) return -1;
-        if (k >= NAPPS) { *data = b; *len = n; return 0; }
-        int out = 0;                                         /* (an app: unpacked) */
+        int out = 0;                                         /* (compressed, every one: unpacked) */
         char* d = n ? stbi_zlib_decode_malloc(b, (int)n, &out) : NULL;
         kfree(b);
         if (!d || out <= 0) { if (d) kfree(d); return -1; }
@@ -302,6 +308,80 @@ int builtin_profile_apply(int p) {
 }
 
 /* changes when this kernel's packages do (the App Store's list is made again) */
+extern const uint8_t builtin_meta[], builtin_meta_end[];
+
+int builtin_package_meta(const char* name_in, uint32_t* size, uint8_t sha256[32], const uint8_t** skel, uint32_t* skel_len) {
+    /* (a copy: builtin_package_file's buffer, which name_in may well be, is
+     * written again by the loop below) */
+    char file[40];
+    kstrlcpy(file, name_in, sizeof(file));
+    const uint8_t* p = builtin_meta;
+    const uint8_t* end = builtin_meta_end;
+    if (end - p < 8 || memcmp(p, "BMT1", 4) != 0) return -1;
+    uint32_t count;
+    memcpy(&count, p + 4, 4);
+    p += 8;
+    for (uint32_t i = 0; i < count; i++) {
+        if (end - p < 40 + 4 + 4 + 32 + 4) return -1;
+        const char* name = (const char*)p;
+        uint32_t blob_len, sz, sl;
+        memcpy(&blob_len, p + 40, 4);
+        memcpy(&sz, p + 44, 4);
+        memcpy(&sl, p + 80, 4);
+        const uint8_t* s = p + 84;
+        if (sl > (uint32_t)(end - s)) return -1;
+        p = s + ((sl + 3u) & ~3u);
+        if (strncmp(name, file, 40) != 0) continue;
+        /* (it must be about the very copy this kernel has) */
+        for (int k = 0; k < builtin_package_count(); k++) {
+            if (strcmp(builtin_package_file(k), file)) continue;
+            char bn[48];
+            const uint8_t* bp;
+            uint32_t n;
+            blob_of(k, bn, sizeof(bn), &bp, &n);
+            if (n != blob_len) return -1;
+            *size = sz;
+            memcpy(sha256, name + 48, 32);
+            *skel = s;
+            *skel_len = sl;
+            return 0;
+        }
+        return -1;
+    }
+    return -1;
+}
+
+int builtin_meta_check(char* msg, int cap) {
+    int checked = 0;
+    msg[0] = 0;
+    for (int k = 0; k < builtin_package_count(); k++) {
+        char file[40];                              /* (builtin_package_file's buffer is reused by the calls below) */
+        kstrlcpy(file, builtin_package_file(k), sizeof(file));
+        const uint8_t* skel;
+        uint32_t skl, size;
+        uint8_t h[32], real[32];
+        if (builtin_package_meta(file, &size, h, &skel, &skl) != 0) {
+            ksnprintf(msg, (size_t)cap, "%s: no build-time facts", file);
+            return -1;
+        }
+        char* d;
+        uint32_t dl;
+        if (builtin_package(file, &d, &dl) != 0) { ksnprintf(msg, (size_t)cap, "%s: cannot unpack it", file); return -1; }
+        sha256(d, dl, real);
+        pkg_info_t a, b;
+        char err[96];
+        int ia = pkg_inspect_mem((const uint8_t*)d, dl, &a, err, sizeof(err));
+        int ib = pkg_inspect_mem(skel, skl, &b, err, sizeof(err));
+        kfree(d);
+        a.files = b.files = 0;                      /* (the skeleton's own size, of course, differs) */
+        a.bytes = b.bytes = 0;
+        if (dl != size || memcmp(h, real, 32) != 0) { ksnprintf(msg, (size_t)cap, "%s: size or SHA-256 differ", file); return -1; }
+        if (ia != 0 || ib != 0 || memcmp(&a, &b, sizeof(a)) != 0) { ksnprintf(msg, (size_t)cap, "%s: its manifest reads differently", file); return -1; }
+        checked++;
+    }
+    return checked;
+}
+
 uint32_t builtin_packages_stamp(void) {
     uint32_t s = 2166136261u;
     for (int i = 0; i < NAPPS; i++) s = (s ^ (uint32_t)(APPS[i].end - APPS[i].start)) * 16777619u;

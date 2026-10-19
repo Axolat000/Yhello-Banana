@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 21.
+ * The Banana OS application interface (ABI), version 22.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 21u
+#define BANANA_API_VERSION 22u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -487,6 +487,8 @@ typedef struct banana_api {
      * (0: now), with the summer time of the zone set in Settings */
     unsigned int (*time_utc)(void);
     int   (*utc_offset)(unsigned int utc);
+    /* v22: optional GPU contexts and owned resources (banana_gpu.h). */
+    int (*gpu_call)(unsigned op, const void* request, unsigned request_size, void* data, unsigned size);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0
@@ -535,6 +537,11 @@ typedef struct banana_ucontext {
 /* 1 if the running system's table has the call `field` (newer than the app?) */
 #define BANANA_HAS(api, field) \
     ((api)->size >= (unsigned long)((const char*)&(api)->field - (const char*)(api)) + sizeof(void*))
+
+/* 64-bit: vm_map hands out addresses from here on (kernel/uvm.h's
+ * UVM_BASE); the memory the kernel allocates for an app (malloc, http_get's
+ * data...) is below it - the SDK's heap tells the two apart so */
+#define BANANA_VM_BASE 0x0000640000000000ull
 
 /* vm_map / vm_protect (the same values as kernel/uvm.h) */
 #define BANANA_PROT_NONE  0

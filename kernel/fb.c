@@ -1,6 +1,9 @@
 #include "fb.h"
 #include "kstring.h"
 #include "gpu.h"
+#include "gpu_surface.h"
+#include "timer.h"
+#include "kheap.h"
 
 /* Multiboot2 info parsing (only what we need) */
 typedef struct {
@@ -31,6 +34,13 @@ static fb_info_t g_fb;
 static int g_fb_ok = 0;
 static uint32_t* g_bb = NULL;
 static uint32_t g_bb_w = 0, g_bb_h = 0;
+static uint32_t* g_previous;
+static uint32_t g_previous_w, g_previous_h;
+static int g_previous_valid;
+static void forget_damage(void) {
+    kfree(g_previous); g_previous = NULL; g_previous_valid = 0;
+    g_previous_w = g_previous_h = 0;
+}
 
 /* the sizes the firmware offers (Banana Boot's tag 0xBA00): Settings >
  * Screen, on displays without a graphics driver */
@@ -115,6 +125,7 @@ void fb_putpixel_direct(int x, int y, uint32_t rgb) {
     uintptr_t row = g_fb.addr + (uintptr_t)((uint32_t)y * g_fb.pitch);
     uint32_t* p = (uint32_t*)(row + (uintptr_t)((uint32_t)x * 4u));
     *p = rgb; /* XRGB8888 */
+    gpu_flush(x, y, 1, 1);
 }
 
 void fb_putpixel(int x, int y, uint32_t rgb) {
@@ -139,6 +150,7 @@ uint32_t* fb_target(int* stride_px, int* w, int* h) {
         *h = (int)(g_bb_h < g_fb.height ? g_bb_h : g_fb.height);
         return g_bb;
     }
+    gpu_dirty_raw();
     *stride_px = (int)(g_fb.pitch / 4u);
     *w = (int)g_fb.width;
     *h = (int)g_fb.height;
@@ -176,6 +188,7 @@ void fb_scroll_up(int top, int height, int dy, uint32_t fill) {
 }
 
 void fb_reconfigure(uint32_t width, uint32_t height, uint32_t pitch) {
+    forget_damage();
     g_fb.width = width;
     g_fb.height = height;
     g_fb.pitch = pitch;
@@ -183,6 +196,7 @@ void fb_reconfigure(uint32_t width, uint32_t height, uint32_t pitch) {
 
 void fb_set_framebuffer(uintptr_t addr, uint32_t width, uint32_t height, uint32_t pitch) {
     g_fb.addr = addr;
+    forget_damage();
     g_fb.width = width;
     g_fb.height = height;
     g_fb.pitch = pitch;
@@ -192,45 +206,77 @@ void fb_set_framebuffer(uintptr_t addr, uint32_t width, uint32_t height, uint32_
 }
 
 void fb_set_backbuffer(uint32_t* buf, uint32_t buf_width, uint32_t buf_height) {
+    forget_damage();
     g_bb = buf;
     g_bb_w = buf_width;
     g_bb_h = buf_height;
 }
 
 void fb_clear_backbuffer(void) {
+    forget_damage();
     g_bb = NULL;
     g_bb_w = g_bb_h = 0;
 }
 
-void fb_present(void) {
-    if (!g_fb_ok || !g_bb) return;
-
-    uint32_t w = g_bb_w;
-    uint32_t h = g_bb_h;
-    if (w > g_fb.width) w = g_fb.width;
-    if (h > g_fb.height) h = g_fb.height;
-
-    for (uint32_t y = 0; y < h; y++) {
-        uint32_t* dst = (uint32_t*)(g_fb.addr + (uintptr_t)(y * g_fb.pitch));
-        memcpy(dst, &g_bb[y * g_bb_w], w * 4u);
-    }
-    gpu_flush(0, 0, (int)w, (int)h);
-}
-
 void fb_present_rect(int x, int y, int w, int h) {
     if (!g_fb_ok || !g_bb) return;
-    int x1 = x + w, y1 = y + h;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
-    if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
-    if (x1 > (int)g_bb_w) x1 = (int)g_bb_w;
-    if (y1 > (int)g_bb_h) y1 = (int)g_bb_h;
-    if (x >= x1 || y >= y1) return;
-    for (int yy = y; yy < y1; yy++) {
-        uint32_t* dst = (uint32_t*)(g_fb.addr + (uintptr_t)((uint32_t)yy * g_fb.pitch));
-        memcpy(dst + x, &g_bb[(uint32_t)yy * g_bb_w + (uint32_t)x], (uint32_t)(x1 - x) * 4u);
-    }
-    gpu_flush(x, y, x1 - x, y1 - y);
+    gpu_surface_t dst = {(uint32_t*)g_fb.addr, (int)g_fb.width, (int)g_fb.height, (int)(g_fb.pitch / 4)};
+    gpu_surface_t src = {g_bb, (int)g_bb_w, (int)g_bb_h, (int)g_bb_w};
+    gpu_rect_t r = {x, y, w, h};
+    int width = dst.width < src.width ? dst.width : src.width;
+    int height = dst.height < src.height ? dst.height : src.height;
+    if (!gpu_rect_clip(&r, width, height)) return;
+    uint64_t t = timer_counter();
+    uint64_t bytes = gpu_surface_copy(dst, src, r);
+    gpu_note_present(bytes, timer_counter() - t);
+    gpu_flush(r.x, r.y, r.w, r.h);
 }
 
+void fb_present(void) {
+    g_previous_valid = 0;
+    fb_present_rect(0, 0, (int)g_bb_w, (int)g_bb_h);
+}
+
+void fb_scanout_addr(uintptr_t addr) { g_fb.addr = addr; }
+void fb_invalidate_damage(void) { g_previous_valid = 0; }
+#define PRESENT_RECTS 128
+typedef struct {
+    gpu_surface_t source, target;
+    gpu_rect_t rects[PRESENT_RECTS];
+    int flipping, count, overflow;
+} present_t;
+static void present_damage(gpu_rect_t r, void* opaque) {
+    present_t* p = opaque;
+    if (p->flipping) {
+        uint64_t start = timer_counter();
+        uint64_t bytes = gpu_surface_copy(p->target, p->source, r);
+        gpu_note_present(bytes, timer_counter() - start);
+        if (p->count < PRESENT_RECTS) p->rects[p->count++] = r;
+        else p->overflow = 1;
+    } else fb_present_rect(r.x, r.y, r.w, r.h);
+}
+void fb_present_damage(void) {
+    if (!g_fb_ok || !g_bb) return;
+    uint32_t w = g_bb_w < g_fb.width ? g_bb_w : g_fb.width;
+    uint32_t h = g_bb_h < g_fb.height ? g_bb_h : g_fb.height;
+    if (!w || !h || (uint64_t)w * h > (size_t)-1 / 4) return;
+    if (!g_previous || g_previous_w != w || g_previous_h != h) {
+        forget_damage();
+        g_previous = kmalloc((size_t)w * h * 4);
+        if (!g_previous) { fb_present(); return; }
+        g_previous_w = w; g_previous_h = h;
+    }
+    present_t p = {0};
+    p.source = (gpu_surface_t){g_bb, (int)w, (int)h, (int)g_bb_w};
+    p.flipping = gpu_present_begin(&p.target);
+    if (p.flipping == 2) g_previous_valid = 0;
+    if (!p.flipping) gpu_wait_vblank();
+    uint64_t copied = gpu_surface_damage(p.source,
+        (gpu_surface_t){g_previous, (int)w, (int)h, (int)w}, g_previous_valid, present_damage, &p);
+    g_previous_valid = 1;
+    if (p.flipping && p.count) {
+        if (p.overflow) { p.rects[0] = (gpu_rect_t){0, 0, (int)w, (int)h}; p.count = 1; }
+        gpu_present_end(p.source, p.rects, p.count);
+    }
+    gpu_note_damage((uint64_t)w * h * 4, copied);
+}

@@ -158,6 +158,7 @@ void sysinfo_init_mb2(uint32_t mb2_info_addr) {
     mb2_info_t* mb2 = (mb2_info_t*)(uintptr_t)mb2_info_addr;
     uint32_t total = mb2->total_size;
     info.mem_kb = bootmem_kb_mb2(mb2, total);
+    info.s3_wake_page = bootmem_wake_page_mb2(mb2,total);
 
     /* the boot loader passes the EFI system table (tag 11/12) only when it was
      * started by UEFI firmware */

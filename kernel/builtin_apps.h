@@ -20,6 +20,14 @@ const char* builtin_package_file(int i);              /* "mediaplayer.bpk", "pai
 /* the package with that file name, in a fresh buffer (kfree): 0, or -1 */
 int         builtin_package(const char* file, char** data, uint32_t* len);
 uint32_t    builtin_packages_stamp(void);                  /* changes with this kernel's packages */
+/* what the build found out about package file (tools/mkbuiltinmeta.py): its
+ * unpacked size and SHA-256, and a skeleton of it - its file table and
+ * manifest - for pkg_inspect_mem; 0, or -1 if there is none that matches */
+int         builtin_package_meta(const char* file, uint32_t* size, uint8_t sha256[32],
+                                 const uint8_t** skel, uint32_t* skel_len);
+/* selftest: those facts against each package itself, unpacked and hashed -
+ * how many agree, or -1 and which did not in msg */
+int         builtin_meta_check(char* msg, int cap);
 /* on an installed system: the packages saved as files on the disk
  * (/usr/share/builtin, read when wanted) and the kernel's copies of them
  * given to the heap - after builtin_apps_install(), at boot. The live CD

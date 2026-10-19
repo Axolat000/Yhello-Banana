@@ -38,7 +38,7 @@ int disk_probe(ata_disk_t* out, int max) {
 #define UVM_HOLE  0x0000600000000000ull       /* (UVM_BASE and up: an app's mmap region) */
 #define BOUNCE    (256u * 1024u)
 static uint8_t      g_bounce[BOUNCE] __attribute__((aligned(4096)));
-static volatile int g_bounce_lock;
+static iowait_t g_bounce_lock = IOWAIT_INIT;
 
 static int below_4g(const void* p, uint32_t bytes) { return (uint64_t)(uintptr_t)p + bytes <= 0x100000000ull; }
 

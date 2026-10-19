@@ -133,6 +133,30 @@ static __attribute__((unused)) void build_cmdline(char* out, int entry, const ch
     if (entry == 3 || entry == 4) c_strcat(out, " verbose");
 }
 
+/* the boot's timeline (kernel/boottime.c, `boottime`): the TSC when the
+ * loader started, the menu came and went, the kernel was in memory -
+ * " boottsc=a,b,c,d" in hex on the command line */
+static __attribute__((unused)) u64 loader_tsc(void) {
+    u32 lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (u64)hi << 32 | lo;
+}
+
+static __attribute__((unused)) void append_boottsc(char* out, const u64 t[4]) {
+    c_strcat(out, " boottsc=");
+    for (int i = 0; i < 4; i++) {
+        char h[18];
+        int n = 0;
+        u64 v = t[i];
+        do { h[n++] = "0123456789abcdef"[v & 15]; v >>= 4; } while (v);
+        char s[18];
+        for (int k = 0; k < n; k++) s[k] = h[n - 1 - k];
+        s[n] = 0;
+        if (i) c_strcat(out, ",");
+        c_strcat(out, s);
+    }
+}
+
 static __attribute__((unused)) int has_long_mode(void) {
     u32 a, b, c, d;
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000u));

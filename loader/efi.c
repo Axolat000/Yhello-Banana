@@ -358,6 +358,7 @@ extern HIDDEN u8 tramp_start[], tramp_end[], tramp_gdtr_base[], tramp_gdt[];
 #define PTR(x) ((void*)(UINTN)(x))                     /* a physical address as a pointer */
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE* st) {
+    u64 tsc[4] = { loader_tsc(), 0, 0, 0 };     /* (boottime: start, menu, menu done, kernel loaded) */
     ST = st;
     BS = st->BootServices;
     RT = st->RuntimeServices;
@@ -400,6 +401,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE* st) {
     g_extra[g_nextra++] = X_RESTART;
 
     int entry;
+    tsc[1] = loader_tsc();
     for (;;) {
         entry = menu(has_long_mode() ? 0 : 2);
         if (entry < KERNEL_ENTRIES) break;
@@ -410,6 +412,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE* st) {
         if (x == X_ENROLL) enroll_keys();
         if (x == X_RESTART) RT->ResetSystem(EfiResetCold, 0, 0, 0);
     }
+    tsc[2] = loader_tsc();
     if (g_gop && g_vsel >= 0 && g_modes[g_vsel].id != g_gop->Mode->Mode)
         ((gop_set_t)g_gop->SetMode)(g_gop, g_modes[g_vsel].id);    /* refused: the size stays */
     ST->ConOut->ClearScreen(ST->ConOut);
@@ -418,13 +421,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE* st) {
 
     UINTN fsize;
     u8* file = read_file(is64 ? "\\boot\\kernel64.bin" : "\\boot\\kernel.bin", &fsize, 1);
-    /* Secure Boot vouched for this program; it vouches for the kernel */
-    u8 sum[32];
-    sha256(file, fsize, sum);
-    const u8* want = is64 ? KERNEL64_SHA256 : KERNEL32_SHA256;
-    int same = 1;
-    for (int i = 0; i < 32; i++) if (sum[i] != want[i]) same = 0;
-    if (!same && g_secure) halt("Secure Boot: the kernel is not the one this loader was built with");
+    /* Secure Boot vouched for this program; it vouches for the kernel (only
+     * then: hashing the whole kernel is a good part of the loading time) */
+    if (g_secure) {
+        u8 sum[32];
+        sha256(file, fsize, sum);
+        const u8* want = is64 ? KERNEL64_SHA256 : KERNEL32_SHA256;
+        int same = 1;
+        for (int i = 0; i < 32; i++) if (sum[i] != want[i]) same = 0;
+        if (!same) halt("Secure Boot: the kernel is not the one this loader was built with");
+    }
 
     seg_t segs[16];
     u64 kentry;
@@ -466,9 +472,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE* st) {
 
     mb2_t m;
     mb2_begin(&m, (u8*)PTR(info));
-    char medium[16], cmd[96];
+    tsc[3] = loader_tsc();                           /* (read and checked; copied in place below) */
+    char medium[16], cmd[192];
     medium_value(mfile ? (const char*)mfile : "", mfile ? (u32)msz : 0, medium, sizeof(medium));
     build_cmdline(cmd, entry, medium);
+    append_boottsc(cmd, tsc);
     mb2_string(&m, 1, cmd);
     mb2_string(&m, 2, "Banana Boot (" FIRMWARE_NAME ")");
 #ifdef __x86_64__

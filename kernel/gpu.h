@@ -4,6 +4,7 @@
 #include "types.h"
 #include "display.h"
 #include "pci.h"
+#include "gpu_surface.h"
 
 /*
  * Graphics drivers (kernel/gpu_*.c, and driver modules: kernel/driver.h).
@@ -54,6 +55,7 @@ gpu_t* gpu_active(void);
 int    gpu_register(gpu_t* g);
 /* fb.c: an area was drawn */
 void   gpu_flush(int x, int y, int w, int h);
+void   gpu_dirty_raw(void); /* a caller will write through a raw framebuffer pointer */
 /* Built-in drivers may provide a bounded, allocation-free panic update.
  * Kept outside gpu_t so the driver-module structure ABI stays unchanged. */
 void   gpu_register_panic(gpu_t* g, void (*present)(void));
@@ -68,6 +70,35 @@ int    gpu_has_hw_cursor(void);
 void   gpu_wait_vblank(void);
 int    gpu_backlight(int percent);     /* percent < 0 reads; -1 without one */
 
+/* Telemetry is separate from gpu_t: loadable driver ABI stays stable. */
+typedef struct {
+    uint64_t frames, copied_bytes, copy_ns, flushes, flushed_bytes, flush_ns;
+    uint64_t commands, command_ns, timeouts;
+    uint64_t damage_frames, candidate_bytes, damage_bytes;
+    uint64_t flips, vblank_waits, vblank_timeouts;
+} gpu_stats_t;
+void gpu_stats(gpu_stats_t* out);
+void gpu_note_present(uint64_t bytes, uint64_t ns);
+void gpu_note_damage(uint64_t candidate, uint64_t copied);
+void gpu_note_command(uint64_t ns, int timeout);
+void gpu_diagnostics(void);
+void gpu_bench(void);
+void gpu_tests(void (*report)(const char*, int, const char*));
+/* Optional built-in extensions, kept outside the driver-module ABI. */
+typedef struct {
+    /* 0: unavailable, 1: existing pages, 2: initialize both pages. */
+    int (*begin)(gpu_surface_t* target);
+    void (*end)(gpu_surface_t source, const gpu_rect_t* changed, int count);
+} gpu_present_ops_t;
+void gpu_register_present(gpu_t* g, const gpu_present_ops_t* ops);
+int gpu_present_begin(gpu_surface_t* target);
+void gpu_present_end(gpu_surface_t source, const gpu_rect_t* changed, int count);
+void gpu_note_flip(void);
+void gpu_note_vblank(int timeout);
+void gpu_register_service(gpu_t* g, void (*service)(void),
+                          void (*tests)(void (*report)(const char*, int, const char*)));
+void gpu_driver_tests(void (*report)(const char*, int, const char*));
+
 void   gpu_list(void);                  /* lsgpu */
 /* after gpu_init: a card with no driver here (AMD, NVIDIA, Intel Arc / Xe)
  * keeps the firmware's screen - named, its framebuffer write-combining */
@@ -76,6 +107,7 @@ const char* gpu_family_name(uint16_t vendor, uint16_t device);   /* "NVIDIA GeFo
 
 /* the built-in drivers: 0 if it took the device */
 int gpu_bga_probe(const pci_dev_t* d);
+int gpu_bga_s3_resume(void);
 int gpu_vmsvga_probe(const pci_dev_t* d);
 int gpu_virtio_probe(const pci_dev_t* d);
 int gpu_intel_probe(const pci_dev_t* d);

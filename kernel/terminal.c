@@ -33,8 +33,8 @@ static size_t term_fb_rows = VGA_HEIGHT;
 /* framebuffer virtual terminals (count shared via terminal.h so other
  * modules can size their own per-window state to match) */
 #define VT_MAX TERMINAL_VT_MAX
-static char    vt_chars[VT_MAX][FB_MAX_ROWS][FB_MAX_COLS];
-/* a UTF-8 character still arriving, per vt (cells hold ASCII or Latin-1) */
+static uint32_t vt_chars[VT_MAX][FB_MAX_ROWS][FB_MAX_COLS];    /* Unicode characters (code points) */
+/* a UTF-8 character still arriving, per vt */
 static uint8_t  vt_u8_need[VT_MAX];
 static uint32_t vt_u8_cp[VT_MAX];
 static uint8_t vt_colors[VT_MAX][FB_MAX_ROWS][FB_MAX_COLS];
@@ -163,7 +163,7 @@ static void fb_draw_cell(size_t row, size_t col) {
     if (row >= terminal_fb_rows() || col >= terminal_fb_cols()) return;
     uint8_t color = vt_colors[CONSOLE_VT][row][col];
     int scale = term_fb_scale < 1 ? 1 : term_fb_scale;
-    gfx_draw_char_scaled((int)col * 8 * scale, (int)row * 8 * scale, scale, vt_chars[CONSOLE_VT][row][col],
+    gfx_draw_char_scaled_cp((int)col * 8 * scale, (int)row * 8 * scale, scale, vt_chars[CONSOLE_VT][row][col],
                          vga_color_rgb(color & 0x0F), vga_color_rgb((color >> 4) & 0x0F));
 }
 
@@ -270,11 +270,34 @@ static const unsigned char LATIN1_CP437[96] = {
     0x85,0xA0,0x83,'a', 0x84,0x86,0x91,0x87,0x8A,0x82,0x88,0x89,0x8D,0xA1,0x8C,0x8B,
     '?', 0xA4,0x95,0xA2,0x93,'o', 0x94,0xF6,'o', 0x97,0xA3,0x96,0x81,'y', '?', 0x98,
 };
-static char vga_glyph(char c) {
-    unsigned char b = (unsigned char)c;
-    if (b < 0x80) return c;
-    return b >= 0xA0 ? (char)LATIN1_CP437[b - 0xA0] : '?';
+/* ... and beyond Latin-1, what code page 437 has: box drawing, shades,
+ * arrows, card suits, Greek and maths */
+static const struct { uint16_t cp; uint8_t g; } UNI_CP437[] = {
+    { 0x2500, 0xC4 }, { 0x2502, 0xB3 }, { 0x250C, 0xDA }, { 0x2510, 0xBF }, { 0x2514, 0xC0 }, { 0x2518, 0xD9 },
+    { 0x251C, 0xC3 }, { 0x2524, 0xB4 }, { 0x252C, 0xC2 }, { 0x2534, 0xC1 }, { 0x253C, 0xC5 },
+    { 0x2550, 0xCD }, { 0x2551, 0xBA }, { 0x2554, 0xC9 }, { 0x2557, 0xBB }, { 0x255A, 0xC8 }, { 0x255D, 0xBC },
+    { 0x2560, 0xCC }, { 0x2563, 0xB9 }, { 0x2566, 0xCB }, { 0x2569, 0xCA }, { 0x256C, 0xCE },
+    { 0x2580, 0xDF }, { 0x2584, 0xDC }, { 0x2588, 0xDB }, { 0x258C, 0xDD }, { 0x2590, 0xDE },
+    { 0x2591, 0xB0 }, { 0x2592, 0xB1 }, { 0x2593, 0xB2 }, { 0x25A0, 0xFE },
+    { 0x2190, 0x1B }, { 0x2191, 0x18 }, { 0x2192, 0x1A }, { 0x2193, 0x19 }, { 0x2194, 0x1D }, { 0x2195, 0x12 },
+    { 0x25B2, 0x1E }, { 0x25BA, 0x10 }, { 0x25BC, 0x1F }, { 0x25C4, 0x11 }, { 0x25CB, 0x09 }, { 0x25D8, 0x08 },
+    { 0x263A, 0x01 }, { 0x263B, 0x02 }, { 0x2665, 0x03 }, { 0x2666, 0x04 }, { 0x2663, 0x05 }, { 0x2660, 0x06 },
+    { 0x2022, 0x07 }, { 0x266A, 0x0D }, { 0x266B, 0x0E }, { 0x263C, 0x0F }, { 0x2302, 0x7F },
+    { 0x03B1, 0xE0 }, { 0x0393, 0xE2 }, { 0x03C0, 0xE3 }, { 0x03A3, 0xE4 }, { 0x03C3, 0xE5 }, { 0x03C4, 0xE7 },
+    { 0x03A6, 0xE8 }, { 0x0398, 0xE9 }, { 0x03A9, 0xEA }, { 0x03B4, 0xEB }, { 0x221E, 0xEC }, { 0x03C6, 0xED },
+    { 0x03B5, 0xEE }, { 0x2229, 0xEF }, { 0x2261, 0xF0 }, { 0x2265, 0xF2 }, { 0x2264, 0xF3 }, { 0x2248, 0xF7 },
+    { 0x2219, 0xF9 }, { 0x221A, 0xFB }, { 0x207F, 0xFC }, { 0x20A7, 0x9E }, { 0x0192, 0x9F },
+};
+
+static char vga_glyph(uint32_t cp) {
+    if (cp < 0x80) return (char)cp;
+    if (cp >= 0xA0 && cp <= 0xFF) return (char)LATIN1_CP437[cp - 0xA0];
+    for (unsigned i = 0; i < sizeof(UNI_CP437) / sizeof(UNI_CP437[0]); i++)
+        if (UNI_CP437[i].cp == cp) return (char)UNI_CP437[i].g;
+    return '?';
 }
+
+char terminal_cp437(uint32_t cp) { return vga_glyph(cp); }
 
 static inline uint16_t vga_entry(char c, uint8_t color) {
     return (uint16_t)c | (uint16_t)color << 8;
@@ -308,6 +331,7 @@ void terminal_init(void) {
 }
 
 static int capturing(void);
+static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t col);
 
 void terminal_clear(void) {
     if (capturing()) return;
@@ -366,7 +390,7 @@ static void terminal_scroll(void) {
     size_t w = terminal_width();
 
     if ((term_mode == TERMINAL_MODE_FRAMEBUFFER && gfx_available()) || term_mode == TERMINAL_MODE_SUSPENDED) {
-        memmove(&vt_chars[vt_active][0][0], &vt_chars[vt_active][1][0], (h - 1) * FB_MAX_COLS);
+        memmove(&vt_chars[vt_active][0][0], &vt_chars[vt_active][1][0], (h - 1) * FB_MAX_COLS * sizeof(vt_chars[0][0][0]));
         memmove(&vt_colors[vt_active][0][0], &vt_colors[vt_active][1][0], (h - 1) * FB_MAX_COLS);
         for (size_t x = 0; x < w; x++) {
             vt_chars[vt_active][h - 1][x] = ' ';
@@ -458,24 +482,25 @@ void terminal_putchar(char c) {
     /* ...and an SSH session's vt to its client */
     if (g_serial_mirror && vt_active != 0) tty_mirror((int)vt_active, c);
 
-    /* text is UTF-8: é comes as two bytes and fills one cell */
+    /* text is UTF-8: é comes as two bytes, € as three, and each fills one cell */
+    uint32_t cp = (unsigned char)c;
     {
         unsigned char b = (unsigned char)c;
         int v = (int)vt_active;
         if (b >= 0x80) {
             if ((b & 0xC0) == 0x80) {
                 if (!vt_u8_need[v]) {
-                    c = '?';
+                    cp = 0xFFFD;
                 } else {
                     vt_u8_cp[v] = vt_u8_cp[v] << 6 | (b & 0x3F);
                     if (--vt_u8_need[v]) return;
-                    c = u8_cell(vt_u8_cp[v]);
+                    cp = vt_u8_cp[v];
                 }
             } else {
                 vt_u8_need[v] = (uint8_t)(b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0);
                 vt_u8_cp[v] = b & (0x3Fu >> vt_u8_need[v]);
                 if (vt_u8_need[v]) return;
-                c = '?';
+                cp = 0xFFFD;
             }
         } else {
             vt_u8_need[v] = 0;
@@ -501,7 +526,7 @@ void terminal_putchar(char c) {
                 mark_dirty(term_row);
             }
         } else {
-            vt_chars[CONSOLE_VT][term_row][term_col] = c;
+            vt_chars[CONSOLE_VT][term_row][term_col] = cp;
             vt_colors[CONSOLE_VT][term_row][term_col] = vt_color[CONSOLE_VT];
             mark_dirty(term_row);
             if (++term_col == w) {
@@ -536,7 +561,7 @@ void terminal_putchar(char c) {
             }
             return;
         }
-        vt_chars[vt_active][term_row][term_col] = c;
+        vt_chars[vt_active][term_row][term_col] = cp;
         vt_colors[vt_active][term_row][term_col] = vt_color[vt_active];
         if (++term_col == w) {
             term_col = 0;
@@ -569,7 +594,7 @@ void terminal_putchar(char c) {
         return;
     }
 
-    term_buf[term_row * VGA_WIDTH + term_col] = vga_entry(vga_glyph(c), term_color);
+    term_buf[term_row * VGA_WIDTH + term_col] = vga_entry(vga_glyph(cp), term_color);
 
     if (++term_col == w) {
         term_col = 0;
@@ -654,26 +679,30 @@ void terminal_set_reserved_bottom(size_t rows) {
 }
 
 void terminal_putentryat(char c, uint8_t fg, uint8_t bg, size_t row, size_t col) {
+    putentry_cp((unsigned char)c, fg, bg, row, col);
+}
+
+static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t col) {
     g_term_gen++;
     if (row >= VGA_HEIGHT || col >= VGA_WIDTH) return;
     if (term_mode == TERMINAL_MODE_FRAMEBUFFER && gfx_available()) {
         uint8_t color = vga_entry_color(fg, bg);
-        vt_chars[vt_active][row][col] = c;
+        vt_chars[vt_active][row][col] = cp;
         vt_colors[vt_active][row][col] = color;
         if (vt_active == CONSOLE_VT) { mark_dirty(row); terminal_flush(); }
         return;
     }
 
     uint8_t color = vga_entry_color(fg, bg);
-    term_buf[row * VGA_WIDTH + col] = vga_entry(vga_glyph(c), color);
+    term_buf[row * VGA_WIDTH + col] = vga_entry(vga_glyph(cp), color);
 }
 
 void terminal_write_at(const char* str, uint8_t fg, uint8_t bg, size_t row, size_t col) {
     if (!str) return;
     size_t x = col;
-    for (size_t i = 0; str[i] && x < VGA_WIDTH; i++, x++) {
-        terminal_putentryat(str[i], fg, bg, row, x);
-    }
+    int len = (int)strlen(str);
+    for (int i = 0; i < len && x < VGA_WIDTH; x++)
+        putentry_cp(u8_decode(str, len, &i), fg, bg, row, x);          /* (a UTF-8 character a cell) */
 }
 
 void terminal_screen_changed(void) {
@@ -707,8 +736,8 @@ int terminal_fb_get_scale(void) {
     return term_fb_scale;
 }
 
-void terminal_fb_get_buffer(const char** chars, const uint8_t** colors, int* width, int* height, int* stride) {
-    if (chars)  *chars = (const char*)&vt_chars[vt_active][0][0];
+void terminal_fb_get_buffer(const uint32_t** chars, const uint8_t** colors, int* width, int* height, int* stride) {
+    if (chars)  *chars = &vt_chars[vt_active][0][0];
     if (colors) *colors = (const uint8_t*)&vt_colors[vt_active][0][0];
     if (width)  *width = (int)terminal_width();
     if (height) *height = (int)terminal_height();
@@ -754,7 +783,7 @@ int terminal_vt_get_active(void) {
     return vt_active;
 }
 
-void terminal_vt_get_buffer(int vt, const char** chars, const uint8_t** colors, int* width, int* height, int* stride) {
+void terminal_vt_get_buffer(int vt, const uint32_t** chars, const uint8_t** colors, int* width, int* height, int* stride) {
     if (vt < 0 || vt >= VT_MAX || !vt_used[vt]) {
         if (chars) *chars = NULL;
         if (colors) *colors = NULL;
@@ -763,7 +792,7 @@ void terminal_vt_get_buffer(int vt, const char** chars, const uint8_t** colors, 
         if (stride) *stride = 0;
         return;
     }
-    if (chars)  *chars = (const char*)&vt_chars[vt][0][0];
+    if (chars)  *chars = &vt_chars[vt][0][0];
     if (colors) *colors = (const uint8_t*)&vt_colors[vt][0][0];
     if (width)  *width = (int)(vt_cols[vt] ? vt_cols[vt] : terminal_fb_cols());
     if (height) *height = (int)(vt_rows[vt] ? vt_rows[vt] : terminal_fb_rows());
@@ -796,7 +825,7 @@ void terminal_vt_set_size(int vt, int cols, int rows) {
     /* the cursor's line stays visible: scroll the text up if the window got shorter */
     if (vt_row[vt] >= (size_t)rows) {
         size_t sh = vt_row[vt] - (size_t)rows + 1;
-        memmove(&vt_chars[vt][0][0], &vt_chars[vt][sh][0], (FB_MAX_ROWS - sh) * FB_MAX_COLS);
+        memmove(&vt_chars[vt][0][0], &vt_chars[vt][sh][0], (FB_MAX_ROWS - sh) * FB_MAX_COLS * sizeof(vt_chars[0][0][0]));
         memmove(&vt_colors[vt][0][0], &vt_colors[vt][sh][0], (FB_MAX_ROWS - sh) * FB_MAX_COLS);
         for (size_t y = FB_MAX_ROWS - sh; y < FB_MAX_ROWS; y++)
             for (size_t x = 0; x < FB_MAX_COLS; x++) { vt_chars[vt][y][x] = ' '; vt_colors[vt][y][x] = vt_color[vt]; }

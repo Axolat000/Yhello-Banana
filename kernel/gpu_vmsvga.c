@@ -13,6 +13,8 @@
 #include "kstring.h"
 #include "serial.h"
 #include "paging.h"
+#include "timer.h"
+#include "crash.h"
 
 #define SVGA_INDEX       0
 #define SVGA_VALUE       1
@@ -98,10 +100,40 @@ static void fifo_cmd_locked(const uint32_t* w, int n) {
     g_fifo[F_NEXT_CMD] = next;
 }
 
+/* Nonblocking updates: a full FIFO keeps the damage queued for next tick. */
 static void svga_flush(gpu_t* g, int x, int y, int w, int h) {
     (void)g;
-    uint32_t c[5] = { CMD_UPDATE, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h };
-    fifo_cmd(c, 5);
+    if (!g_fifo) return;
+    uint32_t c[5] = {CMD_UPDATE, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
+    uintptr_t fl;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
+    uint32_t min = g_fifo[F_MIN], max = g_fifo[F_MAX];
+    uint32_t next = g_fifo[F_NEXT_CMD], stop = g_fifo[F_STOP];
+    uint32_t free_b = next >= stop ? (max - next) + (stop - min) : stop - next;
+    int queued = free_b > sizeof(c);
+    if (queued) {
+        for (unsigned i = 0; i < 5; i++) {
+            g_fifo[next / 4] = c[i]; next += 4;
+            if (next >= max) next = min;
+        }
+        __asm__ volatile("sfence" ::: "memory");
+        g_fifo[F_NEXT_CMD] = next;
+    }
+    wr(R_SYNC, 1); /* kick the host, without waiting for R_BUSY */
+    if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
+    if (!crash_in_progress()) {
+        if (queued) gpu_note_command(0, 0);
+        else gpu_dirty_raw();
+    }
+}
+
+static void svga_tests(void (*report)(const char*, int, const char*)) {
+    uint64_t start = timer_counter();
+    for (int i = 0; i < 64; i++) svga_flush(&g_gpu, i, i, 1, 1);
+    fifo_sync();
+    int ok = !rd(R_BUSY) && g_fifo[F_NEXT_CMD] == g_fifo[F_STOP];
+    if (!ok) gpu_note_command(timer_counter() - start, 1);
+    report("SVGA asynchronous updates drain without a busy FIFO", ok, "64 queued pixel updates");
 }
 
 /* The FIFO's register I/O waits are bounded and never allocate or yield. */
@@ -256,6 +288,7 @@ int gpu_vmsvga_probe(const pci_dev_t* d) {
     gpu_set_framebuffer(g_fb + rd(R_FB_OFFSET), w, h, (int)rd(R_BYTES_PER_LINE));
     gpu_register(&g_gpu);
     gpu_register_panic(&g_gpu,svga_panic_present);
+    gpu_register_service(&g_gpu, NULL, svga_tests);
     svga_flush(&g_gpu, 0, 0, w, h);
     return 0;
 }

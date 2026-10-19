@@ -753,13 +753,14 @@ int repo_autoremove(repo_log_t log, void* ctx, char* msg, int mcap) {
 
 /* a package's stanza (as a signed index has it) added to the index being
  * made in *out: 1, or 0 (not a package, or out of memory) */
-static int add_stanza(char** out, uint32_t* len, uint32_t* cap, const char* d, uint32_t dl, const char* fname) {
+/* the index entry of a package: its manifest from pkg (the package, or a
+ * skeleton of it with its file table and manifest), its size and SHA-256 */
+static int add_stanza_of(char** out, uint32_t* len, uint32_t* cap, const uint8_t* pkg, uint32_t pkg_len,
+                         uint32_t dl, const uint8_t h[32], const char* fname) {
     pkg_info_t info;
     char err[96];
-    if (pkg_inspect_mem((const uint8_t*)d, dl, &info, err, sizeof(err)) != 0) return 0;
-    uint8_t h[32];
+    if (pkg_inspect_mem(pkg, pkg_len, &info, err, sizeof(err)) != 0) return 0;
     char hx[65], st[1024];
-    sha256(d, dl, h);
     tohex(h, 32, hx);
     ksnprintf(st, sizeof(st),
               "Package: %s\nVersion: %s\nTitle: %s\nType: %s\nCategory: %s\nDescription: %s\nAuthor: %s\n"
@@ -778,6 +779,12 @@ static int add_stanza(char** out, uint32_t* len, uint32_t* cap, const char* d, u
     memcpy(*out + *len, st, sl + 1);
     *len += sl;
     return 1;
+}
+
+static int add_stanza(char** out, uint32_t* len, uint32_t* cap, const char* d, uint32_t dl, const char* fname) {
+    uint8_t h[32];
+    sha256(d, dl, h);
+    return add_stanza_of(out, len, cap, (const uint8_t*)d, dl, dl, h, fname);
 }
 
 /* a local folder without an index: its .bpk files are the packages */
@@ -816,6 +823,15 @@ static char* builtin_index(int* count) {
     for (int i = 0; i < builtin_package_count(); i++) {
         char fname[40];
         kstrlcpy(fname, builtin_package_file(i), sizeof(fname));
+        /* what the build found out about it (tools/mkbuiltinmeta.py) - else
+         * the package itself, unpacked and hashed (~0.9 s for them all in QEMU) */
+        const uint8_t* skel;
+        uint32_t skl, size;
+        uint8_t h[32];
+        if (builtin_package_meta(fname, &size, h, &skel, &skl) == 0) {
+            *count += add_stanza_of(&out, &len, &cap, skel, skl, size, h, fname);
+            continue;
+        }
         char* d;
         uint32_t dl;
         if (builtin_package(fname, &d, &dl) != 0) continue;

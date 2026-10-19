@@ -4,6 +4,7 @@
 #include "kheap.h"
 #include "kstring.h"
 #include "timer.h"
+#include "task.h"
 #include "serial.h"
 #include "blockdev.h"
 #include "iowait.h"
@@ -56,7 +57,7 @@ typedef struct {
     vs_resp_t* resp;
     uint8_t* bounce;
     uint64_t next_id;
-    volatile int lock;
+    iowait_t lock;
 } vsc_t;
 
 typedef struct {
@@ -320,6 +321,7 @@ static int scan_cb(const pci_dev_t* d, void* ctx) {
     if (d->vendor != 0x1AF4 || (d->device != 0x1004 && d->device != 0x1048) || g_nctl >= VSCSI_CTL_MAX) return 0;
     vsc_t* c = &g_ctl[g_nctl];
     memset(c, 0, sizeof(*c));
+    c->lock = (iowait_t)IOWAIT_INIT;
     if (start(c, d) == 0) g_nctl++;
     return 0;
 }

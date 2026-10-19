@@ -2,6 +2,7 @@
 #include "kstring.h"
 #include "i2chid.h"
 #include "usb.h"
+#include "pci.h"
 #include "vmtools.h"
 #include "../usb/usbcore.h"
 #include "terminal.h"
@@ -146,6 +147,20 @@ static void __attribute__((unused)) ehci_handoff(uint8_t bus, uint8_t dev, uint8
     usb_ehci_handoff_ok++;
 }
 
+/* a USB controller: its I/O and memory decoding on, counted by kind */
+static int usb_controller_cb(const pci_dev_t* d, void* ctx) {
+    (void)ctx;
+    uint32_t cc = ((uint32_t)d->class_code << 16) | ((uint32_t)d->subclass << 8) | d->prog_if;
+    if ((cc & 0xFFFF00) == 0x0C0300) pci_enable_usb_decode(d->bus, d->dev, d->fn);
+    /* class=0x0C serial bus, sub=0x03 USB, prog=0x30 xHCI / 0x20 EHCI:
+     * BIOS-owned legacy emulation preserved for now */
+    if (cc == 0x0C0330) usb_xhci_found++;
+    if (cc == 0x0C0320) usb_ehci_found++;
+    if (cc == 0x0C0300) usb_uhci_found++;
+    if (cc == 0x0C0310) usb_ohci_found++;
+    return 0;
+}
+
 void usb_init(void) {
     usb_xhci_found = usb_xhci_handoff_ok = 0;
     usb_ehci_found = usb_ehci_handoff_ok = 0;
@@ -162,34 +177,7 @@ void usb_init(void) {
      * On QEMU with `-device usb-kbd`, this keeps keyboard events translated
      * to PS/2 so the existing keyboard driver continues to work.
      */
-    for (uint32_t bus = 0; bus < 256; bus++) {
-        for (uint32_t dev = 0; dev < 32; dev++) {
-            for (uint32_t fn = 0; fn < 8; fn++) {
-                uint32_t id = pci_read(bus, dev, fn, 0);
-                if ((id & 0xFFFF) == 0xFFFF) { if (fn==0) break; continue; }
-                uint32_t cc = pci_read(bus, dev, fn, 8) >> 8;
-                if ((cc & 0xFFFF00) == 0x0C0300) {
-                    pci_enable_usb_decode((uint8_t)bus, (uint8_t)dev, (uint8_t)fn);
-                }
-                /* class=0x0C serial bus, sub=0x03 USB, prog=0x30 xHCI */
-                if (cc == 0x0C0330) {
-                    usb_xhci_found++;
-                    /* preserve BIOS-owned legacy emulation for now */
-                }
-                /* class=0x0C serial bus, sub=0x03 USB, prog=0x20 EHCI */
-                if (cc == 0x0C0320) {
-                    usb_ehci_found++;
-                    /* preserve BIOS-owned legacy emulation for now */
-                }
-                if (cc == 0x0C0300) usb_uhci_found++;
-                if (cc == 0x0C0310) usb_ohci_found++;
-                if (fn == 0) {
-                    uint32_t hdr = pci_read(bus, dev, fn, 0x0C);
-                    if (!((hdr >> 16) & 0x80)) break; /* not multi-function */
-                }
-            }
-        }
-    }
+    pci_scan(usb_controller_cb, NULL);   /* (kernel/pci.c: the bus is walked once for every driver) */
     /*
      * After xHCI handoff, the BIOS continues to translate USB HID
      * reports to PS/2 scancodes through port 0x60.  Our existing

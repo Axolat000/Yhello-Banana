@@ -1,5 +1,6 @@
 #include "ata.h"
 #include "iowait.h"
+#include "timer.h"
 
 /* ── I/O helpers (each kernel .c file keeps its own copy - see usb.c) ── */
 static inline uint8_t  inb(uint16_t p) { uint8_t  v; __asm__ volatile("inb  %1,%0":"=a"(v):"Nd"(p)); return v; }
@@ -47,7 +48,7 @@ static uint16_t bus_ctrl(int bus) { return (bus == ATA_BUS_PRIMARY) ? 0x3F6 : 0x
 /* Reading the alternate status register costs ~100ns on real hardware;
  * four reads is the ATA spec's standard "400ns" settle delay after a
  * drive select or reset, before status bits can be trusted. */
-static void io_wait(uint16_t ctrl) {
+static void settle_400ns(uint16_t ctrl) {
     inb(ctrl); inb(ctrl); inb(ctrl); inb(ctrl);
 }
 
@@ -76,7 +77,7 @@ static int wait_drq(uint16_t io, uint32_t spins) {
 static void select_drive(int bus, int is_slave) {
     uint16_t io = bus_io(bus), ctrl = bus_ctrl(bus);
     outb(io + ATA_REG_HDDEVSEL, (uint8_t)(0xA0 | (is_slave ? 0x10 : 0x00)));
-    io_wait(ctrl);
+    settle_400ns(ctrl);
 }
 
 /* Sends IDENTIFY DEVICE and fills *out. Returns 1 if a drive answered at
@@ -291,7 +292,7 @@ static inline void outl(uint16_t p, uint32_t v) { __asm__ volatile("outl %0,%1":
 
 static int      g_dma_off;
 static uint16_t g_bm;                               /* the bus-master registers (BAR4), 0: none */
-static volatile int g_chan_lock[2];
+static iowait_t g_chan_lock[2] = { IOWAIT_INIT, IOWAIT_INIT };
 static volatile int g_irq_done[2];
 static uint32_t g_prd[2][PRD_N * 2] __attribute__((aligned(256)));   /* (aligned: never across 64 KiB) */
 

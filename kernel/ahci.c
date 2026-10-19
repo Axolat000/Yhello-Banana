@@ -1,11 +1,11 @@
 #include "ahci.h"
+#include "iowait.h"
+#include "idt.h"
 #include "pci.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "timer.h"
 #include "serial.h"
-#include "idt.h"
-#include "iowait.h"
 
 /*
  * AHCI 1.3: the HBA's registers are memory-mapped at BAR5 (ABAR); each
@@ -85,19 +85,20 @@ typedef struct {
     volatile uint8_t* abar;
     int      ok;
     uint8_t  bus, dev, fn;
-    uint8_t  irq;         /* its interrupt line (0: none - polled) */
-    int      s64;         /* 64-bit addresses (CAP.S64A) */
+    uint8_t  irq;                     /* its interrupt line (0: none we can use) */
+    int      s64;                     /* 64-bit addresses (CAP.S64A) */
 } hba_t;
 
 typedef struct {
     hba_t*        hba;
     int           port;
     int           atapi;
-    volatile int  lock;           /* one command at a time (a waiting one lets other tasks run) */
-    volatile uint32_t irq_is;     /* PxIS as the interrupt handler found it */
     cmd_header_t* clist;
     cmd_table_t*  table;
     void*         fis;
+    iowait_t      w;                  /* one command at a time; who waits for it (kernel/iowait.c) */
+    int           irq;                /* its completion interrupts are on */
+    volatile uint32_t is_seen;        /* PX_IS bits the interrupt handler cleared */
 } port_t;
 
 static hba_t  g_hba[MAX_HBA];
@@ -157,10 +158,16 @@ static int setup_port(port_t* p) {
     p->clist[0].ctbau = 0;
     wr(r, PX_SERR, 0xFFFFFFFFu);
     wr(r, PX_IS, 0xFFFFFFFFu);
-    /* interrupts: a command done (D2H, PIO setup, DMA setup, set device bits), an error */
-    wr(r, PX_IE, p->hba->irq ? 0x4000000Fu : 0);
+    wr(r, PX_IE, 0);                  /* (interrupts on once every port is set up: init_all) */
     start_port(r);
     return 0;
+}
+
+/* the command in slot 0 is done (or failed) */
+static int cmd_done(void* ctx) {
+    port_t* p = (port_t*)ctx;
+    volatile uint8_t* r = port_regs(p);
+    return !(rd(r, PX_CI) & 1) || ((rd(r, PX_IS) | p->is_seen) & (1u << 30));
 }
 
 /*
@@ -168,7 +175,7 @@ static int setup_port(port_t* p) {
  * command (12 bytes) or NULL; buf/bytes: the data (bytes may be 0).
  */
 static int exec_locked(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const uint8_t* packet,
-                       void* buf, uint32_t bytes, int write) {
+                void* buf, uint32_t bytes, int write) {
     volatile uint8_t* r = port_regs(p);
     if (wait_clear(r, PX_TFD, TFD_BSY | TFD_DRQ, 1000) != 0) {
         /* a stuck device: restart the port once */
@@ -219,21 +226,16 @@ static int exec_locked(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count,
     h->prdbc = 0;
 
     wr(r, PX_IS, 0xFFFFFFFFu);
-    p->irq_is = 0;
+    p->is_seen = 0;
     wr(r, PX_CI, 1);
-    uint32_t t0 = timer_ms();
-    for (;;) {
-        if (!(rd(r, PX_CI) & 1)) break;
-        if ((rd(r, PX_IS) | p->irq_is) & (1u << 30)) break;     /* task file error */
-        if ((uint32_t)(timer_ms() - t0) > CMD_TIMEOUT) {
-            klog("ahci: port %d: command %x timed out\n", p->port, fis_cmd);
-            stop_port(r);
-            start_port(r);
-            return -1;
-        }
-        io_wait_step();                           /* (the others run; the HBA's interrupt wakes us) */
+    /* done, or a task file error - the task sleeps meanwhile (kernel/iowait.c) */
+    if (io_wait(&p->w, cmd_done, p, CMD_TIMEOUT, p->irq) != 0) {
+        klog("ahci: port %d: command %x timed out\n", p->port, fis_cmd);
+        stop_port(r);
+        start_port(r);
+        return -1;
     }
-    if (rd(r, PX_TFD) & TFD_ERR || (rd(r, PX_IS) | p->irq_is) & (1u << 30)) {
+    if (rd(r, PX_TFD) & TFD_ERR || (rd(r, PX_IS) | p->is_seen) & (1u << 30)) {
         klog("ahci: port %d: command %x failed (tfd %x)\n", p->port, fis_cmd, rd(r, PX_TFD));
         stop_port(r);
         wr(r, PX_SERR, 0xFFFFFFFFu);
@@ -244,32 +246,13 @@ static int exec_locked(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count,
     return 0;
 }
 
+/* (a task can be switched out while its command runs: one at a time) */
 static int exec(port_t* p, uint8_t fis_cmd, uint64_t lba, uint16_t count, const uint8_t* packet,
                 void* buf, uint32_t bytes, int write) {
-    io_lock(&p->lock);
+    io_lock(&p->w);
     int rc = exec_locked(p, fis_cmd, lba, count, packet, buf, bytes, write);
-    io_unlock(&p->lock);
+    io_unlock(&p->w);
     return rc;
-}
-
-/* an HBA's interrupt: each port's status kept (exec looks at it) and cleared,
- * level-triggered PCI lines want it so before the end of the interrupt */
-static void ahci_irq(void) {
-    for (int i = 0; i < g_nhba; i++) {
-        hba_t* h = &g_hba[i];
-        if (!h->ok || !h->irq) continue;
-        uint32_t is = rd(h->abar, HBA_IS);
-        if (!is) continue;
-        for (int k = 0; k < g_nports; k++) {
-            port_t* p = &g_ports[k];
-            if (p->hba != h || !(is & (1u << p->port))) continue;
-            volatile uint8_t* r = port_regs(p);
-            uint32_t pis = rd(r, PX_IS);
-            p->irq_is |= pis;
-            wr(r, PX_IS, pis);
-        }
-        wr(h->abar, HBA_IS, is);
-    }
 }
 
 int ahci_addr64(int port) {
@@ -313,8 +296,28 @@ static int find_hba(const pci_dev_t* d, void* ctx) {
     h->fn = d->fn;
     h->irq = d->irq_line > 0 && d->irq_line < 16 ? d->irq_line : 0;
     h->s64 = (rd(h->abar, HBA_CAP) >> 31) & 1;
-    if (h->irq) irq_install(h->irq, ahci_irq);
     return 0;
+}
+
+/* a command finished or failed on some port: what it reported is noted
+ * (exec reads it) and its waiter woken. (Lines are shared: nothing to do
+ * if it was not one of ours.) */
+static void ahci_irq(void) {
+    for (int i = 0; i < g_nhba; i++) {
+        hba_t* h = &g_hba[i];
+        if (!h->ok || !h->irq) continue;
+        uint32_t is = rd(h->abar, HBA_IS);
+        if (!is) continue;
+        for (int pn = 0; pn < MAX_PORTS; pn++) {
+            if (!(is & (1u << pn))) continue;
+            volatile uint8_t* r = h->abar + 0x100 + (uint32_t)pn * 0x80;
+            uint32_t pis = rd(r, PX_IS);
+            wr(r, PX_IS, pis);
+            for (int k = 0; k < g_nports; k++)
+                if (g_ports[k].hba == h && g_ports[k].port == pn) { g_ports[k].is_seen |= pis; io_wake(&g_ports[k].w); }
+        }
+        wr(h->abar, HBA_IS, is);
+    }
 }
 
 static void init_all(void) {
@@ -356,7 +359,22 @@ static void init_all(void) {
             p->port = pn;
             p->atapi = sig == SIG_ATAPI;
             if (setup_port(p) != 0) continue;
+            p->w.pid = -1;
             g_nports++;
+        }
+        /* completion and error interrupts (polling stays as the fallback) */
+        if (h->irq) {
+            irq_install(h->irq, ahci_irq);
+            for (int k = 0; k < g_nports; k++) {
+                if (g_ports[k].hba != h) continue;
+                volatile uint8_t* r = port_regs(&g_ports[k]);
+                wr(r, PX_IS, 0xFFFFFFFFu);
+                /* D2H register, PIO setup, DMA setup, set device bits, descriptor done; errors */
+                wr(r, PX_IE, (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 5) | (0xFu << 27) | (1u << 30));
+                g_ports[k].irq = 1;
+            }
+            wr(abar, HBA_IS, 0xFFFFFFFFu);
+            wr(abar, HBA_GHC, rd(abar, HBA_GHC) | (1u << 1));          /* GHC.IE */
         }
     }
 }

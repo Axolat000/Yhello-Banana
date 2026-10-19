@@ -55,14 +55,14 @@ void terminal_fb_set_scale(int scale);
 int  terminal_fb_get_scale(void);
 
 /* Access framebuffer backing store (80x25) for GUI windows */
-void terminal_fb_get_buffer(const char** chars, const uint8_t** colors, int* width, int* height, int* stride);
+void terminal_fb_get_buffer(const uint32_t** chars, const uint8_t** colors, int* width, int* height, int* stride);
 
 /* Virtual terminals (for multiple GUI terminal windows) */
 int  terminal_vt_alloc(void);          /* returns vt id or -1 */
 void terminal_vt_free(int vt);
 void terminal_vt_set_active(int vt);   /* selects vt for subsequent output */
 int  terminal_vt_get_active(void);
-void terminal_vt_get_buffer(int vt, const char** chars, const uint8_t** colors, int* width, int* height, int* stride);
+void terminal_vt_get_buffer(int vt, const uint32_t** chars, const uint8_t** colors, int* width, int* height, int* stride);
 void terminal_vt_get_cursor(int vt, size_t* row, size_t* col);
 /* a GUI window's text grid: output to that vt wraps and scrolls at this size */
 void terminal_vt_set_size(int vt, int cols, int rows);
@@ -95,5 +95,7 @@ void terminal_get_cursor(size_t* row, size_t* col);
 void terminal_set_reserved_bottom(size_t rows);
 void terminal_putentryat(char c, uint8_t fg, uint8_t bg, size_t row, size_t col);
 void terminal_write_at(const char* str, uint8_t fg, uint8_t bg, size_t row, size_t col);
+/* what VGA text mode shows for a Unicode character (code page 437; '?' if it has none) */
+char terminal_cp437(uint32_t cp);
 
 #endif

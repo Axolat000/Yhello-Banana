@@ -1,4 +1,5 @@
 #include "moncmds.h"
+#include "../kernel/fpu.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
 #include "../kernel/keyboard.h"
@@ -491,6 +492,10 @@ static void cmd_lscpu(void) {
         terminal_write(row);
     }
     ksnprintf(row, sizeof(row), "Interrupt controller: %s\n", n > 1 ? (smp_x2apic() ? "x2APIC" : "xAPIC") : "8259 (one processor)");
+    terminal_write(row);
+    char fp[64];
+    fpu_describe(fp, sizeof(fp));
+    ksnprintf(row, sizeof(row), "Registers for apps:   %s\n", fp);
     terminal_write(row);
     if (n < 2 && smp_cores_found() < 2) return;
     ksnprintf(row, sizeof(row), "%4s %6s %4s %5s %6s %5s %5s", "CPU", "APIC", "PKG", "CORE", "THREAD", "TYPE", "BUSY");

@@ -102,10 +102,15 @@ void task_kpreempt(uintptr_t ip);       /* kernel/idt.c, every hardware interrup
 
 /* the calling task runs an app (kernel/app.c, 64-bit): its page tables
  * and the kernel stack ring 3 enters on, loaded now and at every switch
- * back to it on any core; (0, 0) when the app is done */
-void task_set_user(uintptr_t cr3, uintptr_t rsp0);
+ * back to it on any core, and what the TLBs keep of them (kernel/tlb.c);
+ * (0, NULL, 0) when the app is done */
+struct tlb_tag;
+void task_set_user(uintptr_t cr3, const struct tlb_tag* tag, uintptr_t rsp0);
 /* the calling task's FS base from now on (an app thread's TLS; 64-bit) */
 void task_set_fs(uintptr_t base);
+
+/* 1 once the scheduler runs (task_init): tasks may sleep */
+int  task_ready(void);
 
 /* Real sleep: marks the calling task SLEEPING and does not resume it
  * until at least `ms` milliseconds have passed (or task_wake()). */
@@ -170,6 +175,9 @@ void task_recover_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t a
 const char* task_crash_msg(void);
 /* the boot core's timer, every millisecond */
 void task_smp_tick(void);
+/* Park app cores with their task contexts saved before platform suspend. */
+int task_smp_pause(void);
+void task_smp_unpause(void);
 /* another core's loop (kernel/smp.c), interrupts off: never returns */
 void task_ap_loop(int cpu) __attribute__((noreturn));
 

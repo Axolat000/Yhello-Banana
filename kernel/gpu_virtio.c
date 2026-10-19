@@ -9,12 +9,14 @@
  * pointer through the cursor queue (a 64x64 resource of its own).
  * After the virtio 1.2 specification, section 5.7. */
 #include "gpu.h"
+#include "gpu_virgl.h"
 #include "crash.h"
 #include "fb.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "serial.h"
 #include "paging.h"
+#include "timer.h"
 
 /* PCI capabilities of a virtio device */
 #define CAP_VENDOR       0x09
@@ -61,6 +63,14 @@
 #define FMT_B8G8R8A8            1        /* 0xAARRGGBB */
 
 #define QSIZE 64
+#define NSLOTS (QSIZE / 2)
+#define ASYNC_TIMEOUT_NS 1000000000ull
+
+typedef struct {
+    uint8_t request[128], response[512];
+    uint64_t started, fence;
+    int busy;
+} async_slot_t;
 
 typedef struct __attribute__((packed)) { uint64_t addr; uint32_t len; uint16_t flags, next; } vdesc_t;
 typedef struct __attribute__((packed)) { uint32_t type, flags; uint64_t fence; uint32_t ctx, pad; } hdr_t;
@@ -72,10 +82,15 @@ typedef struct {
     volatile uint16_t* used;             /* flags, idx, then { u32 id, u32 len }[] */
     volatile uint16_t* notify;
     uint16_t           size, avail_idx, last_used, qi;
+    async_slot_t* slots;
+    int pending, peak, sync_busy, sync_done;
+    uint32_t sync_len;
+    uint64_t completed, errors;
 } vq_t;
 
 static gpu_t g_gpu;
 static volatile uint8_t* g_common;
+static volatile uint8_t* g_device;
 static volatile uint8_t* g_notify_base;
 static uint32_t g_notify_mul;
 static vq_t g_cq, g_curq;                /* control, cursor */
@@ -89,6 +104,9 @@ static int g_w, g_h, g_res = 1;          /* its size and resource id */
 static int g_pref_w, g_pref_h;
 static uint32_t* g_curimg;               /* 64x64 pointer image */
 static int g_cursor_res;
+static int g_failed, g_cursor_pending, g_reset_ack;
+static uint64_t g_fence;
+static uint8_t g_cursor_latest[64];
 
 static uint8_t  c8(int o) { return g_common[o]; }
 static uint16_t c16(int o) { return *(volatile uint16_t*)(g_common + o); }
@@ -122,7 +140,9 @@ static int setup_queue(vq_t* q, int qi) {
     q->desc = zalloc_aligned(16u * size, 16);
     q->avail = zalloc_aligned(6u + 2u * size, 4);
     q->used = zalloc_aligned(6u + 8u * size, 4);
-    if (!q->desc || !q->avail || !q->used) return -1;
+    q->slots = zalloc_aligned(sizeof(async_slot_t) * NSLOTS, 64);
+    if (!q->desc || !q->avail || !q->used || !q->slots || size < 4) return -1;
+    q->avail[0] = 1; /* polling completions: suppress unused interrupts */
     w64(C_QDESC, (uintptr_t)q->desc);
     w64(C_QDRIVER, (uintptr_t)q->avail);
     w64(C_QDEVICE, (uintptr_t)q->used);
@@ -131,35 +151,147 @@ static int setup_queue(vq_t* q, int qi) {
     return 0;
 }
 
-/* sends a request (and waits for the device): 0 if it answered OK */
+static uint64_t gpu_clock(void) { return crash_in_progress() ? 0 : timer_counter(); }
+
+/* Every in-flight command owns its DMA buffers until the used ring returns
+ * its descriptor. Descriptor pair zero is reserved for synchronous control.
+ * Screen updates and cursor motion use the other pairs without waiting. */
+static void device_failed(void) {
+    if (g_failed) return;
+    g_failed = 1;
+    if (!crash_in_progress()) {
+        gpu_note_command(ASYNC_TIMEOUT_NS, 1);
+        klog("virtio-gpu: queue stopped; device reset, serial console remains available\n");
+    }
+    w8(C_STATUS, 0);
+    for (unsigned i = 0; i < 100000; i++) if (!c8(C_STATUS)) { g_reset_ack = 1; break; }
+    /* Never release DMA storage on this path, even if reset is not acknowledged. */
+}
+
+static int reap(vq_t* q) {
+    if (g_failed) return -1;
+    uint16_t used = q->used[1];
+    __asm__ volatile("mfence" ::: "memory");
+    if ((uint16_t)(used - q->last_used) > q->size) { device_failed(); return -1; }
+    while (q->last_used != used) {
+        volatile uint32_t* entry = (volatile uint32_t*)(q->used + 2 + (q->last_used % q->size) * 4);
+        uint32_t id = entry[0], len = entry[1];
+        if (id >= q->size || (id & 1)) { device_failed(); return -1; }
+        q->last_used++;
+        if (!id) {
+            if (!q->sync_busy || q->sync_done) { device_failed(); return -1; }
+            q->sync_len = len; q->sync_done = 1;
+        } else {
+            async_slot_t* slot = &q->slots[id / 2];
+            if (!slot->busy) { device_failed(); return -1; }
+            hdr_t* reply = (hdr_t*)slot->response;
+            if (!q->qi && (len < sizeof(hdr_t) || len > sizeof(slot->response) ||
+                !(reply->flags & 1) || reply->fence != slot->fence ||
+                (reply->type != RESP_OK_NODATA && reply->type != RESP_OK_DISPLAY_INFO))) q->errors++;
+            slot->busy = 0; q->pending--; q->completed++;
+            if (!crash_in_progress()) gpu_note_command(gpu_clock() - slot->started, 0);
+        }
+    }
+    uint64_t now = gpu_clock();
+    for (unsigned i = 1; i < q->size / 2; i++) if (q->slots[i].busy && now - q->slots[i].started > ASYNC_TIMEOUT_NS) {
+        device_failed(); return -1;
+    }
+    return 0;
+}
+
+static int post(vq_t* q, const void* request, uint32_t length, int notify) {
+    if (g_failed || length > sizeof(q->slots[0].request) || length < sizeof(hdr_t)) return -1;
+    if (reap(q) < 0) return -1;
+    unsigned i;
+    for (i = 1; i < q->size / 2; i++) if (!q->slots[i].busy) break;
+    if (i == q->size / 2) return -2; /* backpressure: retain damage and retry */
+    async_slot_t* slot = &q->slots[i];
+    memcpy(slot->request, request, length); memset(slot->response, 0, sizeof(slot->response));
+    hdr_t* h = (hdr_t*)slot->request;
+    slot->fence = ++g_fence;
+    if (!q->qi) { h->flags |= 1; h->fence = slot->fence; }
+    slot->started = gpu_clock(); slot->busy = 1;
+    unsigned id = 2 * i;
+    q->desc[id] = (vdesc_t){(uintptr_t)slot->request, length, 1, (uint16_t)(id + 1)};
+    q->desc[id + 1] = (vdesc_t){(uintptr_t)slot->response, sizeof(slot->response), 2, 0};
+    q->avail[2 + q->avail_idx % q->size] = (uint16_t)id;
+    __asm__ volatile("mfence" ::: "memory");
+    q->avail[1] = ++q->avail_idx;
+    __asm__ volatile("mfence" ::: "memory");
+    if (++q->pending > q->peak) q->peak = q->pending;
+    if (notify) *q->notify = q->qi;
+    return 0;
+}
+
+static int drain(vq_t* q) {
+    uint64_t start = gpu_clock();
+    for (unsigned spins = 0; spins < 50000000u; spins++) {
+        if (!(spins & 255)) {
+            if (reap(q) < 0) return -1;
+            if (!q->pending) return 0;
+            if (gpu_clock() - start > ASYNC_TIMEOUT_NS) break;
+        }
+        __asm__ volatile("pause");
+    }
+    device_failed(); return -1;
+}
+
+/* Mode/resource changes drain outstanding DMA before detaching backing.
+ * Boot and panic have no scheduler; normal frame submission never waits. */
 static int submit(vq_t* q, void* req, uint32_t rlen, void* resp, uint32_t slen) {
     uintptr_t fl;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(fl) :: "memory");
-    q->desc[0].addr = (uintptr_t)req;
-    q->desc[0].len = rlen;
-    q->desc[0].flags = 1;                   /* NEXT */
-    q->desc[0].next = 1;
-    q->desc[1].addr = (uintptr_t)resp;
-    q->desc[1].len = slen;
-    q->desc[1].flags = 2;                   /* WRITE: the device fills it */
-    q->desc[1].next = 0;
+    uint64_t started = gpu_clock();
+    int ok = 0;
+    if (g_failed || q->sync_busy || drain(q) < 0) goto out;
+    memset(resp, 0, slen);
+    q->sync_busy = 1; q->sync_done = 0;
+    q->desc[0] = (vdesc_t){(uintptr_t)req, rlen, 1, 1};
+    q->desc[1] = (vdesc_t){(uintptr_t)resp, slen, 2, 0};
     q->avail[2 + q->avail_idx % q->size] = 0;
     __asm__ volatile("mfence" ::: "memory");
-    q->avail_idx++;
-    q->avail[1] = q->avail_idx;
+    q->avail[1] = ++q->avail_idx;
     __asm__ volatile("mfence" ::: "memory");
     *q->notify = q->qi;
-    int ok = 0;
-    uint32_t limit=crash_in_progress()?1000000u:50000000u;
-    for (uint32_t i = 0; i < limit; i++) {
-        if (q->used[1] != q->last_used) { ok = 1; break; }
+    unsigned limit = crash_in_progress() ? 1000000u : 50000000u;
+    for (unsigned spins = 0; spins < limit; spins++) {
+        if (!(spins & 255)) {
+            if (reap(q) < 0) break;
+            if (q->sync_done) { ok = 1; break; }
+            if (gpu_clock() - started > ASYNC_TIMEOUT_NS) break;
+        }
         __asm__ volatile("pause");
     }
-    if (ok) q->last_used++;
+    if (!ok) device_failed();
+    q->sync_busy = 0;
+    if (ok && !q->qi) {
+        hdr_t* reply = resp;
+        ok = q->sync_len >= sizeof(hdr_t) && q->sync_len <= slen &&
+            (reply->type == RESP_OK_NODATA || reply->type == RESP_OK_DISPLAY_INFO || reply->type == 0x1102 || reply->type == 0x1103);
+    }
+out:
+    if (!crash_in_progress()) gpu_note_command(gpu_clock() - started, 0);
     if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
-    if (!ok) { if(!crash_in_progress())klog("virtio-gpu: no answer from the device\n"); return -1; }
-    uint32_t t = ((hdr_t*)resp)->type;
-    return t == RESP_OK_NODATA || t == RESP_OK_DISPLAY_INFO ? 0 : -1;
+    return ok ? 0 : -1;
+}
+
+int gpu_virtio_alive(void) { return g_common && !g_failed; }
+int gpu_virtio_command(void* request, unsigned length, void* response, unsigned capacity) {
+    if (!g_common || g_failed || length < sizeof(hdr_t) || length > (512u << 10) + 32 || capacity < sizeof(hdr_t) || capacity > 8192) return -1;
+    void* req = kmalloc(length); void* resp = kmalloc(capacity);
+    if (!req || !resp) { kfree(req); kfree(resp); return -1; }
+    memcpy(req, request, length);
+    LOCK();
+    hdr_t* h = req;
+    h->flags |= 1; h->fence = ++g_fence;
+    int rc = submit(&g_cq, req, length, resp, capacity);
+    hdr_t* reply = resp;
+    if (!rc && (!(reply->flags & 1) || reply->fence != h->fence ||
+        ((h->type == 0x108 || h->type == 0x109) && g_cq.sync_len < capacity))) rc = -1;
+    if (!rc) memcpy(response, resp, capacity);
+    UNLOCK();
+    if (!g_failed || g_reset_ack) { kfree(req); kfree(resp); }
+    return rc;
 }
 
 static int ctrl(void* req, uint32_t rlen) { return submit(&g_cq, req, rlen, g_resp, sizeof(hdr_t)); }
@@ -194,9 +326,21 @@ static void drop_resource(int res) {
 static void vg_flush_locked(int x, int y, int w, int h);
 static void vg_flush(gpu_t* g, int x, int y, int w, int h) {
     (void)g;
+    struct __attribute__((packed)) { hdr_t h; rect_t r; uint64_t off; uint32_t id, pad; } t = {0};
+    struct __attribute__((packed)) { hdr_t h; rect_t r; uint32_t id, pad; } f = {0};
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x > g_w - w || y > g_h - h) return;
+    t.h.type = TRANSFER_TO_HOST_2D;
+    t.r = (rect_t){(uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
+    t.off = ((uint64_t)y * g_w + x) * 4; t.id = (uint32_t)g_res;
+    f.h.type = RESOURCE_FLUSH; f.r = t.r; f.id = t.id;
     LOCK();
-    vg_flush_locked(x, y, w, h);
+    int retry = 0;
+    if (!g_failed && reap(&g_cq) == 0) {
+        if (g_cq.pending + 2 >= g_cq.size / 2) retry = 1;
+        else { post(&g_cq, &t, sizeof(t), 0); post(&g_cq, &f, sizeof(f), 1); }
+    }
     UNLOCK();
+    if (retry) gpu_dirty_raw();
 }
 
 static void vg_flush_locked(int x, int y, int w, int h) {
@@ -252,7 +396,7 @@ static int vg_set_mode(gpu_t* g, int w, int h) {
     if (!mem) return -1;
     LOCK();
     int res = g_res == 1 ? 2 : 1;
-    if (create_screen(res, w, h, mem) < 0) { drop_resource(res); UNLOCK(); kfree(raw); return -1; }
+    if (create_screen(res, w, h, mem) < 0) { drop_resource(res); UNLOCK(); if (!g_failed) kfree(raw); return -1; }
     int old = g_res;
     void* old_raw = g_fbraw;
     g_res = res;
@@ -263,7 +407,7 @@ static int vg_set_mode(gpu_t* g, int w, int h) {
     gpu_set_framebuffer((uintptr_t)mem, w, h, w * 4);
     drop_resource(old);
     UNLOCK();
-    if (old_raw) kfree(old_raw);
+    if (old_raw && !g_failed) kfree(old_raw);
     return 0;
 }
 
@@ -315,13 +459,47 @@ static void vg_cursor_move(gpu_t* g, int x, int y, int visible) {
     hdr(u, visible ? MOVE_CURSOR : UPDATE_CURSOR);
     u->scanout = 0; u->x = (uint32_t)(x < 0 ? 0 : x); u->y = (uint32_t)(y < 0 ? 0 : y);
     u->id = visible ? 3u : 0u;
-    submit(&g_curq, u, sizeof(*u), g_resp, sizeof(hdr_t));
+    memcpy(g_cursor_latest, u, sizeof(*u));
+    g_cursor_pending = post(&g_curq, u, sizeof(*u), 1) == -2;
     UNLOCK();
 }
 
 static void vg_info(gpu_t* g, char* buf, int cap) {
     (void)g;
-    ksnprintf(buf, (size_t)cap, "virtio 1.x 2D, screen resource %d, host's preferred size %dx%d", g_res, g_pref_w, g_pref_h);
+    ksnprintf(buf, (size_t)cap, "virtio 1.x 2D, screen resource %d, host's preferred size %dx%d\nasync queue: %d pending, peak %d, %llu completed, %llu errors%s",
+              g_res, g_pref_w, g_pref_h, g_cq.pending, g_cq.peak, g_cq.completed, g_cq.errors, g_failed ? " (device stopped)" : "");
+}
+
+static void vg_service(void) {
+    LOCK();
+    reap(&g_cq);
+    if (g_curq.size) {
+        reap(&g_curq);
+        if (g_cursor_pending && post(&g_curq, g_cursor_latest, 56, 1) != -2) g_cursor_pending = 0;
+    }
+    UNLOCK();
+}
+static void vg_tests(void (*report)(const char*, int, const char*)) {
+    LOCK();
+    int ok = drain(&g_cq) == 0;
+    uint64_t before = g_cq.completed, errors = g_cq.errors;
+    for (int batch = 0; batch < 3 && ok; batch++) {
+        /* One doorbell for a full batch: forces multiple in-flight commands.
+         * Mutate the source after posting to verify owned request storage. */
+        for (unsigned i = 1; i < g_cq.size / 2; i++) {
+            hdr_t request = {0}; request.type = GET_DISPLAY_INFO;
+            if (post(&g_cq, &request, sizeof(request), 0)) { ok = 0; break; }
+            memset(&request, 0xff, sizeof(request));
+        }
+        *g_cq.notify = g_cq.qi;
+        if (drain(&g_cq)) ok = 0;
+    }
+    uint64_t completed = g_cq.completed - before;
+    int fenced = !g_failed && g_cq.errors == errors;
+    UNLOCK();
+    report("virtio pipeline returns every owned request buffer", ok && completed == 3u * (g_cq.size / 2 - 1), "three full queue batches");
+    report("virtio completion responses carry their matching fences", ok && fenced, "");
+    report("virtio descriptors are reusable after completion", ok && !g_cq.pending && g_cq.peak > 1, "");
 }
 
 /* the virtio capabilities: where the common, notify and device areas are */
@@ -338,7 +516,8 @@ static int find_caps(const pci_dev_t* d) {
             int io = 0;
             uintptr_t base = bar < 6 ? pci_bar(d, bar, &io) : 0;
             if (base && !io && mmio_map(base + off, len ? len : 4096)) {
-                if (type == CFG_COMMON) g_common = (volatile uint8_t*)(base + off);
+                if (type == CFG_DEVICE && len >= 16) g_device = (volatile uint8_t*)(base + off);
+                else if (type == CFG_COMMON) g_common = (volatile uint8_t*)(base + off);
                 else if (type == CFG_NOTIFY) {
                     g_notify_base = (volatile uint8_t*)(base + off);
                     g_notify_mul = pci_read32(d->bus, d->dev, d->fn, (uint8_t)(p + 16));
@@ -361,8 +540,11 @@ int gpu_virtio_probe(const pci_dev_t* d) {
     w32(C_DFSELECT, 1);
     uint32_t hi = c32(C_DF);
     if (!(hi & 1)) { w8(C_STATUS, S_FAILED); return -1; }   /* VIRTIO_F_VERSION_1 */
+    w32(C_DFSELECT, 0);
+    uint32_t features = c32(C_DF) & 0x11u; /* VIRGL and CONTEXT_INIT, when offered */
+    if (!(features & 1)) features = 0;
     w32(C_GFSELECT, 0);
-    w32(C_GF, 0);                                      /* no extra features (2D only) */
+    w32(C_GF, features);                                      /* 2D remains available independently of 3D */
     w32(C_GFSELECT, 1);
     w32(C_GF, 1);
     w8(C_STATUS, S_ACK | S_DRIVER | S_FEATURES_OK);
@@ -403,6 +585,8 @@ int gpu_virtio_probe(const pci_dev_t* d) {
     gpu_set_framebuffer((uintptr_t)g_fbmem, w, h, w * 4);
     gpu_register(&g_gpu);
     gpu_register_panic(&g_gpu,vg_panic_present);
+    gpu_register_service(&g_gpu, vg_service, vg_tests);
+    if ((features & 1) && g_device) gpu_virgl_init(*(volatile uint32_t*)(g_device + 12), features & 0x10);
     vg_flush_locked(0, 0, w, h);
     return 0;
 }

@@ -1,4 +1,6 @@
 #include "smp.h"
+#include "fpu.h"
+#include "tlb.h"
 #include "paging.h"
 #include "task.h"
 #include "timer.h"
@@ -76,7 +78,7 @@ static const rsdp_t* find_rsdp(void) {
 }
 
 static const sdt_t* table_at(uint64_t a, const char* sig) {
-    if (!a || a + sizeof(sdt_t) > (4ull << 30)) return NULL;    /* (the low 4 GiB are mapped) */
+    if (a < 4096 || a > (4ull << 30)-sizeof(sdt_t)) return NULL; /* low 4 GiB, excluding the NULL guard */
     const sdt_t* t = (const sdt_t*)(uintptr_t)a;
     return memcmp(t->sig, sig, 4) == 0 ? t : NULL;
 }
@@ -130,6 +132,8 @@ void smp_init(void) {}
 void smp_send_ipi(int cpu, int vector) { (void)cpu; (void)vector; }
 void smp_panic_stop_others(void) {}
 void smp_eoi(void) {}
+void smp_s3_save(void) {}
+int smp_s3_resume(void) { return 0; }
 
 #else
 
@@ -155,6 +159,8 @@ static volatile int       g_apic_on;
 static int                g_x2;
 static uint32_t           g_apic_id[SMP_MAX_CPUS];
 static volatile int       g_ap_up;
+static uint64_t          g_ap_stack[SMP_MAX_CPUS];
+static uint8_t           g_firmware_tramp[4096];
 
 static void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
     __asm__ volatile("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
@@ -354,19 +360,17 @@ static void ioapic_restore(void) {
         for (uint32_t i = 0; i < g_ioa[k].pins; i++) ioa_wr(&g_ioa[k], 0x10 + 2 * i, g_ioa[k].lo[i]);
 }
 
-static inline uint64_t tsc(void) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+static inline uint64_t counter_now(void) {
+    return timer_counter();
 }
 
-/* n timer interrupts within max_ms (busy: no hlt, they may not come) - bounded by the TSC */
+/* n timer interrupts within max_ms (busy: no hlt, they may not come) - bounded by the shared hardware clock */
 static int ticks_arrive(uint32_t n, uint32_t max_ms) {
     uint32_t c0 = timer_irq_count();
-    uint64_t per = timer_tsc_per_ms(), t0 = tsc();
+    uint64_t per = timer_counter_per_ms(), t0 = counter_now();
     for (uint32_t i = 0;; i++) {
         if (timer_irq_count() - c0 >= n) return 1;
-        if (per ? tsc() - t0 > per * max_ms : i > 50000000u) return 0;
+        if (counter_now() - t0 > per * max_ms || i > 50000000u) return 0;
         __asm__ volatile("pause");
     }
 }
@@ -381,12 +385,15 @@ typedef struct __attribute__((packed)) {
     uint32_t cpu, pad;
 } tramp_data_t;
 
+/* PCIDs (CR4.PCIDE) can only be turned on in long mode, global pages are
+ * left for later too: tlb_cpu_init (kernel/tlb.c) */
+#define TRAMP_CR4_LATER ((1u << 17) | (1u << 7))
+
 static void smp_ap_entry(uint32_t cpu) {
     idt_ap_init((int)cpu);                  /* GDT with its own TSS, the IDT */
     paging_pat_init();                      /* the same page attributes as the boot core (write-combining) */
-    __asm__ volatile("fninit");
-    uint32_t mxcsr = 0x1F80;
-    __asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
+    fpu_cpu_init();                         /* x87 / SSE / AVX as the boot core has them (kernel/fpu.c) */
+    tlb_cpu_init();                         /* global pages, PCIDs (kernel/tlb.c) */
     uint32_t lo, hi;
     rdmsr(0x1B, &lo, &hi);
     if (!(lo & (1u << 11))) { lo |= 1u << 11; wrmsr(0x1B, lo, hi); }           /* off -> xAPIC */
@@ -453,7 +460,7 @@ static int lapic_on(uint32_t madt_addr) {
  * poorly - VirtualBox delivered those ticks late while the guest idled and
  * then in bursts, and the sound, the pointer and the clock stuttered with
  * them. The local APIC timer is what current systems use: counted against
- * the TSC clock (timer_ms) for 20 ms, then periodic. If it does not tick,
+ * the shared clock (timer_ms) for 20 ms, then periodic. If it does not tick,
  * the PIT stays the timer. */
 #define LAPIC_TIMER_INIT 0x380
 #define LAPIC_TIMER_CUR  0x390
@@ -587,6 +594,9 @@ void smp_init(void) {
     /* the start code, at 0x8000 */
     uint32_t len = (uint32_t)(smp_tramp_end - smp_tramp_start);
     if (len > 4096) { klog("smp: start code too big\n"); return; }
+    /* OVMF keeps its S3 transfer code here. Borrow the page only while
+     * starting CPUs; every AP loads the kernel GDT before acknowledging. */
+    memcpy(g_firmware_tramp,(const void*)(uintptr_t)TRAMP_ADDR,sizeof(g_firmware_tramp));
     memcpy((void*)(uintptr_t)TRAMP_ADDR, smp_tramp_start, len);
     tramp_data_t* td = (tramp_data_t*)(uintptr_t)(TRAMP_ADDR + (uint32_t)(smp_tramp_data - smp_tramp_start));
     uintptr_t cr0, cr3, cr4;
@@ -594,8 +604,8 @@ void smp_init(void) {
     uint32_t elo, ehi;
     rdmsr(0xC0000080u, &elo, &ehi);
     td->cr0 = (uint32_t)cr0;
-    td->cr3 = (uint32_t)cr3;
-    td->cr4 = (uint32_t)cr4;
+    td->cr3 = (uint32_t)cr3 & ~0xFFFu;
+    td->cr4 = (uint32_t)cr4 & ~TRAMP_CR4_LATER;
     td->efer = elo & ((1u << 0) | (1u << 8) | (1u << 11));    /* SCE, LME, NXE */
     td->entry = (uint64_t)(uintptr_t)smp_ap_entry;
 
@@ -606,6 +616,7 @@ void smp_init(void) {
         uint8_t* stack = (uint8_t*)kmalloc(16384);
         if (!stack) break;
         td->stack = ((uint64_t)(uintptr_t)stack + 16384) & ~15ull;
+        g_ap_stack[cpu]=td->stack;
         td->cpu = (uint32_t)cpu;
         g_apic_id[cpu] = ids[i];
         g_ap_up = 0;
@@ -624,6 +635,7 @@ void smp_init(void) {
         }
         g_cpus = cpu + 1;
     }
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
     topo_link(g_cpus);
     klog("smp: %d of %d logical processors running (%s): %d physical cores, %d thread%s per core\n", g_cpus, n,
          g_x2 ? "x2APIC" : "xAPIC", g_nphys, g_tpc, g_tpc == 1 ? "" : "s");
@@ -631,6 +643,48 @@ void smp_init(void) {
         klog("smp:   cpu %d: APIC id %u, package %u, core %u, thread %u%s\n", i, g_topo[i].apic, g_topo[i].pkg,
              g_topo[i].core, g_topo[i].smt, g_topo[i].type == CPU_TYPE_PERF ? ", performance core" :
              g_topo[i].type == CPU_TYPE_EFF ? ", efficient core" : "");
+}
+
+static const uint32_t sleep_regs[]={LAPIC_TPR,LAPIC_SVR,LAPIC_LVT_TIMER,LAPIC_LVT_LINT0,
+    LAPIC_LVT_LINT1,LAPIC_LVT_ERR,LAPIC_TIMER_DIV,LAPIC_TIMER_INIT};
+static uint32_t sleep_lapic[8],sleep_ioa[4][IOAPIC_PINS][2];
+void smp_s3_save(void) {
+    if(!g_apic_on)return;
+    for(unsigned i=0;i<8;i++)sleep_lapic[i]=lapic_rd(sleep_regs[i]);
+    for(int k=0;k<g_nioa;k++)for(uint32_t i=0;i<g_ioa[k].pins;i++) {
+        sleep_ioa[k][i][0]=ioa_rd(&g_ioa[k],0x10+2*i);
+        sleep_ioa[k][i][1]=ioa_rd(&g_ioa[k],0x11+2*i);
+    }
+}
+static void resume_delay(unsigned ms) {
+    uint64_t per=timer_counter_per_ms(),start=counter_now();
+    if(timer_has_hardware_clock())while(counter_now()-start<per*ms)__asm__ volatile("pause");
+    else for(unsigned i=0;i<ms*1000;i++)__asm__ volatile("outb %%al,$0x80" :: "a"(0));
+}
+int smp_s3_resume(void) {
+    if(!g_apic_on)return 0;
+    for(unsigned i=0;i<8;i++)lapic_wr(sleep_regs[i],sleep_lapic[i]);
+    for(int k=0;k<g_nioa;k++)for(uint32_t i=0;i<g_ioa[k].pins;i++) {
+        ioa_wr(&g_ioa[k],0x11+2*i,sleep_ioa[k][i][1]);
+        ioa_wr(&g_ioa[k],0x10+2*i,sleep_ioa[k][i][0]);
+    }
+    uint32_t len=(uint32_t)(smp_tramp_end-smp_tramp_start);
+    memcpy(g_firmware_tramp,(const void*)(uintptr_t)TRAMP_ADDR,sizeof(g_firmware_tramp));
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,smp_tramp_start,len);
+    tramp_data_t* td=(tramp_data_t*)(uintptr_t)(TRAMP_ADDR+(smp_tramp_data-smp_tramp_start));
+    uintptr_t cr0,cr3,cr4;
+    __asm__ volatile("mov %%cr0,%0; mov %%cr3,%1; mov %%cr4,%2":"=r"(cr0),"=r"(cr3),"=r"(cr4));
+    uint32_t elo,ehi;rdmsr(0xc0000080,&elo,&ehi);
+    td->cr0=(uint32_t)cr0;td->cr3=(uint32_t)cr3&~0xFFFu;td->cr4=(uint32_t)cr4&~TRAMP_CR4_LATER;
+    td->efer=elo&((1u<<0)|(1u<<8)|(1u<<11));td->entry=(uintptr_t)smp_ap_entry;
+    for(int cpu=1;cpu<g_cpus;cpu++) {
+        td->stack=g_ap_stack[cpu];td->cpu=(uint32_t)cpu;g_ap_up=0;__sync_synchronize();
+        icr_send(g_apic_id[cpu],0x4500);resume_delay(10);
+        for(int i=0;i<2 && !g_ap_up;i++){icr_send(g_apic_id[cpu],0x4600|(TRAMP_ADDR>>12));resume_delay(i?200:2);}
+        if(!g_ap_up){memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));return -1;}
+    }
+    memcpy((void*)(uintptr_t)TRAMP_ADDR,g_firmware_tramp,sizeof(g_firmware_tramp));
+    return 0;
 }
 
 #endif

@@ -8,6 +8,8 @@
 #include "app.h"
 #include "serial.h"
 #include "paging.h"
+#include "fpu.h"
+#include "tlb.h"
 
 #define KSTACK_GUARD (16u << 10)
 
@@ -23,8 +25,8 @@
  * asleep the scheduler halts the CPU until the next interrupt.
  *
  * Which task runs next: the READY one that has had the least processor
- * time so far ("virtual run time"), counted in TSC cycles and weighted by
- * its priority - the desktop's task counts its time at half rate, the
+ * time so far ("virtual run time"), counted with the shared monotonic counter,
+ * weighted by its priority - the desktop's task counts its time at half rate, the
  * daemons (autosave, sshd...) at four times, so under load the desktop
  * gets twice a normal task's share and a daemon a quarter. A task that
  * wakes from a sleep (a key press, a timer, a packet) starts just ahead of
@@ -33,8 +35,8 @@
  * task that slept is not credited the whole sleep, though - only a few
  * ms - so it cannot then hog the CPU to "catch up".
  *
- * CPU% and run times are real: measured with the TSC across each task's
- * actual run spans; halted (idle) time is charged to no task.
+ * CPU% and run times are real: measured with the shared monotonic counter
+ * across each task's actual run spans; halted (idle) time is charged to no task.
  *
  * Shares come from nice values (-20 .. 19, the weights of Linux's CFS:
  * each step is ~1.25x). Long work gives way after a time slice that
@@ -53,7 +55,7 @@ typedef struct task {
     volatile task_state_t state;
     void         (*entry)(void);
     uint32_t     sleep_until_tick;        /* timer_ms() */
-    uint64_t     run_start;               /* TSC when it got the boot core */
+    uint64_t     run_start;               /* counter when it got the boot core */
     uint64_t     window_cyc;              /* boot-core time since the last cpu_pct sample */
     uint64_t     life_cyc;                /* ... for the task's life */
     volatile uint32_t away_window_ms;     /* time on other cores (added by them) */
@@ -63,7 +65,7 @@ typedef struct task {
     uint32_t     weight;                  /* from nice: 1024 at 0 */
     int          prio;
     int          nice, nice_set;          /* nice_set: chosen by the user (inherited by its threads) */
-    uint64_t     switched_in;             /* TSC when it last got the boot core */
+    uint64_t     switched_in;             /* counter when it last got the boot core */
     uint64_t     longest_cyc;             /* longest run without a switch */
     uint64_t     ready_tsc;               /* when it became ready (0: not waiting) */
     uint64_t     lat_sum_cyc, lat_max_cyc;
@@ -83,8 +85,9 @@ typedef struct task {
     uintptr_t    fault_ip, fault_addr;
     kjmp_buf_t*  recover;                 /* where a crash in its own code goes (task_set_recover) */
     char         crash[112];              /* what the last one was */
-    uint8_t      fpu[512] __attribute__((aligned(16)));   /* FPU/SSE registers while switched out */
+    uint8_t      fpu[FPU_AREA] __attribute__((aligned(64)));   /* FPU/SSE/AVX registers while switched out (xsave: 64-byte aligned) */
     uintptr_t    cr3;                     /* running an app: its page tables (0: the kernel's) */
+    const struct tlb_tag* tag;            /* ... and what the TLBs keep of them (kernel/tlb.c) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
     uintptr_t    fs_base;                 /* ... and its thread pointer (TLS, 64-bit): task_set_fs */
 } task_t;
@@ -96,15 +99,9 @@ static task_t           g_idle;             /* the boot core's idle loop (see ta
 static uintptr_t        g_idle_stack[TASK_STACK_WORDS] __attribute__((aligned(16)));
 static task_t*          g_prev;             /* switched away from: finish_switch() */
 static uint64_t         g_min_vr;           /* the smallest vruntime of the runnable tasks */
-static uint64_t         g_tsc_per_ms = 1000000;
+static uint64_t         g_counter_per_ms = 1000000;
 
 extern void task_switch(uintptr_t** old_sp_store, uintptr_t* new_sp);
-
-static inline uint64_t rdtsc(void) {
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
 
 static inline uintptr_t irq_save(void) {
     uintptr_t f;
@@ -159,30 +156,9 @@ static void task_exit_stub(void) {
     for (;;) __asm__ volatile("hlt");
 }
 
-/* Every task has its own FPU/SSE registers (apps compute with float and
- * double; the browser's JavaScript uses the x87): saved when a task is
- * switched out, restored when it comes back. fxsave when the CPU has it
- * (it also covers SSE), the older fnsave otherwise. */
-static int g_fxsr = -1;
-
-static int have_fxsr(void) {
-    if (g_fxsr < 0) {
-        uint32_t a = 1, b, c, d;
-        __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-        g_fxsr = (d >> 24) & 1;
-    }
-    return g_fxsr;
-}
-
-static void fpu_save(uint8_t* area) {
-    if (have_fxsr()) __asm__ volatile("fxsave (%0)" :: "r"(area) : "memory");
-    else __asm__ volatile("fnsave (%0)" :: "r"(area) : "memory");
-}
-
-static void fpu_restore(uint8_t* area) {
-    if (have_fxsr()) __asm__ volatile("fxrstor (%0)" :: "r"(area) : "memory");
-    else __asm__ volatile("frstor (%0)" :: "r"(area) : "memory");
-}
+/* Every task has its own FPU/SSE/AVX registers (apps compute with float
+ * and double, maybe AVX; the browser's JavaScript uses the x87): saved when
+ * a task is switched out, restored when it comes back - kernel/fpu.c. */
 
 /* ── tasks waiting for another core ──────────────────────────────── */
 
@@ -211,6 +187,8 @@ typedef struct {
 #define AP_HOME_MS  100           /* the boot core sees each task this often (Ctrl+C, End task, painting) */
 
 static ap_t g_ap[SMP_MAX_CPUS];
+static volatile int g_sleep_pause;
+static volatile int g_sleep_parked[SMP_MAX_CPUS];
 static uint32_t g_core_pct[SMP_MAX_CPUS];   /* per core, from sysmon's last sample */
 
 /* The idle core to wake for queued work: best one whose hardware-thread
@@ -220,6 +198,7 @@ static uint32_t g_core_pct[SMP_MAX_CPUS];   /* per core, from sysmon's last samp
  * efficient one. The boot core counts as busy (it runs the kernel). */
 static int core_busy(int c) { return c == 0 || !g_ap[c].idle; }
 static int pick_idle_core(void) {
+    if(g_sleep_pause)return -1;
     int best = -1, best_score = -1, n = cpu_count();
     for (int c = 1; c < n; c++) {
         if (!g_ap[c].idle) continue;
@@ -291,7 +270,7 @@ static int idle_cores(void) {
 
 /* the time since it got the CPU: its statistics and its virtual run time */
 static void account(task_t* t) {
-    uint64_t now = rdtsc();
+    uint64_t now = timer_counter();
     uint64_t d = now - t->run_start;
     t->run_start = now;
     if (t == &g_idle) return;
@@ -299,7 +278,7 @@ static void account(task_t* t) {
     t->life_cyc += d;
     t->here_cyc += d;
     t->vruntime += d * 1024u / t->weight;
-    uint64_t per_us = g_tsc_per_ms / 1000u ? g_tsc_per_ms / 1000u : 1;
+    uint64_t per_us = g_counter_per_ms / 1000u ? g_counter_per_ms / 1000u : 1;
     t->ap_vr += (uint32_t)(d / per_us * 1024u / t->weight);
     uint64_t span = now - t->switched_in;
     if (t->switched_in && span > t->longest_cyc) t->longest_cyc = span;
@@ -308,7 +287,7 @@ static void account(task_t* t) {
 /* a task that slept (or came back from another core) starts just ahead of
  * the others - a few ms of credit, not the whole time it was away */
 static void catch_up(task_t* t) {
-    uint64_t credit = 6u * g_tsc_per_ms;
+    uint64_t credit = 6u * g_counter_per_ms;
     uint64_t floor = g_min_vr > credit ? g_min_vr - credit : 0;
     if (t->vruntime < floor) t->vruntime = floor;
 }
@@ -323,7 +302,7 @@ static void wake_expired(uint32_t now_ms) {
         if (t->state != TASK_SLEEPING) continue;
         if ((int32_t)(now_ms - t->sleep_until_tick) >= 0) {
             catch_up(t);
-            if (!tsc) tsc = rdtsc();
+            if (!tsc) tsc = timer_counter();
             t->ready_tsc = tsc;
             t->state = TASK_READY;
         } else {
@@ -371,7 +350,7 @@ static void after_switch(task_t* self) {
     fpu_restore(self->fpu);
     if (cpu_id() != 0) return;
     finish_switch();
-    self->run_start = rdtsc();
+    self->run_start = timer_counter();
     self->switched_in = self->run_start;
     /* every task has its own idea of which terminal it writes to */
     terminal_vt_set_active(self->vt);
@@ -405,10 +384,9 @@ static void guard_check(task_t* t) {
 static void enter_space(const task_t* t, int cpu) {
 #ifdef __x86_64__
     if (t->rsp0) tss_set_rsp0(cpu, t->rsp0);
-    uintptr_t want = t->cr3 ? t->cr3 : paging_kernel_cr3(), have;
-    if (cpu >= 0 && cpu < SMP_MAX_CPUS) smp_cur_cr3[cpu] = want;   /* (before it is loaded: TLB shootdowns, kernel/smp.c) */
-    __asm__ volatile("mov %%cr3, %0" : "=r"(have));
-    if (have != want) __asm__ volatile("mov %0, %%cr3" :: "r"(want) : "memory");
+    /* (loaded again only if another space - or this one changed since:
+     * what the TLB has of the kernel, and with PCIDs of the space, is kept) */
+    tlb_load(t->cr3 ? t->cr3 : paging_kernel_cr3(), t->cr3 ? t->tag : NULL);
     /* its thread pointer (an app thread's TLS; the kernel does not use FS) */
     __asm__ volatile("wrmsr" :: "a"((uint32_t)t->fs_base), "d"((uint32_t)((uint64_t)t->fs_base >> 32)), "c"(0xC0000100u));
 #else
@@ -416,10 +394,11 @@ static void enter_space(const task_t* t, int cpu) {
 #endif
 }
 
-void task_set_user(uintptr_t cr3, uintptr_t rsp0) {
+void task_set_user(uintptr_t cr3, const struct tlb_tag* tag, uintptr_t rsp0) {
     task_t* t = g_current;
     if (!t) return;
     t->cr3 = cr3;
+    t->tag = tag;
     t->rsp0 = rsp0;
     enter_space(t, 0);
 }
@@ -432,7 +411,7 @@ void task_set_fs(uintptr_t base) {
 }
 
 static void switch_to(task_t* cur, task_t* nxt) {
-    uint64_t now = rdtsc();
+    uint64_t now = timer_counter();
     int invol = g_involuntary;
     g_involuntary = 0;
     nxt->state = TASK_RUNNING;
@@ -469,13 +448,10 @@ static void switch_to(task_t* cur, task_t* nxt) {
  * normal 0-argument call - no arguments need passing here. */
 static void task_trampoline(void) {
     finish_switch();
-    /* a fresh task starts with clean FPU/SSE registers */
-    __asm__ volatile("fninit");
-    if (have_fxsr()) {
-        uint32_t mxcsr = 0x1F80;
-        __asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
-    }
-    g_current->run_start = rdtsc();
+    /* a fresh task starts with clean FPU/SSE/AVX registers - nothing of
+     * the task that ran before it (fninit alone left the SSE ones) */
+    fpu_reset();
+    g_current->run_start = timer_counter();
     g_current->switched_in = g_current->run_start;
     terminal_vt_set_active(g_current->vt);
     __asm__ volatile("sti");
@@ -508,21 +484,10 @@ static void idle_entry(void) {
     for (;;) task_yield();
 }
 
-/* the TSC's rate, against the 1 kHz timer: run times in cycles */
-static void calibrate_tsc(void) {
-    if (timer_tsc_per_ms()) { g_tsc_per_ms = timer_tsc_per_ms(); return; }   /* measured by timer_init */
-    uint32_t t0 = timer_ms();
-    while (timer_ms() == t0) timer_idle();
-    uint64_t c0 = rdtsc();
-    t0 = timer_ms();
-    while (timer_ms() - t0 < 20) timer_idle();
-    uint64_t per = (rdtsc() - c0) / (uint64_t)(timer_ms() - t0);
-    if (per > 1000) g_tsc_per_ms = per;
-}
 
 void task_init(const char* main_task_name) {
     for (int i = 0; i < TASK_MAX; i++) g_tasks[i].state = TASK_UNUSED;
-    calibrate_tsc();
+    g_counter_per_ms = timer_counter_per_ms();
 
     task_t* t = &g_tasks[0];
     t->pid = 0;
@@ -533,7 +498,7 @@ void task_init(const char* main_task_name) {
     set_nice(t, nice_of(TASK_PRIO_HIGH));   /* the desktop and the main shell */
     t->pinned = 1;
     t->no_kpreempt = 1;                     /* (see task_kpreempt) */
-    t->run_start = rdtsc();
+    t->run_start = timer_counter();
     t->switched_in = t->run_start;
     t->stack_top = (uintptr_t)stack_bottom + 65536;
     guard_set(t, (uintptr_t*)stack_bottom);  /* the boot stack (boot/boot*.asm) */
@@ -588,7 +553,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     set_nice(t, t->nice_set ? g_current->nice : 0);
     t->switched_in = 0;
     t->longest_cyc = 0;
-    t->ready_tsc = rdtsc();
+    t->ready_tsc = timer_counter();
     t->lat_sum_cyc = t->lat_max_cyc = 0;
     t->lat_n = t->vcsw = t->icsw = t->kpreempts = 0;
     t->ap_vr = 0;
@@ -597,6 +562,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->cpu = 0;
     t->came_home = 0;
     t->cr3 = 0;
+    t->tag = NULL;
     t->rsp0 = 0;
     t->fs_base = 0;
     t->vruntime = g_min_vr;                 /* a new task starts level with the others */
@@ -626,7 +592,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
 void task_yield(void) {
     task_t* cur = g_current;
     account(cur);
-    if (cur->state == TASK_RUNNING) { cur->state = TASK_READY; cur->ready_tsc = rdtsc(); }
+    if (cur->state == TASK_RUNNING) { cur->state = TASK_READY; cur->ready_tsc = timer_counter(); }
 
     task_t* nxt;
     for (;;) {
@@ -675,6 +641,8 @@ int task_crash_context(char name[TASK_NAME_MAX], uintptr_t* bottom, uintptr_t* t
     return (int)t->pid;
 }
 
+int task_ready(void) { return g_current != NULL; }
+
 int task_current_pid(void) {
     /* on another core: the app task running there (a system call made there, kernel/app.c) */
     int c = cpu_id();
@@ -701,7 +669,7 @@ int task_count(void) {
 
 void task_snapshot(task_info_t* out, int max_count) {
     int n = (g_count < max_count) ? g_count : max_count;
-    uint64_t per_tick = g_tsc_per_ms * 10u;  /* 100 Hz ticks */
+    uint64_t per_tick = g_counter_per_ms * 10u;  /* 100 Hz ticks */
     for (int i = 0; i < n; i++) {
         task_t* t = &g_tasks[i];
         out[i].pid = t->pid;
@@ -716,10 +684,10 @@ void task_snapshot(task_info_t* out, int max_count) {
         out[i].vcsw = t->vcsw;
         out[i].icsw = t->icsw;
         out[i].kpreempts = t->kpreempts;
-        uint64_t per_us = g_tsc_per_ms / 1000u ? g_tsc_per_ms / 1000u : 1;
+        uint64_t per_us = g_counter_per_ms / 1000u ? g_counter_per_ms / 1000u : 1;
         out[i].lat_avg_us = t->lat_n ? (uint32_t)(t->lat_sum_cyc / t->lat_n / per_us) : 0;
         out[i].lat_max_us = (uint32_t)(t->lat_max_cyc / per_us);
-        out[i].longest_ms = (uint32_t)(t->longest_cyc / g_tsc_per_ms);
+        out[i].longest_ms = (uint32_t)(t->longest_cyc / g_counter_per_ms);
     }
 }
 
@@ -751,7 +719,7 @@ static void recompute_cpu_window(void) {
         task_t* t = &g_tasks[i];
         uint32_t away = __sync_fetch_and_and(&t->away_window_ms, 0);
         t->away_life_ms += away;
-        uint32_t here = (uint32_t)(t->window_cyc / g_tsc_per_ms);
+        uint32_t here = (uint32_t)(t->window_cyc / g_counter_per_ms);
         boot_ms += here;
         uint32_t ms = here + away;
         t->window_cyc = 0;
@@ -803,7 +771,7 @@ static void report_long_runs(void) {
     static uint32_t reported[TASK_MAX];
     for (int i = 0; i < g_count; i++) {
         task_t* t = &g_tasks[i];
-        uint32_t ms = (uint32_t)(t->longest_cyc / g_tsc_per_ms);
+        uint32_t ms = (uint32_t)(t->longest_cyc / g_counter_per_ms);
         if (t->state == TASK_UNUSED || ms < 50 || ms <= reported[i] + reported[i] / 4) continue;
         reported[i] = ms;
         klog("sched: %s (task %d) ran %u ms without letting others in\n", t->name, i, ms);
@@ -864,13 +832,13 @@ int task_get_nice(int pid) {
 int task_should_yield(void) {
     task_t* t = g_current;
     if (!t || t == &g_idle) return 0;
-    uint64_t ran = rdtsc() - t->run_start;
+    uint64_t ran = timer_counter() - t->run_start;
     /* the slice: 16 ms shared by the tasks that want the processor, 2 to 8 ms each */
     uint32_t slice = 16u / (uint32_t)g_nr_ready;
     if (slice < 2) slice = 2;
     if (slice > TASK_SLICE_MS) slice = TASK_SLICE_MS;
-    if (ran >= (uint64_t)slice * g_tsc_per_ms) return 1;
-    if (ran < g_tsc_per_ms) return 0;       /* at least 1 ms, or switching costs more than it gives */
+    if (ran >= (uint64_t)slice * g_counter_per_ms) return 1;
+    if (ran < g_counter_per_ms) return 0;       /* at least 1 ms, or switching costs more than it gives */
     /* a sleeper's time has come (or a driver woke one) */
     return g_wake_pending || (g_have_sleeper && (int32_t)(timer_ms() - g_next_wake) >= 0);
 }
@@ -913,7 +881,7 @@ int task_offload(void) {
          * after its slice, it goes into the queue if a waiting task has
          * had less processor time (else the busy threads stuck here would
          * share one core while the others share the rest) */
-        if (!g_qlen || cur->here_cyc + (rdtsc() - cur->run_start) < (uint64_t)ap_slice(cur) * g_tsc_per_ms) return 0;
+        if (!g_qlen || cur->here_cyc + (timer_counter() - cur->run_start) < (uint64_t)ap_slice(cur) * g_counter_per_ms) return 0;
         int less = 0;
         uintptr_t f = irq_save();
         q_lock();
@@ -946,6 +914,12 @@ void task_ap_loop(int cpu) {
     ap_t* a = &g_ap[cpu];
     for (;;) {
         __asm__ volatile("cli");
+        if(g_sleep_pause) {
+            a->idle=1;__sync_synchronize();g_sleep_parked[cpu]=1;
+            __asm__ volatile("sti; hlt; cli" ::: "memory");
+            continue;
+        }
+        g_sleep_parked[cpu]=0;
         task_t* t = q_pop();
         if (!t) {
             a->idle = 1;
@@ -959,11 +933,8 @@ void task_ap_loop(int cpu) {
         t->cpu = cpu;
         a->task = t;
         if (!a->used) { a->first = t; a->used = 1; }   /* sysmon logs it (the kernel is not ours here) */
-        /* its page tables - loaded again even if the same: the boot core
-         * may have changed them (guard pages) since */
-#ifdef __x86_64__
-        __asm__ volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
-#endif
+        /* its page tables (forgotten first if the boot core changed them
+         * since - guard pages: kernel/tlb.c) */
         enter_space(t, cpu);
         task_switch(&a->idle_sp, t->sp);
         enter_space(&g_idle, cpu);          /* the kernel's tables again: t's may go away */
@@ -997,6 +968,7 @@ void task_ipi(void) {
     ap_t* a = &g_ap[c];
     task_t* t = a->task;
     if (!t) return;                         /* the idle loop looks at the queue itself */
+    if(g_sleep_pause){ap_switch_out(a,t,AP_HOME);return;}
     uint32_t ran = timer_ms() - a->since;
     if (ran >= AP_HOME_MS) ap_switch_out(a, t, AP_HOME);
     else if (g_qlen && ran >= ap_slice(t)) ap_switch_out(a, t, AP_REQUEUE);
@@ -1020,12 +992,30 @@ void task_smp_tick(void) {
     }
 }
 
+int task_smp_pause(void) {
+    g_sleep_pause=1;__sync_synchronize();
+    for(int c=1;c<cpu_count();c++)smp_send_ipi(c,SMP_VEC_KICK);
+    uint32_t start=timer_ms();
+    for(;;) {
+        int all=1;
+        for(int c=1;c<cpu_count();c++)if(!g_sleep_parked[c])all=0;
+        if(all)return 0;
+        if(timer_ms()-start>1000){task_smp_unpause();return -1;}
+        timer_idle();
+    }
+}
+void task_smp_unpause(void) {
+    g_current->run_start=timer_counter();g_current->switched_in=g_current->run_start;
+    g_sleep_pause=0;__sync_synchronize();
+    for(int c=1;c<cpu_count();c++){g_sleep_parked[c]=0;smp_send_ipi(c,SMP_VEC_KICK);}
+}
+
 /* the boot core takes over a task that faulted elsewhere: app_fault() stops the app */
 static void ap_fault_landing(void) {
     finish_switch();
-    __asm__ volatile("fninit");
+    fpu_reset();
     task_t* self = g_current;
-    self->run_start = rdtsc();
+    self->run_start = timer_counter();
     terminal_vt_set_active(self->vt);
     app_fault(self->fault_vec, self->fault_err, self->fault_ip, self->fault_addr);
     for (;;) task_yield();                  /* (app_fault does not return for an app) */

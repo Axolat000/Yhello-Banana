@@ -11,9 +11,16 @@
 #define TCP_BACKLOG   8                 /* handshaking + not yet accepted, per listener */
 #define TCP6_MSS      1220              /* 1280-byte minimum IPv6 MTU - 40 - 20 */
 #define TCP_MSS       1460              /* what we accept: 1500 - IP - TCP headers */
-#define RBUF_SIZE     65536u            /* receive ring (window capped at 65535) */
-#define SBUF_SIZE     32768u
-#define OOO_MAX       32                /* out-of-order segments held per conn */
+#define RBUF_SIZE     524288u           /* receive ring: the window, with window scaling (RFC 7323) */
+#define RBUF_SMALL    65536u            /* ... if the heap has no room for that */
+#define RCV_WSCALE    4                 /* our window in 16-byte units: up to 1 MiB */
+#ifndef SBUF_SIZE
+#define SBUF_SIZE     262144u           /* send buffer: what may be in flight */
+#endif
+#define SBUF_SMALL    32768u            /* ... if the heap has no room for that */
+#define OOO_MAX       256               /* out-of-order segments held per conn */
+#define SB_MAX        8                 /* SACK ranges remembered per conn (RFC 2018) */
+#define MAX_OPT       40                /* TCP options: at most 40 bytes */
 #define RTO_INIT      1000u
 #define RTO_MIN       200u
 #define RTO_MAX       60000u
@@ -47,21 +54,36 @@ struct tcp_conn {
     ip6_t       lip6, rip6;
     uint16_t    lport, rport;
 
-    /* send side. sbuf[0] is the byte at sequence snd_una (SYN/FIN are
-     * sequence numbers only, never in the buffer) */
+    /* send side. SB(c)[0] is the byte at sequence snd_una (SYN/FIN are
+     * sequence numbers only, never in the buffer); what was acknowledged
+     * stays in front of it (sb_off) until room is needed at the end */
     uint32_t iss, snd_una, snd_nxt, snd_max, snd_wnd, snd_wl1, snd_wl2;
     uint32_t peer_mss, cwnd, ssthresh;
+    /* options (RFC 7323, 2018): what the peer offered in its SYN, and
+     * whether both sides use them. Windows are shifted by snd_ws (the
+     * peer's) and rcv_ws (ours) */
+    int      peer_ws, peer_sack;        /* (-1: no window scale offered) */
+    int      ws_ok, sack_ok;
+    uint8_t  snd_ws, rcv_ws;
+    /* SACK, sending: the ranges the peer has beyond snd_una (sorted, apart),
+     * and loss recovery: until snd_una reaches recover, the holes are sent
+     * again one per ACK, from rexmit_next on */
+    uint32_t sb_s[SB_MAX], sb_e[SB_MAX];
+    int      nsb;
+    int      in_rec;
+    uint32_t recover, rexmit_next;
     uint8_t* sbuf;
-    uint32_t sb_len;
+    uint32_t sb_size, sb_off, sb_len;
     int      fin_pending, fin_sent;
     uint32_t fin_seq;
 
     /* receive side: ring buffer + out-of-order list sorted by seq */
     uint32_t irs, rcv_nxt;
     uint8_t* rbuf;
-    uint32_t rb_head, rb_len;
+    uint32_t rb_size, rb_head, rb_len;
     ooo_seg_t* ooo;
     int      ooo_count;
+    uint32_t last_ooo;                  /* the newest out-of-order segment: its SACK block goes first */
     int      fin_rcvd;
 
     /* timers: one retransmission timer, RTT estimation per RFC 6298 */
@@ -89,7 +111,11 @@ struct tcp_listener {
     uint16_t port;
 };
 
+#define SB(c) ((c)->sbuf + (c)->sb_off)
+
 static tcp_conn_t g_conns[TCP_MAX_CONN];
+static tcp_stats_t g_stats;
+static uint32_t g_loss_every, g_loss_n;     /* tcp_test_loss */
 static tcp_listener_t g_listeners[TCP_MAX_LISTEN];
 
 const char* tcp_state_str(tcp_state_t s) {
@@ -115,17 +141,20 @@ static void conn_free(tcp_conn_t* c) {
     memset(c, 0, sizeof(*c));
 }
 
+/* the window we offer: the room in the ring, as far as the window field
+ * (scaled: in units of 2^rcv_ws, rounded down) can say it */
 static uint32_t adv_window(const tcp_conn_t* c) {
-    return min_u32(RBUF_SIZE - c->rb_len, 65535u);
+    uint32_t w = min_u32(c->rb_size - c->rb_len, 65535u << c->rcv_ws);
+    return w & ~((1u << c->rcv_ws) - 1);
 }
 
 /* ── segment output ─────────────────────────────────────────────── */
 
 static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
-                     uint8_t flags, uint16_t wnd, const uint8_t* data, uint32_t len, int mss_opt) {
-    static uint8_t seg[24 + TCP_MSS];   /* not reentrant; see net.h */
+                     uint8_t flags, uint16_t wnd, const uint8_t* data, uint32_t len, const uint8_t* opt, uint32_t olen) {
+    static uint8_t seg[20 + MAX_OPT + TCP_MSS];   /* not reentrant; see net.h */
     netif_t* nif = net_if();
-    uint32_t hl = mss_opt ? 24 : 20;
+    uint32_t hl = 20 + olen;            /* (olen: a multiple of 4) */
     wr16(seg, sport);
     wr16(seg + 2, dport);
     wr32(seg + 4, seq);
@@ -135,10 +164,7 @@ static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t s
     wr16(seg + 14, wnd);
     wr16(seg + 16, 0);
     wr16(seg + 18, 0);
-    if (mss_opt) {
-        seg[20] = 2; seg[21] = 4;
-        wr16(seg + 22, dst6 ? TCP6_MSS : TCP_MSS);
-    }
+    if (olen) memcpy(seg + 20, opt, olen);
     if (len) memcpy(seg + hl, data, len);
 
     if (dst6) {
@@ -158,10 +184,60 @@ static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t s
     ip_send(dst, IP_PROTO_TCP, seg, hl + len);
 }
 
+/* SACK blocks (RFC 2018) for what is held out of order: the ranges of
+ * the out-of-order list, the one with the newest segment first; n of them */
+static int sack_blocks(const tcp_conn_t* c, uint32_t* s, uint32_t* e, int max) {
+    int k = 1, have_first = 0;                          /* (s[0]: the newest one's range) */
+    const ooo_seg_t* o = c->ooo;
+    while (o) {
+        uint32_t rs = o->seq, re = o->seq + o->len;     /* a range: segments that touch */
+        for (o = o->next; o && SEQ_LEQ(o->seq, re); o = o->next)
+            if (SEQ_GT(o->seq + o->len, re)) re = o->seq + o->len;
+        if (!have_first && SEQ_GEQ(c->last_ooo, rs) && SEQ_LT(c->last_ooo, re)) {
+            s[0] = rs; e[0] = re; have_first = 1;
+        } else if (k < max) {
+            s[k] = rs; e[k] = re; k++;
+        }
+    }
+    if (!have_first) {                                  /* (none holds it: the others move up) */
+        for (int i = 1; i < k; i++) { s[i - 1] = s[i]; e[i - 1] = e[i]; }
+        k--;
+    }
+    return k;
+}
+
 static void send_seg(tcp_conn_t* c, uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t len) {
-    uint32_t wnd = adv_window(c);
-    send_raw(c->rip, c->ipv6 ? &c->lip6 : NULL, c->ipv6 ? &c->rip6 : NULL, c->lport, c->rport, seq, (flags & F_ACK) ? c->rcv_nxt : 0,
-             flags, (uint16_t)wnd, data, len, (flags & F_SYN) != 0);
+    uint32_t wnd = adv_window(c), field = wnd >> c->rcv_ws;
+    uint8_t opt[MAX_OPT];
+    uint32_t olen = 0;
+    if (flags & F_SYN) {
+        /* (a SYN's window is never scaled) */
+        wnd = min_u32(c->rb_size - c->rb_len, 65535u);
+        field = wnd;
+        opt[0] = 2; opt[1] = 4;
+        wr16(opt + 2, c->ipv6 ? TCP6_MSS : TCP_MSS);
+        olen = 4;
+        /* offered in our SYN; in a SYN-ACK only if the peer offered them */
+        int active = c->state == TCP_SYN_SENT;
+        if (active || c->peer_ws >= 0) { opt[olen] = 1; opt[olen + 1] = 3; opt[olen + 2] = 3; opt[olen + 3] = RCV_WSCALE; olen += 4; }
+        if (active || c->peer_sack) { opt[olen] = 1; opt[olen + 1] = 1; opt[olen + 2] = 4; opt[olen + 3] = 2; olen += 4; }
+    } else if (c->sack_ok && c->ooo && !len && (flags & F_ACK)) {
+        uint32_t s[4], e[4];
+        int n = sack_blocks(c, s, e, 4);
+        if (n) {
+            opt[0] = 1; opt[1] = 1; opt[2] = 5; opt[3] = (uint8_t)(2 + 8 * n);
+            for (int i = 0; i < n; i++) { wr32(opt + 4 + 8 * i, s[i]); wr32(opt + 8 + 8 * i, e[i]); }
+            olen = 4 + 8 * (uint32_t)n;
+            g_stats.sack_acks++;
+        }
+    }
+    /* tcp_test_loss: a data segment to a loopback peer "lost" */
+    if (g_loss_every && len && !c->ipv6 && (c->rip >> 24) == 127 && ++g_loss_n % g_loss_every == 0) {
+        g_stats.test_dropped++;
+    } else {
+        send_raw(c->rip, c->ipv6 ? &c->lip6 : NULL, c->ipv6 ? &c->rip6 : NULL, c->lport, c->rport, seq, (flags & F_ACK) ? c->rcv_nxt : 0,
+                 flags, (uint16_t)field, data, len, opt, olen);
+    }
     if (flags & F_ACK) {
         c->ack_pending = 0;
         c->unacked_segs = 0;
@@ -194,7 +270,7 @@ static void tcp_output(tcp_conn_t* c) {
         }
         uint8_t flags = F_ACK;
         if (off + n == c->sb_len) flags |= F_PSH;
-        send_seg(c, c->snd_nxt, flags, c->sbuf + off, n);
+        send_seg(c, c->snd_nxt, flags, SB(c) + off, n);
         if (!c->rtt_timing) {
             c->rtt_timing = 1;
             c->rtt_seq = c->snd_nxt;
@@ -219,10 +295,10 @@ static void tcp_output(tcp_conn_t* c) {
 /* ── input ──────────────────────────────────────────────────────── */
 
 static uint32_t rbuf_put(tcp_conn_t* c, const uint8_t* data, uint32_t len) {
-    uint32_t space = RBUF_SIZE - c->rb_len;
+    uint32_t space = c->rb_size - c->rb_len;
     if (len > space) len = space;
-    uint32_t tail = (c->rb_head + c->rb_len) % RBUF_SIZE;
-    uint32_t first = min_u32(len, RBUF_SIZE - tail);
+    uint32_t tail = (c->rb_head + c->rb_len) % c->rb_size;
+    uint32_t first = min_u32(len, c->rb_size - tail);
     memcpy(c->rbuf + tail, data, first);
     if (len > first) memcpy(c->rbuf, data + first, len - first);
     c->rb_len += len;
@@ -258,6 +334,7 @@ static uint32_t deliver(tcp_conn_t* c, const uint8_t* data, uint32_t len) {
 
 static void ooo_store(tcp_conn_t* c, uint32_t seq, const uint8_t* data, uint32_t len, int fin) {
     if (c->ooo_count >= OOO_MAX) return;
+    c->last_ooo = seq;
     /* beyond what we advertised? drop */
     if (SEQ_GT(seq + len, c->rcv_nxt + adv_window(c))) return;
     ooo_seg_t** pp = &c->ooo;
@@ -305,16 +382,118 @@ static void update_rtt(tcp_conn_t* c, uint32_t sample) {
     c->rto = rto;
 }
 
-static void parse_mss(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
+/* ── SACK, sending side: the scoreboard ── */
+
+/* [s, e) is at the peer: into the ranges (merged with any it touches) */
+static void sb_add(tcp_conn_t* c, uint32_t s, uint32_t e) {
+    if (SEQ_LT(s, c->snd_una)) s = c->snd_una;
+    if (SEQ_GT(e, c->snd_max)) e = c->snd_max;
+    if (!SEQ_LT(s, e)) return;
+    int i = 0;
+    while (i < c->nsb && SEQ_LT(c->sb_e[i], s)) i++;          /* the first range that may touch it */
+    int j = i;
+    while (j < c->nsb && SEQ_LEQ(c->sb_s[j], e)) {            /* every one that does: into [s, e) */
+        if (SEQ_LT(c->sb_s[j], s)) s = c->sb_s[j];
+        if (SEQ_GT(c->sb_e[j], e)) e = c->sb_e[j];
+        j++;
+    }
+    int keep = c->nsb - j;                                    /* the ranges after it */
+    if (i == j && c->nsb == SB_MAX) {                         /* full: the highest one goes */
+        if (keep == 0) return;
+        keep--;
+    }
+    memmove(&c->sb_s[i + 1], &c->sb_s[j], (size_t)keep * sizeof(uint32_t));
+    memmove(&c->sb_e[i + 1], &c->sb_e[j], (size_t)keep * sizeof(uint32_t));
+    c->sb_s[i] = s;
+    c->sb_e[i] = e;
+    c->nsb = i + 1 + keep;
+}
+
+/* what snd_una passed is out of the ranges */
+static void sb_trim(tcp_conn_t* c) {
+    int k = 0;
+    for (int i = 0; i < c->nsb; i++) {
+        if (SEQ_LEQ(c->sb_e[i], c->snd_una)) continue;
+        c->sb_s[k] = SEQ_LT(c->sb_s[i], c->snd_una) ? c->snd_una : c->sb_s[i];
+        c->sb_e[k] = c->sb_e[i];
+        k++;
+    }
+    c->nsb = k;
+}
+
+/* the first byte at or after from the peer lacks below what it has: 1 and
+ * *seq, *end (the hole), or 0 */
+static int sb_hole(const tcp_conn_t* c, uint32_t from, uint32_t* seq, uint32_t* end) {
+    for (int i = 0; i < c->nsb; i++) {
+        if (SEQ_LT(from, c->sb_s[i])) { *seq = from; *end = c->sb_s[i]; return 1; }
+        if (SEQ_LT(from, c->sb_e[i])) from = c->sb_e[i];
+    }
+    return 0;
+}
+
+/* data from seq again (at most to end): bytes sent */
+static uint32_t resend(tcp_conn_t* c, uint32_t seq, uint32_t end) {
+    uint32_t off = seq - c->snd_una;
+    if (off >= c->sb_len) return 0;
+    uint32_t n = min_u32(min_u32(c->sb_len - off, c->peer_mss), end - seq);
+    if (n) send_seg(c, seq, F_ACK, SB(c) + off, n);
+    return n;
+}
+
+/* in loss recovery: the next hole again (SACK), or, without SACK, the
+ * first unacknowledged segment (NewReno, RFC 6582) */
+static void resend_next(tcp_conn_t* c) {
+    uint32_t seq, end;
+    if (c->sack_ok && c->nsb) {
+        uint32_t from = SEQ_LT(c->rexmit_next, c->snd_una) ? c->snd_una : c->rexmit_next;
+        if (!sb_hole(c, from, &seq, &end)) return;
+        uint32_t n = resend(c, seq, end);
+        if (n) { c->rexmit_next = seq + n; g_stats.sack_rexmit++; }
+    } else if (SEQ_GEQ(c->snd_una, c->rexmit_next)) {
+        uint32_t n = resend(c, c->snd_una, c->snd_una + c->peer_mss);
+        if (n) c->rexmit_next = c->snd_una + n;
+    }
+}
+
+/* the options of a SYN: MSS, window scale, SACK permitted */
+static void parse_syn_opts(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
+    uint32_t i = 0;
+    c->peer_ws = -1;
+    c->peer_sack = 0;
+    while (i < len) {
+        if (opt[i] == 0) break;
+        if (opt[i] == 1) { i++; continue; }
+        if (i + 1 >= len || opt[i + 1] < 2 || i + opt[i + 1] > len) break;
+        if (opt[i] == 2 && opt[i + 1] == 4) {
+            uint32_t mss = rd16(opt + i + 2);
+            if (mss >= 64) c->peer_mss = min_u32(mss, c->ipv6 ? TCP6_MSS : TCP_MSS);
+        } else if (opt[i] == 3 && opt[i + 1] == 3) {
+            c->peer_ws = opt[i + 2] > 14 ? 14 : opt[i + 2];   /* (RFC 7323: at most 14) */
+        } else if (opt[i] == 4 && opt[i + 1] == 2) {
+            c->peer_sack = 1;
+        }
+        i += opt[i + 1];
+    }
+}
+
+/* both SYNs seen: what is used from now on */
+static void opts_agreed(tcp_conn_t* c) {
+    c->ws_ok = c->peer_ws >= 0;
+    c->snd_ws = c->ws_ok ? (uint8_t)c->peer_ws : 0;
+    c->rcv_ws = c->ws_ok ? RCV_WSCALE : 0;
+    c->sack_ok = c->peer_sack;
+}
+
+/* the SACK blocks of an ACK, into the scoreboard */
+static void parse_sack(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
     uint32_t i = 0;
     while (i < len) {
         if (opt[i] == 0) break;
         if (opt[i] == 1) { i++; continue; }
-        if (i + 1 >= len || opt[i + 1] < 2) break;
-        if (opt[i] == 2 && opt[i + 1] == 4 && i + 4 <= len) {
-            uint32_t mss = rd16(opt + i + 2);
-            if (mss >= 64) c->peer_mss = min_u32(mss, c->ipv6 ? TCP6_MSS : TCP_MSS);
-        }
+        if (i + 1 >= len || opt[i + 1] < 2 || i + opt[i + 1] > len) break;
+        if (opt[i] == 5 && opt[i + 1] >= 10 && (opt[i + 1] - 2) % 8 == 0)
+            for (uint32_t b = i + 2; b + 8 <= i + opt[i + 1]; b += 8)
+                sb_add(c, rd32(opt + b), rd32(opt + b + 4));
         i += opt[i + 1];
     }
 }
@@ -323,38 +502,48 @@ static void send_reset_for(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint
                            uint8_t flags, uint32_t seg_len) {
     if (flags & F_RST) return;
     if (flags & F_ACK) {
-        send_raw(src, dst6, src6, dport, sport, ack, 0, F_RST, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, ack, 0, F_RST, 0, NULL, 0, NULL, 0);
     } else {
         uint32_t n = seg_len + ((flags & F_SYN) ? 1 : 0) + ((flags & F_FIN) ? 1 : 0);
-        send_raw(src, dst6, src6, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, NULL, 0);
     }
 }
 
 static void ack_processing(tcp_conn_t* c, uint32_t seq, uint32_t ack, uint32_t wnd,
-                           uint32_t seg_len, uint8_t flags) {
+                           uint32_t seg_len, uint8_t flags, const uint8_t* opt, uint32_t olen) {
+    if (c->sack_ok && olen) parse_sack(c, opt, olen);
     if (SEQ_GT(ack, c->snd_una) && SEQ_LEQ(ack, c->snd_max)) {
         uint32_t acked = ack - c->snd_una;
         uint32_t data_acked = min_u32(acked, c->sb_len);
         if (data_acked) {
-            memmove(c->sbuf, c->sbuf + data_acked, c->sb_len - data_acked);
+            c->sb_off += data_acked;
             c->sb_len -= data_acked;
+            if (!c->sb_len) c->sb_off = 0;
         }
         c->snd_una = ack;
         if (SEQ_LT(c->snd_nxt, c->snd_una)) c->snd_nxt = c->snd_una;
+        sb_trim(c);
 
         if (c->rtt_timing && SEQ_GT(ack, c->rtt_seq)) {
             update_rtt(c, timer_ms() - c->rtt_start);
             c->rtt_timing = 0;
         }
-        /* congestion window: slow start, then additive increase */
-        if (c->cwnd < c->ssthresh) c->cwnd += min_u32(acked, c->peer_mss);
-        else c->cwnd += (c->peer_mss * c->peer_mss) / (c->cwnd ? c->cwnd : 1);
-        if (c->cwnd > 4u * 65535u) c->cwnd = 4u * 65535u;
-
         c->retries = 0;
         c->dupacks = 0;
         if (c->snd_una == c->snd_max) c->timer_on = 0;
         else arm_timer(c);
+
+        if (c->in_rec) {
+            /* everything sent before the loss acknowledged: recovered;
+             * else (a partial ACK) the next hole goes at once */
+            if (SEQ_GEQ(ack, c->recover)) { c->in_rec = 0; c->cwnd = c->ssthresh; c->nsb = 0; }
+            else resend_next(c);
+        } else {
+            /* congestion window: slow start, then additive increase */
+            if (c->cwnd < c->ssthresh) c->cwnd += min_u32(acked, c->peer_mss);
+            else c->cwnd += (c->peer_mss * c->peer_mss) / (c->cwnd ? c->cwnd : 1);
+            if (c->cwnd > (4u << 20)) c->cwnd = 4u << 20;
+        }
 
         if (c->fin_sent && SEQ_GT(ack, c->fin_seq)) {
             if (c->state == TCP_FIN_WAIT1) c->state = TCP_FIN_WAIT2;
@@ -368,14 +557,20 @@ static void ack_processing(tcp_conn_t* c, uint32_t seq, uint32_t ack, uint32_t w
     } else if (ack == c->snd_una && seg_len == 0 && !(flags & (F_SYN | F_FIN)) &&
                c->snd_max != c->snd_una && wnd == c->snd_wnd) {
         /* duplicate ACK: three in a row means a lost segment - resend it
-         * now instead of waiting for the timeout (fast retransmit) */
-        if (++c->dupacks == 3) {
+         * now instead of waiting for the timeout (fast retransmit), then
+         * with SACK each further one sends the next hole */
+        if (++c->dupacks == 3 && !c->in_rec) {
             uint32_t flight = c->snd_max - c->snd_una;
             c->ssthresh = flight / 2 > 2 * c->peer_mss ? flight / 2 : 2 * c->peer_mss;
             c->cwnd = c->ssthresh;
-            uint32_t n = min_u32(c->sb_len, c->peer_mss);
-            if (n) send_seg(c, c->snd_una, F_ACK, c->sbuf, n);
+            c->in_rec = 1;
+            c->recover = c->snd_max;
+            uint32_t n = resend(c, c->snd_una, c->snd_una + c->peer_mss);
+            c->rexmit_next = c->snd_una + n;
             c->rtt_timing = 0;
+            g_stats.fast_rexmit++;
+        } else if (c->dupacks > 3 && c->in_rec && c->sack_ok) {
+            resend_next(c);
         }
     }
     /* window update, taking only the newest segment's view (RFC 793) */
@@ -392,8 +587,12 @@ static tcp_conn_t* conn_alloc(void) {
         if (!g_conns[i].used) { c = &g_conns[i]; break; }
     if (!c) return NULL;
     memset(c, 0, sizeof(*c));
+    c->sb_size = SBUF_SIZE;
     c->sbuf = (uint8_t*)kmalloc(SBUF_SIZE);
+    if (!c->sbuf) { c->sb_size = SBUF_SMALL; c->sbuf = (uint8_t*)kmalloc(SBUF_SMALL); }
+    c->rb_size = RBUF_SIZE;
     c->rbuf = (uint8_t*)kmalloc(RBUF_SIZE);
+    if (!c->rbuf) { c->rb_size = RBUF_SMALL; c->rbuf = (uint8_t*)kmalloc(RBUF_SMALL); }
     if (!c->sbuf || !c->rbuf) {
         kfree(c->sbuf);
         kfree(c->rbuf);
@@ -406,8 +605,9 @@ static tcp_conn_t* conn_alloc(void) {
     c->snd_nxt = c->iss + 1;
     c->snd_max = c->snd_nxt;
     c->peer_mss = 536;                   /* RFC 1122 default until told */
+    c->peer_ws = -1;
     c->cwnd = 4 * TCP_MSS;
-    c->ssthresh = 65535;
+    c->ssthresh = 4u << 20;              /* ("arbitrarily high", RFC 5681) */
     c->rto = RTO_INIT;
     return c;
 }
@@ -438,7 +638,8 @@ static int passive_open(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint16_
     c->rcv_nxt = seq + 1;
     c->snd_wnd = wnd;
     c->snd_wl1 = seq;
-    parse_mss(c, seg + 20, hl - 20);
+    parse_syn_opts(c, seg + 20, hl - 20);
+    opts_agreed(c);
     c->state = TCP_SYN_RCVD;
     send_seg(c, c->iss, F_SYN | F_ACK, NULL, 0);
     c->rtt_timing = 1;
@@ -481,6 +682,7 @@ static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6
         send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
         return;
     }
+    if (!(flags & F_SYN)) wnd <<= c->snd_ws;     /* (a SYN's window is never scaled) */
 
     if (c->state == TCP_SYN_RCVD) {
         if (flags & F_RST) { c->state = TCP_CLOSED; c->timer_on = 0; return; }
@@ -527,7 +729,8 @@ static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6
             c->snd_wnd = wnd;
             c->snd_wl1 = seq;
             c->snd_wl2 = ack;
-            parse_mss(c, seg + 20, hl - 20);
+            parse_syn_opts(c, seg + 20, hl - 20);
+            opts_agreed(c);
             if (c->rtt_timing) {
                 update_rtt(c, timer_ms() - c->rtt_start);
                 c->rtt_timing = 0;
@@ -556,7 +759,7 @@ static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6
         return;
     }
 
-    if (flags & F_ACK) ack_processing(c, seq, ack, wnd, dlen, flags);
+    if (flags & F_ACK) ack_processing(c, seq, ack, wnd, dlen, flags, seg + 20, hl - 20);
     if (c->state == TCP_CLOSED) return;
 
     if (c->state == TCP_TIME_WAIT) {
@@ -639,7 +842,7 @@ static void on_timeout(tcp_conn_t* c) {
     if (c->snd_wnd == 0 && c->sb_len > c->snd_nxt - c->snd_una) {
         /* persist: probe the zero window with one byte */
         uint32_t off = c->snd_nxt - c->snd_una;
-        send_seg(c, c->snd_nxt, F_ACK, c->sbuf + off, 1);
+        send_seg(c, c->snd_nxt, F_ACK, SB(c) + off, 1);
         arm_timer(c);
         return;
     }
@@ -649,6 +852,10 @@ static void on_timeout(tcp_conn_t* c) {
     c->ssthresh = flight / 2 > 2 * c->peer_mss ? flight / 2 : 2 * c->peer_mss;
     c->cwnd = c->peer_mss;
     c->snd_nxt = c->snd_una;
+    c->in_rec = 0;                      /* (the peer may have dropped what it SACKed: RFC 2018) */
+    c->nsb = 0;
+    c->dupacks = 0;
+    g_stats.rto_rexmit++;
     if (c->fin_sent && SEQ_LEQ(c->snd_una, c->fin_seq)) c->fin_sent = 0;
     c->timer_on = 0;
     tcp_output(c);
@@ -747,10 +954,14 @@ int tcp_send(tcp_conn_t* c, const void* data, uint32_t len, uint32_t timeout_ms)
     while (done < len) {
         if (c->err) return c->err;
         if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return NET_ERR_CLOSED;
-        uint32_t space = SBUF_SIZE - c->sb_len;
+        uint32_t space = c->sb_size - c->sb_len;
         if (space) {
+            if (c->sb_off + c->sb_len + min_u32(space, len - done) > c->sb_size) {
+                memmove(c->sbuf, SB(c), c->sb_len);        /* (once per buffer's worth: room at the end) */
+                c->sb_off = 0;
+            }
             uint32_t n = min_u32(space, len - done);
-            memcpy(c->sbuf + c->sb_len, p + done, n);
+            memcpy(SB(c) + c->sb_len, p + done, n);
             c->sb_len += n;
             done += n;
             tcp_output(c);
@@ -768,10 +979,10 @@ int tcp_recv(tcp_conn_t* c, void* buf, uint32_t max, uint32_t timeout_ms) {
     for (;;) {
         if (c->rb_len) {
             uint32_t n = min_u32(max, c->rb_len);
-            uint32_t first = min_u32(n, RBUF_SIZE - c->rb_head);
+            uint32_t first = min_u32(n, c->rb_size - c->rb_head);
             memcpy(buf, c->rbuf + c->rb_head, first);
             if (n > first) memcpy((uint8_t*)buf + first, c->rbuf, n - first);
-            c->rb_head = (c->rb_head + n) % RBUF_SIZE;
+            c->rb_head = (c->rb_head + n) % c->rb_size;
             c->rb_len -= n;
             /* the window reopened noticeably: tell the sender now rather
              * than letting it sit idle until its persist timer fires */
@@ -919,7 +1130,7 @@ int tcp_readable(const tcp_conn_t* c) {
 
 uint32_t tcp_send_space(const tcp_conn_t* c) {
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return 0;
-    return SBUF_SIZE - c->sb_len;
+    return c->sb_size - c->sb_len;
 }
 
 /* ── for sockets (kernel/usock.c) ─────────────────────────────────── */
@@ -927,7 +1138,7 @@ uint32_t tcp_send_space(const tcp_conn_t* c) {
 /* up to max received bytes copied without taking them: how many */
 int tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max) {
     uint32_t n = min_u32(max, c->rb_len);
-    uint32_t first = min_u32(n, RBUF_SIZE - c->rb_head);
+    uint32_t first = min_u32(n, c->rb_size - c->rb_head);
     memcpy(buf, c->rbuf + c->rb_head, first);
     if (n > first) memcpy((uint8_t*)buf + first, c->rbuf, n - first);
     return (int)n;
@@ -945,3 +1156,16 @@ int tcp_pending(const tcp_listener_t* l) {
 }
 
 uint16_t tcp_local_port(const tcp_conn_t* c) { return c->lport; }
+
+void tcp_info(const tcp_conn_t* c, tcp_info_t* i) {
+    i->wscale = c->ws_ok;
+    i->sack = c->sack_ok;
+    i->snd_ws = c->snd_ws;
+    i->rcv_ws = c->rcv_ws;
+    i->rcv_window = adv_window(c);
+    i->snd_window = c->snd_wnd;
+}
+
+void tcp_stats(tcp_stats_t* s) { *s = g_stats; }
+
+void tcp_test_loss(uint32_t every) { g_loss_every = every; g_loss_n = 0; }

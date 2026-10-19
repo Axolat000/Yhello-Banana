@@ -39,6 +39,7 @@
 #include "app.h"
 #include "task.h"
 #include "tz.h"
+#include "acpi_sleep.h"
 
 void shell_power(int reboot);
 
@@ -67,6 +68,7 @@ static win_geom_t g_win = { .x = 100, .y = 40, .w = 640, .h = 490, .min_w = 580,
 static int        g_page;
 static uint32_t   g_gen;
 static char       g_status[96];
+static int g_sleep_available;
 static int        g_muted, g_vol_before_mute = 80;
 static int        g_dragging_vol, g_dragging_speed;
 static uint32_t   g_tick_s;
@@ -990,6 +992,7 @@ static void click_time(int mx, int my) {
 static void draw_about(void) {
     int x = cx0(), y = cy0();
     gfx_draw_text_scaled(x, y, 2, "Banana OS 0.6", C_HEAD, C_PANEL);
+    if(g_sleep_available)button(x+cw()-90,y+28,90,"Sleep",0);
     const sysinfo_t* si = sysinfo_get();
     char line[112];
     int ly = y + 32;
@@ -1367,6 +1370,9 @@ void settings_click(int mx, int my) {
     if (fc_active()) { fc_click(mx, my); return; }
 
     int x = cx0(), y = cy0();
+    if(g_page==PG_ABOUT && g_sleep_available && inside(mx,my,x+cw()-90,y+28,90,20)) {
+        acpi_s3_suspend(0,g_status,sizeof(g_status));g_gen++;return;
+    }
     if (g_page == PG_FONTS) { click_fonts(mx, my); return; }
     if (g_page == PG_DISPLAY) {
         for (int i = 0; i < wallpaper_recent_count(); i++) {
@@ -1531,6 +1537,7 @@ void settings_open_page(int page) {
 }
 
 void settings_open(void) {
+    char reason[160];g_sleep_available=!acpi_s3_status(reason,sizeof(reason));
     g_open = 1;
     g_status[0] = 0;
     win_clamp(&g_win);
