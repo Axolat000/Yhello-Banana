@@ -2,6 +2,7 @@
 #include "appwin.h"
 #include "audio.h"
 #include "fs.h"
+#include "fsdisk.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "task.h"
@@ -568,8 +569,19 @@ static int a_fd_sync(int fd) {
     afd_t* f = get_fd(p, fd);
     if (!f) return -9;                      /* EBADF */
     if (f->sock) return -22;                 /* EINVAL */
-    /* Fail closed until the volume-aware synchronization path is wired. */
-    return -38;                            /* ENOSYS */
+    fs_file_t* ff = fs_file_info(f->fidx);
+    if (!ff || !ff->used) return -9;         /* EBADF: file entry invalid/deleted */
+    if (ff->mnt != 0) {
+        /* Other mounted volumes (e.g. FAT32/exFAT USB sticks) */
+        return -38;                         /* ENOSYS: external volume sync not supported yet */
+    }
+    if (!fsdisk_is_installed()) {
+        /* RAM disk (live CD session without installed disk) */
+        return -38;                         /* ENOSYS: no durable storage backend */
+    }
+    int rc = fsdisk_sync_wait();
+    if (rc == FSDISK_OK) return 0;
+    return -5;                              /* EIO: storage I/O error */
 }
 
 static int a_open(const char* path, int flags) {
