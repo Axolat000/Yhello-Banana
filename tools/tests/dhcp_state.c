@@ -18,6 +18,7 @@ uint32_t timer_ms(void) { return now; }
 uint32_t random_u32(void) { return ++xid; }
 void klog(const char* fmt, ...) { (void)fmt; }
 void arp_request(ip4_t ip) { (void)ip; }
+void arp_flush(void) {}
 void ip4_to_str(ip4_t ip, char out[16]) {
     snprintf(out, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
 }
@@ -33,24 +34,34 @@ static int link_up(netdev_t* nd) { (void)nd; return carrier; }
 static netdev_t dev = {.ifname = "eth0", .mac = {2, 3, 4, 5, 6, 7}, .link_up = link_up};
 static void state(const char* expected) { CHECK(!strcmp(dhcp_state_str(), expected)); }
 static void tick(uint32_t delta) { now += delta; dhcp_timer(); }
-static void reply(uint8_t type, uint32_t lease) {
+static void reply_opts(uint8_t type, uint32_t lease, uint32_t t1, uint32_t t2) {
     uint8_t p[300] = {0};
     p[0] = 2; p[1] = 1; p[2] = 6;
     memcpy(p + 4, sent + 4, 4); memcpy(p + 28, dev.mac, 6);
     wr32(p + 16, IP4(10, 0, 2, 15)); wr32(p + 236, 0x63825363u);
-    p[240] = 53; p[241] = 1; p[242] = type;
-    p[243] = 51; p[244] = 4; wr32(p + 245, lease);
-    p[249] = 54; p[250] = 4; wr32(p + 251, IP4(10, 0, 2, 2)); p[255] = 255;
-    CHECK(handler != NULL); handler(IP4(10, 0, 2, 2), 67, p, 256, handler_ctx);
+    uint8_t* o = p + 240;
+    *o++ = 53; *o++ = 1; *o++ = type;
+    *o++ = 51; *o++ = 4; wr32(o, lease); o += 4;
+    *o++ = 54; *o++ = 4; wr32(o, IP4(10, 0, 2, 2)); o += 4;
+    if (t1) { *o++ = 58; *o++ = 4; wr32(o, t1); o += 4; }
+    if (t2) { *o++ = 59; *o++ = 4; wr32(o, t2); o += 4; }
+    *o++ = 255;
+    CHECK(handler != NULL); handler(IP4(10, 0, 2, 2), 67, p, (uint32_t)(o - p), handler_ctx);
+}
+static void reply(uint8_t type, uint32_t lease) {
+    reply_opts(type, lease, 0, 0);
 }
 static void reset(uint32_t start) {
     dhcp_stop(); memset(&nif, 0, sizeof(nif)); nif.dev = &dev;
     now = start; sends = 0; carrier = 1; dhcp_start();
     state("discovering"); CHECK(!nif.configured && nif.dhcp && sends == 1);
 }
+static void acquire_opts(uint32_t lease, uint32_t t1, uint32_t t2) {
+    reply_opts(2, lease, t1, t2); state("requesting"); CHECK(sent[242] == 3);
+    reply_opts(5, lease, t1, t2); state("bound"); CHECK(nif.configured && nif.lease_s == (lease ? lease : 3600));
+}
 static void acquire(uint32_t lease) {
-    reply(2, lease); state("requesting"); CHECK(sent[242] == 3);
-    reply(5, lease); state("bound"); CHECK(nif.configured && nif.lease_s == (lease ? lease : 3600));
+    acquire_opts(lease, 0, 0);
 }
 
 /* Compile the unmodified draw_network body with label/button capture shims. */
@@ -103,25 +114,47 @@ int main(void) {
     tick(59999); state("bound"); tick(1); state("renewing");
     puts("PASS half-lease renewal and ACK reset the renewal deadline");
 
-    tick(2000); tick(4000); tick(8000); tick(16000); state("renewing");
-    tick(31999); state("renewing"); tick(1); state("discovering");
-    CHECK(nif.configured); ui_mode("Mode: DHCP (discovering)");
-    puts("KNOWN GAP renewal exhaustion at 62 seconds retains the configured address during discovery");
+    /* T1 default is lease / 2 = 60s, T2 default is 7/8 * 120s = 105s, expiry is 120s */
+    /* At 60s, enter renewing. Retry at +1s, +2s, +4s, +8s, +16s, +14s -> at 105s transitions to rebinding */
+    tick(1000); CHECK(sent[242] == 3); /* retry in renewing */
+    tick(44000); state("rebinding"); ui_mode("Mode: DHCP (rebinding)");
+    CHECK(nif.configured);
+    /* In rebinding, broadcast REQUEST without server-id; when 120s lease expires, address is invalidated */
+    tick(14999); state("rebinding"); CHECK(nif.configured);
+    tick(1); state("discovering");
+    CHECK(!nif.configured); ui_mode("Mode: DHCP (discovering)");
+    puts("PASS renewal transitions to rebinding at T2 and expires at lease end, clearing configured");
 
     reply(2, 120); reply(6, 120); state("discovering"); CHECK(!nif.configured);
-    acquire(120); tick(60000); reply(6, 120); state("discovering"); CHECK(!nif.configured);
-    puts("PASS NAK clears configured in both requesting and renewing states");
+    acquire(120); tick(60000); state("renewing"); reply(6, 120); state("discovering"); CHECK(!nif.configured);
+    acquire(120); tick(60000); state("renewing"); tick(45000); state("rebinding"); reply(6, 120); state("discovering"); CHECK(!nif.configured);
+    puts("PASS NAK clears configured in requesting, renewing and rebinding states");
 
-    reset(0); acquire(4); tick(4000); state("bound"); CHECK(nif.configured);
-    carrier = 0; tick(26000); state("renewing"); CHECK(nif.configured);
-    ui_mode("Mode: DHCP (renewing)"); CHECK(!strcmp(labels[42], "Link: down; address configured"));
-    CHECK(colors[42] == 0x00E0A060u);
-    carrier = 1; tick(1); state("renewing");
-    puts("KNOWN GAP 4-second lease remains configured past expiry; T1 has a 30-second floor; carrier changes do not transition DHCP");
+    /* Short 4-second lease: T1=2s, T2=3s, expiry=4s */
+    reset(0); acquire(4);
+    tick(1999); state("bound"); CHECK(nif.configured);
+    tick(1); state("renewing"); CHECK(nif.configured);
+    tick(1000); state("rebinding"); CHECK(nif.configured);
+    tick(999); state("rebinding"); CHECK(nif.configured);
+    tick(1); state("discovering"); CHECK(!nif.configured);
+    ui_mode("Mode: DHCP (discovering)");
+    puts("PASS 4-second lease enters renewing at 2s, rebinding at 3s and invalidates at 4s expiry");
+
+    /* Explicit T1 and T2 options */
+    reset(0); acquire_opts(100, 20, 80);
+    tick(19999); state("bound"); tick(1); state("renewing");
+    tick(59999); state("renewing"); tick(1); state("rebinding");
+    tick(19999); state("rebinding"); tick(1); state("discovering"); CHECK(!nif.configured);
+    puts("PASS explicit T1 and T2 options respected");
+
+    /* Infinite lease (0xFFFFFFFF): stays bound, never renews or expires */
+    reset(0); acquire(0xFFFFFFFFu);
+    tick(86400000); state("bound"); CHECK(nif.configured);
+    tick(86400000); state("bound"); CHECK(nif.configured);
+    puts("PASS infinite lease (0xFFFFFFFF) remains bound indefinitely without renewal or expiry");
 
     reset(0); acquire(0); tick(1799999); state("bound"); tick(1); state("renewing");
-    reset(0); acquire(400000); tick(86399999); state("bound"); tick(1); state("renewing");
-    puts("PASS absent/zero lease defaults to 3600 seconds; renewal caps at one day");
+    puts("PASS absent/zero lease defaults to 3600 seconds");
 
     reset(0xfffffff0u); tick(999); CHECK(sends == 1); tick(1); CHECK(sends == 2);
     reset(0xfffffff0u); acquire(120); tick(59999); state("bound"); tick(1); state("renewing");
