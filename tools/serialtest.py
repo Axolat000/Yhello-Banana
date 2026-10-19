@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--cmd", action="append", help="a command to type (repeatable)")
     ap.add_argument("--cmds-file", help="commands, one a line (see above)")
     ap.add_argument("--window", action="store_true", help="show QEMU's window (to watch or debug); the commands still go over serial")
+    ap.add_argument("--poweroff", action="store_true", help="after successful commands, require clean guest poweroff")
     ap.add_argument("--keep", action="store_true", help="leave QEMU running after the commands, until its window is closed")
     ap.add_argument("qemu_args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
@@ -91,7 +92,12 @@ def main():
             if got:
                 quiet = None
                 continue
-            if text[since:].rstrip(" ").endswith("$") and text.endswith("$ "):
+            prompt_at_end = text[since:].rstrip(" ").endswith("$") and text.endswith("$ ")
+            # Disk automount messages can arrive just after the initial prompt.
+            # At boot, accept that prompt once output settles; commands still
+            # require a fresh prompt at the end of their own output.
+            boot_prompt = since == 0 and re.search(r"(?:^|\n)[^\n]*@[^\n]*:[^\n]*\$ ", text)
+            if prompt_at_end or boot_prompt:
                 quiet = quiet or time.time()
                 if time.time() - quiet > 0.7:
                     return True
@@ -120,7 +126,10 @@ def main():
                 time.sleep(0.01)
             ok = wait_prompt(mark + len(c), a.timeout)
             out = text[mark:]
-            bad = BAD.search(out)
+            # The POSIX suite deliberately recovers from this overflow.
+            # Keep other overflow/crash output fatal, including failed checks.
+            scanned = re.sub(r"(?m)^\s*ok\s+a stack overflow: SIGSEGV on the alternate stack, recovered\s*$", "", out)
+            bad = BAD.search(scanned)
             for l in out.splitlines()[1:-1]:
                 print("    " + l)
             why = bad.group(0) if bad else ""
@@ -132,6 +141,21 @@ def main():
             results.append((c, status, why))
             if bad and "PANIC" in bad.group(0).upper():
                 break
+        if a.poweroff and results and all(st == "ok" for _, st, _ in results):
+            print("$ shutdown now (expect guest poweroff)", flush=True)
+            sock.sendall(b"shutdown now\r")
+            deadline = time.time() + a.timeout
+            while proc.poll() is None and time.time() < deadline:
+                try:
+                    pump()
+                except EOFError:
+                    break
+            try:
+                rc = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                rc = None
+            results.append(("shutdown now", "ok" if rc == 0 else "FAIL",
+                            "" if rc == 0 else f"guest did not power off cleanly (exit {rc})"))
     except EOFError:
         results.append(("(QEMU)", "FAIL", "the serial port closed - the VM stopped or reset"))
     finally:

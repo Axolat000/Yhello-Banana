@@ -2194,5 +2194,54 @@
       "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
     },
     "rank": 45
+  },
+  {
+    "id": "virtio-scsi-install",
+    "title": "Qualify bounded virtio-scsi installation and durability",
+    "domain": "Drivers",
+    "priority": "P2",
+    "kind": "Consolider",
+    "goal": "Use existing SCSI-backed virtual-machine disks without changing their controller configuration, while preserving installed-system durability.",
+    "planningStatus": "proposed",
+    "depends": [
+      "virtio",
+      "base-02"
+    ],
+    "planningReason": "Inspection of pinned upstream aa1a60e07980 found useful SCSI VM compatibility but unsafe DMA reuse after timeout, ignored residuals and false flush success. The bounded adaptation retains boot-time SCSI only; executable qualification remains necessary before daily use. Virtio-blk remains the reference controller. This follow-up requires independent review and controller validation before scheduling; it does not close the assigned upstream task.",
+    "evidence": "Current fork fe73f98 has virtio-blk, PIO SD and ext4/JBD2 but no virtio-scsi. The adaptation adds deterministic production-driver response tests; its verification record distinguishes host tests from QEMU and physical hardware.",
+    "files": [
+      "kernel/virtio_scsi.c",
+      "kernel/virtio_scsi.h",
+      "kernel/ata.h",
+      "kernel/disk.c",
+      "kernel/fsdisk.c",
+      "docs/virtio-scsi.md",
+      "tools/test_virtio_scsi.py"
+    ],
+    "acceptance": "Both kernels link; legacy and modern QEMU disks discover LUN 1 without LUN 0 and support multiple controllers/targets/LUNs. Exact-transfer checks, timeout with late DMA, malformed responses, bounds and flush rejection pass. BIOS/UEFI install/update/restart, system-volume exclusion, data mounts and two non-target hashes pass. Successful synchronization survives power cuts with writeback caching and Linux e2fsck; application errors are checked after base-02.",
+    "deliverable": "Reviewed boot-time virtio-scsi implementation and reproducible VM qualification with exact commands, versions, serial logs and disk hashes; unchanged user ABI and disk layout.",
+    "steps": [
+      "Review the bounded implementation: existing virtio_pci transport, per-controller serialization, retained DMA after failure, exact block transfers, strict flush errors, supported target/LUN/capacity/configuration limits and allocation/registration failure handling. Preserve existing controller behavior and BSD-2-Clause notices.",
+      "Qualify disposable legacy and modern QEMU topologies, LUN 1 alone, multiple controllers/targets/LUNs, concurrent callers and queue-index wrap; verify hashes across transfer chunks.",
+      "Install and boot under BIOS and UEFI; test update, synchronization, clean shutdown/restart, system-volume exclusion, data mounting and unchanged contents of two non-target disks.",
+      "After base-02, inject rejected flushes through the filesystem to applications and interrupt writeback-cache VMs after synchronization and at journal boundaries. Compare contents and Linux e2fsck results. Regress IDE/SATA/NVMe/virtio-blk, PIO SD and selftest/POSIX."
+    ],
+    "tests": [
+      "make -j4 kernel.bin kernel64.bin; python3 tools/test_virtio_scsi.py --sanitize; run 32-bit host tests where the execution environment permits them.",
+      "Record QEMU version, exact controller options, firmware, image hashes and serial logs for legacy/modern discovery, chunked I/O, concurrency and index wrap. Give UEFI a private pflash variable store: combined-ROM OVMF fallback was observed creating NvVars on a non-target FAT disk during installation qualification.",
+      "Run BIOS/UEFI installation and update on disposable images with two hashed non-target disks and a data volume; boot without CD and verify persistence and exclusion.",
+      "Use explicit cache=writeback and inject flush rejection and power cuts at synchronization/journal boundaries; check promised hashes and e2fsck. Run sh tools/ext4test/run.sh and existing selftest/POSIX suites.",
+      "No physical SD/eMMC or performance claim follows from QEMU. Reconsider MMC/ADMA2 separately only with a reproducible emulator or identified device."
+    ],
+    "sources": [
+      [
+        "Pinned upstream",
+        "https://github.com/qcom-toolbox/Banana-OS/commit/aa1a60e07980cfca808fec71b261bfd645de6e8e"
+      ],
+      [
+        "Virtio 1.3 SCSI requirements",
+        "https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html"
+      ]
+    ]
   }
 ]

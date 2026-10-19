@@ -20,6 +20,7 @@ typedef struct {
     int      ahci_port;  /* SATA (kernel/ahci.c) device index, or -1 for an IDE drive */
     int      nvme;       /* NVMe drive (kernel/nvme.c) index + 1, or 0 */
     int      vblk;       /* virtio-blk disk (kernel/virtio_blk.c) index + 1, or 0 */
+    int      scsi;       /* virtio-scsi disk index + 1, or 0; internal kernel structure */
 } ata_disk_t;
 
 /* Probes all 4 possible drives (primary/secondary x master/slave) into

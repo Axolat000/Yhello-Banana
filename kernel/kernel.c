@@ -27,6 +27,7 @@
 #include "sdhci.h"
 #include "acpi.h"
 #include "virtio_blk.h"
+#include "virtio_scsi.h"
 #include "paging.h"
 #include "hmem.h"
 #include "smp.h"
@@ -126,6 +127,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     STEP("nvme");
     nvme_init();      /* NVMe SSDs: disks for install/sync, FAT32 partitions in /mnt/nvme */
     virtio_blk_init();  /* virtio disks (QEMU/KVM, Proxmox, clouds): the same, in /mnt/virtio */
+    virtio_scsi_init(); /* Boot-time SCSI disks, mounted under /mnt/scsi. */
     sdhci_init();     /* SD card readers: cards mounted in /mnt/sd as they are put in */
     applesmc_init();  /* Intel Macs: the SMC's temperatures and fans */
     acpi_power_button_init();   /* VirtualBox's ACPI Shutdown, QEMU's system_powerdown, the PC's button */

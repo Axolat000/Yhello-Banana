@@ -151,10 +151,10 @@ static const page_t PAGES[] = {
       "files and folders instead of bytes.", "-h|sizes like 1.2G\n-k|kilobytes\n-m|megabytes\n-i|files and folders",
       "df -h\ndf -i", "mount, disks, free" },
     { "disks", "disks", "disks", "the drives",
-      "Lists the drives: IDE, SATA (AHCI), NVMe and virtio disks and CD/DVD drives, with their size and model.",
+      "Lists the drives: IDE, SATA (AHCI), NVMe, virtio-blk and virtio-scsi disks and CD/DVD drives, with their size and model.",
       NULL, NULL, "install, mount, df" },
     { "lsblk", "disks", "lsblk", "the drives, their partitions and where they are mounted",
-      "Lists every drive - the installed disk, CD drives, extra IDE / SATA / NVMe / virtio disks, USB "
+      "Lists every drive - the installed disk, CD drives, extra IDE / SATA / NVMe / virtio / SCSI disks, USB "
       "sticks, SD cards - and under each its partitions (MBR primary and logical, or GPT) with their "
       "size, filesystem, mount point and type. Names like sata1p2 are what mount and umount take.",
       NULL, "lsblk", "mount, umount, df, disks" },
