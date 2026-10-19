@@ -107,7 +107,7 @@ jobs:
           path: |
             ports/mesa/src
             ports/mesa/build/ref
-          key: mesa-ref-24.3.4-v1
+          key: mesa-ref-24.3.4-${{ hashFiles('ports/mesa/build.sh', 'ports/mesa/patch.py') }}
 
       - name: Build OpenJDK, Mesa and LWJGL
         if: steps.bundle.outputs.cache-hit != 'true'

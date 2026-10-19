@@ -48,6 +48,13 @@ if [ "$LLVMPIPE" != 0 ]; then
 fi
 
 # ── the reference Linux build ─────────────────────────────────────────
+# a reference build configured otherwise (a cached one from before VirGL or
+# LLVMpipe was added) is set up again: else its old drivers would be linked
+CONF="drivers=$DRIVERS llvm=$LLVM_MODE draw-llvm=$DRAW_LLVM"
+if [ -f "$REF/build.ninja" ] && [ "$(cat "$REF/.banana-conf" 2>/dev/null)" != "$CONF" ]; then
+    echo "mesa: the reference build was configured otherwise - setting it up again"
+    rm -rf "$REF"
+fi
     [ -f "$REF/build.ninja" ] || meson setup "$REF" "$SRC" -Dbuildtype=release -Dosmesa=true \
         -Dgallium-drivers="$DRIVERS" -Dc_args="-DBANANA_MESA_OSMESA -include $HERE/banana/host_compat.h" -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
         -Dllvm="$LLVM_MODE" -Dcpp_rtti=false -Dgles1=disabled -Dgles2=disabled -Dzstd=disabled -Dvalgrind=disabled \
@@ -55,6 +62,7 @@ fi
         -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dgallium-nine=false -Dgallium-opencl=disabled \
         -Dgallium-rusticl=false -Dandroid-libbacktrace=disabled -Dexpat=disabled -Dxmlconfig=disabled \
         -Ddraw-use-llvm="$DRAW_LLVM" -Dbuild-tests=false -Dtools=
+mkdir -p "$REF" && echo "$CONF" > "$REF/.banana-conf"
 ninja -C "$REF" -j"$JOBS" src/gallium/targets/osmesa/libOSMesa.so.8.0.0
 
 if [ "$LLVMPIPE" != 0 ]; then
