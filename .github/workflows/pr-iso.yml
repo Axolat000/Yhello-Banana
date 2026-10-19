@@ -1,0 +1,88 @@
+name: PR ISO
+
+on:
+  push:
+    branches: [codex/integration]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-iso-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  iso:
+    name: Downloadable test ISO
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the proposed source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nasm gcc-multilib binutils xorriso mtools python3 sbsigntool efitools
+
+      - name: Cache FFmpeg for preview builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ports/ffmpeg/src
+            ports/ffmpeg/build
+          key: pr-iso-ffmpeg-7.1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
+
+      - name: Build the unsigned test ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make -j2 2>&1 | tee build-iso.log
+          test -s Banana_OS.iso
+          mkdir -p test-iso
+          cp Banana_OS.iso test-iso/
+          git rev-parse HEAD > test-iso/SOURCE-COMMIT.txt
+          (cd test-iso && sha256sum Banana_OS.iso > SHA256SUMS)
+          cat > test-iso/TESTING.txt <<'EOF'
+          Unzip this artifact and attach Banana_OS.iso as a virtual optical disc
+          in QEMU, VirtualBox or VMware. Boot the VM from that disc.
+          This preview is unsigned: disable Secure Boot in the test VM.
+          SOURCE-COMMIT.txt identifies the exact proposed source revision.
+          Build success alone does not establish hardware compatibility.
+          EOF
+
+      - name: Upload the test ISO
+        id: iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yhello-Banana-ISO-${{ github.event.pull_request.head.sha || github.sha }}
+          path: test-iso/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Publish the download link in the check summary
+        env:
+          ARTIFACT_URL: ${{ steps.iso.outputs.artifact-url }}
+        run: |
+          echo '### Test this proposed change' >> "$GITHUB_STEP_SUMMARY"
+          printf '[Download the ISO ZIP](%s)\n\n' "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Unzip it, then boot Banana_OS.iso in your VM. This unsigned preview requires Secure Boot off.' >> "$GITHUB_STEP_SUMMARY"
+          printf '\nSource commit: `%s`\n' "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-build-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build-iso.log
+          if-no-files-found: ignore
+          retention-days: 14
