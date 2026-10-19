@@ -24,6 +24,7 @@
 #include "filechooser.h"
 #include "kbnav.h"
 #include "dlmgr.h"
+#include "bhistory.h"
 #include "explorer.h"
 
 /*
@@ -1382,6 +1383,7 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
         kstrlcpy(t->hist[t->hist_pos], final_url, sizeof(t->hist[0]));
     }
 
+    if (!t->status_err) bh_visit(final_url, t->title);        /* (what the address bar suggests later) */
     if (!t->status_err) {
         char msg[160];
         if (p->status[0]) ksnprintf(msg, sizeof(msg), "Script error: %s", p->status);
@@ -1506,17 +1508,115 @@ static void history_go(int delta) {
     load(t, url, NULL, 0, 0);
 }
 
+/* ── the address bar: a caret, and what it suggests (Chrome's omnibox) ──
+ * The text is edited where the caret is (Left / Right / Home / End,
+ * Delete, Backspace), and scrolls to keep it in sight; while typing, the
+ * pages visited before whose address or title holds the text are offered
+ * under it (kernel/bhistory.c): Up / Down choose, Enter or a click goes. */
+
+#define SUG_MAX 6
+#define SUG_H   36
+static int g_addr_cur;                   /* the caret: a byte of the address */
+static int g_addr_view;                  /* the first byte shown (focused) */
+static int g_sug[SUG_MAX], g_sug_n, g_sug_sel = -1;
+
+static void addr_suggest(tab_t* t) {
+    g_sug_n = g_addr_focus && t->addr[0] ? bh_match(t->addr, g_sug, SUG_MAX) : 0;
+    g_sug_sel = -1;
+}
+
+static void addr_focus_all(tab_t* t) {
+    g_addr_focus = 1;
+    g_addr_all = 1;
+    g_addr_cur = (int)strlen(t->addr);
+    g_addr_view = 0;
+    g_sug_n = 0;
+    g_sug_sel = -1;
+    g_gen++;
+}
+
+static void addr_go(tab_t* t) {
+    kstrlcpy(g_go_url, g_sug_sel >= 0 && g_sug_sel < g_sug_n ? bh_url(g_sug[g_sug_sel]) : t->addr, sizeof(g_go_url));
+    g_sug_n = 0;
+    g_sug_sel = -1;
+    push_cmd(CMD_GO, 0, 0);
+}
+
+static void addr_insert(tab_t* t, const char* s, int n) {
+    if (g_addr_all) { t->addr[0] = 0; g_addr_cur = 0; g_addr_view = 0; g_addr_all = 0; }
+    int len = (int)strlen(t->addr);
+    if (g_addr_cur > len) g_addr_cur = len;
+    if (len + n > (int)sizeof(t->addr) - 1) n = (int)sizeof(t->addr) - 1 - len;
+    if (n <= 0) return;
+    memmove(t->addr + g_addr_cur + n, t->addr + g_addr_cur, (size_t)(len - g_addr_cur + 1));
+    memcpy(t->addr + g_addr_cur, s, (size_t)n);
+    g_addr_cur += n;
+}
+
+/* Backspace (back) or Delete: the character before / after the caret */
+static void addr_delete(tab_t* t, int back) {
+    int len = (int)strlen(t->addr);
+    if (g_addr_all) { t->addr[0] = 0; g_addr_cur = g_addr_view = 0; g_addr_all = 0; return; }
+    if (g_addr_cur > len) g_addr_cur = len;
+    int a = back ? u8_prev(t->addr, g_addr_cur) : g_addr_cur;
+    int b = back ? g_addr_cur : u8_next(t->addr, len, g_addr_cur);
+    if (a == b) return;
+    memmove(t->addr + a, t->addr + b, (size_t)(len - b + 1));
+    g_addr_cur = a;
+}
+
+/* a typed character while the address bar has the keys */
+static void addr_key(tab_t* t, char c) {
+    if (c == 1) { g_addr_all = 1; g_gen++; return; }                       /* Ctrl+A */
+    if (c == '\n') { addr_go(t); return; }
+    if (c == 27) {                                                          /* Esc: the list, then the edit */
+        if (g_sug_n) g_sug_n = 0;
+        else {
+            g_addr_focus = 0;
+            if (t->page) kstrlcpy(t->addr, t->page->url, sizeof(t->addr));
+        }
+        g_gen++;
+        return;
+    }
+    if (c == '\b') addr_delete(t, 1);
+    else if ((unsigned char)c >= 32) addr_insert(t, &c, 1);
+    else return;
+    g_addr_all = 0;
+    addr_suggest(t);
+    g_gen++;
+}
+
+/* the arrows (and Delete: ESC [3~) in the address bar */
+static void addr_arrow(tab_t* t, char a) {
+    int len = (int)strlen(t->addr);
+    if (g_addr_cur > len) g_addr_cur = len;
+    if (a == 'A' || a == 'B') {                                             /* through the suggestions */
+        if (!g_sug_n) return;
+        if (a == 'B') g_sug_sel = g_sug_sel + 1 < g_sug_n ? g_sug_sel + 1 : g_sug_n - 1;
+        else g_sug_sel = g_sug_sel >= 0 ? g_sug_sel - 1 : -1;
+        g_gen++;
+        return;
+    }
+    if (a == '3') { addr_delete(t, 0); addr_suggest(t); }
+    else if (a == 'D') g_addr_cur = g_addr_all ? 0 : u8_prev(t->addr, g_addr_cur);
+    else if (a == 'C') g_addr_cur = g_addr_all ? len : u8_next(t->addr, len, g_addr_cur);
+    else if (a == 'H') g_addr_cur = 0;
+    else if (a == 'F') g_addr_cur = len;
+    else return;
+    g_addr_all = 0;
+    g_gen++;
+}
+
 static void paste_now(void) {
     uint32_t n;
     const char* clip = clipboard_get(&n);
     tab_t* t = cur_tab();
     if (!n || !t) return;
     if (g_addr_focus) {
-        if (g_addr_all) { t->addr[0] = 0; g_addr_all = 0; }
-        size_t l = strlen(t->addr);
-        for (uint32_t i = 0; i < n && l < sizeof(t->addr) - 1; i++)
-            if ((unsigned char)clip[i] >= 32) t->addr[l++] = clip[i];
-        t->addr[l] = 0;
+        for (uint32_t i = 0; i < n; i++)
+            if ((unsigned char)clip[i] >= 32) addr_insert(t, clip + i, 1);
+        g_addr_all = 0;
+        addr_suggest(t);
         g_gen++;
         return;
     }
@@ -1618,7 +1718,7 @@ static int live_prevented(int sc) {
 static void handle_key(char c) {
     tab_t* t = cur_tab();
     if (!t) return;
-    if (c == 12) { g_addr_focus = 1; g_addr_all = 1; g_gen++; return; }   /* Ctrl+L */
+    if (c == 12) { addr_focus_all(t); return; }                             /* Ctrl+L */
     if (c == 18) { push_cmd(CMD_RELOAD, 0, 0); return; }                    /* Ctrl+R */
     if (c == 14) { g_go_url[0] = 0; push_cmd(CMD_NEWTAB, 0, 0); return; }  /* Ctrl+N: new tab */
     if (c == 10 && (keyboard_mods() & 2)) { push_cmd(CMD_DOWNLOADS, 0, 0); return; }   /* Ctrl+J: the downloads */
@@ -1633,27 +1733,14 @@ static void handle_key(char c) {
         if (c == '\n' || c == 27 || c == ' ') { g_alert[0] = 0; g_gen++; }
         return;
     }
-    if (g_addr_focus) {
-        if (c == 1) { g_addr_all = 1; g_gen++; return; }                     /* Ctrl+A */
-        size_t n = strlen(t->addr);
-        if (c == '\n') { kstrlcpy(g_go_url, t->addr, sizeof(g_go_url)); push_cmd(CMD_GO, 0, 0); }
-        else if (c == '\b') { if (g_addr_all) t->addr[0] = 0; else if (n) u8_backspace(t->addr, (int)n); }
-        else if (c == 27) { g_addr_focus = 0; if (t->page) kstrlcpy(t->addr, t->page->url, sizeof(t->addr)); }
-        else if ((unsigned char)c >= 32) {
-            if (g_addr_all) { t->addr[0] = 0; n = 0; }
-            if (n < sizeof(t->addr) - 1) { t->addr[n] = c; t->addr[n + 1] = 0; }
-        }
-        g_addr_all = 0;
-        g_gen++;
-        return;
-    }
+    if (g_addr_focus) { addr_key(t, c); return; }
     if (t->page && !t->loading && page_key(t->page, c)) { after_page_event(t); return; }
     if (c == ' ' && !live_prevented(0x39)) scroll_by(g_vh - 40);
     else if (c == '\b' && !live_prevented(0x0E)) history_go(-1);
 }
 
 static void handle_arrow(char a) {
-    if (g_addr_focus) return;
+    if (g_addr_focus) { if (cur_tab()) addr_arrow(cur_tab(), a); return; }
     int sc = a == 'A' ? 0xC8 : a == 'B' ? 0xD0 : (a == 'I' || a == '5') ? 0xC9 :
              (a == 'G' || a == '6') ? 0xD1 : a == 'H' ? 0xC7 : a == 'F' ? 0xCF : 0;
     if (sc && live_prevented(sc)) return;            /* a game has the arrows */
@@ -2144,6 +2231,155 @@ static void draw_clipped(int x, int y, const char* s, int max_chars, uint32_t fg
     gfx_draw_text(x, y, buf, fg, bg);
 }
 
+/* ── the toolbar's icons, drawn: 13x13 or so around cx, cy ─────────── */
+
+/* back (dir -1) / forward (+1): a shaft and a head */
+static void ic_arrow(int cx, int cy, int dir, uint32_t c) {
+    gfx_fill_rect(cx - 5, cy - 1, 11, 2, c);
+    int tip = cx + dir * 5;
+    for (int i = 0; i < 5; i++) {
+        int x = tip - dir * i - (dir > 0 ? 1 : 0);
+        gfx_fill_rect(x, cy - 1 - i, 2, 2, c);
+        gfx_fill_rect(x, cy - 1 + i, 2, 2, c);
+    }
+}
+
+/* reload: a ring open at the top right, its end an arrowhead */
+static void ic_reload(int cx, int cy, uint32_t c) {
+    for (int dy = -6; dy <= 6; dy++)
+        for (int dx = -6; dx <= 6; dx++) {
+            int d2 = dx * dx + dy * dy;
+            if (d2 < 20 || d2 > 38) continue;
+            if (dx > 0 && dy < 0 && -dy > dx / 2) continue;           /* the opening */
+            gfx_fill_rect(cx + dx, cy + dy, 1, 1, c);
+        }
+    for (int i = 0; i < 4; i++) gfx_fill_rect(cx + 1 + i, cy - 9 + i, 1, 2 * (3 - i) + 1, c);
+}
+
+/* stop (while a page loads): an X */
+static void ic_stop(int cx, int cy, uint32_t c) {
+    for (int i = -4; i <= 4; i++) {
+        gfx_fill_rect(cx + i, cy + i, 2, 1, c);
+        gfx_fill_rect(cx + i, cy - i, 2, 1, c);
+    }
+}
+
+/* home: a house - roof, walls, a door */
+static void ic_home(int cx, int cy, uint32_t c, uint32_t bg) {
+    for (int i = 0; i < 7; i++) gfx_fill_rect(cx - i, cy - 7 + i, 2 * i + 1, 1, c);
+    gfx_fill_rect(cx - 5, cy, 11, 6, c);
+    gfx_fill_rect(cx - 1, cy + 2, 3, 4, bg);
+}
+
+enum { IC_BACK, IC_FWD, IC_RELOAD, IC_STOP, IC_HOME };
+
+static void icon_button(int x, int y, int w, int kind, int enabled) {
+    uint32_t base = enabled ? 0x00303740u : 0x00262B33u, c = enabled ? C_TEXT : 0x00707A88u;
+    tool_button(x, y, w, "", enabled);
+    int cx = x + w / 2, cy = y + (TOOL_H - 2) / 2;
+    switch (kind) {
+    case IC_BACK:   ic_arrow(cx, cy, -1, c); break;
+    case IC_FWD:    ic_arrow(cx, cy, 1, c); break;
+    case IC_RELOAD: ic_reload(cx, cy + 1, c); break;
+    case IC_STOP:   ic_stop(cx - 1, cy, c); break;
+    case IC_HOME:   ic_home(cx, cy + 1, c, base); break;
+    }
+}
+
+/* a padlock: https */
+static void ic_lock(int x, int y, uint32_t c, uint32_t bg) {
+    gfx_fill_rect(x + 2, y, 5, 5, c);                /* the shackle */
+    gfx_fill_rect(x + 3, y + 1, 3, 4, bg);
+    gfx_fill_rect(x, y + 4, 9, 7, c);                /* the body */
+}
+
+/* the part of an address in its colour; how many columns it took */
+static int addr_part(int x, int y, const char* s, int n, int maxc, uint32_t fg, uint32_t bg) {
+    char buf[200];
+    if (n <= 0 || maxc <= 0) return 0;
+    int nb = u8_byte_at(s, n, maxc);
+    if (nb > (int)sizeof(buf) - 1) nb = (int)sizeof(buf) - 1;
+    memcpy(buf, s, (size_t)nb);
+    buf[nb] = 0;
+    gfx_draw_text(x, y, buf, fg, bg);
+    return u8_cols(buf, nb);
+}
+
+/* the address bar: focused, the text being edited with its caret (all of
+ * it selected right after the click); else the address as Chrome shows
+ * it - a padlock and no "https://", the host dark and the rest grey */
+static void draw_addr_bar(tab_t* t, int x0, int ty, int aw) {
+    uint32_t abg = g_addr_focus ? 0x00FFFFFFu : 0x00E8EAEDu;
+    gfx_fill_rect(x0 + 1, ty, aw - 2, TOOL_H - 2, abg);              /* (rounded a little) */
+    gfx_fill_rect(x0, ty + 1, aw, TOOL_H - 4, abg);
+    if (g_addr_focus) {
+        gfx_fill_rect(x0 + 1, ty, aw - 2, 1, 0x001A73E8u);
+        gfx_fill_rect(x0 + 1, ty + TOOL_H - 3, aw - 2, 1, 0x001A73E8u);
+        gfx_fill_rect(x0, ty + 1, 1, TOOL_H - 4, 0x001A73E8u);
+        gfx_fill_rect(x0 + aw - 1, ty + 1, 1, TOOL_H - 4, 0x001A73E8u);
+    }
+    const char* a = t ? t->addr : "";
+    int len = (int)strlen(a);
+    if (g_addr_focus) {
+        int maxc = (aw - 12) / 8;
+        if (g_addr_cur > len) g_addr_cur = len;
+        if (g_addr_view > g_addr_cur) g_addr_view = g_addr_cur;
+        while (u8_cols(a + g_addr_view, g_addr_cur - g_addr_view) > maxc - 1) g_addr_view = u8_next(a, len, g_addr_view);
+        int from = g_addr_all ? 0 : g_addr_view;
+        if (g_addr_all && len) {
+            int cols = u8_cols(a, u8_byte_at(a, len, maxc));
+            gfx_fill_rect(x0 + 4, ty + 4, cols * 8 + 2, 12, 0x00B4D5FEu);
+            addr_part(x0 + 5, ty + 6, a, len, maxc, 0x00101010u, 0x00B4D5FEu);
+        } else {
+            addr_part(x0 + 5, ty + 6, a + from, len - from, maxc, 0x00101010u, abg);
+            gfx_fill_rect(x0 + 5 + u8_cols(a + g_addr_view, g_addr_cur - g_addr_view) * 8, ty + 4, 1, 12, 0x00202020u);
+        }
+        return;
+    }
+    int tx = x0 + 6;
+    const char* host = a;
+    const char* sep = strstr(a, "://");
+    if (!strncasecmp(a, "https://", 8)) {
+        ic_lock(tx, ty + 4, 0x005F6368u, abg);
+        tx += 15;
+        host = a + 8;
+    } else if (sep) host = sep + 3;
+    int maxc = (x0 + aw - 6 - tx) / 8, col = 0;
+    if (host != a && strncasecmp(a, "https://", 8))                   /* http://, file://: grey */
+        col += addr_part(tx, ty + 6, a, (int)(host - a), maxc, 0x005F6368u, abg);
+    int hn = 0;
+    while (host[hn] && host[hn] != '/' && host[hn] != '?' && host[hn] != '#') hn++;
+    col += addr_part(tx + col * 8, ty + 6, host, hn, maxc - col, 0x00202124u, abg);
+    addr_part(tx + col * 8, ty + 6, host + hn, (int)strlen(host + hn), maxc - col, 0x005F6368u, abg);
+}
+
+/* the suggestions under the address bar: each a title and an address */
+static void draw_suggestions(int x0, int y0, int aw) {
+    if (!g_addr_focus || !g_sug_n) return;
+    int h = g_sug_n * SUG_H + 4;
+    gfx_fill_rect(x0 + 3, y0 + 3, aw, h, 0x00101318u);               /* a shadow */
+    gfx_fill_rect(x0, y0, aw, h, 0x00FFFFFFu);
+    gfx_fill_rect(x0, y0 + h - 1, aw, 1, 0x00C0C4CCu);
+    int maxc = (aw - 40) / 8;
+    for (int i = 0; i < g_sug_n; i++) {
+        int ry = y0 + 2 + i * SUG_H;
+        uint32_t bg = i == g_sug_sel ? 0x00E8F0FEu : 0x00FFFFFFu;
+        gfx_fill_rect(x0 + 1, ry, aw - 2, SUG_H, bg);
+        /* a small globe: a page visited before */
+        for (int dy = -5; dy <= 5; dy++) for (int dx = -5; dx <= 5; dx++) {
+            int d2 = dx * dx + dy * dy;
+            if ((d2 >= 18 && d2 <= 30) || (dx == 0 && d2 <= 30) || (dy == 0 && d2 <= 30))
+                gfx_fill_rect(x0 + 16 + dx, ry + SUG_H / 2 + dy, 1, 1, 0x005F6368u);
+        }
+        const char* title = bh_title(g_sug[i]);
+        const char* url = bh_url(g_sug[i]);
+        const char* shown = !strncasecmp(url, "https://", 8) ? url + 8 : url;
+        const char* top = title[0] ? title : shown;
+        addr_part(x0 + 32, ry + 4, top, (int)strlen(top), maxc, 0x00202124u, bg);
+        addr_part(x0 + 32, ry + 19, shown, (int)strlen(shown), maxc, 0x001A73E8u, bg);
+    }
+}
+
 static void blit_view(int x0, int y0, int w, int h) {
     int stride, tw, th;
     uint32_t* dst = fb_target(&stride, &tw, &th);
@@ -2213,29 +2449,13 @@ void browser_draw(const fb_info_t* fi) {
 
     /* toolbar: < > R Hm [address] Go */
     int ty = y + TOOL_Y;
-    tool_button(x + 4, ty, 26, "<", t && t->hist_pos > 0);
-    tool_button(x + 32, ty, 26, ">", t && t->hist_pos < t->hist_n - 1);
-    tool_button(x + 60, ty, 26, t && t->loading ? "*" : "R", 1);
-    tool_button(x + 88, ty, 32, "Hm", 1);
+    icon_button(x + 4, ty, 26, IC_BACK, t && t->hist_pos > 0);
+    icon_button(x + 32, ty, 26, IC_FWD, t && t->hist_pos < t->hist_n - 1);
+    icon_button(x + 60, ty, 26, t && t->loading ? IC_STOP : IC_RELOAD, 1);
+    icon_button(x + 88, ty, 32, IC_HOME, 1);
     int aw = addr_w();
-    uint32_t abg = g_addr_focus ? 0x00FFFFFFu : 0x00E8E8E8u;
-    bevel(x + ADDR_X, ty, aw, TOOL_H - 2, abg, 0x00606060u, 0x00C0C0C0u);
-    int maxc = (aw - 12) / 8;
-    const char* addr = t ? t->addr : "";
-    if (g_addr_focus && g_addr_all && addr[0]) {
-        int n = (int)strlen(addr);
-        if (n > maxc) n = maxc;
-        gfx_fill_rect(x + ADDR_X + 4, ty + 4, n * 8 + 2, 12, 0x00B4D5FEu);
-        draw_clipped(x + ADDR_X + 5, ty + 6, addr, maxc, 0x00101010u, 0x00B4D5FEu, 0);
-    } else {
-        draw_clipped(x + ADDR_X + 5, ty + 6, addr, maxc, 0x00101010u, abg, g_addr_focus);
-    }
-    if (g_addr_focus && !g_addr_all) {
-        int n = (int)strlen(addr);
-        if (n > maxc) n = maxc;
-        gfx_fill_rect(x + ADDR_X + 5 + n * 8, ty + 4, 2, 12, 0x00202020u);
-    }
-    tool_button(x + ADDR_X + aw + 4, ty, 40, "Go", 1);
+    draw_addr_bar(t, x + ADDR_X, ty, aw);
+    icon_button(x + ADDR_X + aw + 4, ty, 40, IC_FWD, 1);      /* Go */
     draw_dl_button(x + ADDR_X + aw + 48, ty);
 
     /* page */
@@ -2252,6 +2472,7 @@ void browser_draw(const fb_info_t* fi) {
     gfx_fill_rect(x + 3, sy, W - 6, STATUS_H, 0x00161B22u);
     if (t) draw_clipped(x + 8, sy + 4, t->status, (W - 30) / 8, t->status_err ? C_ERR : C_DIM, 0x00161B22u, 0);
     gfx_draw_grip(x + W, y + H);
+    draw_suggestions(x + ADDR_X, ty + TOOL_H, aw);     /* over the page, under the address bar */
 
     /* "Choose a file to upload" */
     if (g_pick_on && fc_active()) {
@@ -2310,18 +2531,32 @@ void browser_click(int mx, int my) {
         return;
     }
     if (ly >= TOOL_Y && ly < TOOL_Y + TOOL_H) {
+        int was = g_addr_focus;
         g_addr_focus = 0;
         int aw = addr_w();
         if (lx >= 4 && lx < 30) push_cmd(CMD_BACK, 0, 0);
         else if (lx >= 32 && lx < 58) push_cmd(CMD_FWD, 0, 0);
         else if (lx >= 60 && lx < 86) push_cmd(CMD_RELOAD, 0, 0);
         else if (lx >= 88 && lx < 120) push_cmd(CMD_HOME, 0, 0);
-        else if (lx >= ADDR_X && lx < ADDR_X + aw) { g_addr_focus = 1; g_addr_all = 1; }
-        else if (lx >= ADDR_X + aw + 48 && lx < ADDR_X + aw + 48 + DLBTN_W) push_cmd(CMD_DOWNLOADS, 0, 0);
-        else if (lx >= ADDR_X + aw + 4 && lx < ADDR_X + aw + 44 && t) {
-            kstrlcpy(g_go_url, t->addr, sizeof(g_go_url));
-            push_cmd(CMD_GO, 0, 0);
+        else if (lx >= ADDR_X && lx < ADDR_X + aw && t) {
+            if (!was) addr_focus_all(t);                 /* the first click takes it all (Chrome) */
+            else {                                       /* the next ones put the caret there */
+                int len = (int)strlen(t->addr), col = (lx - ADDR_X - 5 + 4) / 8;
+                g_addr_focus = 1;
+                g_addr_all = 0;
+                if (g_addr_view > len) g_addr_view = len;
+                g_addr_cur = g_addr_view + u8_byte_at(t->addr + g_addr_view, len - g_addr_view, col < 0 ? 0 : col);
+            }
         }
+        else if (lx >= ADDR_X + aw + 48 && lx < ADDR_X + aw + 48 + DLBTN_W) push_cmd(CMD_DOWNLOADS, 0, 0);
+        else if (lx >= ADDR_X + aw + 4 && lx < ADDR_X + aw + 44 && t) addr_go(t);
+        return;
+    }
+    /* a suggestion under the address bar */
+    if (g_addr_focus && g_sug_n && t && lx >= ADDR_X && lx < ADDR_X + addr_w() &&
+        ly >= TOOL_Y + TOOL_H && ly < TOOL_Y + TOOL_H + 2 + g_sug_n * SUG_H) {
+        int i = (ly - TOOL_Y - TOOL_H - 2) / SUG_H;
+        if (i >= 0 && i < g_sug_n) { g_sug_sel = i; addr_go(t); }
         return;
     }
     int vw = view_w(), vh = view_h();
