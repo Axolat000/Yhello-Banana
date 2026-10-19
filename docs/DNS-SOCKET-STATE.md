@@ -59,7 +59,7 @@ Banana OS implements networking in two tiers:
 | `gethostbyaddr()` | IPv4 address | Length 4, family `AF_INET`; formats string and resolves | Pointer to `hostent`, or `NULL` (`h_errno = HOST_NOT_FOUND`) |
 | `gethostbyaddr()` | IPv6 address | Length 16, family `AF_INET6`; rejected | `NULL` (`h_errno = HOST_NOT_FOUND`) |
 | `socket()` | `AF_INET, SOCK_STREAM/DGRAM` | Maps to kernel `usock_new(AF_INET, ...)` | Valid socket file descriptor |
-| `socket()` | `AF_INET6, SOCK_STREAM/DGRAM`| Rejected in `kernel/usock.c:136` (`family != AF_INET`) | `-1`, `errno = EAFNOSUPPORT` |
+| `socket()` | `AF_INET6, SOCK_STREAM/DGRAM`| Supported in `kernel/usock.c` (`family == AF_INET6`); connects to `net/ipv6.c` & `net/tcp.c` | Valid socket file descriptor |
 
 ---
 
@@ -69,12 +69,13 @@ Banana OS implements networking in two tiers:
 1. **DNS TCP Fallback (Implemented)**:
    - RFC 1035 section 4.2.2 defines TCP fallback when responses have the truncation flag (`TC`) set.
    - In `net/dns.c`, incoming packets with the TC flag set now set `q->tc = 1`, and `resolve()` initiates a TCP connection to the DNS server port 53 (via `tcp_connect` or `tcp_connect6`), transmitting the 2-byte length prefixed question and parsing the TCP answer.
-2. **SDK IPv6 Socket Separation**:
-   - The Banana SDK `banana_api_t` table currently exports `resolve(name, ip4)`.
-   - `kernel/usock.c` explicitly enforces `family == AF_INET`.
-   - Applications ported via the SDK (such as Java or web clients) rely on `socket(AF_INET6, ...)` returning `EAFNOSUPPORT` to cleanly fall back to IPv4 networking.
-3. **Checklist Evolution**:
-   - A dedicated task `base-17-dns-sockets` is proposed in `docs/daily-use-checklist.json` to track future enhancements (DNS TCP fallback, AAAA resolution in SDK `banana_api`, and IPv6 `usock` support) without expanding the scope of the current base-17 step 2 deliverables.
+2. **Kernel usock IPv6 Support (Implemented)**:
+   - `kernel/usock.c` supports both `AF_INET` and `AF_INET6` families for `SOCK_STREAM` and `SOCK_DGRAM`.
+   - `AF_INET6` stream sockets connect and listen via `tcp_connect6` and `tcp_listen6`, query peer information via `tcp_peer6`, and format 28-byte `sockaddr_in6` structures.
+   - `AF_INET6` datagram sockets bind via `udp6_bind` and dispatch through `udp6_send`.
+   - `IPPROTO_IPV6` socket option `IPV6_V6ONLY` is supported.
+3. **SDK IPv6 Integration**:
+   - SDK `getaddrinfo` and `banana_api` AF_INET6 resolution is tracked as step 3 of `base-17-dns-sockets`.
 
 ---
 
