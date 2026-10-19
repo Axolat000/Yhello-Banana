@@ -109,32 +109,49 @@ static int advance64(const ttf_t* f, int px, int g, int prev_g) {
     return (adv * px * 64 + f->upem / 2) / f->upem;
 }
 
+/* the face that draws code point cp: the one asked for or - when it has no
+ * glyph for it - the first other loaded face that has one: the built-in
+ * ones, then the user's (an emoji or a Chinese font installed in Settings >
+ * Fonts draws what DejaVu lacks); *g gets the glyph */
+static int pick(int face, uint32_t cp, int* g) {
+    *g = ttf_glyph(&g_face[face], cp);
+    if (*g || cp < 0x80) return face;
+    for (int i = 0; i < MAX_FACES; i++) {
+        if (i == face || !g_ok[i]) continue;
+        int gg = ttf_glyph(&g_face[i], cp);
+        if (gg) { *g = gg; return i; }
+    }
+    return face;                                  /* (nobody has it: its empty box) */
+}
+
 int font_text_width(int face, int px, const char* s, uint32_t n) {
-    const ttf_t* f = face_of(face);
-    if (!f) return (int)n * px / 2;
+    int rf = resolve(face);
+    if (rf < 0) return (int)n * px / 2;
     const char* e = s + n;
-    int pen = 0, prev = 0;
+    int pen = 0, prev = 0, prev_face = -1;
     while (s < e) {
         uint32_t cp = utf8_next(&s, e);
         if (cp == '\t') cp = ' ';
-        int g = ttf_glyph(f, cp);
-        pen += advance64(f, px, g, prev);
+        int g, fi = pick(rf, cp, &g);
+        pen += advance64(&g_face[fi], px, g, fi == prev_face ? prev : 0);
         prev = g;
+        prev_face = fi;
     }
     return (pen + 32) >> 6;
 }
 
 uint32_t font_fit(int face, int px, const char* s, uint32_t n, int max_w) {
-    const ttf_t* f = face_of(face);
+    int rf = resolve(face);
     const char* start = s, *e = s + n;
-    int pen = 0, prev = 0;
+    int pen = 0, prev = 0, prev_face = -1;
     while (s < e) {
         const char* before = s;
         uint32_t cp = utf8_next(&s, e);
-        int g = f ? ttf_glyph(f, cp) : 0;
-        pen += f ? advance64(f, px, g, prev) : px * 32;
+        int g = 0, fi = rf >= 0 ? pick(rf, cp, &g) : -1;
+        pen += fi >= 0 ? advance64(&g_face[fi], px, g, fi == prev_face ? prev : 0) : px * 32;
         if ((pen + 32) >> 6 > max_w) return (uint32_t)(before - start);
         prev = g;
+        prev_face = fi;
     }
     return n;
 }
@@ -147,17 +164,19 @@ static inline uint32_t blend(uint32_t dst, uint32_t src, uint32_t a) {
 
 int font_draw(uint32_t* buf, int stride, int cx0, int cy0, int cx1, int cy1,
               int face, int px, int x, int y, const char* s, uint32_t n, uint32_t color, int italic) {
-    const ttf_t* f = face_of(face);
-    if (!f) return x;
+    int rf = resolve(face);
+    if (rf < 0) return x;
     const char* e = s + n;
-    int pen = x * 64, prev = 0;
+    int pen = x * 64, prev = 0, prev_face = -1;
     color &= 0xFFFFFF;
     while (s < e) {
         uint32_t cp = utf8_next(&s, e);
         if (cp == '\t') cp = ' ';
-        int g = ttf_glyph(f, cp);
-        if (prev) pen += ((ttf_kern(f, prev, g) * px * 64) + f->upem / 2) / f->upem;
-        const cglyph_t* c = (cp > ' ') ? glyph_bitmap(resolve(face), f, px, g) : NULL;
+        int g, fi = pick(rf, cp, &g);             /* (another face draws what this one lacks) */
+        const ttf_t* f = &g_face[fi];
+        if (prev && fi == prev_face) pen += ((ttf_kern(f, prev, g) * px * 64) + f->upem / 2) / f->upem;
+        prev_face = fi;
+        const cglyph_t* c = (cp > ' ') ? glyph_bitmap(fi, f, px, g) : NULL;
         if (c && c->alpha) {
             int gx = ((pen + 32) >> 6) + c->left, gy = y - c->top;
             for (int r = 0; r < c->h; r++) {
