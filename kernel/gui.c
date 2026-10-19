@@ -44,6 +44,7 @@
 #include "startmenu.h"
 #include "fileicons.h"
 #include "notification.h"
+#include "screenshot.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
@@ -55,7 +56,7 @@
  * down, Lock, Exit to shell). */
 /* (About and Wallpaper live in Settings now: reached from the desktop's menu) */
 enum { ACT_TERMINAL = 0, ACT_FILES, ACT_BROWSER, ACT_NOTEPAD, ACT_APPS, ACT_TASKMGR, ACT_SETTINGS, ACT_QUIT, ACT_ABOUT,
-       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP };
+       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP, ACT_SCREENSHOT };
 /* slots: the installer's ("Install Banana OS") is there only on the live CD */
 #define MENU_ITEMS_MAX 10
 #define MENU_SLOT_INSTALL 8
@@ -2315,6 +2316,7 @@ static void open_desktop_menu(int mx, int my) {
         { "Files", ACT_FILES, 0 },
         { "Task Manager", ACT_TASKMGR, 0 },
         { "Change wallpaper...", ACT_WALLPAPER, 0 },
+        { "Take screenshot", ACT_SCREENSHOT, 0 },
         { "About Banana OS", ACT_ABOUT, 0 },
         { CTX_SEP, 0, 0 },
         { "Lock screen", ACT_LOCK, 0 },
@@ -3130,6 +3132,7 @@ static void do_action(int act) {
     case ACT_TASKMGR: taskmgr_open(); g_app_min[APP_TASKMGR] = 0; raise_app(APP_TASKMGR); break;
     case ACT_SETTINGS: settings_open(); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
     case ACT_WALLPAPER: settings_open_page(SETTINGS_PAGE_DISPLAY); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
+    case ACT_SCREENSHOT: screenshot_take(NULL, 1, NULL, 0); break;
     case ACT_QUIT: gui_set_enabled(0); break;
     case ACT_INSTALL: installer_open(); g_app_min[APP_INSTALLER] = 0; raise_app(APP_INSTALLER); break;
     case ACT_RESTART: shell_power(1); break;          /* (saves the files first) */
@@ -3537,6 +3540,7 @@ static int kb_global(int k) {
     }
     case 'v': cb_toggle(); break;
     case 'n': np_toggle(); break;
+    case 's': screenshot_take(NULL, 1, NULL, 0); break;
     case 'm': for (int j = 0; j < g_ntb; j++) win_minimize(g_tb[j]); g_front_app = -1; break;
     case 'e': do_action(ACT_FILES); break;
     case 'i': do_action(ACT_SETTINGS); break;
@@ -3705,14 +3709,17 @@ static void cb_draw(const fb_info_t* fi) {
     for (int r = 0; r < rows && buf; r++, y += CB_ROW_H) {
         int i = g_cb_top + r, pinned = 0;
         uint32_t len = 0;
-        if (clipboard_hist_peek(i, buf, 400, &len, &pinned) < 0) break;
+        clip_format_t fmt = CLIP_FORMAT_TEXT;
+        if (clipboard_hist_peek_ex(i, buf, 400, &len, &pinned, &fmt) < 0) break;
         int sel = i == g_cb_sel;
         uint32_t bg = sel ? CB_ROW_SEL : CB_ROW;
         draw_bevel_box(px + 8, y + 2, pw - 16, CB_ROW_H - 4, bg, sel ? 0x0090B8F0u : 0x00384252u, 0x0010151Du);
         char lines[2][96];
         cb_preview(buf, (pw - 16 - 52) / 8, lines);
         if (!lines[0][0]) kstrlcpy(lines[0], "(spaces only)", sizeof(lines[0]));
-        gfx_draw_text(px + 16, y + 9, lines[0], 0x00E8EEF6u, bg);
+        uint32_t fg = (fmt == CLIP_FORMAT_IMAGE) ? 0x0080D0FFu :
+                      (fmt == CLIP_FORMAT_FILES) ? 0x00FFE08Au : 0x00E8EEF6u;
+        gfx_draw_text(px + 16, y + 9, lines[0], fg, bg);
         if (lines[1][0]) gfx_draw_text(px + 16, y + 23, lines[1], 0x00C2CCD8u, bg);
         cb_draw_pin(px + pw - 46, y + 12, pinned, bg);
         gfx_draw_text(px + pw - 24, y + 15, "x", 0x00C2CCD8u, bg);

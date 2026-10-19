@@ -8,6 +8,7 @@
 #include "../kernel/rtc.h"
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
+#include "../kernel/screenshot.h"
 
 static void err(const char* cmd, const char* what, const char* path) {
     char b[FS_PATH_LEN + 64];
@@ -375,16 +376,33 @@ static void cmd_unzip(int argc, char** argv) {
 
 /* ── clip: the clipboard from the shell (Windows has the same name) ───── */
 
+/* ── clip: the clipboard from the shell (Windows has the same name) ───── */
+
 static void cmd_clip(int argc, char** argv, const char* line) {
     if (argc < 2) {
-        terminal_writeln("usage: clip TEXT (copy it) | clip -p (print the clipboard) | clip -l (the history, Win+V) | clip -c (clear it)");
+        terminal_writeln("usage: clip TEXT | -p | -l | -c | -f FILE ... | -i IMAGE.png");
         return;
     }
     if (!strcmp(argv[1], "-p")) {
-        uint32_t n;
-        const char* s = clipboard_get(&n);
-        terminal_write(s);
-        if (n && s[n - 1] != '\n') terminal_putchar('\n');
+        clip_format_t fmt = clipboard_get_format();
+        uint32_t n = 0;
+        if (fmt == CLIP_FORMAT_TEXT) {
+            const char* s = clipboard_get(&n);
+            terminal_write(s);
+            if (n && s[n - 1] != '\n') terminal_putchar('\n');
+        } else if (fmt == CLIP_FORMAT_IMAGE) {
+            clipboard_get_image(&n);
+            char b[64];
+            ksnprintf(b, sizeof(b), "[clipboard contains PNG image: %u bytes]", n);
+            terminal_writeln(b);
+        } else if (fmt == CLIP_FORMAT_FILES) {
+            char buf[1024];
+            int count = clipboard_get_files(buf, sizeof(buf), &n);
+            char b[64];
+            ksnprintf(b, sizeof(b), "[clipboard contains %d file%s (%u bytes)]:", count, count == 1 ? "" : "s", n);
+            terminal_writeln(b);
+            terminal_write(buf);
+        }
         return;
     }
     if (!strcmp(argv[1], "-l")) {
@@ -394,7 +412,8 @@ static void cmd_clip(int argc, char** argv, const char* line) {
         for (int i = 0; i < n; i++) {
             uint32_t len = 0;
             int pinned = 0;
-            if (clipboard_hist_peek(i, b, sizeof(b), &len, &pinned) < 0) break;
+            clip_format_t fmt = CLIP_FORMAT_TEXT;
+            if (clipboard_hist_peek_ex(i, b, sizeof(b), &len, &pinned, &fmt) < 0) break;
             for (char* c = b; *c; c++) if (*c == '\n' || *c == '\t' || *c == '\r') *c = ' ';
             ksnprintf(l, sizeof(l), "%2d %c %s%s", i + 1, pinned ? '*' : ' ', b, len >= sizeof(b) ? "..." : "");
             terminal_writeln(l);
@@ -407,6 +426,41 @@ static void cmd_clip(int argc, char** argv, const char* line) {
         terminal_writeln(m);
         return;
     }
+    if (!strcmp(argv[1], "-f")) {
+        if (argc < 3) { terminal_writeln("usage: clip -f <file1> [file2 ...]"); return; }
+        const char* paths[64];
+        int cnt = 0;
+        for (int i = 2; i < argc && cnt < 64; i++) paths[cnt++] = argv[i];
+        if (clipboard_set_files(paths, cnt) == 0) {
+            char m[64];
+            ksnprintf(m, sizeof(m), "clip: %d file%s copied to clipboard", cnt, cnt == 1 ? "" : "s");
+            terminal_writeln(m);
+        } else {
+            terminal_writeln("clip: failed to copy files (limit exceeded)");
+        }
+        return;
+    }
+    if (!strcmp(argv[1], "-i")) {
+        if (argc < 3) { terminal_writeln("usage: clip -i <image.png>"); return; }
+        int fi = fs_find_file(argv[2]);
+        fs_file_t* fl = fi >= 0 ? fs_get_file(fi) : NULL;
+        if (!fl || !fl->content || fl->size == 0) {
+            terminal_writeln("clip: cannot read image file");
+            return;
+        }
+        if (fl->size > CLIPBOARD_IMAGE_MAX) {
+            terminal_writeln("clip: image exceeds 2 MiB limit");
+            return;
+        }
+        if (clipboard_set_image(fl->content, fl->size) == 0) {
+            char m[64];
+            ksnprintf(m, sizeof(m), "clip: image \"%s\" (%u bytes) copied to clipboard", argv[2], fl->size);
+            terminal_writeln(m);
+        } else {
+            terminal_writeln("clip: failed to copy image");
+        }
+        return;
+    }
     /* the rest of the line as it was typed (quotes around all of it dropped) */
     const char* t = line;
     while (*t == ' ') t++;
@@ -416,6 +470,33 @@ static void cmd_clip(int argc, char** argv, const char* line) {
     while (n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\n')) n--;
     if (n >= 2 && (t[0] == '"' || t[0] == '\'') && t[n - 1] == t[0]) { t++; n -= 2; }
     clipboard_set(t, (uint32_t)n);
+}
+
+/* ── screenshot: captures screen to PNG ──────────────────────────────── */
+
+static void cmd_screenshot(int argc, char** argv) {
+    const char* dir = NULL;
+    int notify = 1;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-q")) {
+            notify = 0;
+        } else if (!strcmp(argv[i], "-d") && i + 1 < argc) {
+            dir = argv[++i];
+        } else if (argv[i][0] != '-') {
+            dir = argv[i];
+        } else {
+            terminal_writeln("usage: screenshot [-d <dir>] [-q]");
+            return;
+        }
+    }
+    char out_path[FS_PATH_LEN] = "";
+    if (screenshot_take(dir, notify, out_path, sizeof(out_path)) == 0) {
+        char msg[FS_PATH_LEN + 32];
+        ksnprintf(msg, sizeof(msg), "Screenshot saved to: %s", out_path);
+        terminal_writeln(msg);
+    } else {
+        terminal_writeln("screenshot: failed to capture screen (no graphics mode or memory error)");
+    }
 }
 
 int fscmd_dispatch(const char* line) {
@@ -435,6 +516,7 @@ int fscmd_dispatch(const char* line) {
     else if (strcmp(argv[0], "zip") == 0) cmd_zip(argc, argv);
     else if (strcmp(argv[0], "unzip") == 0) cmd_unzip(argc, argv);
     else if (strcmp(argv[0], "clip") == 0) cmd_clip(argc, argv, line);
+    else if (strcmp(argv[0], "screenshot") == 0) cmd_screenshot(argc, argv);
     else done = 0;
     kfree(buf);
     return done;
