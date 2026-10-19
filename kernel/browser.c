@@ -23,6 +23,8 @@
 #include "media.h"
 #include "filechooser.h"
 #include "kbnav.h"
+#include "dlmgr.h"
+#include "explorer.h"
 
 /*
  * The web browser window. Everything that touches a page (loading,
@@ -59,7 +61,7 @@
 #define C_ERR     0x00F08070u
 
 enum { CMD_NONE = 0, CMD_CLICK, CMD_RCLICK, CMD_GO, CMD_BACK, CMD_FWD, CMD_RELOAD, CMD_HOME,
-       CMD_NEWTAB, CMD_CLOSETAB, CMD_PASTE, CMD_DOWNLOAD, CMD_SOURCE, CMD_COPY };
+       CMD_NEWTAB, CMD_CLOSETAB, CMD_PASTE, CMD_DOWNLOAD, CMD_SOURCE, CMD_COPY, CMD_DOWNLOADS };
 
 typedef struct { int kind, x, y; } cmd_t;
 
@@ -90,6 +92,9 @@ static int        g_ntabs, g_cur;
 static tab_t*     g_status_tab;          /* the tab a load reports to */
 
 static int        g_addr_focus, g_addr_all;  /* address bar focused; its text all selected */
+static uint32_t   g_dl_seen;                 /* dlm_gen() when the downloads page was last opened */
+static int        g_dl_new;                  /* a download finished since: a dot on the button */
+static int        g_dl_announced;            /* the newest finished download told in the status line */
 static char       g_go_url[URL_MAX];        /* CMD_GO / CMD_NEWTAB target */
 static char       g_alert[256];
 
@@ -105,7 +110,8 @@ static uint32_t   g_page_mem = 48u << 20;
 
 static int view_w(void) { return g_win.w - 2 * VIEW_X - SB_W; }
 static int view_h(void) { return g_win.h - VIEW_Y - STATUS_H - 4; }
-static int addr_w(void) { return g_win.w - ADDR_X - 52; }
+#define DLBTN_W   30                 /* the downloads button, right of Go */
+static int addr_w(void) { return g_win.w - ADDR_X - 52 - DLBTN_W - 4; }
 
 static tab_t* cur_tab(void) { return g_ntabs ? g_tabs[g_cur] : NULL; }
 
@@ -331,6 +337,8 @@ static void cookies_load(void) {
 typedef struct {
     int      force;          /* save whatever comes */
     int      ram;            /* wanted in RAM (a sound for a page), not saved */
+    int      handoff;        /* a page load: a download goes to the download manager (dlmgr.c) */
+    int      handed;         /* ... and did: this fetch was stopped at its first bytes */
     int      active;         /* the answer turned out to be a download */
     char     name[96];       /* from Content-Disposition */
     uint32_t reported;       /* bytes at the last progress message */
@@ -351,6 +359,7 @@ static void set_status(const char* s, int err);
 static void download_name(const char* url, const char* hint, const char* ctype, char* out, int cap);
 static void download_path(const char* name, char* path, int cap);
 static void download_done(const char* path, uint32_t len);
+static void watch_downloads(void);
 
 /* the download's file, made when the answer turns out to be one */
 static void dl_open(dl_t* dl) {
@@ -554,6 +563,140 @@ static void sb_esc(sbuf_t* b, const char* s, uint32_t n) {
     }
 }
 
+/* ── about:downloads: the downloads, like Chrome's page ──────────────── */
+
+static void fmt_bytes(uint32_t b, char* o, int cap) {
+    if (b >= (1u << 30)) ksnprintf(o, (size_t)cap, "%u.%u GB", b >> 30, ((b >> 20) & 1023) * 10 / 1024);
+    else if (b >= (10u << 20)) ksnprintf(o, (size_t)cap, "%u MB", (b + (1u << 19)) >> 20);
+    else if (b >= (1u << 20)) ksnprintf(o, (size_t)cap, "%u.%u MB", b >> 20, ((b >> 10) & 1023) * 10 / 1024);
+    else if (b >= 1024) ksnprintf(o, (size_t)cap, "%u KB", (b + 512) >> 10);
+    else ksnprintf(o, (size_t)cap, "%u B", b);
+}
+
+static const char DL_CSS[] =
+    "body{margin:0;background:#f1f3f4;font-family:sans-serif;color:#202124}"
+    ".bar{background:#fff;padding:14px 24px;border-bottom:1px solid #dadce0;display:flex;align-items:center}"
+    ".bar h1{font-size:20px;font-weight:normal;margin:0;flex:1}"
+    ".bar a,.acts a{color:#1a73e8;text-decoration:none}"
+    ".list{max-width:680px;margin:24px auto;padding:0 16px}"
+    ".card{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(60,64,67,.3);padding:14px 16px;margin-bottom:12px;display:flex}"
+    ".icon{width:40px;height:40px;margin-right:16px;background:#e8f0fe;border-radius:6px;text-align:center;line-height:40px;color:#1a73e8;font-weight:bold;font-size:12px}"
+    ".main{flex:1;min-width:0}"
+    ".name{font-weight:bold;color:#1a73e8;text-decoration:none}"
+    ".gone{color:#80868b;text-decoration:line-through;font-weight:bold}"
+    ".url{color:#5f6368;font-size:13px;margin:2px 0 6px;overflow:hidden;white-space:nowrap}"
+    ".st{font-size:13px;color:#5f6368;margin-bottom:6px}"
+    ".err{color:#d93025}"
+    ".prog{height:4px;background:#e8eaed;border-radius:2px;margin:8px 0}"
+    ".prog div{height:4px;background:#1a73e8;border-radius:2px}"
+    ".acts a{margin-right:18px;font-size:14px}"
+    ".x{color:#5f6368;text-decoration:none;font-size:16px;margin-left:12px}"
+    ".empty{text-align:center;color:#5f6368;margin-top:90px}";
+
+static char* downloads_html(uint32_t* len) {
+    sbuf_t b = { 0, 0, 0 };
+    char t[160], s1[24], s2[24], s3[24];
+    sb_str(&b, "<html><head><title>Downloads</title><style>");
+    sb_str(&b, DL_CSS);
+    sb_str(&b, "</style></head><body><div class=bar><h1>Downloads</h1>"
+               "<a href=\"about:downloads?folder=1\">Open Downloads folder</a>&nbsp;&nbsp;&nbsp;"
+               "<a href=\"about:downloads?clear=1\">Clear all</a></div><div class=list>");
+    dlm_info_t d;
+    int n = 0, running = 0;
+    for (int i = 0; dlm_get(i, &d); i++, n++) {
+        int live = d.state == DLM_RUNNING || d.state == DLM_QUEUED;
+        running |= live;
+        int gone = d.state == DLM_DONE && fs_find_file(d.path) < 0;
+        /* the file's kind, as Chrome's icon */
+        const char* dot = strrchr(d.name, '.');
+        char ext[6] = "FILE";
+        if (dot && dot[1] && strlen(dot + 1) <= 4) { kstrlcpy(ext, dot + 1, sizeof(ext)); for (char* p = ext; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32; }
+        sb_str(&b, "<div class=card><div class=icon>");
+        sb_esc(&b, ext, (uint32_t)strlen(ext));
+        sb_str(&b, "</div><div class=main>");
+        if (d.state == DLM_DONE && !gone) {
+            ksnprintf(t, sizeof(t), "<a class=name href=\"about:downloads?open=%d\">", d.id);
+            sb_str(&b, t);
+            sb_esc(&b, d.name, (uint32_t)strlen(d.name));
+            sb_str(&b, "</a>");
+        } else {
+            sb_str(&b, gone || d.state == DLM_CANCELLED || d.state == DLM_FAILED ? "<span class=gone>" : "<span class=name>");
+            sb_esc(&b, d.name, (uint32_t)strlen(d.name));
+            sb_str(&b, "</span>");
+        }
+        sb_str(&b, "<div class=url>");
+        sb_esc(&b, d.url, (uint32_t)strlen(d.url));
+        sb_str(&b, "</div>");
+        if (d.state == DLM_RUNNING) {
+            fmt_bytes(d.got, s1, sizeof(s1));
+            if (d.total) {
+                fmt_bytes(d.total, s2, sizeof(s2));
+                ksnprintf(t, sizeof(t), "<div class=prog><div style=\"width:%u%%\"></div></div>", (uint32_t)((uint64_t)d.got * 100 / d.total));
+                sb_str(&b, t);
+            }
+            fmt_bytes(d.rate, s3, sizeof(s3));
+            if (d.total && d.rate) {
+                uint32_t left = (d.total - d.got) / d.rate;
+                char eta[32];
+                if (left >= 3600) ksnprintf(eta, sizeof(eta), "%u h %u min left", left / 3600, left / 60 % 60);
+                else if (left >= 60) ksnprintf(eta, sizeof(eta), "%u min left", (left + 30) / 60);
+                else ksnprintf(eta, sizeof(eta), "%u s left", left);
+                ksnprintf(t, sizeof(t), "<div class=st>%s/s - %s of %s, %s</div>", s3, s1, s2, eta);
+            } else if (d.total) ksnprintf(t, sizeof(t), "<div class=st>%s of %s</div>", s1, s2);
+            else ksnprintf(t, sizeof(t), "<div class=st>%s%s%s</div>", s1, d.rate ? ", " : "", d.rate ? s3 : "");
+            sb_str(&b, t);
+        } else if (d.state == DLM_QUEUED) sb_str(&b, "<div class=st>Waiting for another download to finish...</div>");
+        else if (d.state == DLM_DONE) {
+            fmt_bytes(d.got, s1, sizeof(s1));
+            ksnprintf(t, sizeof(t), "<div class=st>%s%s</div>", s1, gone ? " - Deleted" : "");
+            sb_str(&b, t);
+        } else if (d.state == DLM_FAILED) {
+            sb_str(&b, "<div class=\"st err\">Failed - ");
+            sb_esc(&b, d.err, (uint32_t)strlen(d.err));
+            sb_str(&b, "</div>");
+        } else sb_str(&b, "<div class=st>Cancelled</div>");
+        sb_str(&b, "<div class=acts>");
+        if (live) ksnprintf(t, sizeof(t), "<a href=\"about:downloads?cancel=%d\">Cancel</a>", d.id);
+        else if (d.state == DLM_DONE && !gone) ksnprintf(t, sizeof(t), "<a href=\"about:downloads?show=%d\">Show in folder</a>", d.id);
+        else ksnprintf(t, sizeof(t), "<a href=\"about:downloads?retry=%d\">Retry</a>", d.id);
+        sb_str(&b, t);
+        sb_str(&b, "</div></div>");
+        if (!live) {
+            ksnprintf(t, sizeof(t), "<a class=x href=\"about:downloads?remove=%d\" title=\"Remove from list\">X</a>", d.id);
+            sb_str(&b, t);
+        }
+        sb_str(&b, "</div>");
+    }
+    if (!n) sb_str(&b, "<div class=empty>Files you download appear here</div>");
+    sb_str(&b, "</div>");
+    if (running) sb_str(&b, "<script>setTimeout(function(){location.reload()},1000)</script>");
+    sb_str(&b, "</body></html>");
+    *len = b.n;
+    return b.s;
+}
+
+/* a button of about:downloads: "cancel=3", "open=3", "clear=1"... */
+static void downloads_action(const char* q) {
+    const char* eq = strchr(q, '=');
+    uint32_t id = 0;
+    if (eq) k_parse_u32(eq + 1, &id);
+    dlm_info_t d;
+    if (!strncmp(q, "cancel=", 7)) dlm_cancel((int)id);
+    else if (!strncmp(q, "retry=", 6)) dlm_retry((int)id);
+    else if (!strncmp(q, "remove=", 7)) dlm_remove((int)id);
+    else if (!strncmp(q, "clear=", 6)) dlm_clear();
+    else if (!strncmp(q, "folder=", 7)) { fs_mkdir_p(DOWNLOAD_DIR); gui_open_files(DOWNLOAD_DIR); }
+    else if (!strncmp(q, "open=", 5) && dlm_find((int)id, &d) && d.state == DLM_DONE) explorer_launch(d.path);
+    else if (!strncmp(q, "show=", 5) && dlm_find((int)id, &d)) {
+        char dir[FS_PATH_LEN];
+        kstrlcpy(dir, d.path, sizeof(dir));
+        char* sl = strrchr(dir, '/');
+        if (sl) *sl = 0;
+        gui_open_files(dir);
+        explorer_select(d.name);
+    }
+}
+
 /* ══ built-in pages ═══════════════════════════════════════════════════ */
 
 static const char HOME_HTML[] =
@@ -702,6 +845,7 @@ static int on_body(void* ctx, const uint8_t* d, uint32_t n) {
         uint32_t k = n < 1024 ? n : 1024;
         for (uint32_t i = 0; i < k; i++) if (!d[i]) { dl->active = 1; b->limit = FS_MAX_FILE_SIZE; break; }
     }
+    if (dl && dl->active && dl->handoff && !dl->force) { dl->handed = 1; return -1; }   /* (the manager fetches it again) */
     if (dl && dl->active && !dl->open && !dl->ram && b->n == 0) dl_open(dl);
     uint32_t total = (dl && dl->open ? dl->got : b->n) + n;
     if (dl && dl->active && total - dl->reported >= (256u << 10)) {
@@ -741,6 +885,12 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     ctype[0] = 0;
     err[0] = 0;
     kstrlcpy(final_url, url, (size_t)fcap);
+    if (strcasecmp(url, "about:downloads") == 0) {
+        *data = downloads_html(len);
+        if (!*data) return -1;
+        kstrlcpy(ctype, "text/html", (size_t)ccap);
+        return 0;
+    }
     if (strncasecmp(url, "about:", 6) == 0) {
         const char* src = strcasecmp(url, "about:home") == 0 ? HOME_HTML : "<html><body></body></html>";
         const char* type = "text/html";
@@ -781,6 +931,14 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     http_response_t* resp = (http_response_t*)kmalloc(sizeof(http_response_t));
     if (!resp) return -1;
     int rc = http_fetch(url, &req, resp, err, (uint32_t)ecap);
+    if (dl && dl->handed) {                     /* a download: the manager's now (2) */
+        if (resp->final_url[0]) kstrlcpy(final_url, resp->final_url, (size_t)fcap);
+        kstrlcpy(ctype, resp->content_type, (size_t)ccap);
+        if (b.buf) kfree(b.buf);
+        kfree(resp);
+        err[0] = 0;
+        return 2;
+    }
     if (rc != NET_OK || b.too_big) {
         if (dl && dl->werr) kstrlcpy(err, "the file could not be written (is the disk full?)", (size_t)ecap);
         else if (b.too_big == 2) kstrlcpy(err, "not enough memory for it", (size_t)ecap);
@@ -1068,9 +1226,30 @@ static void finish_download(dl_t* dl, const char* url, const char* ctype, const 
 }
 
 /* "Save link as" / "Save page as": always a download, the page stays */
+/* a download for the manager (kernel/dlmgr.c): its file in ~/Downloads, its
+ * entry on about:downloads; the tab goes on */
+static void hand_to_manager(tab_t* t, const char* url, const char* fname) {
+    char path[FS_PATH_LEN], msg[200];
+    download_path(fname && fname[0] ? fname : "download", path, sizeof(path));
+    g_status_tab = t;
+    if (dlm_start(url, path) < 0) set_status("Cannot start the download (too many at once)", 1);
+    else {
+        ksnprintf(msg, sizeof(msg), "Downloading %s - the arrow (or Ctrl+J) shows your downloads", strrchr(path, '/') + 1);
+        set_status(msg, 0);
+    }
+    g_status_tab = NULL;
+    g_gen++;
+}
+
 static void download(tab_t* t, const char* url_in) {
     char url[URL_MAX], final_url[URL_MAX], ctype[96], err[200], msg[200];
     normalize_url(url_in, url, sizeof(url));
+    if (!strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8)) {
+        char name[FS_NAME_LEN];
+        download_name(url, NULL, "", name, sizeof(name));
+        hand_to_manager(t, url, name);
+        return;
+    }
     g_status_tab = t;
     ksnprintf(msg, sizeof(msg), "Downloading %s ...", url);
     set_status(msg, 0);
@@ -1111,6 +1290,12 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     char url[URL_MAX], final_url[URL_MAX], ctype[96], err[200];
     g_work_tab = t;
     normalize_url(url_in, url, sizeof(url));
+    /* about:downloads?cancel=3 and the like: the page's buttons; then the list again */
+    if (!strncasecmp(url, "about:downloads?", 16)) {
+        downloads_action(url + 16);
+        kstrlcpy(url, "about:downloads", sizeof(url));
+        if (t->page && !strcmp(t->page->url, "about:downloads")) add_history = 0;
+    }
     char prev_addr[URL_MAX];
     kstrlcpy(prev_addr, t->page ? t->page->url : "", sizeof(prev_addr));
     kstrlcpy(t->addr, url, sizeof(t->addr));
@@ -1123,6 +1308,7 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     uint32_t len = 0;
     dl_t dl;
     memset(&dl, 0, sizeof(dl));
+    dl.handoff = !post;                          /* (a form's answer: kept in the tab) */
     /* view-source:URL shows the page's text */
     /* about:crash - the engine crashes on purpose (what a bad page could do): the
      * tab shows the crash, the rest of the system goes on */
@@ -1131,6 +1317,14 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     int frc = fetch_url(vsrc ? url + 12 : url, NULL, post, post_len, post && g_load_btype[0] ? g_load_btype : NULL,
                         &data, &len, ctype, sizeof(ctype), final_url, sizeof(final_url), err, sizeof(err), vsrc ? NULL : &dl);
     g_load_btype[0] = 0;
+    if (frc == 2) {                               /* a download: the manager has it, the page stays */
+        hand_to_manager(t, final_url, dl.fname);
+        if (prev_addr[0]) kstrlcpy(t->addr, prev_addr, sizeof(t->addr));
+        t->loading = 0;
+        g_render_req = 1;
+        g_gen++;
+        return;
+    }
     if (frc == 0 && vsrc) {
         char fin[URL_MAX];
         ksnprintf(fin, sizeof(fin), "view-source:%s", final_url);
@@ -1427,6 +1621,7 @@ static void handle_key(char c) {
     if (c == 12) { g_addr_focus = 1; g_addr_all = 1; g_gen++; return; }   /* Ctrl+L */
     if (c == 18) { push_cmd(CMD_RELOAD, 0, 0); return; }                    /* Ctrl+R */
     if (c == 14) { g_go_url[0] = 0; push_cmd(CMD_NEWTAB, 0, 0); return; }  /* Ctrl+N: new tab */
+    if (c == 10 && (keyboard_mods() & 2)) { push_cmd(CMD_DOWNLOADS, 0, 0); return; }   /* Ctrl+J: the downloads */
     if (c == 23) { push_cmd(CMD_CLOSETAB, g_cur, 0); return; }              /* Ctrl+W */
     if (c == 22) { paste_now(); return; }                                    /* Ctrl+V */
     if (c == 3) {                                                            /* Ctrl+C */
@@ -1617,6 +1812,15 @@ static void run_commands(void) {
             else if (t) load(t, HOME_URL, NULL, 0, 1);
             break;
         case CMD_HOME: if (t) load(t, HOME_URL, NULL, 0, 1); break;
+        case CMD_DOWNLOADS: {                    /* the downloads page: its tab, or a new one */
+            int k = 0;
+            for (; k < g_ntabs; k++) if (g_tabs[k]->page && !strcmp(g_tabs[k]->page->url, "about:downloads")) break;
+            if (k < g_ntabs) { g_cur = k; load(g_tabs[k], "about:downloads", NULL, 0, 0); }
+            else new_tab("about:downloads");
+            g_dl_seen = dlm_gen();
+            g_dl_new = 0;
+            break;
+        }
         case CMD_PASTE: paste_now(); break;
         }
     }
@@ -1631,6 +1835,7 @@ static void env_setup(void) {
     if (done) return;
     done = 1;
     cookies_load();                 /* the cookies kept from earlier sessions */
+    dlm_set_cookies(cookie_header);     /* the download manager sends them too */
     g_env.fetch = env_fetch;
     g_env.request = env_request;
     g_env.decode_image = web_decode_image;
@@ -1805,6 +2010,7 @@ static void browser_task(void) {
                 after_page_event(t);
         }
         cookies_save();                 /* new long-lived cookies (no-op otherwise) */
+        watch_downloads();
         g_work_tab = cur_tab();
         if (g_render_req) render_view();
         task_sleep_ms(10);
@@ -1863,6 +2069,62 @@ static void tool_button(int x, int y, int w, const char* label, int enabled) {
     bevel(x, y, w, TOOL_H - 2, base, 0x00535D6Eu, 0x0015191Fu);
     int tw = (int)strlen(label) * 8;
     gfx_draw_text(x + (w - tw) / 2, y + 6, label, enabled ? C_TEXT : 0x00707A88u, base);
+}
+
+/* the downloads button: an arrow into a tray; blue with a bar under it
+ * while downloads run (how far, or a moving piece when the size is not
+ * known), a dot when one finished since the downloads page was looked at */
+static void draw_dl_button(int x, int y) {
+    uint32_t got, total;
+    int run = dlm_running(&got, &total);
+    tool_button(x, y, DLBTN_W, "", 1);
+    uint32_t c = run ? 0x0068A8F0u : C_TEXT;
+    int cx = x + DLBTN_W / 2;
+    gfx_fill_rect(cx - 1, y + 3, 3, 6, c);                        /* the shaft */
+    for (int i = 0; i < 4; i++) gfx_fill_rect(cx - 4 + i, y + 9 + i, 9 - 2 * i, 1, c);   /* its head */
+    gfx_fill_rect(cx - 6, y + 14, 2, 3, c);                       /* the tray */
+    gfx_fill_rect(cx + 5, y + 14, 2, 3, c);
+    gfx_fill_rect(cx - 6, y + 16, 13, 1, c);
+    if (run) {
+        int w = DLBTN_W - 6;
+        gfx_fill_rect(x + 3, y + TOOL_H - 4, w, 2, 0x00202630u);
+        if (total) gfx_fill_rect(x + 3, y + TOOL_H - 4, (int)((uint64_t)w * (got > total ? total : got) / total), 2, 0x0068A8F0u);
+        else gfx_fill_rect(x + 3 + (int)(timer_ms() / 60 % (uint32_t)(w - 8)), y + TOOL_H - 4, 8, 2, 0x0068A8F0u);
+    } else if (g_dl_new) gfx_fill_rect(x + DLBTN_W - 8, y + 3, 4, 4, 0x0068A8F0u);
+}
+
+/* the browser's loop: a download that finished is told in the status line
+ * (and the button redrawn while they run) */
+static void watch_downloads(void) {
+    static uint32_t last_gen, last_tick;
+    static int started;
+    if (!started) {                              /* the list from earlier sessions: nothing to tell */
+        dlm_info_t d0;
+        started = 1;
+        if (dlm_get(0, &d0)) g_dl_announced = d0.id;
+    }
+    uint32_t gen = dlm_gen();
+    if (dlm_running(NULL, NULL) && timer_ms() - last_tick >= 250) { last_tick = timer_ms(); g_gen++; }   /* (the bar moves) */
+    if (gen == last_gen) return;
+    last_gen = gen;
+    dlm_info_t d;
+    for (int i = 0; i < 8 && dlm_get(i, &d); i++) {
+        if (d.id <= g_dl_announced) break;
+        if (d.state != DLM_DONE && d.state != DLM_FAILED) continue;
+        g_dl_announced = d.id;
+        char msg[200];
+        if (d.state == DLM_DONE) {
+            char sz[24];
+            fmt_bytes(d.got, sz, sizeof(sz));
+            ksnprintf(msg, sizeof(msg), "Downloaded %s (%s) - the arrow (or Ctrl+J) shows your downloads", d.name, sz);
+            g_dl_new = 1;
+        } else ksnprintf(msg, sizeof(msg), "Download failed: %s - %s", d.name, d.err);
+        g_status_tab = cur_tab();
+        set_status(msg, d.state != DLM_DONE);
+        g_status_tab = NULL;
+        break;
+    }
+    g_gen++;
 }
 
 static void draw_clipped(int x, int y, const char* s, int max_chars, uint32_t fg, uint32_t bg, int tail) {
@@ -1974,6 +2236,7 @@ void browser_draw(const fb_info_t* fi) {
         gfx_fill_rect(x + ADDR_X + 5 + n * 8, ty + 4, 2, 12, 0x00202020u);
     }
     tool_button(x + ADDR_X + aw + 4, ty, 40, "Go", 1);
+    draw_dl_button(x + ADDR_X + aw + 48, ty);
 
     /* page */
     int vw = view_w(), vh = view_h();
@@ -2054,6 +2317,7 @@ void browser_click(int mx, int my) {
         else if (lx >= 60 && lx < 86) push_cmd(CMD_RELOAD, 0, 0);
         else if (lx >= 88 && lx < 120) push_cmd(CMD_HOME, 0, 0);
         else if (lx >= ADDR_X && lx < ADDR_X + aw) { g_addr_focus = 1; g_addr_all = 1; }
+        else if (lx >= ADDR_X + aw + 48 && lx < ADDR_X + aw + 48 + DLBTN_W) push_cmd(CMD_DOWNLOADS, 0, 0);
         else if (lx >= ADDR_X + aw + 4 && lx < ADDR_X + aw + 44 && t) {
             kstrlcpy(g_go_url, t->addr, sizeof(g_go_url));
             push_cmd(CMD_GO, 0, 0);
