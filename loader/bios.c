@@ -23,10 +23,10 @@ extern void boot_kernel(u32 entry, u32 info) __attribute__((noreturn));
 #define CF(r) ((r).eflags & 1u)
 
 #define BUF_SEG    0x1000u                 /* 0x10000: VBE info, mode info, DAP, E820 */
-#define DISK_BUF   ((u8*)0x20000)          /* 32 KiB */
+#define DISK_BUF   ((u8*)0x20000)          /* up to 64 KiB, to MB2_INFO */
 #define DISK_SEG   0x2000u
 #define MB2_INFO   ((u8*)0x30000)
-#define BOUNCE_BLOCKS 16u                  /* 2048-byte blocks per read */
+#define BOUNCE_BLOCKS 31u                  /* 2048-byte blocks per read (124 sectors: some BIOSes take at most 127) */
 
 void* memcpy(void* d, const void* s, unsigned n) { u8* a = d; const u8* b = s; while (n--) *a++ = *b++; return d; }
 void* memset(void* d, int c, unsigned n) { u8* a = d; while (n--) *a++ = (u8)c; return d; }
@@ -459,6 +459,7 @@ static int menu(int def) {
 static u8 g_head[8192];
 
 void loader_main(u32 drive, u32 cd) {
+    u64 tsc[4] = { loader_tsc(), 0, 0, 0 };     /* (boottime: start, menu, menu done, kernel loaded) */
     g_drive = (u8)drive;
     g_cd = (int)cd;
     hide_cursor();
@@ -496,7 +497,9 @@ void loader_main(u32 drive, u32 cd) {
             (int)menu_fb.pitch,menu_fb.rp,menu_fb.gp,menu_fb.bp};
     }
     if(!boot_ui_valid(&g_menu_fb)) { rm_regs_t r={0};r.eax=3;bios_int(0x10,&r);g_menu_fb.pixels=0;hide_cursor(); }
+    tsc[1] = loader_tsc();
     int entry = menu(has_long_mode() ? 0 : 2);
+    tsc[2] = loader_tsc();
     if(g_menu_fb.pixels) { rm_regs_t r={0};r.eax=3;bios_int(0x10,&r);g_menu_fb.pixels=0;hide_cursor(); }
     cls();
     if (entry == ENTRY_NEXT) {
@@ -535,10 +538,12 @@ void loader_main(u32 drive, u32 cd) {
     /* the Multiboot2 information */
     mb2_t m;
     mb2_begin(&m, MB2_INFO);
-    char cmd[96];
+    tsc[3] = loader_tsc();
+    char cmd[192];
     char medium[16];
     medium_value(MEDIUM_LINE, sizeof(MEDIUM_LINE) - 1, medium, sizeof(medium));
     build_cmdline(cmd, entry, medium);
+    append_boottsc(cmd, tsc);
     mb2_string(&m, 1, cmd);
     mb2_string(&m, 2, "Banana Boot");
     u8* bootdev = mb2_tag(&m, 5, 20);

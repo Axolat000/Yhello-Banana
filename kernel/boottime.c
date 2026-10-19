@@ -1,6 +1,8 @@
 #include "boottime.h"
 #include "timer.h"
 #include "serial.h"
+#include "sysinfo.h"
+#include "kstring.h"
 
 #define MAX_STEPS 64
 
@@ -84,4 +86,34 @@ uint64_t boottime_before_ns(void) {
     if (!g_n || !rate || g_marks[0].tsc >= (1ull << 43)) return 0;
     uint64_t ns = (g_marks[0].tsc << 20) / rate;
     return ns < 600ull * 1000000000ull ? ns : 0;          /* (over 10 minutes: not since a reset) */
+}
+
+int boottime_loader(uint64_t* firmware_ns, uint64_t* menu_ns, uint64_t* load_ns, uint64_t* other_ns) {
+    const char* p = strstr(sysinfo_get()->cmdline, "boottsc=");
+    const mark_t* c0;
+    uint64_t rate = tsc_rate(&c0);
+    if (!p || !rate || !g_n) return 0;
+    p += 8;
+    uint64_t t[4];
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        int digits = 0;
+        for (;; p++, digits++) {
+            char c = *p;
+            int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            if (d < 0) break;
+            v = v << 4 | (uint64_t)d;
+        }
+        if (!digits || (i < 3 && *p != ',')) return 0;
+        if (i < 3) p++;
+        t[i] = v;
+    }
+    uint64_t k = g_marks[0].tsc;
+    /* (in order, from a TSC that was reset at power-on - else nothing is said) */
+    if (!(t[0] <= t[1] && t[1] <= t[2] && t[2] <= t[3] && t[3] <= k) || k >= (1ull << 43)) return 0;
+    *firmware_ns = (t[0] << 20) / rate;
+    *menu_ns = ((t[2] - t[1]) << 20) / rate;
+    *load_ns = ((t[3] - t[2]) << 20) / rate;
+    *other_ns = (((t[1] - t[0]) + (k - t[3])) << 20) / rate;
+    return 1;
 }

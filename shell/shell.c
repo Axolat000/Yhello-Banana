@@ -501,10 +501,15 @@ static void cmd_boottime(void) {
         }
     }
     char b[128];
-    uint64_t before = boottime_before_ns();
+    uint64_t before = boottime_before_ns(), fw, menu, load, other;
     if (before) {
         ksnprintf(b, sizeof(b), "before the kernel (firmware, boot menu, loading it): about %u ms", (uint32_t)(before / 1000000u));
         terminal_writeln(b);
+        if (boottime_loader(&fw, &menu, &load, &other)) {
+            ksnprintf(b, sizeof(b), "  firmware %u ms, boot menu %u ms, loading the kernel %u ms, the loader's other work %u ms",
+                      (uint32_t)(fw / 1000000u), (uint32_t)(menu / 1000000u), (uint32_t)(load / 1000000u), (uint32_t)(other / 1000000u));
+            terminal_writeln(b);
+        }
     }
     terminal_write_color("    at ms   took ms  step\n", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     for (int i = 0; i < n; i++) {

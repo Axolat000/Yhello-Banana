@@ -14,7 +14,7 @@ typedef struct {
     uint32_t cpu_has_ht;        /* 1 if Hyper-Threading flag set */
     uint32_t mem_kb;            /* usable firmware RAM in KiB, including above 4 GiB */
     int      uefi;              /* booted through UEFI firmware (else BIOS) */
-    char     cmdline[128];      /* from GRUB ("root=cd0") */
+    char     cmdline[256];      /* from the loader ("medium=live-cd", "boottsc=...") */
     uint32_t biosdev;           /* BIOS boot drive (0x80.. = hard disk), if has_biosdev */
     int      has_biosdev;
     uint8_t  rsdp[36];          /* GRUB's copy of the ACPI RSDP (kernel/smp.c), if has_rsdp */

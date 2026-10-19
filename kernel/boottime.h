@@ -27,5 +27,9 @@ typedef struct {
 int      boottime_steps(boot_step_t* out, int max);
 /* before the kernel: the firmware and the loader, from the TSC (0: unknown) */
 uint64_t boottime_before_ns(void);
+/* ... split, from the TSC readings Banana Boot passes ("boottsc="): the
+ * firmware, the boot menu, loading the kernel, the rest of the loader's
+ * work; 0 if the loader passed none */
+int      boottime_loader(uint64_t* firmware_ns, uint64_t* menu_ns, uint64_t* load_ns, uint64_t* other_ns);
 
 #endif

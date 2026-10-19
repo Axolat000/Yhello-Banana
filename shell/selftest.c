@@ -401,6 +401,14 @@ static void t_boottime(void) {
     if (before) {
         ksnprintf(note, sizeof(note), "about %u ms", (uint32_t)(before / 1000000u));
         report("the time before the kernel (firmware, menu, loading) estimated", 1, note);
+        uint64_t fw, menu, load, other;
+        if (boottime_loader(&fw, &menu, &load, &other)) {
+            ksnprintf(note, sizeof(note), "firmware %u, menu %u, loading %u, other %u ms", (uint32_t)(fw / 1000000u),
+                      (uint32_t)(menu / 1000000u), (uint32_t)(load / 1000000u), (uint32_t)(other / 1000000u));
+            report("the loader's part split (Banana Boot's timestamps)", fw + menu + load + other <= before + before / 50 + 1000000u, note);
+        } else {
+            skip("the loader's part split", "no timestamps from the loader (GRUB, or a TSC not reset at power-on)");
+        }
     } else {
         skip("the time before the kernel", "the time stamp counter was not reset at power-on here");
     }
