@@ -1,0 +1,95 @@
+# File synchronization ABI (version 22)
+
+`banana_api_t.fd_sync(int fd)` is appended after `utc_offset`, preserving all
+version 21 field offsets. The kernel advertises version 22 and the enlarged
+`size`. Existing applications keep their table layout. New callers must check
+`BANANA_HAS(api, fd_sync)` before reading/calling the pointer on an older kernel;
+an unavailable entry must be treated as unsupported, never as successful sync.
+There is no disk-format change.
+
+The entry returns zero only for completed synchronization, or a negative errno
+directly (it does not set the application's SDK `errno`):
+
+| Result | Meaning |
+| --- | --- |
+| `-9` (`EBADF`) | No current application, negative/out-of-range/unused/closed descriptor, or missing/deleted file entry. |
+| `-22` (`EINVAL`) | Terminal descriptor 0–2 or an open socket cannot be synchronized by this call. |
+| `-38` (`ENOSYS`) | An open regular file is valid, but its synchronization backend is not connected yet. |
+| `-5` (`EIO`) | Reserved for a storage failure when the backend is connected. |
+
+Validation uses the calling application's existing descriptor lookup. Read-only
+file descriptors are accepted for validation. The call does not move the file
+position or close the descriptor. On x86_64 the integer argument is registered
+with the syscall dispatcher and the call stays on the boot core; on i386 the
+ABI table points directly to the same implementation.
+
+This is base-02 step 1 only. It intentionally provides no successful storage
+path yet. Step 2 must connect the appropriate volume's cache/journal/device flush
+and propagate failures; step 3 must replace the SDK's existing no-op `fsync` and
+`fdatasync` wrappers and define directory synchronization. Currently `a_open`
+rejects directories, so directory support remains necessary in that later step.
+No durability guarantee is established by this ABI addition or its host tests.
+
+One backend hazard to resolve in step 2: `fsdisk_sync()` returns `FSDISK_OK`
+while `g_frozen` defers writes for backups. A successful application sync cannot
+inherit that early return without waiting for real synchronization or returning
+an error. A proposed acceptance test is recorded in the living checklist.
+
+Run `python3 tools/test_fd_sync.py --sanitize` and
+`python3 tools/test_fd_sync.py --32` for host execution of the actual kernel
+entry, lookup and close functions with task/filesystem/socket stubs. The tests
+cover invalid and closed descriptors, the last descriptor, deleted/missing file
+entries, terminals, sockets, read-only files, unchanged position, unsupported
+backends, ABI size checks and x86_64 syscall argument registration. They do not
+execute ring-3 entry, real storage, QEMU power cuts or physical hardware.
+Compile both kernel paths with `make kernel/app.o kernel/app.o64`.
+
+## Execution evidence for this change
+
+On the Debian worker on 2026-10-19:
+
+- `python3 tools/test_fd_sync.py --sanitize`: passed on x86_64 with
+  AddressSanitizer and UndefinedBehaviorSanitizer. Log:
+  `build/logs/base-02-fd-sync-host.log`.
+- `python3 tools/test_fd_sync.py --32`: the i386 harness compiled, but its
+  process was terminated by `SIGSYS` at execution. Its runtime checks are
+  unverified. Log: `build/logs/base-02-fd-sync-host32.log`.
+- `make kernel/app.o kernel/app.o64`: both freestanding kernel objects compiled
+  successfully, with no compiler diagnostics. Log:
+  `build/logs/base-02-app-build.log`.
+
+Logs are local ignored build artifacts. No complete OS build, QEMU run, power-cut
+experiment or physical hardware test was performed for this substep.
+
+## Checkpoint resumption verification
+
+The resumed worktree contains checkpoint
+`90497854722f7a1b9dfa940639905a3aaa8e7819` on top of integration base
+`fe73f98e2bf9aef877b4fdea5f8f73a724d6fd7c`. Source inspection confirmed:
+
+- `fd_sync` remains the final table member after the v21 `utc_offset` entry;
+  `api_init()` publishes its pointer, version 22 and the complete table size.
+- `spec_init()` registers exactly one integer argument. There is no local-core
+  override for this slot, preserving the existing boot-core dispatch default.
+- `a_fd_sync()` resolves the calling process before looking up its descriptor,
+  rejects terminals and sockets, and uses `get_fd()` for range, allocation and
+  live file-entry validation. Its only regular-file result is still `ENOSYS`.
+- The frozen-backup checklist proposal matches the current early-success return
+  in `fsdisk_sync()`; it remains a proposal for independent review and controller
+  validation, not evidence that backend integration is finished.
+
+The execution logs listed above were inspected and retained. No source change
+to the ABI implementation or test harness was needed during resumption, so
+successful compilation and host checks were not repeated. The prior i386
+runtime failure remains unresolved; compilation alone does not validate that
+runtime. The six checkpoint source paths and this verification update form the
+step 1 review candidate. Backend synchronization and SDK wrapper work remain
+separate, unfinished substeps.
+
+A bounded Antigravity review was checked against the source during resumption.
+No suggested implementation patch was accepted: `SPEC` uses member offsets,
+so registration order does not allocate slots; `APP_FD_MAX` is 253, making 255
+the correct last descriptor; and position preservation and boot-core dispatch
+are already asserted. The suggested host-test macro has no implementation and
+would not establish why i386 execution received `SIGSYS`. That limitation remains
+reported rather than bypassed.
