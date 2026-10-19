@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__x86_64__)
+#include <GL/gl3.h>
+#endif
+
+
 /* ── Window Struct ─────────────────────────────────────────────────── */
 struct SDL_Window {
     bwin_t bwin;
@@ -19,7 +24,11 @@ struct SDL_Window {
     Uint32 flags;
     char   title[128];
     SDL_Surface* surface;
+    void*  gl_context;
 };
+
+/* Forward declaration for GL context structure */
+typedef struct SDL_GLContext_impl SDL_GLContext_impl;
 
 static char g_last_error[256] = "";
 static Uint32 g_initialized_subsystems = 0;
@@ -30,6 +39,19 @@ static int g_last_mouse_y = 0;
 static Uint32 g_last_mouse_buttons = 0;
 static int g_rel_dx = 0;
 static int g_rel_dy = 0;
+
+/* OpenGL attributes and active context */
+static int g_gl_attr_major = 3;
+static int g_gl_attr_minor = 3;
+static int g_gl_attr_profile = SDL_GL_CONTEXT_PROFILE_CORE;
+static int g_gl_attr_doublebuffer = 1;
+static int g_gl_attr_depth_size = 24;
+static int g_gl_attr_stencil_size = 8;
+static int g_gl_swap_interval = 0;
+
+static SDL_GLContext_impl* g_current_gl_context = NULL;
+static SDL_Window* g_current_gl_window = NULL;
+
 
 /* Key state tracking for keyup synthesis and polling */
 static Uint8 g_key_state[SDL_NUM_SCANCODES];
@@ -282,6 +304,10 @@ void SDL_DestroyWindow(SDL_Window* window) {
     if (g_relative_mouse) {
         SDL_SetRelativeMouseMode(SDL_FALSE);
     }
+    if (window->gl_context) {
+        SDL_GL_DeleteContext((SDL_GLContext)window->gl_context);
+        window->gl_context = NULL;
+    }
     bwin_close(&window->bwin);
     if (window->surface) {
         free(window->surface);
@@ -454,12 +480,41 @@ static int translate_banana_event(SDL_Window* win, const banana_event_t* bev, SD
             win->surface->pitch = win->bwin.w * 4;
             win->surface->pixels = win->bwin.px;
         }
+#if defined(__x86_64__)
+        if (win->gl_context) {
+            bgl3_resize((bgl3_ctx_t*)win->gl_context);
+        }
+#endif
         return 1;
 
     case BANANA_EV_FOCUS:
         ev->type = SDL_WINDOWEVENT;
         ev->window.windowID = win->id;
-        ev->window.event = bev->x ? SDL_WINDOWEVENT_FOCUS_GAINED : SDL_WINDOWEVENT_FOCUS_LOST;
+        if (bev->x) {
+            ev->window.event = SDL_WINDOWEVENT_FOCUS_GAINED;
+            win->flags |= SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS;
+        } else {
+            ev->window.event = SDL_WINDOWEVENT_FOCUS_LOST;
+            win->flags &= ~(SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS);
+            /* Focus lost: release all tracked held keys to prevent sticky repeats */
+            for (int k = 0; k < SDL_NUM_SCANCODES; k++) {
+                if (g_key_state[k]) {
+                    g_key_state[k] = 0;
+                    SDL_Event up_ev;
+                    memset(&up_ev, 0, sizeof(up_ev));
+                    up_ev.type = SDL_KEYUP;
+                    up_ev.key.timestamp = ev->common.timestamp;
+                    up_ev.key.windowID = win->id;
+                    up_ev.key.state = SDL_RELEASED;
+                    up_ev.key.keysym.scancode = (SDL_Scancode)k;
+                    queue_push_event(&up_ev);
+                }
+            }
+            g_last_pressed_scancode = -1;
+            g_last_mouse_buttons = 0;
+            g_rel_dx = 0;
+            g_rel_dy = 0;
+        }
         return 1;
 
     case BANANA_EV_KEY: {
@@ -614,6 +669,13 @@ int SDL_WaitEventTimeout(SDL_Event* event, int timeout) {
     }
     return 0;
 }
+
+int SDL_PushEvent(SDL_Event* event) {
+    if (!event) return -1;
+    queue_push_event(event);
+    return 1;
+}
+
 
 /* ── Audio Subsystem with Mixer Thread ─────────────────────────────── */
 #define SDL_AUDIO_BUFFER_SIZE 4096
@@ -1210,4 +1272,227 @@ Uint8 SDL_GameControllerGetButton(SDL_GameController* gamecontroller, SDL_GameCo
 
 void SDL_GameControllerUpdate(void) {
     SDL_JoystickUpdate();
+}
+
+/* ── OpenGL Acceleration & Context Management ──────────────────────── */
+struct SDL_GLContext_impl {
+    SDL_Window* window;
+#if defined(__x86_64__)
+    bgl3_ctx_t* bgl3;
+#else
+    void* dummy;
+#endif
+    int major;
+    int minor;
+    int profile;
+};
+
+int SDL_GL_SetAttribute(SDL_GLattr attr, int value) {
+    switch (attr) {
+    case SDL_GL_CONTEXT_MAJOR_VERSION:
+        g_gl_attr_major = value;
+        return 0;
+    case SDL_GL_CONTEXT_MINOR_VERSION:
+        g_gl_attr_minor = value;
+        return 0;
+    case SDL_GL_CONTEXT_PROFILE_MASK:
+        g_gl_attr_profile = value;
+        return 0;
+    case SDL_GL_DOUBLEBUFFER:
+        g_gl_attr_doublebuffer = value;
+        return 0;
+    case SDL_GL_DEPTH_SIZE:
+        g_gl_attr_depth_size = value;
+        return 0;
+    case SDL_GL_STENCIL_SIZE:
+        g_gl_attr_stencil_size = value;
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+int SDL_GL_GetAttribute(SDL_GLattr attr, int* value) {
+    if (!value) {
+        SDL_SetError("Invalid value pointer for SDL_GL_GetAttribute");
+        return -1;
+    }
+    switch (attr) {
+    case SDL_GL_CONTEXT_MAJOR_VERSION:
+        *value = g_gl_attr_major;
+        return 0;
+    case SDL_GL_CONTEXT_MINOR_VERSION:
+        *value = g_gl_attr_minor;
+        return 0;
+    case SDL_GL_CONTEXT_PROFILE_MASK:
+        *value = g_gl_attr_profile;
+        return 0;
+    case SDL_GL_DOUBLEBUFFER:
+        *value = g_gl_attr_doublebuffer;
+        return 0;
+    case SDL_GL_DEPTH_SIZE:
+        *value = g_gl_attr_depth_size;
+        return 0;
+    case SDL_GL_STENCIL_SIZE:
+        *value = g_gl_attr_stencil_size;
+        return 0;
+    default:
+        *value = 0;
+        return 0;
+    }
+}
+
+void SDL_GL_ResetAttributes(void) {
+    g_gl_attr_major = 3;
+    g_gl_attr_minor = 3;
+    g_gl_attr_profile = SDL_GL_CONTEXT_PROFILE_CORE;
+    g_gl_attr_doublebuffer = 1;
+    g_gl_attr_depth_size = 24;
+    g_gl_attr_stencil_size = 8;
+}
+
+SDL_GLContext SDL_GL_CreateContext(SDL_Window* window) {
+    if (!window) {
+        SDL_SetError("Window is NULL");
+        return NULL;
+    }
+#if !defined(__x86_64__)
+    SDL_SetError("OpenGL 3.3 hardware/Mesa acceleration is supported only on x86_64 in Banana OS");
+    return NULL;
+#else
+    SDL_GLContext_impl* ctx = (SDL_GLContext_impl*)calloc(1, sizeof(SDL_GLContext_impl));
+    if (!ctx) {
+        SDL_SetError("Out of memory allocating SDL_GLContext");
+        return NULL;
+    }
+    ctx->window = window;
+    ctx->major = g_gl_attr_major;
+    ctx->minor = g_gl_attr_minor;
+    ctx->profile = g_gl_attr_profile;
+
+    int compat = (g_gl_attr_profile == SDL_GL_CONTEXT_PROFILE_COMPATIBILITY) || (g_gl_attr_major < 3);
+    ctx->bgl3 = compat ? bgl3_create_compat(&window->bwin) : bgl3_create(&window->bwin);
+    if (!ctx->bgl3) {
+        SDL_SetError("Failed to initialize OpenGL 3.3 Mesa context: %s", bgl3_error());
+        free(ctx);
+        return NULL;
+    }
+
+    window->gl_context = ctx;
+    window->flags |= SDL_WINDOW_OPENGL;
+    g_current_gl_context = ctx;
+    g_current_gl_window = window;
+    return (SDL_GLContext)ctx;
+#endif
+}
+
+int SDL_GL_MakeCurrent(SDL_Window* window, SDL_GLContext context) {
+    if (!context) {
+#if defined(__x86_64__)
+        bgl3_make_current(NULL);
+#endif
+        g_current_gl_context = NULL;
+        g_current_gl_window = NULL;
+        return 0;
+    }
+    SDL_GLContext_impl* ctx = (SDL_GLContext_impl*)context;
+    if (window && ctx->window != window) {
+        ctx->window = window;
+    }
+#if defined(__x86_64__)
+    if (bgl3_make_current(ctx->bgl3) != 0) {
+        SDL_SetError("Failed to make OpenGL context current: %s", bgl3_error());
+        return -1;
+    }
+#endif
+    g_current_gl_context = ctx;
+    g_current_gl_window = window;
+    return 0;
+}
+
+SDL_GLContext SDL_GL_GetCurrentContext(void) {
+    return (SDL_GLContext)g_current_gl_context;
+}
+
+SDL_Window* SDL_GL_GetCurrentWindow(void) {
+    return g_current_gl_window;
+}
+
+void SDL_GL_GetDrawableSize(SDL_Window* window, int* w, int* h) {
+    if (!window) return;
+    if (w) *w = window->bwin.w;
+    if (h) *h = window->bwin.h;
+}
+
+int SDL_GL_SetSwapInterval(int interval) {
+    g_gl_swap_interval = interval;
+    return 0;
+}
+
+int SDL_GL_GetSwapInterval(void) {
+    return g_gl_swap_interval;
+}
+
+void SDL_GL_SwapWindow(SDL_Window* window) {
+    if (!window) return;
+#if defined(__x86_64__)
+    SDL_GLContext_impl* ctx = (SDL_GLContext_impl*)window->gl_context;
+    if (!ctx) ctx = g_current_gl_context;
+    if (ctx && ctx->bgl3) {
+        bgl3_swap(ctx->bgl3);
+        return;
+    }
+#endif
+    SDL_UpdateWindowSurface(window);
+}
+
+void SDL_GL_DeleteContext(SDL_GLContext context) {
+    if (!context) return;
+    SDL_GLContext_impl* ctx = (SDL_GLContext_impl*)context;
+    if (g_current_gl_context == ctx) {
+        SDL_GL_MakeCurrent(NULL, NULL);
+    }
+    if (ctx->window && ctx->window->gl_context == ctx) {
+        ctx->window->gl_context = NULL;
+    }
+#if defined(__x86_64__)
+    if (ctx->bgl3) {
+        bgl3_destroy(ctx->bgl3);
+        ctx->bgl3 = NULL;
+    }
+#endif
+    free(ctx);
+}
+
+void* SDL_GL_GetProcAddress(const char* proc) {
+    if (!proc) return NULL;
+#if defined(__x86_64__)
+    return bgl3_proc(proc);
+#else
+    return NULL;
+#endif
+}
+
+SDL_bool SDL_GL_ExtensionSupported(const char* extension) {
+    if (!extension || !*extension) return SDL_FALSE;
+#if defined(__x86_64__)
+    if (!bgl3_glGetString) return SDL_FALSE;
+    const char* ext_str = (const char*)bgl3_glGetString(0x1F03 /* GL_EXTENSIONS */);
+    if (!ext_str) return SDL_FALSE;
+    const char* p = ext_str;
+    size_t elen = strlen(extension);
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char* end = p;
+        while (*end && *end != ' ') end++;
+        if ((size_t)(end - p) == elen && strncmp(p, extension, elen) == 0) {
+            return SDL_TRUE;
+        }
+        p = end;
+    }
+    return SDL_FALSE;
+#else
+    return SDL_FALSE;
+#endif
 }
