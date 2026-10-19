@@ -56,6 +56,10 @@ selftest tlb             global kernel pages and PCIDs: a private address space 
 selftest net             TCP over loopback: window scaling and SACK agreed (window over
                          64 KiB), 8 MiB checked byte for byte, then 2 MiB with 1 data
                          segment in 25 dropped (holes resent; still every byte right)
+selftest utf8            a terminal's cells hold any character (é € Ω Ж ─ and one past
+                         U+FFFF, a stray byte as U+FFFD); DejaVu Sans Mono draws what
+                         the 8x8 font has not; VGA text mode's code page 437; UTF-8 to
+                         UTF-16 and back (FAT32 / exFAT names, surrogate pairs)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /

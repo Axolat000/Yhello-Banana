@@ -1,4 +1,5 @@
 #include "fat32.h"
+#include "utf8.h"
 #include "iowait.h"
 #include "fs.h"
 #include "kheap.h"
@@ -384,12 +385,14 @@ static void make_alias(const char* name, const uint8_t* dir, uint32_t len, uint8
     if (dot == name) dot = NULL;          /* ".profile": no extension */
     for (const char* s = name; *s && (!dot || s < dot) && bl < 8; s++) {
         char c = *s;
+        if (u8_cont(c)) continue;         /* (a non-ASCII character: one '_') */
         if (c == ' ' || c == '.') continue;
         if (c >= 'a' && c <= 'z') c -= 32;
         base[bl++] = sfn_char_ok(c) ? c : '_';
     }
     if (dot) for (const char* s = dot + 1; *s && el < 3; s++) {
         char c = *s;
+        if (u8_cont(c)) continue;
         if (c == ' ' || c == '.') continue;
         if (c >= 'a' && c <= 'z') c -= 32;
         ext[el++] = sfn_char_ok(c) ? c : '_';
@@ -419,7 +422,9 @@ static int add_entries(fvol_t* v, uint32_t parent, const char* name, const uint8
 
     uint8_t sfn[11];
     int nl = 0;
-    int nlen = (int)strlen(name);
+    uint16_t u16[255];                    /* the long name, as it goes on the disk */
+    int nlen = u8_to_utf16(name, (int)strlen(name), u16, 255);
+    if (nlen < 0) { kfree(dir); return -1; }   /* (over 255 UTF-16 units: FAT's limit) */
     if (!is_plain_83(name, sfn)) {
         make_alias(name, dir, len, sfn);
         nl = (nlen + 12) / 13;
@@ -468,7 +473,7 @@ static int add_entries(fvol_t* v, uint32_t parent, const char* name, const uint8
         static const uint8_t offs[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
         for (int i = 0; i < 13; i++) {
             int ci = (k - 1) * 13 + i;
-            uint16_t ch = ci < nlen ? (uint8_t)name[ci] : ci == nlen ? 0x0000 : 0xFFFF;
+            uint16_t ch = ci < nlen ? u16[ci] : ci == nlen ? 0x0000 : 0xFFFF;
             wr16(e + offs[i], ch);
         }
         if (dir_entry(v, dirc, (slot + (uint32_t)(nl - k)) * 32, e, 1) != 0) return -1;
@@ -743,8 +748,8 @@ static void scan_dir(fvol_t* v, uint32_t dnode, int fsdir, int depth) {
     uint32_t len;
     uint8_t* dir = dir_load(v, node_first(v, dnode), &len);
     if (!dir) return;
-    char lfn[256];
-    int lfn_n = 0, lfn_have = 0;
+    uint16_t lfn[260];                      /* the long name's UTF-16 units */
+    int lfn_n = 0, lfn_have = 0, lfn_len = 0;
     uint8_t lfn_chk = 0;
     for (uint32_t p = 0; p + 32 <= len; p += 32) {
         const uint8_t* e = dir + p;
@@ -752,14 +757,15 @@ static void scan_dir(fvol_t* v, uint32_t dnode, int fsdir, int depth) {
         if (e[0] == 0xE5) { lfn_have = 0; continue; }
         if (e[11] == ATTR_LFN) {
             int seq = e[0] & 0x1F;
-            if (e[0] & 0x40) { lfn_have = seq; lfn_n = 0; lfn_chk = e[13]; memset(lfn, 0, sizeof(lfn)); }
+            if (e[0] & 0x40) { lfn_have = seq; lfn_n = 0; lfn_chk = e[13]; lfn_len = 0; memset(lfn, 0, sizeof(lfn)); }
             if (!lfn_have || seq < 1 || seq > 20 || e[13] != lfn_chk) { lfn_have = 0; continue; }
             static const uint8_t offs[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
             for (int i = 0; i < 13; i++) {
                 uint16_t ch = rd16(e + offs[i]);
                 int at = (seq - 1) * 13 + i;
                 if (ch == 0 || ch == 0xFFFF || at >= 255) continue;
-                lfn[at] = (char)(ch < 128 && ch >= 32 ? ch : '_');
+                lfn[at] = ch < 32 ? '_' : ch;
+                if (at + 1 > lfn_len) lfn_len = at + 1;
             }
             lfn_n++;
             continue;
@@ -775,7 +781,7 @@ static void scan_dir(fvol_t* v, uint32_t dnode, int fsdir, int depth) {
         }
         char name[256];
         int use_lfn = lfn_have && lfn_n == lfn_have && lfn_chk == lfn_sum(e) && lfn[0];
-        if (use_lfn) kstrlcpy(name, lfn, sizeof(name));
+        if (use_lfn) u8_from_utf16(lfn, lfn_len, name, sizeof(name));        /* (UTF-16 on the disk, UTF-8 here) */
         else sfn_to_name(e, name);
         int nl = use_lfn ? lfn_n : 0;
         lfn_have = 0;
@@ -791,7 +797,7 @@ static void scan_dir(fvol_t* v, uint32_t dnode, int fsdir, int depth) {
         n->size = n->is_dir ? 0 : rd32(e + 28);
         n->pos = p;
         n->nlfn = (uint8_t)nl;
-        if (strlen(name) >= FS_NAME_LEN) name[FS_NAME_LEN - 1] = 0;   /* the tree's limit */
+        u8_truncate(name, FS_NAME_LEN);                                  /* the tree's limit (at a whole character) */
         if (n->is_dir) {
             if (!valid_clus(v, n->first)) { n->used = 0; continue; }
             int fd = fs_mount_add_dir(v->mnt, fsdir, name, (uint32_t)ni);

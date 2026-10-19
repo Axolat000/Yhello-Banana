@@ -455,7 +455,7 @@ void help_set_known(const char* const* names) { g_known = names; }
 /* ── output ───────────────────────────────────────────────────────────── */
 
 static int cols(void) {
-    const char* ch;
+    const uint32_t* ch;
     const uint8_t* co;
     int w = 80, h = 25, stride = 80;
     terminal_vt_get_buffer(terminal_vt_get_active(), &ch, &co, &w, &h, &stride);
@@ -666,7 +666,7 @@ static int key_wait(void) {
 }
 
 static void all_commands(void) {
-    const char* ch;
+    const uint32_t* ch;
     const uint8_t* co;
     int w = 80, h = 25, stride = 80;
     terminal_vt_get_buffer(terminal_vt_get_active(), &ch, &co, &w, &h, &stride);

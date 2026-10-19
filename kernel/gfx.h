@@ -8,9 +8,13 @@ int  gfx_available(void);
 
 void gfx_clear(uint32_t rgb);
 void gfx_fill_rect(int x, int y, int w, int h, uint32_t rgb);
-void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg);
+void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg);   /* c: ASCII or Latin-1 */
+/* a Unicode character: the 8x8 font has ASCII and Latin-1, the rest comes
+ * from DejaVu Sans Mono ('?' without it) */
+void gfx_draw_char_cp(int x, int y, uint32_t cp, uint32_t fg, uint32_t bg);
 void gfx_draw_text(int x, int y, const char* s, uint32_t fg, uint32_t bg);
 void gfx_draw_char_scaled(int x, int y, int scale, char c, uint32_t fg, uint32_t bg);
+void gfx_draw_char_scaled_cp(int x, int y, int scale, uint32_t cp, uint32_t fg, uint32_t bg);
 void gfx_draw_text_scaled(int x, int y, int scale, const char* s, uint32_t fg, uint32_t bg);
 /* the dotted resize grip of a window whose bottom-right corner is (right, bottom) */
 void gfx_draw_grip(int right, int bottom);
@@ -31,6 +35,7 @@ int  gfx_cell_w(void);
 int  gfx_cell_h(void);
 /* one terminal / Notepad cell: c is ASCII or Latin-1 */
 void gfx_draw_cell_char(int x, int y, char c, uint32_t fg, uint32_t bg);
+void gfx_draw_cell_cp(int x, int y, uint32_t cp, uint32_t fg, uint32_t bg);
 int  gfx_label_px(void);
 
 /* a desktop icon's name: centred on cx, wrapped onto up to two lines max_w wide,

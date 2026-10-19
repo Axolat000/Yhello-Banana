@@ -12,6 +12,8 @@
 #include "../kernel/kheap.h"
 #include "../kernel/tlb.h"
 #include "../kernel/boottime.h"
+#include "../kernel/font.h"
+#include "../kernel/utf8.h"
 #include "../kernel/pci.h"
 #include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
@@ -372,6 +374,65 @@ static void t_tlb(void) {
 #else
     skip("the TLB", "the 32-bit kernel runs without paging");
 #endif
+}
+
+/* ── UTF-8 everywhere: terminal cells, drawing, VGA, FAT names ── */
+static void t_utf8(void) {
+    section("UTF-8: any character in the terminal, the editor and file names");
+    /* the terminal: each UTF-8 character one cell, holding its code point */
+    static const uint32_t want[] = { 'a', 0xE9, 0x20AC, 0x3A9, 0x416, 0x2500, 0x1F34C, 0xFFFD, 'z' };
+    const char* text = "a\xC3\xA9\xE2\x82\xAC\xCE\xA9\xD0\x96\xE2\x94\x80\xF0\x9F\x8D\x8C\x80z";  /* (\x80: a stray byte) */
+    int vt = terminal_vt_alloc(), was = terminal_vt_get_active();
+    if (vt < 0) {
+        skip("terminal cells hold any character", "no free virtual terminal to write to");
+    } else {
+        terminal_vt_set_active(vt);
+        terminal_write(text);
+        terminal_vt_set_active(was);
+        const uint32_t* ch;
+        const uint8_t* co;
+        int w, h, stride;
+        terminal_vt_get_buffer(vt, &ch, &co, &w, &h, &stride);
+        int ok = ch != NULL, at = -1;
+        for (unsigned i = 0; ok && i < sizeof(want) / sizeof(want[0]); i++) if (ch[i] != want[i]) { ok = 0; at = (int)i; }
+        char note[96];
+        if (ok) ksnprintf(note, sizeof(note), "a e-acute euro Omega Zhe box-line banana, a stray byte as U+FFFD");
+        else ksnprintf(note, sizeof(note), "cell %d holds U+%04X", at, ch ? ch[at] : 0);
+        report("terminal cells hold any character", ok, note);
+        terminal_vt_free(vt);
+    }
+    /* drawing: the 8x8 font has Latin-1, DejaVu Sans Mono the rest */
+    static const char* const drawn[] = { "\xE2\x82\xAC", "\xCE\xA9", "\xD0\x96", "\xE2\x94\x80" };
+    int glyphs = 0;
+    if (font_available(FONT_MONO)) {
+        static uint32_t buf[32 * 32];
+        for (unsigned g = 0; g < 4; g++) {
+            memset(buf, 0, sizeof(buf));
+            font_draw(buf, 32, 0, 0, 32, 32, FONT_MONO, 20, 4, 24, drawn[g], (uint32_t)strlen(drawn[g]), 0x00FFFFFFu, 0);
+            int lit = 0;
+            for (int i = 0; i < 32 * 32; i++) if (buf[i]) lit++;
+            if (lit > 8) glyphs++;
+        }
+        report("beyond Latin-1 drawn with DejaVu Sans Mono (euro, Omega, Zhe, box line)", glyphs == 4, glyphs == 4 ? "" : "a glyph came out empty");
+    } else {
+        skip("beyond Latin-1 drawn with DejaVu Sans Mono", "the font is not loaded");
+    }
+    /* VGA text mode: code page 437 has some of it */
+    int vga = terminal_cp437(0xE9) == (char)0x82 && terminal_cp437(0x2500) == (char)0xC4 &&
+              terminal_cp437(0x3A9) == (char)0xEA && terminal_cp437(0x2591) == (char)0xB0 && terminal_cp437(0x1F34C) == '?';
+    report("VGA text mode shows what code page 437 has (e-acute, box lines, Omega, shades)", vga, "");
+    /* FAT32 / exFAT names are UTF-16: there and back, a surrogate pair included */
+    uint16_t u16[16];
+    char back[32];
+    const char* name = "caf\xC3\xA9 \xF0\x9F\x8D\x8C";
+    int n16 = u8_to_utf16(name, (int)strlen(name), u16, 16);
+    u8_from_utf16(u16, n16, back, sizeof(back));
+    uint16_t lone[2] = { 'x', 0xD800 };
+    char lb[8];
+    u8_from_utf16(lone, 2, lb, sizeof(lb));
+    int conv = n16 == 7 && u16[3] == 0xE9 && u16[5] == 0xD83C && u16[6] == 0xDF4C && !strcmp(back, name) &&
+               !strcmp(lb, "x\xEF\xBF\xBD");
+    report("UTF-8 to UTF-16 and back (file names on FAT32 / exFAT)", conv, conv ? "" : "the name came back different");
 }
 
 /* ── the boot's timeline (boottime) ── */
@@ -908,8 +969,8 @@ static void t_clip(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "llvmpipe") && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "boottime") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [llvmpipe | virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | boottime | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "llvmpipe") && strcmp(only, "virgl") && strcmp(only, "gpu") && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "sleep") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "clock") && strcmp(only, "malloc") && strcmp(only, "avx") && strcmp(only, "syscall") && strcmp(only, "disk") && strcmp(only, "heap") && strcmp(only, "tlb") && strcmp(only, "net") && strcmp(only, "boottime") && strcmp(only, "utf8") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [llvmpipe | virgl | gpu | ring3 | memory | ram | sleep [cycle] | limits | cores | clock | malloc | avx | syscall | disk | heap | tlb | net | boottime | utf8 | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && (!strcmp(only,"virgl") || !strcmp(only,"llvmpipe")) && argc!=2) { terminal_writeln("usage: selftest virgl | llvmpipe");return 1; }
@@ -954,6 +1015,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "tlb") ? "selftest: checking the TLB" :
                      only && !strcmp(only, "net") ? "selftest: checking TCP" :
                      only && !strcmp(only, "boottime") ? "selftest: checking the boot's timeline" :
+                     only && !strcmp(only, "utf8") ? "selftest: checking UTF-8" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"llvmpipe")) {
         section("LLVMpipe CPU rendering (optional Mesa/LLVM libraries)");t_gl3("llvmpipe");
@@ -993,6 +1055,8 @@ int selftest_cmd(int argc, char** argv) {
         t_net();
     } else if (only && !strcmp(only, "boottime")) {
         t_boottime();
+    } else if (only && !strcmp(only, "utf8")) {
+        t_utf8();
     } else if (only && !strcmp(only, "opencl")) {
         t_opencl();
     } else if (only && !strcmp(only, "posix")) {
@@ -1014,6 +1078,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "tlb")) t_tlb();
         if (!only) t_net();
         if (!only) t_boottime();
+        if (!only) t_utf8();
         if (!only) {
             t_opencl();
             browser_test_run(report);

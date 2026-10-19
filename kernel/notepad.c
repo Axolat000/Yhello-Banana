@@ -607,10 +607,10 @@ void notepad_draw(const fb_info_t* fi) {
                 break;
             }
             uint32_t cp = u8_decode(l->s, (int)l->len, &xi);    /* (xi moves to the next one) */
-            char ch = (cp == '\t' || cp < 32) ? ' ' : u8_cell(cp);
+            uint32_t ch = (cp == '\t' || cp < 32) ? ' ' : cp;
             uint32_t bg = in ? C_SELBG : C_PAGE;
             if (in) gfx_fill_rect(px + 3 + cidx * CHAR_W, ty - 1, CHAR_W, LINE_H, bg);
-            if (ch != ' ') gfx_draw_cell_char(px + 3 + cidx * CHAR_W, ty, ch, C_INK, bg);
+            if (ch != ' ') gfx_draw_cell_cp(px + 3 + cidx * CHAR_W, ty, ch, C_INK, bg);   /* (any character: kernel/gfx.c) */
         }
     }
     /* caret */

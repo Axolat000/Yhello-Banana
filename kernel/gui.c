@@ -504,7 +504,7 @@ static int term_row_off(const term_win_t* w, int max_rows, int th) {
 
 /* the text cell under the mouse (buffer coordinates), clamped to the grid */
 static void term_cell_at(const term_win_t* w, int mx, int my, int* r, int* c) {
-    const char* chars;
+    const uint32_t* chars;
     const uint8_t* cols;
     int tw, th, stride;
     terminal_vt_get_buffer(w->vt, &chars, &cols, &tw, &th, &stride);
@@ -532,21 +532,21 @@ static int term_cell_selected(const term_win_t* w, int r, int c) {
 
 /* the selected text (lines without their trailing blanks) onto the clipboard */
 static void term_copy_selection(const term_win_t* w) {
-    const char* chars;
+    const uint32_t* chars;
     const uint8_t* cols;
     int tw, th, stride;
     terminal_vt_get_buffer(w->vt, &chars, &cols, &tw, &th, &stride);
     int r0 = w->s_r0, c0 = w->s_c0, r1 = w->s_r1, c1 = w->s_c1;
     if (r1 < r0 || (r1 == r0 && c1 < c0)) { int t = r0; r0 = r1; r1 = t; t = c0; c0 = c1; c1 = t; }
-    static char out[100 * 76 * 2];
+    static char out[100 * 76 * 4];                 /* (up to 4 UTF-8 bytes a cell) */
     uint32_t n = 0;
     for (int r = r0; r <= r1 && r < th; r++) {
         int a = r == r0 ? c0 : 0, b = r == r1 ? c1 : tw - 1;
         uint32_t line_start = n;
         for (int c = a; c <= b && c < tw; c++) {
-            char ch = chars[r * stride + c];
-            if ((unsigned char)ch >= 0xA0) n += (uint32_t)u8_encode((unsigned char)ch, out + n);
-            else out[n++] = ch ? ch : ' ';
+            uint32_t ch = chars[r * stride + c];
+            if (ch >= 0x80) n += (uint32_t)u8_encode(ch, out + n);
+            else out[n++] = ch ? (char)ch : ' ';
         }
         while (n > line_start && out[n - 1] == ' ') n--;
         if (r < r1) out[n++] = '\n';
@@ -637,7 +637,7 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
     int ch = w.h - title_h - pad * 2;
     gfx_fill_rect(cx, cy, cw, ch, 0x00000000u);
 
-    const char* chars;
+    const uint32_t* chars;
     const uint8_t* cols;
     int tw, th, stride;
     terminal_vt_get_buffer(win->vt, &chars, &cols, &tw, &th, &stride);
@@ -665,14 +665,14 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
         for (int x = 0; x < max_cols; x++) {
             int idx = (y + row_off) * stride + x;
             uint8_t color = cols[idx];
-            char c = chars[idx];
+            uint32_t c = chars[idx];
             if (term_cell_selected(win, y + row_off, x)) {     /* selection: inverted */
-                gfx_draw_cell_char(cx + x * CW, cy + y * CH, c ? c : ' ', 0x00101010u, 0x00C8D8F0u);
+                gfx_draw_cell_cp(cx + x * CW, cy + y * CH, c ? c : ' ', 0x00101010u, 0x00C8D8F0u);
                 continue;
             }
             /* the client area is already black: skip blank black cells */
             if ((c == ' ' || c == 0) && (color & 0xF0) == 0) continue;
-            gfx_draw_cell_char(cx + x * CW, cy + y * CH, c,
+            gfx_draw_cell_cp(cx + x * CW, cy + y * CH, c,
                                vga_color_rgb(color & 0x0F), vga_color_rgb((color >> 4) & 0x0F));
         }
     }

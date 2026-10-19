@@ -3,6 +3,7 @@
 #include "gfx.h"
 #include "fb.h"
 #include "font8x8.h"
+#include "utf8.h"
 
 static int g_ok = 0;
 
@@ -25,17 +26,47 @@ void gfx_fill_rect(int x, int y, int w, int h, uint32_t rgb) {
     fb_fill_rect(x, y, w, h, rgb);
 }
 
-void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
+/* the 8x8 bitmap of a character: ASCII and Latin-1 have one (NULL: none) */
+static const uint8_t* bitmap_of(uint32_t cp) {
+    if (cp < 0x80) return font8x8_basic[cp];
+    if (cp >= 0xA0 && cp <= 0xFF) return font8x8_latin1[cp - 0xA0];
+    return NULL;
+}
+
+/* a character the 8x8 font has not, drawn with DejaVu Sans Mono into the
+ * w x h cell at (x, y) (its background already filled): 0 if there is no
+ * such font, or it has nothing to draw */
+static int ttf_cell(int x, int y, int w, int h, uint32_t cp, uint32_t fg) {
+    if (!font_available(FONT_MONO) || cp < 0x20 || cp == 0xFFFF) return 0;
+    int stride, tw, th;
+    uint32_t* t = fb_target(&stride, &tw, &th);
+    if (!t) return 0;
+    char u[4];
+    uint32_t n = (uint32_t)u8_encode(cp, u);
+    int px = h * 13 / 8, a, d;
+    font_metrics(FONT_MONO, px, &a, &d, NULL);
+    int adv = font_text_width(FONT_MONO, px, u, n);
+    font_draw(t, stride, x, y, x + w, y + h, FONT_MONO, px, x + (w - adv) / 2, y + (h - (a + d)) / 2 + a, u, n, fg, 0);
+    return 1;
+}
+
+void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) { gfx_draw_char_cp(x, y, (uint8_t)c, fg, bg); }
+
+void gfx_draw_char_cp(int x, int y, uint32_t cp, uint32_t fg, uint32_t bg) {
     if (!g_ok) return;
     int stride, tw, th;
     uint32_t* t = fb_target(&stride, &tw, &th);
     if (!t) return;
-    uint8_t uc = (uint8_t)c;
-    if (uc >= 128 && uc < 0xA0) uc = '?';   /* a cell holds ASCII or Latin-1 */
+    if (cp >= 0x80 && cp < 0xA0) cp = '?';
 
     /* Blank cells (most of any terminal) are a plain fill. */
-    if (uc == ' ' || uc == 0 || uc == 0xA0) { fb_fill_rect(x, y, 8, 8, bg); return; }
-    const uint8_t* glyph = uc >= 0xA0 ? font8x8_latin1[uc - 0xA0] : font8x8_basic[uc];
+    if (cp == ' ' || cp == 0 || cp == 0xA0) { fb_fill_rect(x, y, 8, 8, bg); return; }
+    const uint8_t* glyph = bitmap_of(cp);
+    if (!glyph) {                               /* (beyond Latin-1: the TrueType font, else '?') */
+        fb_fill_rect(x, y, 8, 8, bg);
+        if (ttf_cell(x, y, 8, 8, cp, fg)) return;
+        glyph = font8x8_basic['?'];
+    }
 
     /* Clip once per glyph, then write rows straight into the target
      * instead of 64 bounds-checked fb_putpixel() calls. */
@@ -50,12 +81,20 @@ void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
 }
 
 void gfx_draw_char_scaled(int x, int y, int scale, char c, uint32_t fg, uint32_t bg) {
-    if (!g_ok) return;
-    if (scale <= 1) { gfx_draw_char(x, y, c, fg, bg); return; }
+    gfx_draw_char_scaled_cp(x, y, scale, (uint8_t)c, fg, bg);
+}
 
-    uint8_t uc = (uint8_t)c;
-    if (uc >= 128 && uc < 0xA0) uc = '?';
-    const uint8_t* glyph = uc >= 0xA0 ? font8x8_latin1[uc - 0xA0] : font8x8_basic[uc];
+void gfx_draw_char_scaled_cp(int x, int y, int scale, uint32_t cp, uint32_t fg, uint32_t bg) {
+    if (!g_ok) return;
+    if (scale <= 1) { gfx_draw_char_cp(x, y, cp, fg, bg); return; }
+
+    if (cp >= 0x80 && cp < 0xA0) cp = '?';
+    const uint8_t* glyph = bitmap_of(cp);
+    if (!glyph) {
+        fb_fill_rect(x, y, 8 * scale, 8 * scale, bg);
+        if (ttf_cell(x, y, 8 * scale, 8 * scale, cp, fg)) return;
+        glyph = font8x8_basic['?'];
+    }
 
     for (int gy = 0; gy < 8; gy++) {
         uint8_t row = glyph[gy];
@@ -126,29 +165,32 @@ int  gfx_cell_w(void) { return gfx_smooth_text() ? TSIZE[g_tsize].sw : TSIZE[g_t
 int  gfx_cell_h(void) { return gfx_smooth_text() ? TSIZE[g_tsize].sh : TSIZE[g_tsize].ch; }
 int  gfx_label_px(void) { return TSIZE[g_tsize].label; }
 
-void gfx_draw_cell_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
+void gfx_draw_cell_char(int x, int y, char c, uint32_t fg, uint32_t bg) { gfx_draw_cell_cp(x, y, (uint8_t)c, fg, bg); }
+
+void gfx_draw_cell_cp(int x, int y, uint32_t cp, uint32_t fg, uint32_t bg) {
     if (!g_ok) return;
-    if (g_tsize == 0) { gfx_draw_char(x, y, c, fg, bg); return; }     /* the classic 8x8 cells */
+    if (g_tsize == 0) { gfx_draw_char_cp(x, y, cp, fg, bg); return; }     /* the classic 8x8 cells */
     int cw = gfx_cell_w(), ch = gfx_cell_h();
     fb_fill_rect(x, y, cw, ch, bg);
-    uint8_t uc = (uint8_t)c;
-    if (uc == ' ' || uc == 0 || uc == 0xA0) return;
-    if (uc >= 128 && uc < 0xA0) uc = '?';
+    if (cp == ' ' || cp == 0 || cp == 0xA0) return;
+    if (cp >= 0x80 && cp < 0xA0) cp = '?';
     if (gfx_smooth_text()) {
         int stride, tw, th;
         uint32_t* t = fb_target(&stride, &tw, &th);
         if (!t) return;
-        char u[3];
-        uint32_t n = 1;
-        if (uc < 0x80) u[0] = (char)uc;
-        else { u[0] = (char)(0xC0 | uc >> 6); u[1] = (char)(0x80 | (uc & 0x3F)); n = 2; }
+        char u[4];
+        uint32_t n = (uint32_t)u8_encode(cp, u);
         int px = TSIZE[g_tsize].px, a, d;
         font_metrics(FONT_UI, px, &a, &d, NULL);
         int adv = font_text_width(FONT_UI, px, u, n);
         font_draw(t, stride, x, y, x + cw + 2, y + ch, FONT_UI, px, x + (cw - adv) / 2, y + (ch - (a + d)) / 2 + a, u, n, fg, 0);
         return;
     }
-    const uint8_t* glyph = uc >= 0xA0 ? font8x8_latin1[uc - 0xA0] : font8x8_basic[uc];
+    const uint8_t* glyph = bitmap_of(cp);
+    if (!glyph) {
+        if (ttf_cell(x, y, cw, ch, cp, fg)) return;
+        glyph = font8x8_basic['?'];
+    }
     int sx = TSIZE[g_tsize].sx, sy = TSIZE[g_tsize].sy;
     int ox = x + (cw - 8 * sx) / 2, oy = y + (ch - 8 * sy) / 2;
     for (int gy = 0; gy < 8; gy++)
@@ -159,10 +201,10 @@ void gfx_draw_cell_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
 void gfx_draw_text(int x, int y, const char* s, uint32_t fg, uint32_t bg) {
     if (!g_ok || !s) return;
     if (gfx_smooth_text()) { smooth_text(x, y, 1, s, fg, bg); return; }
-    int cx = x;
-    for (int i = 0; s[i]; i++) {
-        if (s[i] == '\n') { cx = x; y += 8; continue; }
-        gfx_draw_char(cx, y, s[i], fg, bg);
+    int cx = x, len = (int)strlen(s);
+    for (int i = 0; i < len; ) {
+        if (s[i] == '\n') { cx = x; y += 8; i++; continue; }
+        gfx_draw_char_cp(cx, y, u8_decode(s, len, &i), fg, bg);      /* (a whole UTF-8 character a cell) */
         cx += 8;
     }
 }
@@ -171,11 +213,11 @@ void gfx_draw_text_scaled(int x, int y, int scale, const char* s, uint32_t fg, u
     if (!g_ok || !s) return;
     if (scale <= 1) { gfx_draw_text(x, y, s, fg, bg); return; }
     if (gfx_smooth_text()) { smooth_text(x, y, scale, s, fg, bg); return; }
-    int cx = x;
+    int cx = x, len = (int)strlen(s);
     int step = 8 * scale;
-    for (int i = 0; s[i]; i++) {
-        if (s[i] == '\n') { cx = x; y += step; continue; }
-        gfx_draw_char_scaled(cx, y, scale, s[i], fg, bg);
+    for (int i = 0; i < len; ) {
+        if (s[i] == '\n') { cx = x; y += step; i++; continue; }
+        gfx_draw_char_scaled_cp(cx, y, scale, u8_decode(s, len, &i), fg, bg);
         cx += step;
     }
 }

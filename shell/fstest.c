@@ -102,8 +102,9 @@ int fstest_cmd(int argc, char** argv) {
     char point[FS_PATH_LEN], d[FS_PATH_LEN], p[FS_PATH_LEN], q[FS_PATH_LEN], why[96];
     kstrlcpy(point, where, sizeof(point));
     const char* type = volume_fs_name(mnt);
-    int unicode = !strcmp(type, "exfat");                   /* (FAT32's names here are ASCII only) */
-    const char* renamed = unicode ? "héllo wörld.txt" : "hello-renamed.txt";
+    /* a Unicode name - Latin-1, the euro, Greek, and one past U+FFFF (a UTF-16
+     * surrogate pair on FAT32 / exFAT) - read back after the remount */
+    const char* renamed = "héllo wörld € Ω \xF0\x9F\x8D\x8C.txt";
     g_fail = g_ok = 0;
     uint32_t t0 = timer_ms();
     char line[160];
@@ -136,7 +137,7 @@ int fstest_cmd(int argc, char** argv) {
 
     ksnprintf(p, sizeof(p), "%s/hello.txt", d);
     ksnprintf(q, sizeof(q), "%s/%s", d, renamed);
-    report(unicode ? "rename (to a Unicode name)" : "rename", fs_move(p, q) >= 0 && fs_find_file(q) >= 0 && fs_find_file(p) < 0, "");
+    report("rename (to a Unicode name)", fs_move(p, q) >= 0 && fs_find_file(q) >= 0 && fs_find_file(p) < 0, "");
 
     ksnprintf(p, sizeof(p), "%s/sub", d);
     report("make a folder in it", fs_mkdir(p) >= 0, "");
