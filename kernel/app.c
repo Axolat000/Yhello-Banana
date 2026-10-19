@@ -93,6 +93,7 @@ typedef struct {
     int       pid;             /* the task it runs in */
     int       own_task;        /* started with app_spawn() */
     char      name[32];
+    app_credentials_t credentials; /* kernel-owned; shared by all its threads */
     uspace_t* us;              /* 64-bit: its page tables (kernel/uspace.c) */
     umem_t*   mem;             /* everything it has: code, stacks, malloc() (kernel/umem.c) */
     uintptr_t base;            /* where the ELF was loaded (crash reports: app+offset) */
@@ -162,6 +163,25 @@ static app_proc_t* cur(void) {
     if (pid < 0 || pid >= TASK_MAX || !g_pid_app[pid]) return NULL;
     app_proc_t* p = &g_procs[g_pid_app[pid] - 1];
     return p->used ? p : NULL;
+}
+
+static const app_credentials_t kernel_credentials = {
+    .euid = APP_UID_ROOT, .egid = APP_UID_ROOT
+};
+static const app_credentials_t user_credentials = {
+    .euid = APP_UID_BANANA, .egid = APP_UID_BANANA
+};
+
+const app_credentials_t* app_current_credentials(void) {
+    app_proc_t* p = cur();
+    return p ? &p->credentials : &kernel_credentials;
+}
+
+static void credentials_for_launch(app_credentials_t* out) {
+    app_proc_t* parent = cur();
+    /* Native shells, desktop and daemons launch ordinary apps. Their
+     * administrator authority must not become the app's default identity. */
+    *out = parent ? parent->credentials : user_credentials;
 }
 
 /* the calling thread of app p, NULL for its main thread */
@@ -2734,6 +2754,7 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     int id = p->id;
     memset(p, 0, sizeof(*p));
     p->id = id;
+    credentials_for_launch(&p->credentials);
     static int s_seq = 100;
     p->seq = ++s_seq;
     fs_file_t* f = fs_get_file(fi);

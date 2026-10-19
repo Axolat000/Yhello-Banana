@@ -20,6 +20,30 @@
 
 #define APP_MAX 32      /* apps running at once */
 
+#define APP_UID_ROOT   0u
+#define APP_UID_BANANA 1000u
+#define APP_GROUPS_MAX 16
+
+/* Kernel-owned, immutable for the lifetime of an app. Threads share it;
+ * children copy it. groups[] contains supplementary groups, not egid. */
+typedef struct {
+    uint32_t euid;
+    uint32_t egid;
+    uint32_t group_count;
+    uint32_t groups[APP_GROUPS_MAX];
+} app_credentials_t;
+
+/* The calling app (including calls made inside the kernel on its behalf),
+ * or root for native kernel services. Never expose this pointer to apps. */
+const app_credentials_t* app_current_credentials(void);
+
+static inline int app_credentials_in_group(const app_credentials_t* c, uint32_t gid) {
+    if (c->egid == gid) return 1;
+    for (uint32_t i = 0; i < c->group_count && i < APP_GROUPS_MAX; i++)
+        if (c->groups[i] == gid) return 1;
+    return 0;
+}
+
 /* runs the app at path (an ELF file) in the calling task - a shell's -
  * and returns its exit code once it ends; -1 with err if it cannot start */
 int  app_exec(const char* path, int argc, char** argv, char* err, int ecap);

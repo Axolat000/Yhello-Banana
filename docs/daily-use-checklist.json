@@ -195,6 +195,39 @@
     "rank": 4
   },
   {
+    "id": "base-03-native-sessions",
+    "priority": "P0",
+    "domain": "Security",
+    "title": "Propagate user identity through native shell sessions and file services",
+    "goal": "User commands and remote file requests must not acquire administrator authority by executing in native kernel tasks.",
+    "evidence": "shell/shell.c built-in commands and scripts call fs_* directly outside app_proc_t. net/sshd.c creates ssh-sh tasks that call shell_run_remote without an app context. An app-only current-credential lookup therefore identifies these user-request contexts as trusted kernel services.",
+    "planningReason": "Inspection during base-03 step 1 identified native user-request paths that are not covered by SDK app credentials. Explicit task/session identity and bounded administrator operations are needed so later filesystem checks cannot be bypassed by a native frontend. Preserve the started base-03 steps; review this separate proposal before scheduling.",
+    "acceptance": "A normal local or SSH user session cannot read a root-owned 0600 fixture or modify a protected system fixture through built-in commands, scripts or supported remote file operations; approved administrator service operations still work.",
+    "deliverable": "Documented native-session trust boundaries, task/session credential propagation and positive/negative runtime regression tests.",
+    "steps": [
+      "Inventory local shell, SSH and native file-service request paths and identify which operations require explicit administrator authority.",
+      "Bind native user requests to kernel-owned session/task credentials; preserve identity across task creation and nested user requests, and bound approved administrator operations.",
+      "Run local and remote positive/negative permission tests, including failed requests and task reuse, without relying on SDK wrappers."
+    ],
+    "tests": [
+      "Run built-in read/write commands and a script against root-owned 0600 and banana-owned fixtures: deny protected operations and allow personal-file updates.",
+      "Exercise supported SSH file/shell requests under the same identity; interleave user requests and administrator service work, then reuse task IDs and verify no privilege leak."
+    ],
+    "depends": [
+      "base-03"
+    ],
+    "files": [
+      "kernel/task.c",
+      "kernel/task.h",
+      "kernel/app.c",
+      "kernel/fs.c",
+      "kernel/login.c",
+      "shell/shell.c",
+      "net/sshd.c"
+    ],
+    "planningStatus": "proposed"
+  },
+  {
     "id": "base-04",
     "priority": "P0",
     "domain": "Sécurité",
