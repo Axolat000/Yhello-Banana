@@ -9,6 +9,13 @@ console. Most of them came with pull request #30 (builds 141-150); `fsck` and
 Every test prints one line per check - `ok`, `FAIL` (with the reason) or
 `skip` (with why it cannot run here) - and a summary with the number failed.
 
+## DHCP state inventory
+
+See [DHCP state and failure matrix](DHCP-STATE.md) for the current timers,
+Settings/ifconfig diagnostics, known lease/carrier gaps, host characterization
+commands and the controlled-network qualification procedure. Execution evidence
+for base-17 step 1 is in [DHCP validation](DHCP-STATE-VALIDATION.md).
+
 ## Inside Banana OS
 
 ### `selftest [part]`
