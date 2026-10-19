@@ -1,3 +1,4 @@
+#include "latency.h"
 #include "kheap.h"
 #include "idt.h"
 #include "crash.h"
@@ -300,6 +301,7 @@ void irq_handler(registers_t* regs) {
         }
     }
 
+    uint64_t service_start = latency_stamp();
     for (int i = 0; i < IRQ_CHAIN && irq_handlers[irq][i]; i++) irq_handlers[irq][i]();
 
     /* An interrupt storm: a line that fires without end (a device on a
@@ -321,6 +323,7 @@ void irq_handler(registers_t* regs) {
 
     if (irq >= 8) pic_outb(PIC2_CMD, 0x20);
     pic_outb(PIC1_CMD, 0x20);
+    latency_service(service_start);
     /* app code is safe to switch away from (kernel code is not) */
     app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3, regs);
     task_kpreempt((uintptr_t)REG_IP(regs));     /* (kernel code that may be preempted) */
@@ -488,9 +491,11 @@ extern void lapic_timer_stub(void);
 void ipi_handler(registers_t* regs) {
     crash_stop_secondary();
     if (regs->int_no == SMP_VEC_TIMER) {
+        uint64_t service_start = latency_stamp();
         /* the boot core's local APIC timer, standing in for the PIT (IRQ 0) */
         for (int i = 0; i < IRQ_CHAIN && irq_handlers[0][i]; i++) irq_handlers[0][i]();
         smp_eoi();
+        latency_service(service_start);
         app_preempt((uintptr_t)REG_IP(regs), (regs->cs & 3) == 3, regs);
         task_kpreempt((uintptr_t)REG_IP(regs));
         return;
