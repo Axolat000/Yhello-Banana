@@ -152,12 +152,13 @@ To guarantee application and filesystem stability without breaking monotonically
 
 ## 5. Host Test Verification Suite
 
-A comprehensive test suite in `tools/tests/clock_monotonic_utc.c` and `tools/test_clock_monotonic_utc.py` verifies:
+A comprehensive test suite in `tools/tests/clock_monotonic_utc.c`, `tools/tests/test_ntp_client.c`, and `tools/test_clock_monotonic_utc.py` verifies:
 1. Complete isolation between `timer_ms()` and `rtc_set_utc()` / `rtc_set_time()`.
 2. TCP deadline math invariance under large positive and negative UTC steps:
    - $RTO$ countdowns remain strictly monotonic.
    - Retransmission deadlines do not fire prematurely when UTC steps forward.
    - Retransmission deadlines do not stall when UTC steps backward.
    - Round-trip time (RTT) estimations remain unaffected by wall-clock changes.
-3. NTP packet serialization, epoch conversion (1900 vs 1970 epoch delta: 2,208,988,800 s), and offset calculation formulas.
-4. POSIX `CLOCK_MONOTONIC` vs `CLOCK_REALTIME` behavior under simulated time steps.
+3. NTP packet serialization, epoch conversion (1900 vs 1970 epoch delta: 2,208,988,800 s), and offset calculation formulas in `net/ntp.c` and `net/ntp.h`.
+4. Live UDP mock NTP server query/reply exchanges validating stratum 1 responses, millisecond resolution delay and offset calculation, and error rejection (truncated packets, Kiss-o'-Death, unsynchronized leap indicator).
+5. POSIX `CLOCK_MONOTONIC` vs `CLOCK_REALTIME` behavior under simulated time steps.

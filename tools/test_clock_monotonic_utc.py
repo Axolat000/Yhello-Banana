@@ -23,3 +23,14 @@ binary = out / ('test32' if a.bits32 else 'test64')
 subprocess.run(['cc', *flags, 'tools/tests/clock_monotonic_utc.c', '-o', binary],
                cwd=root, check=True)
 subprocess.run([binary], cwd=root, check=True)
+
+# SNTP client host test
+ntp_binary = out / ('test_ntp32' if a.bits32 else 'test_ntp64')
+ntp_flags = ['-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-Inet']
+if a.bits32:
+    ntp_flags += ['-m32']
+if a.sanitize:
+    ntp_flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
+subprocess.run(['cc', *ntp_flags, 'tools/tests/test_ntp_client.c', 'net/ntp.c', '-o', ntp_binary],
+               cwd=root, check=True)
+subprocess.run([ntp_binary], cwd=root, check=True)

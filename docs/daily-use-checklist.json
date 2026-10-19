@@ -2093,7 +2093,15 @@
       "kernel/notification.h",
       "kernel/notification.c",
       "tools/tests/notification.c",
-      "tools/test_notification.py"
+      "tools/test_notification.py",
+      "kernel/screenshot.h",
+      "kernel/screenshot.c",
+      "kernel/clipboard.h",
+      "shell/fscmds.c",
+      "shell/help.c",
+      "shell/selftest.c",
+      "tools/tests/screenshot_clipboard.c",
+      "tools/test_screenshot_clipboard.py"
     ],
     "steps": [
       "Créer un service de notification avec titre, texte, application et action ; limiter la fréquence et conserver un historique borné.",
@@ -2114,7 +2122,7 @@
       "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
     },
     "rank": 43,
-    "planningReason": "Establish the desktop notification service with title, body, source application, and action handler, enforcing per-application rate limiting and a bounded ring buffer history."
+    "planningReason": "Implement PNG screenshot capture with configurable directory, collision-free naming, and visual toast feedback, alongside multi-format clipboard support (text, image up to 2 MiB, file lists) with history integration."
   },
   {
     "id": "base-31",

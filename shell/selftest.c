@@ -19,6 +19,7 @@
 #include "../kernel/smp.h"
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
+#include "../kernel/screenshot.h"
 #include "../kernel/builtin_apps.h"
 #include "../kernel/zswap.h"
 #include "../kernel/deflate.h"
@@ -499,6 +500,36 @@ static void t_clip(void) {
     report("choosing one makes it the clipboard", len == strlen(T[2]) && !memcmp(c, T[2], len) && clip_find(T[2]) == 0, "");
     for (int i = 0; i < 3; i++) clipboard_hist_delete(clip_find(T[i]));
     report("entries can be deleted", clip_find(T[0]) < 0 && clip_find(T[1]) < 0 && clip_find(T[2]) < 0, "");
+
+    /* Multi-format clipboard checks (files and images) */
+    const char* sample_files[2] = { "/etc/hostname", "/etc/motd" };
+    int sf_ok = clipboard_set_files(sample_files, 2);
+    clip_format_t fmt = clipboard_get_format();
+    char fbuf[128] = "";
+    uint32_t flen = 0;
+    int fcnt = clipboard_get_files(fbuf, sizeof(fbuf), &flen);
+    report("file list copied to clipboard and queried", sf_ok == 0 && fmt == CLIP_FORMAT_FILES && fcnt == 2 && strstr(fbuf, "/etc/hostname"), "");
+
+    /* Fake PNG / image test data */
+    static const uint8_t fake_png[16] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3, 4, 5, 6, 7, 8 };
+    int si_ok = clipboard_set_image(fake_png, sizeof(fake_png));
+    fmt = clipboard_get_format();
+    uint32_t img_len = 0;
+    const void* img_ptr = clipboard_get_image(&img_len);
+    report("image copied to clipboard and queried", si_ok == 0 && fmt == CLIP_FORMAT_IMAGE && img_len == sizeof(fake_png) && img_ptr != NULL, "");
+
+    /* Screenshot PNG encoder unit verification */
+    static const uint8_t mini_pixels[16] = {
+        0xFF, 0x00, 0x00, 0x00,  0x00, 0xFF, 0x00, 0x00,
+        0x00, 0x00, 0xFF, 0x00,  0xFF, 0xFF, 0xFF, 0x00
+    };
+    uint32_t png_bytes = 0;
+    uint8_t* png_enc = screenshot_encode_png(mini_pixels, 2, 2, 8, 1, &png_bytes);
+    int valid_png = (png_enc != NULL && png_bytes > 30 &&
+                     png_enc[0] == 0x89 && png_enc[1] == 'P' && png_enc[2] == 'N' && png_enc[3] == 'G');
+    kfree(png_enc);
+    report("PNG screenshot encoder produces valid PNG stream", valid_png, "");
+
     if (keep) {
         clipboard_set(keep, keep_len);                   /* the user's clipboard back */
         kfree(keep);
