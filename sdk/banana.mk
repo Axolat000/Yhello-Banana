@@ -44,6 +44,7 @@ UNPACK      ?=
 USE_GL      ?= 0
 USE_GL3     ?= 0
 USE_CL      ?= 0
+USE_UTF8PROC ?= 0
 BUILD       ?= build
 # extra libraries (.a) linked after the objects, per CPU
 LIBS_i686   ?=
@@ -89,6 +90,11 @@ $(CLJIT)/config.h: $(BANANA_SDK)/lib/mkcljit.sh $(BANANA_SDK)/lib/patch-cljit.py
 	sh $(BANANA_SDK)/lib/mkcljit.sh $(BANANA_TCC) $(CLJIT)
 $(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o $(BUILD)/i686/cljit.o $(BUILD)/x86_64/cljit.o: $(CLJIT)/config.h
 $(BUILD)/i686/cl.o $(BUILD)/x86_64/cl.o: $(wildcard $(BANANA_SDK)/lib/cl*.h)
+endif
+
+# USE_UTF8PROC = 1: utf8proc Unicode library (<utf8proc.h>)
+ifeq ($(USE_UTF8PROC),1)
+SRCS += $(BANANA_SDK)/lib/utf8proc.c
 endif
 
 LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/stdio.c $(BANANA_SDK)/lib/banana.c \
