@@ -31,7 +31,11 @@ write(p, s)
 p=root/'src/gallium/drivers/virgl/meson.build';s=p.read_text().replace('if not with_platform_windows\n', "if not with_platform_windows and not get_option('osmesa')\n");write(p, s)
 p=root/'src/gallium/auxiliary/target-helpers/inline_sw_helper.h';s=p.read_text().replace('#if defined(GALLIUM_VIRGL)', '#if defined(GALLIUM_VIRGL) && !defined(BANANA_MESA_OSMESA)');write(p, s)
 
-p=root/'src/gallium/drivers/virgl/virgl_context.c';s=p.read_text().replace('#ifndef _WIN32\n#include <libsync.h>', '#if !defined(_WIN32) && !defined(__BANANA_OS__)\n#include <libsync.h>');write(p, s)
+p=root/'src/gallium/drivers/virgl/virgl_context.c';s=p.read_text().replace('#ifndef _WIN32\n#include <libsync.h>', '#if !defined(_WIN32) && !defined(__BANANA_OS__)\n#include <libsync.h>')
+# Mesa's own copy: the sync-file dependency that gave <libsync.h> its include
+# path is left out for OSMesa (meson.build above), so the Linux reference build
+# could not find it
+s=s.replace('#include <libsync.h>', '#include "util/libsync.h"');write(p, s)
 p=root/'src/gallium/frontends/osmesa/osmesa.c';s=p.read_text()
 if 'Banana: validate the selected screen' not in s:
  s=s.replace('   if (sharelist) {\n      st_shared = sharelist->st;', '''   /* Banana: validate the selected screen before using its callbacks. */
