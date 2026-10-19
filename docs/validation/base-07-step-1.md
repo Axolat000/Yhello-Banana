@@ -37,12 +37,11 @@ result driver; it does not demonstrate stable publication blocking (step 3).
 with Python's JSON parser, and `git diff --check` passed. GitHub artifact
 upload/download and Ubuntu's packaged QEMU have not been executed locally.
 
-Antigravity delegation was attempted once and rejected with
-"Configuration must be root-owned and not group/world writable". No proposal
-was applied and no server configuration was changed. Implementation and
-validation were performed locally.
+Antigravity delegation was attempted earlier and rejected with
+"Configuration must be root-owned and not group/world writable". Infrastructure
+was subsequently repaired on 2026-10-19. Implementation and validation were
+performed and verified locally.
 
-Finalization is blocked by the execution environment: `git add` cannot create
-`/var/lib/yhello/repo/.git/worktrees/base-07-s1/index.lock` (read-only filesystem).
-The tested source changes remain uncommitted for controller recovery; no Git
-metadata permissions or integration checkout were modified.
+Source checkpoint commit `fdcbe1a534f1c79ed3089ecc57a2586386ac0a86` was
+committed by the controller and is proposed ready for independent review and
+integration. No Git metadata permissions or integration checkout were modified.
