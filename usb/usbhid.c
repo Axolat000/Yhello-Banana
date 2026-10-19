@@ -333,8 +333,15 @@ static int walk_cb(const uint8_t* desc, void* ctx) {
                 h->xfer.dev = d;
                 h->xfer.ep = h->ep;
                 h->xfer.buf = (uint8_t*)usb_dma_alloc(64);
+                /* one packet per transfer: a report never spans packets (it is at
+                 * most wMaxPacketSize), and asking for more holds a full-size
+                 * report back until the next one fills the rest - a mouse with
+                 * 4-byte packets (QEMU's, many real ones) then lags a report
+                 * behind and drops every second one (seen on UHCI, which runs
+                 * the transfer packet by packet). A boot keyboard needs its 8. */
                 uint16_t mps = ep->wMaxPacketSize & 0x7FF;
-                h->xfer.len = report ? (mps > 64 ? 64 : mps ? mps : 8) : 8;
+                h->xfer.len = mps > 64 ? 64 : mps ? mps : 8;
+                if (h->is_kbd && h->xfer.len < 8) h->xfer.len = 8;
                 h->pad = h->is_pad ? gamepad_add(d->product) : -1;
                 if (h->xfer.buf) usb_submit(&h->xfer);
             } else if (h->fields) { kfree(h->fields); h->fields = NULL; }
