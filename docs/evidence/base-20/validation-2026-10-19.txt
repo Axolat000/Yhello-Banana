@@ -1,0 +1,17 @@
+Validation date: 2026-10-19 UTC
+PASS: python3 -m json.tool docs/daily-use-checklist.json
+PASS: Python inline validation reran the exact Markdown QEMU command and QMP request block (20 second timeout).
+QEMU exit 0, stderr empty, no QMP errors.
+Seven PCI functions and two USB product/port entries matched the first capture exactly.
+Four virtual CPUs reported; host thread IDs excluded from comparison.
+PASS: all seven observed PCI IDs appear in the document.
+PASS: three record headings, 31 unique dated matrix rows, all Banana results not tested.
+PASS: checklist JSON equals HEAD after removing only the new base-20 planningReason field; existing IDs, steps and history unchanged.
+An initial validation incorrectly expected 32 rows and failed; recount corrected the validation to 31, with no document changes.
+Scope: emulator inventory and documentation validation only.
+Not run: compilation, Banana QEMU boot, guest USB descriptor capture, physical-machine tests.
+PASS: git diff --check for tracked documentation changes.
+BLOCKED: git add of the five deliverable files failed with: Unable to create '/var/lib/yhello/repo/.git/worktrees/base-20-s1/index.lock': Read-only file system.
+Read-only inspection: findmnt -T /var/lib/yhello/repo/.git/worktrees/base-20-s1 -o TARGET,OPTIONS reports ro,nosuid,nodev,relatime,errors=remount-ro.
+No commit created; metadata permissions and mounts left unchanged. Deliverable files remain in the worker worktree for resumption.
+PASS: git diff --no-index --check against /dev/null emitted no whitespace diagnostics for all three new documentation/evidence files (exit 1 denotes differences from /dev/null).

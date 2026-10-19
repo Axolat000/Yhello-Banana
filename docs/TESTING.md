@@ -9,6 +9,13 @@ console. Most of them came with pull request #30 (builds 141-150); `fsck` and
 Every test prints one line per check - `ok`, `FAIL` (with the reason) or
 `skip` (with why it cannot run here) - and a summary with the number failed.
 
+## Reference hardware
+
+See [the reference-machine records](hardware-reference.md) for the pinned VM
+profile, dated emulator inventory, and desktop/laptop records awaiting owner
+hardware details. Those records distinguish inventory from Banana execution;
+this test guide alone does not qualify a physical machine.
+
 ## Inside Banana OS
 
 ### `selftest [part]`

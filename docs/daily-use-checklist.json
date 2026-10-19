@@ -538,6 +538,7 @@
   },
   {
     "id": "base-20",
+    "planningReason": "Inspection on 2026-10-19 found that tools/dev.sh leaves QEMU machine, CPU and accelerator implicit; no owner desktop/laptop inventory was supplied. docs/hardware-reference.md now records a pinned VM proposal and executed paused-emulator inventory, with explicit blocked physical records. Preserve all existing steps: step 1 still requires exact owner machines, dated CPU/firmware/PCI/USB evidence and confirmed test availability. QEMU inventory and source-derived USB IDs do not establish Banana functionality. Independent review and controller validation are required before this evidence changes scheduling.",
     "priority": "P1",
     "domain": "Pilotes",
     "title": "Choisir les machines et composants de référence",
