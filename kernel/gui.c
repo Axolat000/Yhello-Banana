@@ -2132,6 +2132,7 @@ static int  g_dband, g_dband_x0, g_dband_y0, g_dband_x1, g_dband_y1;
 static int  desk_nmarked(void);
 static void desk_mouse(const fb_info_t* fi, int mx, int my, int left);
 static void dnd_draw(const fb_info_t* fi, int mx, int my);
+static void dband_draw(const fb_info_t* fi);
 
 /* the keyboard everywhere (defined at the end of this file) */
 static int  kb_global(int k);                 /* Alt+Tab, Win+..., the Menu key: 1 if taken */
@@ -2209,6 +2210,7 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     blit_wallpaper_cache();
 
     draw_desktop_icons(fi);
+    dband_draw(fi);
 
     /* windows back to front in the one stacking order, the ones always on
      * top last; each with a soft shadow under it */
@@ -4114,22 +4116,32 @@ static void desk_mouse(const fb_info_t* fi, int mx, int my, int left) {
     }
 }
 
+/* the desktop's selection box: on the desktop, over its icons and under
+ * every window (it was drawn last, over the windows too), never on the
+ * taskbar */
+static void dband_draw(const fb_info_t* fi) {
+    if (!g_dband) return;
+    int x0 = g_dband_x0 < g_dband_x1 ? g_dband_x0 : g_dband_x1, x1 = g_dband_x0 < g_dband_x1 ? g_dband_x1 : g_dband_x0;
+    int y0 = g_dband_y0 < g_dband_y1 ? g_dband_y0 : g_dband_y1, y1 = g_dband_y0 < g_dband_y1 ? g_dband_y1 : g_dband_y0;
+    int bottom = (int)fi->height - BAR_H;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fi->width) x1 = (int)fi->width;
+    if (y1 > bottom) y1 = bottom;
+    if (x1 <= x0 || y1 <= y0) return;
+    int stride, tw, th;
+    uint32_t* t = fb_target(&stride, &tw, &th);
+    for (int y = y0; t && y < y1 && y < th; y++)
+        for (int x = x0; x < x1 && x < tw; x++) {
+            uint32_t p = t[y * stride + x];
+            t[y * stride + x] = ((p & 0x00FEFEFEu) >> 1) + ((0x006FA8E8u & 0x00FEFEFEu) >> 1);
+        }
+    gfx_fill_rect(x0, y0, x1 - x0, 1, 0x0099CCFFu); gfx_fill_rect(x0, y1 - 1, x1 - x0, 1, 0x0099CCFFu);
+    gfx_fill_rect(x0, y0, 1, y1 - y0, 0x0099CCFFu); gfx_fill_rect(x1 - 1, y0, 1, y1 - y0, 0x0099CCFFu);
+}
+
 static void dnd_draw(const fb_info_t* fi, int mx, int my) {
     (void)fi;
-    /* the desktop's selection box */
-    if (g_dband) {
-        int x0 = g_dband_x0 < g_dband_x1 ? g_dband_x0 : g_dband_x1, x1 = g_dband_x0 < g_dband_x1 ? g_dband_x1 : g_dband_x0;
-        int y0 = g_dband_y0 < g_dband_y1 ? g_dband_y0 : g_dband_y1, y1 = g_dband_y0 < g_dband_y1 ? g_dband_y1 : g_dband_y0;
-        int stride, tw, th;
-        uint32_t* t = fb_target(&stride, &tw, &th);
-        for (int y = y0; t && y < y1 && y < th; y++)
-            for (int x = x0 < 0 ? 0 : x0; x < x1 && x < tw; x++) {
-                uint32_t p = t[y * stride + x];
-                t[y * stride + x] = ((p & 0x00FEFEFEu) >> 1) + ((0x006FA8E8u & 0x00FEFEFEu) >> 1);
-            }
-        gfx_fill_rect(x0, y0, x1 - x0, 1, 0x0099CCFFu); gfx_fill_rect(x0, y1 - 1, x1 - x0, 1, 0x0099CCFFu);
-        gfx_fill_rect(x0, y0, 1, y1 - y0, 0x0099CCFFu); gfx_fill_rect(x1 - 1, y0, 1, y1 - y0, 0x0099CCFFu);
-    }
     if (!g_dnd_on) return;
     /* what is dragged, beside the pointer */
     int n = g_dnd_src == GUI_DRAG_DESKTOP ? g_ndnd_icons : g_ndnd;

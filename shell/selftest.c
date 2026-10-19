@@ -18,6 +18,7 @@
 #include "../kernel/pci.h"
 #include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
+#include "../kernel/usb.h"
 #include "../kernel/gui.h"
 #include "../kernel/browser_test.h"
 #include "ipv6test.h"
@@ -1043,6 +1044,7 @@ int selftest_cmd(int argc, char** argv) {
         section("graphical boot menu rendering");bootmenu_tests_run(report);
     } else if(only && !strcmp(only,"mouse")) {
         section("mouse capture and relative movement");mouse_capture_tests(report);
+        section("mouse: two pointing devices");mouse_source_tests(report);
         if(argc==3)mouse_demo();
     } else if (only && !strcmp(only, "browser")) {
         if(argc==3) {
@@ -1085,6 +1087,7 @@ int selftest_cmd(int argc, char** argv) {
             browser_test_run(report);
             gpu_tests(report);
             mouse_capture_tests(report);
+            mouse_source_tests(report);
             bootmenu_tests_run(report);
             t_ram();
             t_sleep(0);

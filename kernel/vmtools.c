@@ -136,8 +136,9 @@ static void vmmouse_poll(void) {
         uint32_t st = r.ax;
         int buttons = ((st & VMM_LEFT) ? 1 : 0) | ((st & VMM_RIGHT) ? 2 : 0) | ((st & VMM_MIDDLE) ? 4 : 0);
         int z = (int32_t)r.dx;
-        if(st & VMM_RELATIVE_PACKET)mouse_inject((int32_t)r.bx,(int32_t)r.cx,buttons);
-        else mouse_inject_abs((int)(r.bx & 0xFFFFu), (int)(r.cx & 0xFFFFu), buttons);
+        static int src;
+        if(st & VMM_RELATIVE_PACKET)mouse_inject_src(mouse_src(&src),(int32_t)r.bx,(int32_t)r.cx,buttons);
+        else mouse_inject_abs_src(mouse_src(&src), (int)(r.bx & 0xFFFFu), (int)(r.cx & 0xFFFFu), buttons);
         if (z) mouse_inject_wheel(z);
         g_vmm_events++;
     }

@@ -312,6 +312,7 @@ typedef struct {
     touchpad_t tp;
     /* mouse mode */
     int      m_rid, mb[3], mx, my, mw;
+    int      src;                     /* its own buttons (kernel/usb.h) */
 } ihid_t;
 
 static ihid_t* g_dev[4];
@@ -561,7 +562,7 @@ static void mouse_report(ihid_t* h, const uint8_t* r, int n) {
     int buttons = 0;
     for (int b = 0; b < 3; b++) if (fv(h, h->mb[b], r, n)) buttons |= 1 << b;
     int dx = fv(h, h->mx, r, n), dy = fv(h, h->my, r, n);
-    mouse_inject(dx, -dy, buttons);
+    mouse_inject_src(mouse_src(&h->src), dx, -dy, buttons);
     int w = fv(h, h->mw, r, n);
     if (w) mouse_inject_wheel(-w);
 }

@@ -625,32 +625,71 @@ void mouse_set_abs(int x, int y) {
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
-void mouse_inject_abs(int x, int y, int buttons) {
+/* every pointing device's own buttons (kernel/usb.h); the desktop gets them
+ * ORed. Before, each report set the one shared state: on a laptop the
+ * touchpad's reports ("no button") let go of a USB mouse's held button, and
+ * the mouse's next report pressed it again - clicks came out as a click
+ * too soon, or two, or a drag that broke. */
+#define MSRC_MAX 32
+static int      g_src_btn[MSRC_MAX];        /* (0: the shared source) */
+static uint32_t g_src_used = 1;
+
+int mouse_source(void) {
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    int s = 0;
+    for (int i = 1; i < MSRC_MAX; i++)
+        if (!(g_src_used & (1u << i))) { g_src_used |= 1u << i; g_src_btn[i] = 0; s = i; break; }
+    if (f & 0x200) __asm__ volatile("sti" ::: "memory");
+    return s;
+}
+
+/* the buttons of every source together, queued when they change (interrupts off) */
+static void buttons_changed(void) {
+    int b = 0;
+    for (int i = 0; i < MSRC_MAX; i++) b |= g_src_btn[i];
+    if (b != g_usb_btn_last) {
+        if (g_usb_btnq_n < USB_BTNQ) g_usb_btnq[g_usb_btnq_n++] = b;
+        else g_usb_btnq[USB_BTNQ - 1] = b;
+        g_usb_btn_last = b;
+    }
+}
+
+void mouse_source_free(int src) {
+    if (src <= 0 || src >= MSRC_MAX) return;
+    uintptr_t f;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    g_src_btn[src] = 0;                     /* (unplugged with a button down: let go) */
+    g_src_used &= ~(1u << src);
+    buttons_changed();
+    if (f & 0x200) __asm__ volatile("sti" ::: "memory");
+}
+
+void mouse_inject_abs_src(int src, int x, int y, int buttons) {
+    if (src < 0 || src >= MSRC_MAX) src = 0;
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
     g_abs_x = x < 0 ? 0 : x > 65535 ? 65535 : x;
     g_abs_y = y < 0 ? 0 : y > 65535 ? 65535 : y;
     g_abs_new = 1;
-    if (buttons != g_usb_btn_last) {
-        if (g_usb_btnq_n < USB_BTNQ) g_usb_btnq[g_usb_btnq_n++] = buttons;
-        else g_usb_btnq[USB_BTNQ - 1] = buttons;
-        g_usb_btn_last = buttons;
-    }
+    g_src_btn[src] = buttons & 7;
+    buttons_changed();
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
-void mouse_inject(int dx, int dy, int buttons) {
+void mouse_inject_src(int src, int dx, int dy, int buttons) {
+    if (src < 0 || src >= MSRC_MAX) src = 0;
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
     g_usb_dx += dx;
     g_usb_dy += dy;
-    if (buttons != g_usb_btn_last) {
-        if (g_usb_btnq_n < USB_BTNQ) g_usb_btnq[g_usb_btnq_n++] = buttons;
-        else g_usb_btnq[USB_BTNQ - 1] = buttons;
-        g_usb_btn_last = buttons;
-    }
+    g_src_btn[src] = buttons & 7;
+    buttons_changed();
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
+
+void mouse_inject_abs(int x, int y, int buttons) { mouse_inject_abs_src(0, x, y, buttons); }
+void mouse_inject(int dx, int dy, int buttons) { mouse_inject_src(0, dx, dy, buttons); }
 
 /* ── the pointer from the timer interrupt (kernel/gui.c) ─────────────
  * The desktop reads the mouse only when its task runs; while another task
@@ -810,4 +849,50 @@ static mouse_state_t mouse_read_locked(void) {
     last_mouse.dy = sdy;
     last_mouse.dz = sdz;
     return last_mouse;
+}
+
+/* selftest: two pointing devices at once (the bug of the shared buttons).
+ * Runs with interrupts off on the queue itself and puts it back, so the
+ * desktop, if it runs, sees nothing of it. */
+void mouse_source_tests(void (*report)(const char*, int, const char*)) {
+    int a = mouse_source(), b = mouse_source();
+    report("two pointing devices get a source each", a > 0 && b > 0 && a != b, "");
+    if (a <= 0 || b <= 0) { mouse_source_free(a); mouse_source_free(b); return; }
+    uintptr_t f = irq_off();
+    int q[USB_BTNQ], n = g_usb_btnq_n, last = g_usb_btn_last, dx = g_usb_dx, dy = g_usb_dy;
+    memcpy(q, g_usb_btnq, sizeof(q));
+    int base = 0;
+    for (int i = 0; i < MSRC_MAX; i++) if (i != a && i != b) base |= g_src_btn[i];
+    g_usb_btnq_n = 0;
+    g_usb_btn_last = base;
+
+    /* a mouse holds the left button while a touchpad keeps saying "none" */
+    mouse_inject_src(a, 0, 0, 1);
+    mouse_inject_src(b, 2, 1, 0);
+    mouse_inject_src(a, 5, 0, 1);
+    mouse_inject_src(b, 1, 1, 0);
+    int held = g_usb_btnq_n == 1 && g_usb_btnq[0] == (base | 1);
+    mouse_inject_src(a, 0, 0, 0);
+    int one = held && g_usb_btnq_n == 2 && g_usb_btnq[1] == base;
+    /* the touchpad holds the right button; the mouse clicks the left */
+    g_usb_btnq_n = 0;
+    mouse_inject_src(b, 0, 0, 2);
+    mouse_inject_src(a, 0, 0, 1);
+    mouse_inject_src(a, 0, 0, 0);
+    int both = g_usb_btnq_n == 3 && g_usb_btnq[0] == (base | 2) && g_usb_btnq[1] == (base | 3) && g_usb_btnq[2] == (base | 2);
+    /* the device holding a button is unplugged: let go */
+    mouse_source_free(b);
+    int freed = g_usb_btnq_n == 4 && g_usb_btnq[3] == base;
+    mouse_source_free(a);
+
+    memcpy(g_usb_btnq, q, sizeof(q));
+    g_usb_btnq_n = n;
+    g_usb_btn_last = last;
+    g_usb_dx = dx;
+    g_usb_dy = dy;
+    irq_on(f);
+    report("another device's reports do not let go of a held button", held, "");
+    report("a held button gives exactly one click", one, "");
+    report("buttons of two devices are seen together", both, "");
+    report("unplugging a device lets go of its buttons", freed, "");
 }

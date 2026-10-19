@@ -31,6 +31,7 @@ typedef struct {
     int      pad_prev, cbtn;        /* ClickPad: the button its press became */
     int      scroll_acc, fx, fy;    /* fractions carried to the next report */
     int      out;                   /* the buttons last sent */
+    int      src;                   /* its own buttons (kernel/usb.h mouse_source), 0 until first used */
 } touchpad_t;
 
 #define TPF_PALM 1                  /* a palm (or something big) is on the pad */

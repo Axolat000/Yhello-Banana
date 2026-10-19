@@ -50,6 +50,19 @@ void         mouse_set_speed(int speed);
 int          mouse_get_speed(void);
 /* USB mice report here (dy positive = up, buttons bit0 left/1 right/2 middle) */
 void         mouse_inject(int dx, int dy, int buttons);
+/* Each pointing device keeps its own buttons, and the desktop sees all of
+ * them together (ORed): a touchpad saying "no button" no longer lets go of
+ * the button held on a USB mouse. A device asks for its source once
+ * (0 when all are taken: the shared one), reports through it, and gives it
+ * back when it goes away (its buttons are let go then). */
+int          mouse_source(void);
+void         mouse_source_free(int src);
+void         mouse_inject_src(int src, int dx, int dy, int buttons);
+void         mouse_inject_abs_src(int src, int x, int y, int buttons);
+/* the source in *slot, asked for on first use */
+static inline int mouse_src(int* slot) { if (!*slot) *slot = mouse_source(); return *slot; }
+/* selftest mouse: the sources checked */
+void         mouse_source_tests(void (*report)(const char*, int, const char*));
 void         mouse_inject_wheel(int dz);      /* + = scroll down */
 /* absolute pointers (tablets): x, y 0..65535 across the screen, top-left 0 */
 void         mouse_inject_abs(int x, int y, int buttons);

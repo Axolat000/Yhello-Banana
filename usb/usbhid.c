@@ -85,6 +85,7 @@ typedef struct {
     int        fx, fy, fwheel, ftip, fbtn[3];
     /* a game controller: its fields, its slot in gamepad.c */
     int        is_pad, pad;
+    int        src;              /* a pointer: its own buttons (kernel/usb.h), 0 until first used */
     uint8_t    pad_rid;
     int        fp[9], fpb[13];
 } hid_iface_t;
@@ -223,8 +224,8 @@ static void pointer_report(hid_iface_t* h, const uint8_t* buf, int len) {
         const hid_field_t* fx = &h->fields[h->fx];
         const hid_field_t* fy = &h->fields[h->fy];
         int32_t wx = fx->lmax > fx->lmin ? fx->lmax - fx->lmin : 1, wy = fy->lmax > fy->lmin ? fy->lmax - fy->lmin : 1;
-        mouse_inject_abs((int)((int64_t)(x - fx->lmin) * 65535 / wx), (int)((int64_t)(y - fy->lmin) * 65535 / wy), b);
-    } else mouse_inject(x, -y, b);
+        mouse_inject_abs_src(mouse_src(&h->src), (int)((int64_t)(x - fx->lmin) * 65535 / wx), (int)((int64_t)(y - fy->lmin) * 65535 / wy), b);
+    } else mouse_inject_src(mouse_src(&h->src), x, -y, b);
     int wheel = field_val(h, h->fwheel, buf, len, rid);
     if (wheel) mouse_inject_wheel(-wheel);
 }
@@ -386,7 +387,7 @@ static void hid_poll(usb_device_t* d) {
                 pointer_report(h, h->xfer.buf, (int)h->xfer.actual);
             } else if (!h->is_kbd && h->xfer.actual >= 3) {
                 int dx = (int8_t)h->xfer.buf[1], dy = (int8_t)h->xfer.buf[2];
-                mouse_inject(dx, -dy, h->xfer.buf[0] & 7);   /* USB: +y is down */
+                mouse_inject_src(mouse_src(&h->src), dx, -dy, h->xfer.buf[0] & 7);   /* USB: +y is down */
                 if (h->xfer.actual >= 4 && h->xfer.buf[3])
                     mouse_inject_wheel(-(int8_t)h->xfer.buf[3]);   /* USB: + is away from the user */
             }
@@ -402,6 +403,7 @@ static void hid_detach(usb_device_t* d) {
     for (int i = 0; i < hid->count; i++) {
         if (hid->ifs[i].is_pad) gamepad_remove(hid->ifs[i].pad);
         if (hid->ifs[i].fields) { kfree(hid->ifs[i].fields); hid->ifs[i].fields = NULL; }
+        if (hid->ifs[i].src) { mouse_source_free(hid->ifs[i].src); hid->ifs[i].src = 0; }
         if (!hid->ifs[i].is_kbd) continue;
         static const uint8_t none[8] = { 0 };
         keyboard_report(&hid->ifs[i], none);

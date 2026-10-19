@@ -27,13 +27,13 @@ static int held(const touchpad_t* t) { return t->tap_state != TS_IDLE ? 1 : 0; }
  * left button of a tap / drag */
 static void send(touchpad_t* t, int dx, int dy_down, int pad_buttons) {
     t->out = pad_buttons | held(t);
-    mouse_inject(dx, -dy_down, t->out);        /* (PS/2 convention: + is up) */
+    mouse_inject_src(mouse_src(&t->src), dx, -dy_down, t->out);   /* (PS/2 convention: + is up) */
 }
 
 /* a whole click of `bit`, now */
 static void click(touchpad_t* t, int bit) {
-    mouse_inject(0, 0, t->out | bit);
-    mouse_inject(0, 0, t->out);
+    mouse_inject_src(mouse_src(&t->src), 0, 0, t->out | bit);
+    mouse_inject_src(mouse_src(&t->src), 0, 0, t->out);
 }
 
 /* device units -> pixels, faster for quick moves: 3 px/mm when slow,
