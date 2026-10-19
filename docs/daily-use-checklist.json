@@ -2088,7 +2088,11 @@
       "kernel/gui.c",
       "kernel/clipboard.c",
       "kernel/appwin.c",
-      "kernel/settings.c"
+      "kernel/settings.c",
+      "kernel/notification.h",
+      "kernel/notification.c",
+      "tools/tests/notification.c",
+      "tools/test_notification.py"
     ],
     "steps": [
       "Créer un service de notification avec titre, texte, application et action ; limiter la fréquence et conserver un historique borné.",
@@ -2108,7 +2112,8 @@
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
     },
-    "rank": 43
+    "rank": 43,
+    "planningReason": "Establish the desktop notification service with title, body, source application, and action handler, enforcing per-application rate limiting and a bounded ring buffer history."
   },
   {
     "id": "base-31",
