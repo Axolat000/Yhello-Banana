@@ -43,14 +43,14 @@ this does not prove behavior after a stall of half the counter range.
 | --- | --- | --- |
 | `D_IDLE` / `idle` | `dhcp_stop()` removes UDP port 68 listener. It does not itself clear address fields or `configured`. | Timer does nothing. |
 | `D_SELECTING` / `discovering` | Start/restart chooses a new transaction ID and sends DISCOVER immediately. | Retransmit at 1, 3, 7, 15, 31, 47… seconds; interval caps at 16 s, indefinitely. OFFER moves to requesting. |
-| `D_REQUESTING` / `requesting` | OFFER supplies requested address/server; REQUEST sent immediately with the same transaction ID. | Retry REQUEST at 1, 3, 7 s; at 15 s restart discovery with a new ID. ACK binds; NAK clears `configured` and restarts discovery. |
-| `D_BOUND` / `bound` | ACK installs address, mask (default /24), router, DNS if supplied, server, lease and `bound_ms`. Announces ARP and warms gateway ARP. | Renewal after `clamp(floor(lease_s / 2), 30, 86400)` seconds. Missing/zero lease defaults to 3600 s. Options 58/59 (server T1/T2) are not parsed. |
-| `D_RENEWING` / `renewing` | New transaction ID; REQUEST immediately, `ciaddr` set to configured address. Address remains configured. | Retry at 2, 6, 14, 30 s; at 62 s restart discovery **without clearing configured**. ACK resets bound time and renewal timer; NAK clears configured and restarts discovery. |
+| `D_REQUESTING` / `requesting` | OFFER supplies requested address/server; REQUEST sent immediately with the same transaction ID. | Retry REQUEST at 1, 3, 7 s; at 15 s restart discovery with a new ID. ACK binds; NAK clears `configured`, flushes ARP and restarts discovery. |
+| `D_BOUND` / `bound` | ACK installs address, mask (default /24), router, DNS if supplied, server, lease, T1, T2 and `bound_ms`. Announces ARP and warms gateway ARP. | Renewal at T1 (default `lease / 2` or Option 58). Rebinding at T2 (default `lease * 7 / 8` or Option 59). Infinite lease (`0xFFFFFFFF`) stays bound without timers. Missing/zero lease defaults to 3600 s. |
+| `D_RENEWING` / `renewing` | Entered at T1. New transaction ID; REQUEST immediately, `ciaddr` set to configured address. Address remains configured. | Exponential backoff (1s, 2s, 4s, 8s, 16s capped) up to T2. At T2 transition to rebinding. ACK resets bound time and renewal/rebinding/expiry timers; NAK clears configured, flushes ARP and restarts discovery. Expiry clears configured and restarts discovery. |
+| `D_REBINDING` / `rebinding` | Entered at T2. New transaction ID; REQUEST broadcast immediately, `ciaddr` set to configured address. Address remains configured. | Exponential backoff capped at 16s up to lease expiry. At lease expiry, clears configured, flushes ARP and restarts discovery. ACK resets to bound; NAK clears configured, flushes ARP and restarts discovery. |
 
-All messages, including renewal REQUEST, go to IPv4 broadcast/UDP 67 and
-request broadcast replies; there is no unicast renewal or separate T2
-rebinding state. Renewal omits requested-IP and server-ID options.
-The client ignores UDP bind/send failures. Response filtering checks BOOTREPLY,
+All messages, including renewal and rebinding REQUEST, go to IPv4 broadcast/UDP 67 and
+request broadcast replies. Renewal and rebinding omit requested-IP and server-ID options
+per RFC 2131. The client ignores UDP bind/send failures. Response filtering checks BOOTREPLY,
 transaction ID, MAC and magic cookie, but does not validate server source/port
 or enforce a selected server identity. This inventory is not a DHCP security
 or malformed-packet audit.
@@ -63,14 +63,15 @@ or malformed-packet audit.
 | `dhcp_timer()` | Advance one due state/retry, then return. | No wait for DHCP replies; nominal intervals above depend on polling. |
 | No OFFER | Remain discovering and retry. | No acquisition deadline. |
 | OFFER but no ACK | Restart discovery after REQUEST retry sequence. | 15 s per requesting attempt, no overall deadline. |
-| Renewal unanswered | Restart discovery while retaining the configured address. | 62 s after entering renewal; **no lease-expiry invalidation**. |
-| Lease expires | No dedicated transition or configured-address removal. | A four-second lease is still bound at expiry because T1 is floored at 30 s. Long/infinite lease values are not handled as a separate infinite state. |
-| NAK in requesting/renewing | Clear configured and restart discovery. | On accepted NAK; old IP/router/DNS fields remain but configured is false. |
-| Cable/carrier down or up | DHCP does not consult `link_up`; current timers continue. | No link-triggered DHCP recovery or guaranteed socket error deadline. |
+| Renewal unanswered | Transition to `rebinding` at T2 deadline. | At T2 (default 87.5% of lease or Option 59). |
+| Rebinding unanswered | Transition to `discovering` at lease expiry deadline, unconfiguring IP. | At lease expiry (Option 51). Configured address is invalidated and ARP flushed. |
+| Lease expires | Invalidate configured address (`nif->configured = 0`), flush ARP cache, restart discovery. | Address ceases to be used immediately upon lease expiry. |
+| NAK in requesting/renewing/rebinding | Clear configured, flush ARP, restart discovery. | On accepted NAK; old IP/router/DNS fields remain but configured is false. |
+| Cable/carrier down or up | DHCP does not consult `link_up`; current timers continue. | Addressed in base-17-dhcp-lifecycle step 2. |
 | Active adapter removed | `net_unregister_device()` selects first remaining card or none; selection clears configured/IP and ARP cache. DHCP starts on replacement, or stops if none. | Event-driven, distinct from cable unplug. Saved interface policy is in netconf; selection is not a carrier monitor. |
 | Manual card selection | `net_select_device()` clears configured/IP and ARP, starts DHCP on selected card. | No guarantee of preserved connections; sockets are not explicitly closed by this path. |
 | `dhcp_stop()` | Idle and remove listener. | No reply wait. Caller manages configuration (e.g. static mode). |
-| `net_wait_configured(timeout_ms)` | Poll/sleep until configured, no device, timeout, or Ctrl+C. | Caller-supplied timeout, checked between waits of 20 ms plus scheduler/poll latency. A retained expired address can return success immediately. |
+| `net_wait_configured(timeout_ms)` | Poll/sleep until configured, no device, timeout, or Ctrl+C. | Caller-supplied timeout, checked between waits of 20 ms plus scheduler/poll latency. An unconfigured/expired address will not return success. |
 | Terminal `dhcp` / Settings renew | Restart acquisition. Terminal waits up to 15 s; Settings returns to event loop. | Terminal timeout does not stop background acquisition. No finite server-success guarantee. |
 
 There is currently no reliable maximum recovery time after lease loss or a
@@ -92,17 +93,18 @@ make -j4
 
 The host harness compiles the real `net/dhcp.c` with controlled time, UDP,
 ARP, interface and random shims. It verifies packet sends, state strings,
-ACK/NAK, retry times, renewal reset, timer wrap, stop, and the known short-lease,
-renewal-exhaustion and carrier gaps. `KNOWN GAP` output deliberately records
-current shortcomings; it is not a passing recovery qualification. Fixes must
-replace those assertions with the new required behavior.
+ACK/NAK, retry times, renewal reset, timer wrap, stop, rebinding transition,
+Option 58/59 T1/T2 parsing, infinite lease handling, and short lease expiry
+invalidation. Step 1 replaced previous characterization assertions for known
+gaps with required behavior tests.
 
 The runner also extracts the actual `draw_network()` function from Settings
 and captures its labels/colors with host drawing shims: discovery, requesting,
-bound, renewing, retained-address/link-down, static and no-device displays.
+bound, renewing, rebinding, static and no-device displays.
 This checks displayed state mapping, not framebuffer layout, refresh scheduling,
-NIC drivers or packet interoperability. Native and 32-bit runs are separate;
-a compiled harness whose execution fails is not a passing test.
+NIC drivers or packet interoperability. Note: host seccomp environment blocks
+32-bit execution (`--32` killed with SIGSYS/31); native 64-bit and AddressSanitizer/UBSan
+runs pass cleanly.
 
 For controlled QEMU qualification after the follow-up, use an isolated DHCP
 server with a short lease and observable T1/T2; capture packets and serial logs.
