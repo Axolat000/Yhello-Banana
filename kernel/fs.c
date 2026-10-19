@@ -565,6 +565,15 @@ int fs_write(int idx, const void* data, uint32_t len) {
     return 0;
 }
 
+static int  droppable(int i);
+static void drop(int i);
+
+/* a file growing past this by appends (a download) on a volume that writes
+ * at an offset (the ext4 disk) leaves RAM: the rest goes to the disk only,
+ * where its whole copy in RAM - grown again and again - capped the size of
+ * what could be downloaded by the free memory */
+#define APPEND_STREAM_MIN (1u << 20)
+
 int fs_append(int idx, const void* data, uint32_t len) {
     touched();
     fs_file_t* f = fs_file_info(idx);
@@ -575,6 +584,10 @@ int fs_append(int idx, const void* data, uint32_t len) {
     f->data_gen = g_fs_gen;
     f->mtime = rtc_now();
     mount_t* m = mount_of(f->mnt);
+    if (m && m->ops->write_at && f->loaded && f->size + (uint64_t)len > APPEND_STREAM_MIN) {
+        settle(f);
+        if (droppable(idx)) drop(idx);              /* (written through: the disk has all of it) */
+    }
     if (m && m->ops->write_at && !f->loaded) {
         /* written at the end on the disk: nothing of the file read in */
         settle(f);

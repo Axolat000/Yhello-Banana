@@ -330,14 +330,43 @@ static void cookies_load(void) {
 
 typedef struct {
     int      force;          /* save whatever comes */
+    int      ram;            /* wanted in RAM (a sound for a page), not saved */
     int      active;         /* the answer turned out to be a download */
     char     name[96];       /* from Content-Disposition */
     uint32_t reported;       /* bytes at the last progress message */
+    /* a download goes straight into its file in ~/Downloads as it comes (it
+     * was all kept in RAM first: the free memory capped its size) */
+    int      open;           /* the file is made: fidx, path */
+    int      fidx;
+    int      werr;           /* the file could not be written */
+    uint32_t got;
+    char     path[FS_PATH_LEN];
+    char     fname[FS_NAME_LEN];   /* its name, from the answer's address and type */
+    char     ctype[96];            /* (kept from the headers for its first bytes) */
 } dl_t;
 
 typedef struct { char* buf; uint32_t n, cap; int too_big; uint32_t limit; dl_t* dl; } body_t;
 
 static void set_status(const char* s, int err);
+static void download_name(const char* url, const char* hint, const char* ctype, char* out, int cap);
+static void download_path(const char* name, char* path, int cap);
+static void download_done(const char* path, uint32_t len);
+
+/* the download's file, made when the answer turns out to be one */
+static void dl_open(dl_t* dl) {
+    if (dl->open || !dl->fname[0]) return;
+    download_path(dl->fname, dl->path, sizeof(dl->path));
+    dl->fidx = fs_create(dl->path);
+    if (dl->fidx < 0 || fs_write(dl->fidx, "", 0) != 0) { dl->fidx = -1; return; }   /* (else: in RAM, as before) */
+    dl->open = 1;
+}
+
+/* a download that did not finish: its part goes */
+static void dl_abort(dl_t* dl) {
+    if (!dl || !dl->open) return;
+    fs_delete(dl->path, 0);
+    dl->open = 0;
+}
 
 static int displayable(const char* ct) {
     if (!ct[0]) return 1;
@@ -415,6 +444,9 @@ static void on_headers(void* ctx, const http_response_t* r, const char* raw) {
             b->limit = FS_MAX_FILE_SIZE;
             if (fname[0]) kstrlcpy(b->dl->name, fname, sizeof(b->dl->name));
         }
+        /* what its file would be called (the answer may still turn out to be one) */
+        kstrlcpy(b->dl->ctype, r->content_type, sizeof(b->dl->ctype));
+        download_name(r->final_url, b->dl->name, r->content_type, b->dl->fname, sizeof(b->dl->fname));
     }
     char host[96];
     url_host(r->final_url, host, sizeof(host));
@@ -663,18 +695,33 @@ static int fetch_file(const char* path, char** data, uint32_t* len, char* ctype,
 
 static int on_body(void* ctx, const uint8_t* d, uint32_t n) {
     body_t* b = (body_t*)ctx;
-    if (b->n + n + 1 > b->limit) { b->too_big = 1; return -1; }
-    if (b->dl && b->dl->active && b->n + n - b->dl->reported >= (256u << 10)) {
+    dl_t* dl = b->dl;
+    /* a binary answer the server called text (or nothing): a file, found
+     * by its first bytes, before any of it is kept as a page */
+    if (dl && !dl->active && !dl->force && b->n == 0 && n && strncasecmp(dl->ctype, "image/", 6) != 0) {
+        uint32_t k = n < 1024 ? n : 1024;
+        for (uint32_t i = 0; i < k; i++) if (!d[i]) { dl->active = 1; b->limit = FS_MAX_FILE_SIZE; break; }
+    }
+    if (dl && dl->active && !dl->open && !dl->ram && b->n == 0) dl_open(dl);
+    uint32_t total = (dl && dl->open ? dl->got : b->n) + n;
+    if (dl && dl->active && total - dl->reported >= (256u << 10)) {
         char msg[96];
-        b->dl->reported = b->n + n;
-        ksnprintf(msg, sizeof(msg), "Downloading... %u.%u MB", (b->n + n) >> 20, (((b->n + n) >> 10) & 1023) * 10 / 1024);
+        dl->reported = total;
+        ksnprintf(msg, sizeof(msg), "Downloading... %u.%u MB", total >> 20, ((total >> 10) & 1023) * 10 / 1024);
         set_status(msg, 0);
     }
+    if (dl && dl->open) {                           /* into the file, not RAM */
+        if ((uint64_t)dl->got + n > FS_MAX_FILE_SIZE) { b->too_big = 1; return -1; }
+        if (fs_append(dl->fidx, d, n) != 0) { dl->werr = 1; return -1; }
+        dl->got += n;
+        return 0;
+    }
+    if ((uint64_t)b->n + n + 1 > b->limit) { b->too_big = 1; return -1; }
     if (b->n + n + 1 > b->cap) {
-        uint32_t cap = (b->n + n + 1) * 2;
-        if (cap > b->limit) cap = b->limit;
+        uint64_t want = ((uint64_t)b->n + n + 1) * 2;
+        uint32_t cap = want > b->limit ? b->limit : (uint32_t)want;
         char* nb = (char*)kmalloc(cap);
-        if (!nb) { b->too_big = 1; return -1; }
+        if (!nb) { b->too_big = 2; return -1; }
         if (b->buf) { memcpy(nb, b->buf, b->n); kfree(b->buf); }
         b->buf = nb;
         b->cap = cap;
@@ -735,7 +782,10 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     if (!resp) return -1;
     int rc = http_fetch(url, &req, resp, err, (uint32_t)ecap);
     if (rc != NET_OK || b.too_big) {
-        if (b.too_big) kstrlcpy(err, b.limit > MAX_DOC ? "the file is too big (32 MiB max)" : "the page is too big (8 MiB max)", (size_t)ecap);
+        if (dl && dl->werr) kstrlcpy(err, "the file could not be written (is the disk full?)", (size_t)ecap);
+        else if (b.too_big == 2) kstrlcpy(err, "not enough memory for it", (size_t)ecap);
+        else if (b.too_big) kstrlcpy(err, b.limit > MAX_DOC ? "the file is too big (2 GiB max)" : "the page is too big (8 MiB max)", (size_t)ecap);
+        dl_abort(dl);
         if (b.buf) kfree(b.buf);
         kfree(resp);
         return -1;
@@ -968,34 +1018,53 @@ static void download_name(const char* url, const char* hint, const char* ctype, 
     kstrlcpy(out, name, (size_t)cap);
 }
 
-static void save_download(const char* url, const char* hint, const char* ctype, const char* data, uint32_t len) {
-    char name[FS_NAME_LEN], path[FS_PATH_LEN], msg[160];
-    download_name(url, hint, ctype, name, sizeof(name));
+/* ~/Downloads/name, or "name (2).ext"... when it is taken */
+static void download_path(const char* name, char* path, int cap) {
     fs_mkdir_p(DOWNLOAD_DIR);
-    ksnprintf(path, sizeof(path), "%s/%s", DOWNLOAD_DIR, name);
+    ksnprintf(path, (size_t)cap, "%s/%s", DOWNLOAD_DIR, name);
     for (int n = 2; fs_find_file(path) >= 0 && n < 100; n++) {
-        /* "name (2).ext" */
         char base[FS_NAME_LEN];
         kstrlcpy(base, name, sizeof(base));
         char* dot = strrchr(base, '.');
         char ext[12] = "";
         if (dot && strlen(dot) < sizeof(ext)) { kstrlcpy(ext, dot, sizeof(ext)); *dot = 0; }
         base[FS_NAME_LEN - 8 - strlen(ext)] = 0;
-        ksnprintf(path, sizeof(path), "%s/%s (%d)%s", DOWNLOAD_DIR, base, n, ext);
+        ksnprintf(path, (size_t)cap, "%s/%s (%d)%s", DOWNLOAD_DIR, base, n, ext);
     }
-    const char* leaf = strrchr(path, '/') + 1;
+}
+
+static void save_download(const char* url, const char* hint, const char* ctype, const char* data, uint32_t len) {
+    char name[FS_NAME_LEN], path[FS_PATH_LEN], msg[160];
+    download_name(url, hint, ctype, name, sizeof(name));
+    download_path(name, path, sizeof(path));
     if (fs_write_path(path, data, len) < 0) {
-        ksnprintf(msg, sizeof(msg), "Could not save %s (out of space?)", leaf);
+        ksnprintf(msg, sizeof(msg), "Could not save %s (out of space?)", strrchr(path, '/') + 1);
         set_status(msg, 1);
         return;
     }
+    download_done(path, len);
+}
+
+/* the status line once a download is in its file */
+static void download_done(const char* path, uint32_t len) {
+    char msg[160];
+    const char* leaf = strrchr(path, '/') + 1;
     const char* tail = "";
     const char* dot = strrchr(leaf, '.');
     if (dot && strcasecmp(dot, ".bpk") == 0) tail = " - an app: install it from Files (right-click)";
     else if (dot && strcasecmp(dot, ".wav") == 0) tail = " - play it from Files";
     else if (dot && download_ext(leaf - 1 > path ? path : leaf)) tail = " - open it from Files";
-    ksnprintf(msg, sizeof(msg), "Downloaded %s (%u KB) to ~/Downloads%s", leaf, (len + 1023) / 1024, tail);
+    if (len >= (10u << 20))
+        ksnprintf(msg, sizeof(msg), "Downloaded %s (%u MB) to ~/Downloads%s", leaf, (len + (1u << 19)) >> 20, tail);
+    else
+        ksnprintf(msg, sizeof(msg), "Downloaded %s (%u KB) to ~/Downloads%s", leaf, (len + 1023) / 1024, tail);
     set_status(msg, 0);
+}
+
+/* a finished download: already in its file, or saved from RAM now */
+static void finish_download(dl_t* dl, const char* url, const char* ctype, const char* data, uint32_t len) {
+    if (dl->open) download_done(dl->path, dl->got);
+    else save_download(url, dl->name, ctype, data, len);
 }
 
 /* "Save link as" / "Save page as": always a download, the page stays */
@@ -1015,7 +1084,7 @@ static void download(tab_t* t, const char* url_in) {
         ksnprintf(msg, sizeof(msg), "Download failed: %s", err[0] ? err : "error");
         set_status(msg, 1);
     } else {
-        save_download(final_url, dl.name, ctype, data, len);
+        finish_download(&dl, final_url, ctype, data, len);
         kfree(data);
     }
     g_status_tab = NULL;
@@ -1075,7 +1144,7 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     }
     if (frc == 0 && dl.active) {
         /* not a page: save it, and stay on the page we were on */
-        save_download(final_url, dl.name, ctype, data, len);
+        finish_download(&dl, final_url, ctype, data, len);
         kfree(data);
         if (prev_addr[0]) kstrlcpy(t->addr, prev_addr, sizeof(t->addr));
         t->loading = 0;
@@ -1593,7 +1662,7 @@ void        browser_cookies_save(void) { cookies_save(); }
 /* url (or a search) as a document page_load can take: the page, an
  * error page, or a text / image / listing wrapped as HTML. *data is
  * kmalloc'd; final_url is where it ended up after redirects */
-/* a sound file (up to 32 MiB), with the browser's cookies; 0, or -1 with err */
+/* a sound file (in RAM: as big as the memory allows), with the browser's cookies; 0, or -1 with err */
 int browser_fetch_media(const char* url_in, char** data, uint32_t* len, char* err, int ecap) {
     env_setup();
     char url[URL_MAX], ctype[96], fin[URL_MAX];
@@ -1601,6 +1670,7 @@ int browser_fetch_media(const char* url_in, char** data, uint32_t* len, char* er
     dl_t dl;
     memset(&dl, 0, sizeof(dl));
     dl.force = 1;                                    /* (the big limit) */
+    dl.ram = 1;
     g_quiet++;
     int rc = fetch_url(url, NULL, NULL, 0, NULL, data, len, ctype, sizeof(ctype), fin, sizeof(fin), err, ecap, &dl);
     g_quiet--;
