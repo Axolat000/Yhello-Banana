@@ -2,7 +2,7 @@
 #define BANANA_API_H
 
 /*
- * The Banana OS application interface (ABI), version 21.
+ * The Banana OS application interface (ABI), version 22.
  *
  * An app is a position-independent ELF executable (built by the SDK for
  * i686 and x86_64, both packed in one .bpk). Banana OS loads it, applies
@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 21u
+#define BANANA_API_VERSION 22u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -487,6 +487,12 @@ typedef struct banana_api {
      * (0: now), with the summer time of the zone set in Settings */
     unsigned int (*time_utc)(void);
     int   (*utc_offset)(unsigned int utc);
+    /* v22: synchronize an open file; 0 only after synchronization succeeds,
+     * otherwise a negative errno (not -1 with SDK errno). -9: invalid or
+     * closed descriptor; -22: terminal/socket; -38: backend unavailable;
+     * -5: storage failure. Currently regular files return -38 until the
+     * storage backend is connected. Check BANANA_HAS before calling. */
+    int   (*fd_sync)(int fd);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0
