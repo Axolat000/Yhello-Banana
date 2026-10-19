@@ -36,6 +36,10 @@ int gui_close_terminal_by_vt(int vt);
 int gui_open_files(const char* path);
 /* opens the Browser window (url NULL: its current page); 0 if the desktop is not running */
 int gui_open_browser(const char* url);
+/* opens a shortcut's target (kernel/shortcut.h): app:NAME, a web address, a folder, a file; 0 if it cannot */
+int gui_open_target(const char* target);
+/* puts a shortcut to target on the desktop (name.link in ~/Desktop); 0 = ok */
+int gui_desktop_shortcut(const char* name, const char* target);
 /* opens Notepad (path NULL: what it has open, or a new text); 0 if the desktop is not running */
 int gui_open_notepad(const char* path);
 /* 1 while Notepad is the front window (it gets the keyboard) */

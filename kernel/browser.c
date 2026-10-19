@@ -25,6 +25,7 @@
 #include "kbnav.h"
 #include "dlmgr.h"
 #include "bhistory.h"
+#include "shortcut.h"
 #include "explorer.h"
 
 /*
@@ -1794,7 +1795,7 @@ static void read_keys(void) {
 
 /* the right-click menu: chosen in the desktop's task, carried out here */
 enum { BM_OPEN = 1, BM_NEWTAB, BM_SAVELINK, BM_COPYLINK, BM_BACK, BM_FWD, BM_RELOAD, BM_COPY, BM_PASTE,
-       BM_SAVEPAGE, BM_SOURCE, BM_DOWNLOADS };
+       BM_SAVEPAGE, BM_SOURCE, BM_DOWNLOADS, BM_LINKDESK, BM_PAGEDESK };
 static char g_menu_link[URL_MAX];
 static char g_dl_url[URL_MAX];
 static int  g_rc_mx, g_rc_my;
@@ -1817,6 +1818,14 @@ static void bmenu_cb(int id, void* arg) {
         break;
     case BM_SOURCE: push_cmd(CMD_SOURCE, 0, 0); break;
     case BM_DOWNLOADS: fs_mkdir_p(DOWNLOAD_DIR); gui_open_files(DOWNLOAD_DIR); break;
+    case BM_LINKDESK: case BM_PAGEDESK: {          /* a web shortcut on the desktop: the link, or this page */
+        const char* url = id == BM_LINKDESK ? g_menu_link : (t && t->page ? t->page->url : "");
+        char target[FS_PATH_LEN], name[FS_NAME_LEN];
+        if (!url[0] || shortcut_resolve(url, target, sizeof(target), name, sizeof(name)) != SC_WEB) break;
+        if (id == BM_PAGEDESK && t && t->title[0]) kstrlcpy(name, t->title, sizeof(name));
+        if (gui_desktop_shortcut(name, target) == 0) set_status("A shortcut to it is on the desktop", 0);
+        break;
+    }
     }
     g_gen++;
 }
@@ -1848,6 +1857,7 @@ static void run_commands(void) {
                 items[n++] = (ctx_item_t){ "Open link in new tab", BM_NEWTAB, 0 };
                 items[n++] = (ctx_item_t){ "Save link as (download)", BM_SAVELINK, 0 };
                 items[n++] = (ctx_item_t){ "Copy link address", BM_COPYLINK, 0 };
+                items[n++] = (ctx_item_t){ "Create desktop shortcut", BM_LINKDESK, 0 };
                 items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
             }
             items[n++] = (ctx_item_t){ "Back", BM_BACK, !t || t->hist_pos <= 0 };
@@ -1859,6 +1869,7 @@ static void run_commands(void) {
             items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
             items[n++] = (ctx_item_t){ "Save page as (download)", BM_SAVEPAGE, !t };
             items[n++] = (ctx_item_t){ "View page source", BM_SOURCE, !t };
+            items[n++] = (ctx_item_t){ "Create desktop shortcut", BM_PAGEDESK, !t || !t->page || strncasecmp(t->page->url, "http", 4) != 0 };
             if (n < CTX_MAX_ITEMS) items[n++] = (ctx_item_t){ "Open Downloads folder", BM_DOWNLOADS, 0 };
             ctxmenu_open(g_rc_mx, g_rc_my, items, n, bmenu_cb, NULL);
             break;

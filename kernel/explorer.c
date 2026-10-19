@@ -47,6 +47,7 @@
 #include "keyboard.h"
 #include "rtc.h"
 #include "zip.h"
+#include "shortcut.h"
 
 #define HOME      "/home/banana"
 #define TITLE_H   20
@@ -624,6 +625,12 @@ static void open_item(int i) {
     char path[FS_PATH_LEN];
     child_path(item_name(it), path, sizeof(path));
     if (it->is_dir) { go(path); return; }
+    if (shortcut_is(item_name(it))) {                /* a shortcut: what it points to */
+        char target[FS_PATH_LEN];
+        if (!shortcut_read(path, target, sizeof(target)) || !gui_open_target(target))
+            set_status_c("This shortcut points to something that is not there any more", 1);
+        return;
+    }
     if (has_ext(item_name(it), ".bpk")) { install_package(path); return; }
     if (zip_is_zip_name(item_name(it))) { extract_zip(path, item_name(it), 0); return; }
     if (open_media(path, item_name(it))) return;
@@ -903,7 +910,7 @@ static void compress_selected(void) {
 enum { M_OPEN = 1, M_EDIT, M_INSTALL, M_PLAY, M_WALLPAPER, M_COPY, M_CUT, M_PASTE, M_RENAME, M_DELETE,
        M_NEWFOLDER, M_NEWFILE, M_TERMINAL, M_REFRESH, M_USB, M_EJECT, M_PROPS, M_CLOSE, M_VIEW_DETAILS, M_VIEW_ICONS,
        M_SELECT_NONE, M_BROWSER, M_FONT, M_CODE, M_RESTORE, M_EMPTY_TRASH, M_DELETE_FOREVER, M_SELECT_ALL, M_HIDDEN,
-       M_EXTRACT, M_EXTRACT_HERE, M_ZIP };
+       M_EXTRACT, M_EXTRACT_HERE, M_ZIP, M_SHORTCUT };
 
 static void menu_cb(int id, void* arg) {
     (void)arg;
@@ -936,6 +943,9 @@ static void menu_cb(int id, void* arg) {
     case M_USB: go("/mnt/usb"); break;
     case M_EJECT: eject_here(); break;
     case M_PROPS: properties(); break;
+    case M_SHORTCUT:                              /* a shortcut to it on the desktop */
+        if (g_sel >= 0 && g_sel < g_count && gui_desktop_shortcut(item_name(&g_items[g_sel]), path) == 0) set_status("A shortcut is on the desktop");
+        break;
     case M_CLOSE: explorer_close(); break;
     case M_VIEW_DETAILS: g_view_icons = 0; g_scroll = 0; break;
     case M_VIEW_ICONS: g_view_icons = 1; g_scroll = 0; break;
@@ -1034,6 +1044,7 @@ static void item_menu(int mx, int my, int row) {
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Delete", M_DELETE, 0 };
         items[n++] = (ctx_item_t){ "Rename", M_RENAME, 0 };
+        items[n++] = (ctx_item_t){ "Create shortcut on desktop", M_SHORTCUT, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Properties", M_PROPS, 0 };
     } else {

@@ -11,7 +11,7 @@
  * (called from gui_poll(), in whatever task runs the desktop).
  */
 
-#define CTX_MAX_ITEMS 16
+#define CTX_MAX_ITEMS 24
 #define CTX_SEP       "-"            /* a label of "-" is a separator line */
 
 typedef struct {
