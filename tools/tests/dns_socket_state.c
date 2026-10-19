@@ -22,6 +22,7 @@
 #undef ntohl
 
 #include "ipv6.h"
+#include "tcp.h"
 #include "kstring.h"
 #include "banana_api.h"
 
@@ -252,6 +253,91 @@ static void send_mock_reply(int is6) {
     }
 }
 
+static uint32_t g_tcp_connect_count = 0;
+static uint32_t g_tcp_send_count = 0;
+static uint32_t g_tcp_close_count = 0;
+static uint8_t  g_mock_tcp_rx[1024];
+static uint32_t g_mock_tcp_rx_len = 0;
+static uint32_t g_mock_tcp_rx_pos = 0;
+static int      g_tcp_fail_connect = 0;
+
+struct tcp_conn {
+    int dummy;
+};
+static tcp_conn_t g_mock_conn;
+
+tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err) {
+    (void)ip; (void)port; (void)timeout_ms;
+    g_tcp_connect_count++;
+    if (g_tcp_fail_connect) {
+        if (err) *err = NET_ERR_TIMEOUT;
+        return NULL;
+    }
+    return &g_mock_conn;
+}
+
+tcp_conn_t* tcp_connect6(const ip6_t* ip, uint16_t port, uint32_t timeout_ms, int* err) {
+    (void)ip; (void)port; (void)timeout_ms;
+    g_tcp_connect_count++;
+    if (g_tcp_fail_connect) {
+        if (err) *err = NET_ERR_TIMEOUT;
+        return NULL;
+    }
+    return &g_mock_conn;
+}
+
+int tcp_send(tcp_conn_t* c, const void* data, uint32_t len, uint32_t timeout_ms) {
+    (void)c; (void)timeout_ms;
+    g_tcp_send_count++;
+    /* When a TCP DNS request is sent, synthesize a TCP DNS reply if we have mock response */
+    if (len > 2 && g_inject_action > 0) {
+        /* Format full DNS reply for TCP: 2-byte length prefix + DNS message */
+        uint8_t rep[512] = {0};
+        const uint8_t* req = (const uint8_t*)data + 2;
+        uint32_t req_len = len - 2;
+        uint16_t id = (uint16_t)(req[0] << 8 | req[1]);
+        wr16(rep, id);
+        wr16(rep + 2, 0x8180); /* Response, no TC flag */
+        wr16(rep + 4, 1);      /* QDCOUNT = 1 */
+        wr16(rep + 6, 1);      /* ANCOUNT = 1 */
+        uint32_t qlen = req_len - 12;
+        memcpy(rep + 12, req + 12, qlen);
+        uint32_t off = 12 + qlen;
+        rep[off++] = 0xc0; rep[off++] = 0x0c;
+        uint16_t qtype = (uint16_t)(req[req_len - 4] << 8 | req[req_len - 3]);
+        wr16(rep + off, qtype); off += 2;
+        wr16(rep + off, 1); off += 2;
+        wr32(rep + off, g_inject_ttl); off += 4;
+        if (qtype == 28) {
+            wr16(rep + off, 16); off += 2;
+            memcpy(rep + off, g_inject_ip6, 16); off += 16;
+        } else {
+            wr16(rep + off, 4); off += 2;
+            wr32(rep + off, g_inject_ip4); off += 4;
+        }
+        wr16(g_mock_tcp_rx, (uint16_t)off);
+        memcpy(g_mock_tcp_rx + 2, rep, off);
+        g_mock_tcp_rx_len = off + 2;
+        g_mock_tcp_rx_pos = 0;
+    }
+    return (int)len;
+}
+
+int tcp_recv(tcp_conn_t* c, void* buf, uint32_t max, uint32_t timeout_ms) {
+    (void)c; (void)timeout_ms;
+    if (g_mock_tcp_rx_pos >= g_mock_tcp_rx_len) return 0;
+    uint32_t avail = g_mock_tcp_rx_len - g_mock_tcp_rx_pos;
+    uint32_t n = max < avail ? max : avail;
+    memcpy(buf, g_mock_tcp_rx + g_mock_tcp_rx_pos, n);
+    g_mock_tcp_rx_pos += n;
+    return (int)n;
+}
+
+void tcp_close(tcp_conn_t* c) {
+    (void)c;
+    g_tcp_close_count++;
+}
+
 /* Include actual net/dns.c implementation */
 #include "../../net/dns.c"
 
@@ -310,6 +396,12 @@ static void test_setup(void) {
     g_inject_action = 0;
     g_udp_send_count = 0;
     g_udp6_send_count = 0;
+    g_tcp_connect_count = 0;
+    g_tcp_send_count = 0;
+    g_tcp_close_count = 0;
+    g_mock_tcp_rx_len = 0;
+    g_mock_tcp_rx_pos = 0;
+    g_tcp_fail_connect = 0;
     g_last_sent_len = 0;
     /* Clear DNS cache */
     memset(g_cache, 0, sizeof(g_cache));
@@ -408,17 +500,38 @@ int main(void) {
     CHECK(dns_resolve("malformed.com", &a4, 500) == NET_ERR_TIMEOUT || dns_resolve("malformed.com", &a4, 500) == NET_ERR_DNS);
     puts("PASS parser drops mismatched ID, malformed answer length and honors timeout bound");
 
-    /* Test 7: Truncated response (TC bit set) behavior */
+    /* Test 7: Truncated response (TC bit set) falls back to TCP (RFC 1035) */
     test_setup();
     g_inject_action = 3; /* Truncated response (TC bit set: 0x8380) */
-    /* In net/dns.c: parse_reply checks (p[2] & 0xFA) != 0x80. Because TC (0x02) is tested by 0xFA,
-     * a truncated UDP response without fallback is dropped by parse_reply, timing out cleanly at timeout_ms.
-     * Document this real behavior: no infinite loop or hang, but no TCP fallback either. */
-    t0 = g_now;
-    CHECK(dns_resolve("truncated.org", &a4, 400) == NET_ERR_TIMEOUT);
-    CHECK(g_now - t0 >= 400);
+    CHECK(dns_resolve("truncated.org", &a4, 1000) == NET_OK);
+    CHECK(a4 == g_inject_ip4);
+    CHECK(g_udp_send_count == 1);
+    CHECK(g_tcp_connect_count == 1);
+    CHECK(g_tcp_send_count == 1);
+    CHECK(g_tcp_close_count == 1);
     CHECK(g_udp_bound_port == 0);
-    puts("KNOWN GAP truncated response (TC bit set): dropped by parse_reply and times out (no DNS TCP fallback implemented)");
+
+    /* Also verify IPv6 DNS resolution with TCP fallback */
+    test_setup();
+    g_ipv6_enabled = 1;
+    g_ipv6_has_dns = 1;
+    ip6_parse("2001:4860:4860::8888", &g_ipv6_dns_server);
+    g_inject_action = 3;
+    CHECK(dns_resolve6("truncated6.org", &a6, 1000) == NET_OK);
+    CHECK(memcmp(a6.b, g_inject_ip6, 16) == 0);
+    CHECK(g_udp6_send_count == 1);
+    CHECK(g_tcp_connect_count == 1);
+    CHECK(g_tcp_send_count == 1);
+    CHECK(g_tcp_close_count == 1);
+    CHECK(g_udp6_bound_port == 0);
+
+    /* Verify that if TCP connection fails during fallback, DNS error is returned cleanly */
+    test_setup();
+    g_inject_action = 3;
+    g_tcp_fail_connect = 1;
+    CHECK(dns_resolve("tcpfail.org", &a4, 500) != NET_OK);
+    CHECK(g_udp_bound_port == 0);
+    puts("PASS truncated response (TC bit set) falls back to TCP and resolves successfully");
 
     /* Test 8: Silent timeout bounded by caller timeout_ms */
     test_setup();
