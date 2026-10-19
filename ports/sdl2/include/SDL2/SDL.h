@@ -197,6 +197,23 @@ typedef enum {
     SDL_SCANCODE_BACKSPACE = 42,
     SDL_SCANCODE_TAB = 43,
     SDL_SCANCODE_SPACE = 44,
+    SDL_SCANCODE_F1 = 58,
+    SDL_SCANCODE_F2 = 59,
+    SDL_SCANCODE_F3 = 60,
+    SDL_SCANCODE_F4 = 61,
+    SDL_SCANCODE_F5 = 62,
+    SDL_SCANCODE_F6 = 63,
+    SDL_SCANCODE_F7 = 64,
+    SDL_SCANCODE_F8 = 65,
+    SDL_SCANCODE_F9 = 66,
+    SDL_SCANCODE_F10 = 67,
+    SDL_SCANCODE_F11 = 68,
+    SDL_SCANCODE_F12 = 69,
+    SDL_SCANCODE_HOME = 74,
+    SDL_SCANCODE_PAGEUP = 75,
+    SDL_SCANCODE_DELETE = 76,
+    SDL_SCANCODE_END = 77,
+    SDL_SCANCODE_PAGEDOWN = 78,
     SDL_SCANCODE_RIGHT = 79,
     SDL_SCANCODE_LEFT = 80,
     SDL_SCANCODE_DOWN = 81,
@@ -248,6 +265,23 @@ typedef Sint32 SDL_Keycode;
 #define SDLK_DOWN      (1 << 30 | 81)
 #define SDLK_LEFT      (1 << 30 | 80)
 #define SDLK_RIGHT     (1 << 30 | 79)
+#define SDLK_HOME      (1 << 30 | 74)
+#define SDLK_END       (1 << 30 | 77)
+#define SDLK_PAGEUP    (1 << 30 | 75)
+#define SDLK_PAGEDOWN  (1 << 30 | 78)
+#define SDLK_DELETE    (1 << 30 | 76)
+#define SDLK_F1        (1 << 30 | 58)
+#define SDLK_F2        (1 << 30 | 59)
+#define SDLK_F3        (1 << 30 | 60)
+#define SDLK_F4        (1 << 30 | 61)
+#define SDLK_F5        (1 << 30 | 62)
+#define SDLK_F6        (1 << 30 | 63)
+#define SDLK_F7        (1 << 30 | 64)
+#define SDLK_F8        (1 << 30 | 65)
+#define SDLK_F9        (1 << 30 | 66)
+#define SDLK_F10       (1 << 30 | 67)
+#define SDLK_F11       (1 << 30 | 68)
+#define SDLK_F12       (1 << 30 | 69)
 
 typedef struct SDL_Keysym {
     SDL_Scancode scancode;
@@ -273,17 +307,29 @@ Uint32 SDL_GetRelativeMouseState(int* x, int* y);
 
 /* Events */
 typedef enum {
-    SDL_FIRSTEVENT     = 0,
-    SDL_QUIT           = 0x100,
-    SDL_WINDOWEVENT    = 0x200,
-    SDL_KEYDOWN        = 0x300,
-    SDL_KEYUP          = 0x301,
-    SDL_TEXTINPUT      = 0x303,
-    SDL_MOUSEMOTION    = 0x400,
-    SDL_MOUSEBUTTONDOWN= 0x401,
-    SDL_MOUSEBUTTONUP  = 0x402,
-    SDL_MOUSEWHEEL     = 0x403,
-    SDL_LASTEVENT      = 0xFFFF
+    SDL_FIRSTEVENT          = 0,
+    SDL_QUIT                = 0x100,
+    SDL_WINDOWEVENT         = 0x200,
+    SDL_KEYDOWN             = 0x300,
+    SDL_KEYUP               = 0x301,
+    SDL_TEXTINPUT           = 0x303,
+    SDL_MOUSEMOTION         = 0x400,
+    SDL_MOUSEBUTTONDOWN     = 0x401,
+    SDL_MOUSEBUTTONUP       = 0x402,
+    SDL_MOUSEWHEEL          = 0x403,
+    SDL_JOYAXISMOTION       = 0x600,
+    SDL_JOYBALLMOTION       = 0x601,
+    SDL_JOYHATMOTION        = 0x602,
+    SDL_JOYBUTTONDOWN       = 0x603,
+    SDL_JOYBUTTONUP         = 0x604,
+    SDL_JOYDEVICEADDED      = 0x605,
+    SDL_JOYDEVICEREMOVED    = 0x606,
+    SDL_CONTROLLERAXISMOTION= 0x650,
+    SDL_CONTROLLERBUTTONDOWN= 0x651,
+    SDL_CONTROLLERBUTTONUP  = 0x652,
+    SDL_CONTROLLERDEVICEADDED = 0x653,
+    SDL_CONTROLLERDEVICEREMOVED = 0x654,
+    SDL_LASTEVENT           = 0xFFFF
 } SDL_EventType;
 
 typedef enum {
@@ -367,6 +413,69 @@ typedef struct SDL_MouseWheelEvent {
     Uint32 direction;
 } SDL_MouseWheelEvent;
 
+typedef struct SDL_TextInputEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    Uint32 windowID;
+    char text[32];
+} SDL_TextInputEvent;
+
+typedef Sint32 SDL_JoystickID;
+
+typedef struct SDL_JoyAxisEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    SDL_JoystickID which;
+    Uint8 axis;
+    Uint8 padding1;
+    Uint8 padding2;
+    Uint8 padding3;
+    Sint16 value;
+    Uint16 padding4;
+} SDL_JoyAxisEvent;
+
+typedef struct SDL_JoyButtonEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    SDL_JoystickID which;
+    Uint8 button;
+    Uint8 state;
+    Uint8 padding1;
+    Uint8 padding2;
+} SDL_JoyButtonEvent;
+
+typedef struct SDL_JoyHatEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    SDL_JoystickID which;
+    Uint8 hat;
+    Uint8 value;
+    Uint8 padding1;
+    Uint8 padding2;
+} SDL_JoyHatEvent;
+
+typedef struct SDL_ControllerAxisEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    SDL_JoystickID which;
+    Uint8 axis;
+    Uint8 padding1;
+    Uint8 padding2;
+    Uint8 padding3;
+    Sint16 value;
+    Uint16 padding4;
+} SDL_ControllerAxisEvent;
+
+typedef struct SDL_ControllerButtonEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    SDL_JoystickID which;
+    Uint8 button;
+    Uint8 state;
+    Uint8 padding1;
+    Uint8 padding2;
+} SDL_ControllerButtonEvent;
+
 typedef struct SDL_QuitEvent {
     Uint32 type;
     Uint32 timestamp;
@@ -377,9 +486,15 @@ typedef union SDL_Event {
     SDL_CommonEvent common;
     SDL_WindowEvent window;
     SDL_KeyboardEvent key;
+    SDL_TextInputEvent text;
     SDL_MouseMotionEvent motion;
     SDL_MouseButtonEvent button;
     SDL_MouseWheelEvent wheel;
+    SDL_JoyAxisEvent jaxis;
+    SDL_JoyButtonEvent jbutton;
+    SDL_JoyHatEvent jhat;
+    SDL_ControllerAxisEvent caxis;
+    SDL_ControllerButtonEvent cbutton;
     SDL_QuitEvent quit;
     Uint8 padding[56];
 } SDL_Event;
@@ -389,10 +504,63 @@ int SDL_PollEvent(SDL_Event* event);
 int SDL_WaitEvent(SDL_Event* event);
 int SDL_WaitEventTimeout(SDL_Event* event, int timeout);
 
-/* Time */
+/* Time & Performance Counter */
 Uint32 SDL_GetTicks(void);
 Uint64 SDL_GetTicks64(void);
+Uint64 SDL_GetPerformanceCounter(void);
+Uint64 SDL_GetPerformanceFrequency(void);
 void SDL_Delay(Uint32 ms);
+
+/* Threads & Synchronization */
+typedef struct SDL_Thread SDL_Thread;
+typedef unsigned long SDL_threadID;
+typedef int (*SDL_ThreadFunction)(void* data);
+
+typedef enum {
+    SDL_THREAD_PRIORITY_LOW,
+    SDL_THREAD_PRIORITY_NORMAL,
+    SDL_THREAD_PRIORITY_HIGH,
+    SDL_THREAD_PRIORITY_TIME_CRITICAL
+} SDL_ThreadPriority;
+
+SDL_Thread* SDL_CreateThread(SDL_ThreadFunction fn, const char* name, void* data);
+SDL_threadID SDL_GetThreadID(SDL_Thread* thread);
+SDL_threadID SDL_ThreadID(void);
+int SDL_SetThreadPriority(SDL_ThreadPriority priority);
+void SDL_WaitThread(SDL_Thread* thread, int* status);
+void SDL_DetachThread(SDL_Thread* thread);
+
+typedef unsigned int SDL_TLSID;
+SDL_TLSID SDL_TLSCreate(void);
+void* SDL_TLSGet(SDL_TLSID id);
+int SDL_TLSSet(SDL_TLSID id, const void* value, void (*destructor)(void*));
+
+typedef struct SDL_mutex SDL_mutex;
+SDL_mutex* SDL_CreateMutex(void);
+void SDL_DestroyMutex(SDL_mutex* mutex);
+int SDL_LockMutex(SDL_mutex* mutex);
+int SDL_TryLockMutex(SDL_mutex* mutex);
+int SDL_UnlockMutex(SDL_mutex* mutex);
+
+#define SDL_mutexP(m) SDL_LockMutex(m)
+#define SDL_mutexV(m) SDL_UnlockMutex(m)
+
+typedef struct SDL_sem SDL_sem;
+SDL_sem* SDL_CreateSemaphore(Uint32 initial_value);
+void SDL_DestroySemaphore(SDL_sem* sem);
+int SDL_SemWait(SDL_sem* sem);
+int SDL_SemTryWait(SDL_sem* sem);
+int SDL_SemWaitTimeout(SDL_sem* sem, Uint32 ms);
+int SDL_SemPost(SDL_sem* sem);
+Uint32 SDL_SemValue(SDL_sem* sem);
+
+typedef struct SDL_cond SDL_cond;
+SDL_cond* SDL_CreateCond(void);
+void SDL_DestroyCond(SDL_cond* cond);
+int SDL_CondSignal(SDL_cond* cond);
+int SDL_CondBroadcast(SDL_cond* cond);
+int SDL_CondWait(SDL_cond* cond, SDL_mutex* mutex);
+int SDL_CondWaitTimeout(SDL_cond* cond, SDL_mutex* mutex, Uint32 ms);
 
 /* Audio */
 typedef Uint16 SDL_AudioFormat;
@@ -417,10 +585,96 @@ typedef struct SDL_AudioSpec {
 typedef Uint32 SDL_AudioDeviceID;
 
 int SDL_OpenAudio(SDL_AudioSpec* desired, SDL_AudioSpec* obtained);
+SDL_AudioDeviceID SDL_OpenAudioDevice(const char* device, int iscapture,
+                                      const SDL_AudioSpec* desired,
+                                      SDL_AudioSpec* obtained,
+                                      int allowed_changes);
 void SDL_CloseAudio(void);
+void SDL_CloseAudioDevice(SDL_AudioDeviceID dev);
 void SDL_PauseAudio(int pause_on);
+void SDL_PauseAudioDevice(SDL_AudioDeviceID dev, int pause_on);
 void SDL_LockAudio(void);
+void SDL_LockAudioDevice(SDL_AudioDeviceID dev);
 void SDL_UnlockAudio(void);
+void SDL_UnlockAudioDevice(SDL_AudioDeviceID dev);
+int SDL_QueueAudio(SDL_AudioDeviceID dev, const void* data, Uint32 len);
+Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID dev);
+void SDL_ClearQueuedAudio(SDL_AudioDeviceID dev);
+
+/* Joystick & Game Controller */
+typedef struct _SDL_Joystick SDL_Joystick;
+
+#define SDL_HAT_CENTERED  0x00
+#define SDL_HAT_UP        0x01
+#define SDL_HAT_RIGHT     0x02
+#define SDL_HAT_DOWN      0x04
+#define SDL_HAT_LEFT      0x08
+#define SDL_HAT_RIGHTUP   (SDL_HAT_RIGHT|SDL_HAT_UP)
+#define SDL_HAT_RIGHTDOWN (SDL_HAT_RIGHT|SDL_HAT_DOWN)
+#define SDL_HAT_LEFTUP    (SDL_HAT_LEFT|SDL_HAT_UP)
+#define SDL_HAT_LEFTDOWN  (SDL_HAT_LEFT|SDL_HAT_DOWN)
+
+int SDL_NumJoysticks(void);
+SDL_Joystick* SDL_JoystickOpen(int device_index);
+void SDL_JoystickClose(SDL_Joystick* joystick);
+const char* SDL_JoystickName(SDL_Joystick* joystick);
+SDL_JoystickID SDL_JoystickInstanceID(SDL_Joystick* joystick);
+int SDL_JoystickNumAxes(SDL_Joystick* joystick);
+int SDL_JoystickNumButtons(SDL_Joystick* joystick);
+int SDL_JoystickNumHats(SDL_Joystick* joystick);
+Sint16 SDL_JoystickGetAxis(SDL_Joystick* joystick, int axis);
+Uint8 SDL_JoystickGetButton(SDL_Joystick* joystick, int button);
+Uint8 SDL_JoystickGetHat(SDL_Joystick* joystick, int hat);
+void SDL_JoystickUpdate(void);
+
+typedef struct _SDL_GameController SDL_GameController;
+
+typedef enum {
+    SDL_CONTROLLER_BINDTYPE_NONE = 0,
+    SDL_CONTROLLER_BINDTYPE_BUTTON,
+    SDL_CONTROLLER_BINDTYPE_AXIS,
+    SDL_CONTROLLER_BINDTYPE_HAT
+} SDL_GameControllerBindType;
+
+typedef enum {
+    SDL_CONTROLLER_AXIS_INVALID = -1,
+    SDL_CONTROLLER_AXIS_LEFTX,
+    SDL_CONTROLLER_AXIS_LEFTY,
+    SDL_CONTROLLER_AXIS_RIGHTX,
+    SDL_CONTROLLER_AXIS_RIGHTY,
+    SDL_CONTROLLER_AXIS_TRIGGERLEFT,
+    SDL_CONTROLLER_AXIS_TRIGGERRIGHT,
+    SDL_CONTROLLER_AXIS_MAX
+} SDL_GameControllerAxis;
+
+typedef enum {
+    SDL_CONTROLLER_BUTTON_INVALID = -1,
+    SDL_CONTROLLER_BUTTON_A,
+    SDL_CONTROLLER_BUTTON_B,
+    SDL_CONTROLLER_BUTTON_X,
+    SDL_CONTROLLER_BUTTON_Y,
+    SDL_CONTROLLER_BUTTON_BACK,
+    SDL_CONTROLLER_BUTTON_GUIDE,
+    SDL_CONTROLLER_BUTTON_START,
+    SDL_CONTROLLER_BUTTON_LEFTSTICK,
+    SDL_CONTROLLER_BUTTON_RIGHTSTICK,
+    SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+    SDL_CONTROLLER_BUTTON_DPAD_UP,
+    SDL_CONTROLLER_BUTTON_DPAD_DOWN,
+    SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+    SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+    SDL_CONTROLLER_BUTTON_MAX
+} SDL_GameControllerButton;
+
+SDL_bool SDL_IsGameController(int joystick_index);
+SDL_GameController* SDL_GameControllerOpen(int joystick_index);
+void SDL_GameControllerClose(SDL_GameController* gamecontroller);
+const char* SDL_GameControllerName(SDL_GameController* gamecontroller);
+SDL_Joystick* SDL_GameControllerGetJoystick(SDL_GameController* gamecontroller);
+Sint16 SDL_GameControllerGetAxis(SDL_GameController* gamecontroller, SDL_GameControllerAxis axis);
+Uint8 SDL_GameControllerGetButton(SDL_GameController* gamecontroller, SDL_GameControllerButton button);
+void SDL_GameControllerUpdate(void);
 
 #ifdef __cplusplus
 }
