@@ -1,6 +1,9 @@
 #include "examples.h"
 #include "fs.h"
+#include "kheap.h"
 #include "types.h"
+
+char* stbi_zlib_decode_malloc(const char* buffer, int len, int* outlen);
 
 extern const uint8_t ex_hello[], ex_hello_end[], ex_guess[], ex_guess_end[], ex_paint[], ex_paint_end[];
 extern const uint8_t ex_clock[], ex_clock_end[], ex_tones[], ex_tones_end[], ex_mandel[], ex_mandel_end[];
@@ -39,11 +42,16 @@ void examples_seed(void) {
         for (const char* s = pre; *s; s++) path[n++] = *s;
         for (const char* s = g_examples[i].name; *s && n < FS_PATH_LEN - 1; s++) path[n++] = *s;
         path[n] = 0;
-        fs_write_path(path, g_examples[i].start, (uint32_t)(g_examples[i].end - g_examples[i].start));
+        /* (the kernel has them compressed: kernel/exbin.asm) */
+        int len = 0;
+        char* bpk = stbi_zlib_decode_malloc((const char*)g_examples[i].start, (int)(g_examples[i].end - g_examples[i].start), &len);
+        if (bpk && len > 0) fs_write_path(path, bpk, (uint32_t)len);
+        kfree(bpk);
     }
 }
 
-/* the App Store's builtin: source serves them too (kernel/builtin_apps.c) */
+/* the App Store's builtin: source serves them too (kernel/builtin_apps.c);
+ * examples_data: the compressed package, as the kernel has it */
 int examples_count(void) { return (int)(sizeof(g_examples) / sizeof(g_examples[0])); }
 const char* examples_file(int i) { return i >= 0 && i < examples_count() ? g_examples[i].name : ""; }
 const uint8_t* examples_data(int i, uint32_t* len) {

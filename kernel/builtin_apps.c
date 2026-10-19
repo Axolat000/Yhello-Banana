@@ -164,15 +164,15 @@ static uint32_t g_released_bytes;
 
 uint32_t builtin_released_bytes(void) { return g_released_bytes; }
 
-/* package k (an app: its compressed .bpk.z; then the examples' .bpk): its
- * name in STORE, and where the kernel has it */
+/* package k (the apps, then the examples - every one a compressed .bpk.z):
+ * its name in STORE, and where the kernel has it */
 static void blob_of(int k, char* name, int cap, const uint8_t** p, uint32_t* n) {
     if (k < NAPPS) {
         ksnprintf(name, (size_t)cap, "%s.bpk.z", APPS[k].name);
         *p = APPS[k].start;
         *n = (uint32_t)(APPS[k].end - APPS[k].start);
     } else {
-        kstrlcpy(name, examples_file(k - NAPPS), (size_t)cap);
+        ksnprintf(name, (size_t)cap, "%s.z", examples_file(k - NAPPS));
         *p = examples_data(k - NAPPS, n);
     }
 }
@@ -214,6 +214,10 @@ void builtin_release(void) {
         const uint8_t* p;
         uint32_t n;
         blob_of(k, name, sizeof(name), &p, &n);
+        if (k >= NAPPS) {                                    /* (kernels before build 203 kept the examples unpacked) */
+            ksnprintf(path, sizeof(path), STORE "/%s", examples_file(k - NAPPS));
+            if (fs_find_file(path) >= 0) fs_delete(path, 0);
+        }
         ksnprintf(path, sizeof(path), STORE "/%s", name);
         /* (there already from an earlier boot: the same bytes - the index has
          * their CRC, and the file its size; it is not read) */
@@ -242,14 +246,15 @@ void builtin_release(void) {
          g_released_bytes >> 10, timer_ms() - t0);
 }
 
-int builtin_package(const char* file, char** data, uint32_t* len) {
+int builtin_package(const char* file_in, char** data, uint32_t* len) {
+    char file[40];                                           /* (file_in may be builtin_package_file's buffer, reused below) */
+    kstrlcpy(file, file_in, sizeof(file));
     for (int k = 0; k < builtin_package_count(); k++) {
         if (strcmp(builtin_package_file(k), file)) continue;
         uint32_t n = 0;
         char* b = blob_copy(k, &n);
         if (!b) return -1;
-        if (k >= NAPPS) { *data = b; *len = n; return 0; }
-        int out = 0;                                         /* (an app: unpacked) */
+        int out = 0;                                         /* (compressed, every one: unpacked) */
         char* d = n ? stbi_zlib_decode_malloc(b, (int)n, &out) : NULL;
         kfree(b);
         if (!d || out <= 0) { if (d) kfree(d); return -1; }
