@@ -2197,5 +2197,40 @@
       "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
     },
     "rank": 45
+  },
+  {
+    "id": "base-17-dhcp-lifecycle",
+    "priority": "P1",
+    "domain": "Network",
+    "title": "Enforce DHCP lease expiry and recover across carrier changes",
+    "goal": "Keep IPv4 configuration valid and recover without reboot after DHCP lease loss or a temporary link outage.",
+    "evidence": "Step 1 inventory and tools/test_dhcp_state.py characterize net/dhcp.c: renewal has a 30-second minimum, no lease-expiry invalidation or T2 rebinding, and renewal exhaustion starts discovery with configured still true. DHCP does not consume carrier transitions from netdev.link_up.",
+    "planningReason": "The started base-17 steps cover DHCP state documentation/UI, DNS/sockets and clocks, but do not assign implementation of the observed lease-expiry and carrier-recovery gaps. A distinct follow-up preserves those started steps while making the original short-lease/outage acceptance executable. See docs/DHCP-STATE.md; this proposal needs independent review and controller validation before scheduling.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "On a controlled short lease, renew before expiry, stop using an expired or NAK-rejected address, and reacquire after a 30-second carrier outage without reboot. Interrupted downloads report an explicit error within a documented bound. Static configuration remains unchanged by DHCP timers.",
+    "deliverable": "Reviewed DHCP lease/carrier state machine, updated Settings/ifconfig diagnostics, deterministic tests and packet/serial evidence for the original base-17 outage matrix.",
+    "steps": [
+      "Implement validated lease/T1/T2 deadlines, expiry invalidation, renewal/rebinding and retry behavior, including short and infinite leases and timer wrap; replace characterization assertions for known gaps with required behavior tests.",
+      "Connect active-interface carrier loss/restoration and adapter changes to DHCP recovery and necessary socket invalidation; preserve static mode and distinguish unsupported driver carrier reporting.",
+      "Qualify the short-lease, server-silence, NAK and 30-second outage matrix in controlled QEMU networking; document call/recovery bounds and separately record physical NIC validation when available."
+    ],
+    "tests": [
+      "Use deterministic host tests of real DHCP code for short lease expiry, supplied T1/T2, absent server, ACK/NAK, timer wrap, infinite lease and static mode.",
+      "Capture DHCP traffic and serial logs on an isolated server: shorten lease, suppress replies past T2 and expiry, restore server, cut carrier for 30 seconds and restore it; require no stale-address use and no reboot.",
+      "Run a download through the outage, assert explicit bounded failure, then retry successfully after reacquisition; verify carrier reporting on the actual NIC before claiming hardware support."
+    ],
+    "files": [
+      "net/dhcp.c",
+      "net/net.c",
+      "net/net.h",
+      "net/netdev.h",
+      "net/tcp.c",
+      "kernel/settings.c",
+      "shell/netcmds.c",
+      "tools/test_dhcp_state.py",
+      "docs/DHCP-STATE.md"
+    ]
   }
 ]
