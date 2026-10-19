@@ -36,7 +36,7 @@ Banana OS implements networking in two tiers:
 | **Mismatched Transaction ID** | UDP response | `rd16(p) != q->id` causes early return from `parse_reply()`; packet ignored | `NET_ERR_TIMEOUT` (if no valid packet follows) | Bounded by `timeout_ms` |
 | **Mismatched Query Section** | UDP response | `memcmp(p + 12, q->question, q->qlen) != 0` or type mismatch causes packet drop | `NET_ERR_TIMEOUT` (if no valid packet follows) | Bounded by `timeout_ms` |
 | **Malformed RDLENGTH / Truncated Record** | UDP response | Offset boundary check `off + rdlen > len` aborts loop cleanly | `NET_ERR_DNS` (or timeout if discarded) | Bounded by `timeout_ms` |
-| **Truncated Reply (`TC` bit = 1, `0x0200`)** | UDP response | `(p[2] & 0xFA) != 0x80` drops truncated response (`TC` bit set); no TCP fallback | `NET_ERR_TIMEOUT` | Bounded by `timeout_ms` |
+| **Truncated Reply (`TC` bit = 1, `0x0200`)** | UDP response | `parse_reply()` sets `q->tc = 1`; `resolve()` falls back to `resolve_tcp()` (RFC 1035 4.2.2) | `NET_OK` on answer | Bounded by remaining `timeout_ms` |
 | **Server Silence / Packet Loss** | Unanswered UDP | 3 attempts with 2000 ms per-attempt wait, polling `net_wait(20)` | `NET_ERR_TIMEOUT` | Exactly `min(timeout_ms, 6000)` ms |
 | **Unconfigured Interface** | Pre-flight check | `net_wait_configured(timeout_ms)` fails if DHCP not bound | `NET_ERR_NOTREADY` | Caller timeout or DHCP completion |
 | **Missing DNS Server** | Pre-flight check | `nif->dns == 0` | `NET_ERR_DNS` | Immediate |
@@ -66,9 +66,9 @@ Banana OS implements networking in two tiers:
 ## 4. Architectural Boundaries and Living Checklist Proposal
 
 ### Documented Current Boundaries
-1. **No DNS TCP Fallback**:
+1. **DNS TCP Fallback (Implemented)**:
    - RFC 1035 section 4.2.2 defines TCP fallback when responses have the truncation flag (`TC`) set.
-   - In `net/dns.c`, incoming packets with the TC flag set fail the `(p[2] & 0xFA) == 0x80` check and are dropped, causing resolution to time out.
+   - In `net/dns.c`, incoming packets with the TC flag set now set `q->tc = 1`, and `resolve()` initiates a TCP connection to the DNS server port 53 (via `tcp_connect` or `tcp_connect6`), transmitting the 2-byte length prefixed question and parsing the TCP answer.
 2. **SDK IPv6 Socket Separation**:
    - The Banana SDK `banana_api_t` table currently exports `resolve(name, ip4)`.
    - `kernel/usock.c` explicitly enforces `family == AF_INET`.
