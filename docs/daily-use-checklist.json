@@ -31,7 +31,8 @@
     ],
     "tests": [
       "Test à écrire : modifier un fichier de 1 Mio, appeler fsync, couper QEMU dès le retour puis redémarrer ; comparer le SHA-256 aux octets attendus. Répéter 100 fois, en conservant les logs.",
-      "Injecter une erreur dans la callback flush : fsync doit échouer ; un descripteur fermé doit donner EBADF. Une coupure avant fsync n’a pas les mêmes garanties."
+      "Injecter une erreur dans la callback flush : fsync doit échouer ; un descripteur fermé doit donner EBADF. Une coupure avant fsync n’a pas les mêmes garanties.",
+      "With pending writes and the installed filesystem frozen for backup, fd_sync must either wait until thaw and complete the actual flush, or return an error; it must not return success while writes are deferred. After thaw, inject a device-flush failure and require a storage error. This validates the backend integration in step 2 before SDK wiring in step 3."
     ],
     "deliverable": "Un appel ABI documenté, les wrappers SDK fonctionnels et un test de durabilité reproductible.",
     "commands": [
@@ -48,7 +49,8 @@
       "kernel/ext4.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/ext4.c",
       "kernel/disk.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/disk.c"
     },
-    "rank": 1
+    "rank": 1,
+    "planningReason": "Inspection during step 1 found that kernel/fsdisk.c:fsdisk_sync returns FSDISK_OK immediately while g_frozen defers writes for backups. Step 2 must not expose that deferred-write success as application durability. Add an explicit frozen-backup acceptance test without changing the started steps or relaxing the power-cut tests."
   },
   {
     "id": "base-05",
