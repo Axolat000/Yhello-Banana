@@ -159,6 +159,45 @@ file: one command a line, `#wait N` waits N seconds, other `#` lines are
 comments. `--window` shows QEMU's screen, `--keep` leaves it running afterwards.
 Exit code 0 when every command passed.
 
+### CI firmware smoke jobs
+
+The Build ISO workflow runs separate `boot` matrix jobs for BIOS and x86_64
+UEFI on Ubuntu 24.04. Both download the same `boot-iso-<SHA>` artifact from
+the build job rather than rebuilding it. Reproduce them from the repository root:
+
+```
+make
+bash tools/ci-boot.sh bios
+bash tools/ci-boot.sh uefi
+```
+
+The boot-only dependencies are `python3`, `qemu-system-x86` and `ovmf` (plus
+Git and `sha256sum` for provenance). The build dependencies are listed above.
+UEFI uses `/usr/share/OVMF/OVMF_CODE_4M.fd` and a private copy of
+`/usr/share/OVMF/OVMF_VARS_4M.fd`; override `OVMF_CODE` and `OVMF_VARS` together
+for another matching firmware pair. Secure Boot is disabled in this test.
+QEMU uses software emulation, four cores, 512 MiB RAM and no network device.
+The firmware selects the default 64-bit kernel from the ISO.
+
+Each job must reach a serial shell prompt, then run `selftest boot` and
+`selftest ram` with a `0 failed` result, within 180 seconds for boot and
+180 seconds per command. A timeout, missing expected result, crash or panic
+reported during a command fails the job. The job itself has a 15-minute limit.
+These are offline boot smoke checks, not the full app/POSIX, filesystem,
+installation, reboot, update or hardware test suites.
+
+`build/logs/boot-<firmware>/` contains `serial.log`, `results.log` and
+`provenance.txt` (commit SHA, ISO SHA-256, QEMU version and arguments).
+CI attempts to upload these even on failure as
+`boot-<firmware>-<SHA>-<attempt>` with 14-day retention; failures before QEMU
+starts can have no serial log. The ISO artifact is retained for three days.
+Firmware variable copies are disposable and are not uploaded.
+
+This implements base-07 step 1 only. Existing pre-release publication is
+unchanged and does not wait for the boot jobs. The current workflow has no
+stable channel; stable gating and its intentional-failure demonstration remain
+base-07 step 3. Do not treat successful smoke jobs as full release validation.
+
 ### `tools/test-exfat.sh [bios|uefi]`
 
 The exFAT driver end to end (needs `exfatprogs`): makes an empty 64 MiB exFAT

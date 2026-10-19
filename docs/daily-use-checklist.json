@@ -347,7 +347,8 @@
     "priority": "P0",
     "domain": "Validation",
     "title": "Bloquer les releases stables sur les tests",
-    "evidence": "Le workflow consulté construit et publie ; pas de démarrage QEMU de validation.",
+    "evidence": "The inspected workflow publishes ISO and Java pre-releases (prerelease: true); it has no stable publication job. Step 1 proposes BIOS/UEFI64 offline boot smoke jobs using the built ISO, not release gating.",
+    "planningReason": "Inspection of .github/workflows/build-iso.yml distinguishes existing pre-release publication from the planned stable channel. Preserve all started steps; step 3 must define or identify stable publication and demonstrate that a failed or skipped required validation prevents it. Step 1 smoke checks alone are not evidence of full release validation.",
     "action": "Ajouter boot QEMU BIOS/UEFI, selftest et POSIX, fichiers, réseau, installation, redémarrage et mise à jour avant publication stable. Étendre la matrice avec les corrections. Ce travail peut commencer immédiatement en parallèle.",
     "acceptance": "Une régression de boot, de sauvegarde ou de reprise du journal bloque la release.",
     "sources": [
