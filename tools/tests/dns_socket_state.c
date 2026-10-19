@@ -338,7 +338,92 @@ void tcp_close(tcp_conn_t* c) {
     g_tcp_close_count++;
 }
 
-/* Include actual net/dns.c implementation */
+void* kzalloc(size_t sz) { void* p = malloc(sz); if (p) memset(p, 0, sz); return p; }
+void* kmalloc(size_t sz) { return malloc(sz); }
+void  kfree(void* p) { free(p); }
+
+static tcp_listener_t* g_mock_listen = (tcp_listener_t*)(uintptr_t)0x1234;
+static int g_listen_call_count = 0;
+static int g_listen6_call_count = 0;
+static tcp_conn_t* g_mock_accepted_conn = NULL;
+static ip6_t g_mock_peer6_ip = { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } };
+static uint16_t g_mock_peer6_port = 8080;
+
+tcp_listener_t* tcp_listen(uint16_t port, int* err) {
+    (void)port; (void)err;
+    g_listen_call_count++;
+    return g_mock_listen;
+}
+
+tcp_listener_t* tcp_listen6(uint16_t port, int* err) {
+    (void)port; (void)err;
+    g_listen6_call_count++;
+    return g_mock_listen;
+}
+
+tcp_conn_t* tcp_accept(tcp_listener_t* l, uint32_t timeout_ms) {
+    (void)l; (void)timeout_ms;
+    tcp_conn_t* c = g_mock_accepted_conn;
+    g_mock_accepted_conn = NULL;
+    return c;
+}
+
+void tcp_unlisten(tcp_listener_t* l) { (void)l; }
+void tcp_abort(tcp_conn_t* c) { (void)c; }
+void tcp_peer(const tcp_conn_t* c, ip4_t* ip, uint16_t* port) {
+    (void)c;
+    if (ip) *ip = IP4(192, 168, 1, 100);
+    if (port) *port = 12345;
+}
+
+int tcp_peer6(const tcp_conn_t* c, ip6_t* ip, uint16_t* port) {
+    (void)c;
+    if (ip) *ip = g_mock_peer6_ip;
+    if (port) *port = g_mock_peer6_port;
+    return 1;
+}
+
+uint16_t tcp_local_port(const tcp_conn_t* c) { (void)c; return 54321; }
+int tcp_readable(const tcp_conn_t* c) { (void)c; return (int)(g_mock_tcp_rx_len - g_mock_tcp_rx_pos); }
+uint32_t tcp_send_space(const tcp_conn_t* c) { (void)c; return 4096; }
+tcp_state_t tcp_state(const tcp_conn_t* c) { (void)c; return TCP_ESTABLISHED; }
+int tcp_pending(const tcp_listener_t* l) { (void)l; return g_mock_accepted_conn != NULL; }
+int tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max) {
+    (void)c;
+    if (g_mock_tcp_rx_pos >= g_mock_tcp_rx_len) return 0;
+    uint32_t avail = g_mock_tcp_rx_len - g_mock_tcp_rx_pos;
+    uint32_t n = max < avail ? max : avail;
+    memcpy(buf, g_mock_tcp_rx + g_mock_tcp_rx_pos, n);
+    return (int)n;
+}
+
+int ipv6_link_local(ip6_t* out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->b[0] = 0xfe; out->b[1] = 0x80; out->b[15] = 1;
+        return 1;
+    }
+    return 0;
+}
+
+int ipv6_global(ip6_t* out, int* prefix_len) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->b[0] = 0x20; out->b[1] = 0x01; out->b[15] = 2;
+        if (prefix_len) *prefix_len = 64;
+        return 1;
+    }
+    return 0;
+}
+
+int ipv6_source(const ip6_t* dst, ip6_t* src) {
+    if (!dst || !src) return NET_ERR_PROTO;
+    if (ip6_is_loopback(dst)) { *src = *dst; return NET_OK; }
+    return ipv6_link_local(src) ? NET_OK : NET_ERR_NOTREADY;
+}
+
+/* Include actual kernel/usock.c and net/dns.c implementation */
+#include "../../kernel/usock.c"
 #include "../../net/dns.c"
 
 /* Banana SDK mocks and include socket.c */
@@ -611,6 +696,119 @@ int main(void) {
     sa_in6.sin6_family = AF_INET6;
     CHECK(getnameinfo((struct sockaddr*)&sa_in6, sizeof(sa_in6), hostbuf, sizeof(hostbuf), servbuf, sizeof(servbuf), 0) == EAI_FAMILY);
     puts("PASS SDK getnameinfo IPv4 formatting and IPv6 EAI_FAMILY rejection");
+
+    /* Test 12: kernel/usock AF_INET6 socket lifecycle and TCP operations */
+    test_setup();
+    int err = 0;
+    usock_t* s6 = usock_new(AF_INET6, SOCK_STREAM, &err);
+    CHECK(s6 != NULL && err == 0);
+    CHECK(s6->family == AF_INET6);
+
+    /* Family mismatch rejection in bind and connect */
+    struct sockaddr_in bad_sa4;
+    memset(&bad_sa4, 0, sizeof(bad_sa4));
+    bad_sa4.sin_family = AF_INET;
+    bad_sa4.sin_port = htons(8080);
+    bad_sa4.sin_addr.s_addr = htonl(IP4(127, 0, 0, 1));
+    CHECK(usock_bind(s6, &bad_sa4, sizeof(bad_sa4)) == -EAFNOSUPPORT);
+    CHECK(usock_connect(s6, &bad_sa4, sizeof(bad_sa4)) == -EAFNOSUPPORT);
+
+    /* Valid AF_INET6 bind */
+    struct sockaddr_in6 bind_sa6;
+    memset(&bind_sa6, 0, sizeof(bind_sa6));
+    bind_sa6.sin6_family = AF_INET6;
+    bind_sa6.sin6_port = htons(9090);
+    bind_sa6.sin6_addr[15] = 1; /* ::1 */
+    CHECK(usock_bind(s6, &bind_sa6, sizeof(bind_sa6)) == 0);
+    CHECK(s6->lport == 9090);
+
+    /* Listen delegating to tcp_listen6 */
+    CHECK(usock_listen(s6, 5) == 0);
+    CHECK(g_listen6_call_count == 1);
+    CHECK(g_listen_call_count == 0);
+
+    /* Accept delegating to tcp_accept and formatting sockaddr_in6 */
+    g_mock_accepted_conn = &g_mock_conn;
+    struct sockaddr_in6 peer_sa6;
+    memset(&peer_sa6, 0, sizeof(peer_sa6));
+    int peer_len = sizeof(peer_sa6);
+    usock_t* accepted = usock_accept(s6, &peer_sa6, &peer_len, &err);
+    CHECK(accepted != NULL && err == 0);
+    CHECK(accepted->family == AF_INET6);
+    CHECK(peer_len == 28);
+    CHECK(peer_sa6.sin6_family == AF_INET6);
+    CHECK(ntohs(peer_sa6.sin6_port) == 8080);
+    CHECK(memcmp(peer_sa6.sin6_addr, g_mock_peer6_ip.b, 16) == 0);
+
+    /* getsockname on accepted socket returns local_ip6 address */
+    struct sockaddr_in6 local_sa6;
+    memset(&local_sa6, 0, sizeof(local_sa6));
+    int local_len = sizeof(local_sa6);
+    CHECK(usock_name(accepted, 0, &local_sa6, &local_len) == 0);
+    CHECK(local_len == 28);
+    CHECK(local_sa6.sin6_family == AF_INET6);
+    CHECK(local_sa6.sin6_addr[0] == 0xfe && local_sa6.sin6_addr[1] == 0x80);
+
+    /* getsockopt / setsockopt IPV6_V6ONLY */
+    int v6only_val = 1, optlen = sizeof(int);
+    CHECK(usock_opt(s6, 1, IPPROTO_IPV6, IPV6_V6ONLY, &v6only_val, &optlen) == 0);
+    int read_v6only = 0;
+    CHECK(usock_opt(s6, 0, IPPROTO_IPV6, IPV6_V6ONLY, &read_v6only, &optlen) == 0);
+    CHECK(read_v6only == 1);
+
+    usock_close(accepted);
+    usock_close(s6);
+    puts("PASS kernel usock AF_INET6 TCP lifecycle, bind, listen6, accept and IPV6_V6ONLY");
+
+    /* Test 13: kernel/usock AF_INET6 UDP socket sendto and recvfrom */
+    test_setup();
+    usock_t* u6 = usock_new(AF_INET6, SOCK_DGRAM, &err);
+    CHECK(u6 != NULL && err == 0);
+    CHECK(u6->family == AF_INET6);
+
+    /* Bind UDP6 */
+    struct sockaddr_in6 ubind6;
+    memset(&ubind6, 0, sizeof(ubind6));
+    ubind6.sin6_family = AF_INET6;
+    ubind6.sin6_port = htons(7777);
+    CHECK(usock_bind(u6, &ubind6, sizeof(ubind6)) == 0);
+    CHECK(u6->udp_bound == 1);
+    CHECK(g_udp6_bound_port == 7777);
+
+    /* Sendto AF_INET6 destination */
+    struct sockaddr_in6 udst6;
+    memset(&udst6, 0, sizeof(udst6));
+    udst6.sin6_family = AF_INET6;
+    udst6.sin6_port = htons(8888);
+    udst6.sin6_addr[0] = 0x20; udst6.sin6_addr[1] = 0x01; udst6.sin6_addr[15] = 9;
+    char udp_msg[] = "hello ipv6 socket";
+    long sent = usock_send(u6, udp_msg, sizeof(udp_msg), 0, &udst6, sizeof(udst6));
+    CHECK(sent == sizeof(udp_msg));
+    CHECK(g_udp6_send_count == 1);
+    CHECK(g_udp_send_count == 0);
+
+    /* Ingest incoming datagram via udp6_in */
+    ip6_t src6 = { { 0x26, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } };
+    uint8_t pkt_data[] = "ipv6 datagram payload";
+    CHECK(g_udp6_handler != NULL);
+    g_udp6_handler(&src6, 8888, pkt_data, sizeof(pkt_data), g_udp6_ctx);
+
+    /* Recvfrom yields correct payload and sockaddr_in6 */
+    char rx_buf[64] = {0};
+    struct sockaddr_in6 from6;
+    memset(&from6, 0, sizeof(from6));
+    int from_len = sizeof(from6);
+    long recvd = usock_recv(u6, rx_buf, sizeof(rx_buf), 0, &from6, &from_len);
+    CHECK(recvd == sizeof(pkt_data));
+    CHECK(!strcmp(rx_buf, "ipv6 datagram payload"));
+    CHECK(from_len == 28);
+    CHECK(from6.sin6_family == AF_INET6);
+    CHECK(ntohs(from6.sin6_port) == 8888);
+    CHECK(memcmp(from6.sin6_addr, src6.b, 16) == 0);
+
+    usock_close(u6);
+    CHECK(g_udp6_bound_port == 0);
+    puts("PASS kernel usock AF_INET6 UDP socket bind, sendto, and recvfrom");
 
     printf("DNS/Socket Characterization: %d checks passed\n", checks);
     return 0;
