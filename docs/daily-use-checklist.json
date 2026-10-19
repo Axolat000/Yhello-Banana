@@ -2194,5 +2194,29 @@
       "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
     },
     "rank": 45
+  },
+  {
+    "id": "base-01-entropy",
+    "priority": "P0",
+    "domain": "Security",
+    "title": "Provide credited TLS entropy on systems without RDSEED",
+    "goal": "Keep authenticated HTTPS usable on supported PCs and QEMU without silently seeding cryptography from predictable timing data.",
+    "evidence": "kernel/random.c hashes timing, MAC/packet data and optional RDRAND but exposes no readiness or failure contract. The base-01 port uses a failing RDSEED source; default virtual CPUs and older PCs may not provide it.",
+    "planningReason": "Code inspection during base-01 step 1 found no credited entropy readiness API. A separate reviewed source is necessary for supported non-RDSEED machines; preserving failure is safer than treating the legacy generator as strong entropy. This proposal does not rewrite the already-started base-01 steps.",
+    "depends": [
+      "base-01"
+    ],
+    "acceptance": "On an explicitly documented supported platform without RDSEED, the TLS DRBG seeds from a reviewed source. With every approved source absent or failed, seeding fails before a TLS ClientHello is sent; no timing-only fallback.",
+    "deliverable": "Documented entropy source and trust model, error/readiness interface and QEMU failure/success regression evidence.",
+    "steps": [
+      "Inventory supported CPU and QEMU entropy capabilities and choose a maintained entropy acquisition mechanism with an explicit trust model.",
+      "Implement a bounded error-reporting source and integrate it with the Mbed TLS entropy hook without crediting the legacy timing pool.",
+      "Demonstrate both source failure and successful seeding on the supported non-RDSEED platform, documenting configuration and hardware limits."
+    ],
+    "tests": [
+      "Disable RDSEED and all approved alternate sources: initialization must fail without a ClientHello.",
+      "Provide the approved alternate source on a documented QEMU CPU profile without RDSEED: seed and complete the authenticated TLS test handshake.",
+      "Inject source timeout/short reads and repeated failures; no uninitialized or partially credited entropy may reach a successful seed."
+    ]
   }
 ]
