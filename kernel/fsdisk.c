@@ -1962,6 +1962,19 @@ int fsdisk_sync(void) {
     return rc;
 }
 
+int fsdisk_sync_wait(void) {
+    if (!g_have_target) return FSDISK_ERR_NO_TARGET;
+    while (g_frozen && timer_ms() - g_frozen_at < 600000u) task_sleep_ms(50);
+    if (g_frozen) return FSDISK_ERR_IO;       /* still frozen after timeout */
+    while (g_busy) task_sleep_ms(10);
+    g_busy = 1;
+    int rc = g_e4 ? (ext4_flush() == 0 ? FSDISK_OK : FSDISK_ERR_IO)
+           : g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
+    g_busy = 0;
+    g_last_err = rc;
+    return rc;
+}
+
 /* a layout-5 disk just loaded: made ext4 (it stays layout 5 if that fails) */
 static void e4_move_over(const ata_disk_t* d) {
     uint32_t t = timer_ms();

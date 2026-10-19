@@ -93,3 +93,24 @@ the correct last descriptor; and position preservation and boot-core dispatch
 are already asserted. The suggested host-test macro has no implementation and
 would not establish why i386 execution received `SIGSYS`. That limitation remains
 reported rather than bypassed.
+
+## Step 2 Backend Wiring and Volume Semantics
+
+In step 2, `a_fd_sync` connects the ABI entry to actual disk synchronization
+while handling distinct volume types and backup freeze states:
+
+1. **Installed Disk Files (`mnt == 0`, `fsdisk_is_installed() == 1`)**:
+   - Synchronized via `fsdisk_sync_wait()`, which triggers `ext4_flush()` and the underlying disk controller/device flush (`disk_flush()`).
+   - If the filesystem is currently frozen for a backup (`g_frozen`), `fsdisk_sync_wait()` waits up to 10 minutes (matching the freeze duration in `e4_write`) for the hypervisor backup to thaw and completes the write and flush. If the freeze times out, it returns `FSDISK_ERR_IO`.
+   - On success (`FSDISK_OK`), `a_fd_sync()` returns `0`.
+   - On storage or controller failure (`FSDISK_ERR_IO`), `a_fd_sync()` returns `-5` (`EIO`).
+
+2. **RAM Disk Files (`mnt == 0`, `fsdisk_is_installed() == 0`)**:
+   - In a live CD / memory session without an installed disk, files exist entirely in volatile RAM.
+   - Calling sync on these files fails fail-closed with `-38` (`ENOSYS`), preventing false durability promises to applications.
+
+3. **External Mounted Volumes (`mnt > 0`)**:
+   - Files residing on other mount points (e.g. FAT32 or exFAT USB drives) do not participate in `fsdisk_sync`.
+   - `a_fd_sync` returns `-38` (`ENOSYS`) until filesystem-specific sync handlers are wired for those volumes.
+
+Host tests in `tools/tests/fd_sync.c` verify this volume distinction, mock freeze timeouts, error propagation, and descriptor safety under ASan and UBSan.
