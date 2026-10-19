@@ -121,11 +121,18 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
-    { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
-      "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
-      "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "
-      "the pinned entries stay.", "-p|print the clipboard\n-l|the history, the newest first\n-c|clear the history (not the pinned ones)",
-      "clip hello world\nclip -l", "startx" },
+    { "clip", "files", "clip <text> | -p | -l | -c | -f <files...> | -i <image.png>", "the clipboard: copy, print, history",
+      "clip <text> copies text; -p prints the clipboard content; "
+      "-l lists the clipboard history (Win+V on desktop, * pinned); -c clears history; "
+      "-f copies files to clipboard; -i copies a PNG image to clipboard.",
+      "-p|print clipboard\n-l|history\n-c|clear\n-f|copy files\n-i|copy image",
+      "clip hello world\nclip -l\nclip -f /etc/motd", "screenshot, startx" },
+    { "screenshot", "files", "screenshot [-d <dir>] [-q]", "capture the screen to a PNG image",
+      "Captures the desktop or screen and encodes it to a standard PNG file. "
+      "Defaults to ~/Pictures/Screenshot-YYYYMMDD-NN.png. "
+      "-d chooses destination directory; -q suppresses desktop notification.",
+      "-d|destination directory\n-q|quiet, no desktop notification",
+      "screenshot\nscreenshot -d /home/banana/Desktop", "clip, startx" },
     /* ── text ── */
     { "cat", "text", "cat <file>", "print a file",
       "Prints a text file. Binary files are refused (they would fill the screen with noise).", NULL,
