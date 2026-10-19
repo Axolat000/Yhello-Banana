@@ -16,6 +16,16 @@ Settings/ifconfig diagnostics, known lease/carrier gaps, host characterization
 commands and the controlled-network qualification procedure. Execution evidence
 for base-17 step 1 is in [DHCP validation](DHCP-STATE-VALIDATION.md).
 
+## DNS and socket state characterization
+
+See [DNS and SDK socket mapping state matrix](DNS-SOCKET-STATE.md) for the
+characterization of RFC 1035 A/AAAA DNS queries, error and timeout handling,
+caching, NXDOMAIN, truncated responses (TC bit), and SDK POSIX getaddrinfo /
+socket family mappings. Host characterization tests run via:
+```bash
+python3 tools/test_dns_socket_state.py --sanitize
+```
+
 ## Inside Banana OS
 
 ### `selftest [part]`
