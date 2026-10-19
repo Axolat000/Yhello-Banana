@@ -1,4 +1,5 @@
 #include "keyboard.h"
+#include "latency.h"
 #include "terminal.h"
 #include "types.h"
 #include "usb.h"
@@ -134,16 +135,19 @@ static int ctrl_alt_del_pending = 0;
 /* ── tiny char queue (fixes static-inside-loop bug) ─────────────── */
 #define QUEUE_SIZE 256   /* also holds text typed by keyboard_inject() */
 static char  q_buf[QUEUE_SIZE];
+static uint64_t q_stamp[QUEUE_SIZE];
 static int   q_head = 0;
 static int   q_tail = 0;
 
 static int q_empty(void) { return q_head == q_tail; }
 static void q_push(char c) {
     int next = (q_tail + 1) % QUEUE_SIZE;
-    if (next != q_head) { q_buf[q_tail] = c; q_tail = next; }
+    if (next != q_head) { q_buf[q_tail] = c; q_stamp[q_tail] = latency_stamp(); q_tail = next; }
+    else latency_drop();
 }
 static char q_pop(void) {
     char c = q_buf[q_head];
+    latency_input(q_stamp[q_head]);
     q_head = (q_head + 1) % QUEUE_SIZE;
     return c;
 }
@@ -155,6 +159,7 @@ static void push_arrow(char letter) {
 
 /* ── function and media keys: events of their own (keyboard_take_fkey) ── */
 static int g_fk[16];
+static uint64_t g_fk_stamp[16];
 static int g_fk_head, g_fk_tail;
 
 static void fkey(int code) {
@@ -177,7 +182,8 @@ static void fkey(int code) {
         if (alt_held)   code |= KEYF_ALT;
     }
     int next = (g_fk_tail + 1) % 16;
-    if (next != g_fk_head) { g_fk[g_fk_tail] = code; g_fk_tail = next; }
+    if (next != g_fk_head) { g_fk[g_fk_tail] = code; g_fk_stamp[g_fk_tail] = latency_stamp(); g_fk_tail = next; }
+    else latency_drop();
 }
 
 /* a key while the Windows key is down: a shortcut, not a character */
@@ -209,6 +215,7 @@ static int global_key(uint8_t sc1) {
 int keyboard_take_fkey(void) {
     if (g_fk_head == g_fk_tail) return 0;
     int c = g_fk[g_fk_head];
+    latency_input(g_fk_stamp[g_fk_head]);
     g_fk_head = (g_fk_head + 1) % 16;
     return c;
 }
@@ -579,6 +586,7 @@ char keyboard_us_char(int code, int shift) {
 /* ── raw set-1 capture for the RDP client ─────────────────────────── */
 static int      g_raw_on;
 static int      g_raw_e0;
+static uint64_t g_raw_stamp[64];
 static uint16_t g_raw_q[64];         /* code | (e0<<8) | (down<<9) */
 static int      g_raw_h, g_raw_t;
 
@@ -596,12 +604,14 @@ static void raw_capture(uint8_t sc) {
     uint16_t v = (uint16_t)((sc & 0x7F) | (g_raw_e0 ? 0x100 : 0) | ((sc & 0x80) ? 0 : 0x200));
     g_raw_e0 = 0;
     int next = (g_raw_h + 1) % 64;
-    if (next != g_raw_t) { g_raw_q[g_raw_h] = v; g_raw_h = next; }
+    if (next != g_raw_t) { g_raw_q[g_raw_h] = v; g_raw_stamp[g_raw_h] = latency_stamp(); g_raw_h = next; }
+    else latency_drop();
 }
 
 int keyboard_poll_raw(uint8_t* code, int* down, int* e0) {
     if (g_raw_t == g_raw_h) return 0;
     uint16_t v = g_raw_q[g_raw_t];
+    latency_input(g_raw_stamp[g_raw_t]);
     g_raw_t = (g_raw_t + 1) % 64;
     *code = (uint8_t)(v & 0x7F);
     *e0 = (v >> 8) & 1;
@@ -722,6 +732,7 @@ void keyboard_feed_scancode(uint8_t sc) {
          * must come first */
         q_head = (q_head + QUEUE_SIZE - 1) % QUEUE_SIZE;
         q_buf[q_head] = out;
+        q_stamp[q_head] = latency_stamp();
     } else {
         q_push(out);
         flush_rest();
@@ -782,6 +793,7 @@ char keyboard_try_getchar(void) {
     if (tt >= 0) return tty_getkey(tt);
     if (g_key_owner >= 0 && task_current_pid() != g_key_owner) return 0;
 
+    latency_input_poll();
     usb_poll();           /* USB keyboards report through here */
     if (!q_empty()) return q_pop();
 
@@ -913,6 +925,7 @@ void keyboard_unget(char c) {
     if (prev == q_tail) return;                 /* full */
     q_head = prev;
     q_buf[q_head] = c;
+    q_stamp[q_head] = 0;   /* replay is not a new input event */
 }
 
 /* (selftest) the text typing set-1 codes gives on layout `name` - Shift is
