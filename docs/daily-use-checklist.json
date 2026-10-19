@@ -2265,5 +2265,37 @@
       "tools/test_dns_socket_state.py",
       "docs/DNS-SOCKET-STATE.md"
     ]
+  },
+  {
+    "id": "base-17-ntp",
+    "priority": "P2",
+    "domain": "Network",
+    "title": "Implement NTP / SNTP network time client and slewing",
+    "goal": "Provide automatic network time synchronization over UDP port 123 without disturbing monotonic timers or TCP delays.",
+    "evidence": "Inventory in base-17 step 3 (docs/CLOCK-MONOTONIC-UTC.md) shows that while timer_ms() and rtc_now_utc() are cleanly separated so wall-clock jumps do not affect TCP delays, no RFC 4330/5905 NTP client exists in Banana OS. Setting time currently requires manual date set or VM guest tools.",
+    "planningReason": "Step 3 established and verified monotonic clock isolation and proved TCP deadline invariance under UTC steps, specifying the protocol format and discipline for NTP. A distinct follow-up implements the NTP UDP client, Settings integration, and slew/step discipline without expanding step 3 scope. See docs/CLOCK-MONOTONIC-UTC.md.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "Running ntp <server> or enabling network time in Settings contacts an NTP server, verifies stratum and sanity, and adjusts system UTC time via step or slew without breaking active TCP connections or downloads.",
+    "deliverable": "NTP client utility and kernel/net service, Settings network time toggle, and automated synchronization tests.",
+    "steps": [
+      "Implement RFC 4330 / 5905 SNTP client in net/ntp.c query via UDP port 123.",
+      "Integrate NTP synchronization into Settings Date & Time and date shell command.",
+      "Implement gradual clock slewing (±500 PPM) for small clock offsets (<128 ms)."
+    ],
+    "tests": [
+      "Host test validating SNTP client query/reply against local mock NTP server.",
+      "In Banana OS: ntp pool.ntp.org while maintaining an active TCP download to verify zero connection reset or timeout."
+    ],
+    "files": [
+      "net/ntp.c",
+      "net/ntp.h",
+      "kernel/rtc.c",
+      "kernel/settings.c",
+      "shell/datecmd.c",
+      "tools/test_clock_monotonic_utc.py",
+      "docs/CLOCK-MONOTONIC-UTC.md"
+    ]
   }
 ]
