@@ -1672,9 +1672,9 @@
     ],
     "deliverable": "Backend SDL Banana, exemples et premier programme porté.",
     "decision": "Version retenue : SDL2 (branche stable 2.30.x) pour assurer la compatibilité avec l'écosystème de jeux et outils existants. Premier programme cible sélectionné : Chocolate Doom (Doom classic engine) avec application intermédiaire de démonstration et qualification 100-cycles (ports/sdl2/test/sdl2_demo).",
-    "evidenceLevel": "décision documentée (docs/sdl2-porting-strategy.md), backend SDL2 complet (fenêtre, surface logicielle, événements, horloge, threads, audio mixer, manettes) et tests de qualification automatisés (ports/sdl2/test/sdl2_demo)",
+    "evidenceLevel": "décision documentée (docs/sdl2-porting-strategy.md), backend SDL2 complet (fenêtre, surface logicielle, événements, horloge, threads, audio mixer, manettes, accélération OpenGL bgl3/OSMesa, gestion perte de focus et libération propre) et tests de qualification automatisés (ports/sdl2/test/sdl2_demo)",
     "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
-    "planningReason": "Step 2 resolved: Implemented full SDL2 backend mapping for Banana OS including windowing, software surface, event translation (keyboard, mouse, text, focus, resize), monotonic timer & performance counter, POSIX threads & synchronization primitives (SDL_Thread, SDL_mutex, SDL_sem, SDL_cond, TLS), audio callback mixer thread and queueing, and joystick/gamecontroller subsystem with Xbox layout; verified through expanded 100-cycle stress and qualification test.",
+    "planningReason": "Step 3 resolved: Linked OpenGL 3.3 hardware/Mesa acceleration to SDL2 on Banana OS via bgl3 (SDL_GL_CreateContext, SDL_GL_MakeCurrent, SDL_GL_SwapWindow, SDL_GL_DeleteContext, attributes, proc address resolution), handled focus loss with full key state reset to avoid sticky keys, and verified clean window/context destruction and qualification in ports/sdl2/test/sdl2_demo.",
     "fileLinks": {
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/audio.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h",

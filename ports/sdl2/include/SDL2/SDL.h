@@ -153,6 +153,69 @@ void SDL_FreeSurface(SDL_Surface* surface);
 int SDL_FillRect(SDL_Surface* dst, const SDL_Rect* rect, Uint32 color);
 int SDL_BlitSurface(SDL_Surface* src, const SDL_Rect* srcrect, SDL_Surface* dst, SDL_Rect* dstrect);
 
+/* OpenGL Context & Attributes */
+typedef void* SDL_GLContext;
+
+typedef enum {
+    SDL_GL_RED_SIZE,
+    SDL_GL_GREEN_SIZE,
+    SDL_GL_BLUE_SIZE,
+    SDL_GL_ALPHA_SIZE,
+    SDL_GL_BUFFER_SIZE,
+    SDL_GL_DOUBLEBUFFER,
+    SDL_GL_DEPTH_SIZE,
+    SDL_GL_STENCIL_SIZE,
+    SDL_GL_ACCUM_RED_SIZE,
+    SDL_GL_ACCUM_GREEN_SIZE,
+    SDL_GL_ACCUM_BLUE_SIZE,
+    SDL_GL_ACCUM_ALPHA_SIZE,
+    SDL_GL_STEREO,
+    SDL_GL_MULTISAMPLEBUFFERS,
+    SDL_GL_MULTISAMPLESAMPLES,
+    SDL_GL_ACCELERATED_VISUAL,
+    SDL_GL_RETAINED_BACKING,
+    SDL_GL_CONTEXT_MAJOR_VERSION,
+    SDL_GL_CONTEXT_MINOR_VERSION,
+    SDL_GL_CONTEXT_EGL,
+    SDL_GL_CONTEXT_FLAGS,
+    SDL_GL_CONTEXT_PROFILE_MASK,
+    SDL_GL_SHARE_WITH_CURRENT_CONTEXT,
+    SDL_GL_FRAMEBUFFER_SRGB_CAPABLE,
+    SDL_GL_CONTEXT_RELEASE_BEHAVIOR,
+    SDL_GL_CONTEXT_RESET_NOTIFICATION,
+    SDL_GL_CONTEXT_NO_ERROR
+} SDL_GLattr;
+
+typedef enum {
+    SDL_GL_CONTEXT_PROFILE_CORE           = 0x0001,
+    SDL_GL_CONTEXT_PROFILE_COMPATIBILITY  = 0x0002,
+    SDL_GL_CONTEXT_PROFILE_ES             = 0x0004
+} SDL_GLprofile;
+
+typedef enum {
+    SDL_GL_CONTEXT_DEBUG_FLAG              = 0x0001,
+    SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG = 0x0002,
+    SDL_GL_CONTEXT_ROBUST_ACCESS_FLAG      = 0x0004,
+    SDL_GL_CONTEXT_RESET_ISOLATION_FLAG    = 0x0008
+} SDL_GLcontextFlag;
+
+int SDL_GL_SetAttribute(SDL_GLattr attr, int value);
+int SDL_GL_GetAttribute(SDL_GLattr attr, int* value);
+void SDL_GL_ResetAttributes(void);
+
+SDL_GLContext SDL_GL_CreateContext(SDL_Window* window);
+int SDL_GL_MakeCurrent(SDL_Window* window, SDL_GLContext context);
+SDL_GLContext SDL_GL_GetCurrentContext(void);
+SDL_Window* SDL_GL_GetCurrentWindow(void);
+void SDL_GL_GetDrawableSize(SDL_Window* window, int* w, int* h);
+int SDL_GL_SetSwapInterval(int interval);
+int SDL_GL_GetSwapInterval(void);
+void SDL_GL_SwapWindow(SDL_Window* window);
+void SDL_GL_DeleteContext(SDL_GLContext context);
+void* SDL_GL_GetProcAddress(const char* proc);
+SDL_bool SDL_GL_ExtensionSupported(const char* extension);
+
+
 /* Mouse & Keyboard */
 typedef enum {
     SDL_SCANCODE_UNKNOWN = 0,
@@ -503,6 +566,7 @@ void SDL_PumpEvents(void);
 int SDL_PollEvent(SDL_Event* event);
 int SDL_WaitEvent(SDL_Event* event);
 int SDL_WaitEventTimeout(SDL_Event* event, int timeout);
+int SDL_PushEvent(SDL_Event* event);
 
 /* Time & Performance Counter */
 Uint32 SDL_GetTicks(void);

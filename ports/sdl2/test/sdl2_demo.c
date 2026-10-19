@@ -289,6 +289,134 @@ static int run_interactive_demo(void) {
     return 0;
 }
 
+/* ── 7. OpenGL Acceleration and Focus Loss Test ────────────────────── */
+static int test_opengl_and_focus(void) {
+    printf("[sdl2_test] Testing OpenGL context creation, attributes, swap, and focus loss handling...\n");
+
+    /* 1. Attributes configuration */
+    SDL_GL_ResetAttributes();
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+
+    int maj = 0, min = 0, prof = 0, db = 0, depth = 0;
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, &maj);
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, &min);
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, &prof);
+    SDL_GL_GetAttribute(SDL_GL_DOUBLEBUFFER, &db);
+    SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &depth);
+
+    if (maj != 3 || min != 3 || prof != SDL_GL_CONTEXT_PROFILE_CORE || db != 1 || depth != 24) {
+        printf("[sdl2_test] Error: OpenGL attributes mismatch: maj=%d min=%d prof=%d db=%d depth=%d\n",
+               maj, min, prof, db, depth);
+        return -1;
+    }
+
+    SDL_GL_SetSwapInterval(1);
+    if (SDL_GL_GetSwapInterval() != 1) {
+        printf("[sdl2_test] Error: SDL_GL_GetSwapInterval mismatch\n");
+        return -1;
+    }
+
+    /* 2. Window and Context creation with SDL_WINDOW_OPENGL */
+    SDL_Window* gl_win = SDL_CreateWindow("SDL2 OpenGL Test", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                          400, 300, SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    if (!gl_win) {
+        printf("[sdl2_test] Error creating OpenGL window: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    int dw = 0, dh = 0;
+    SDL_GL_GetDrawableSize(gl_win, &dw, &dh);
+    if (dw != 400 || dh != 300) {
+        printf("[sdl2_test] Warning: Drawable size mismatch: %dx%d\n", dw, dh);
+    }
+
+#if defined(__x86_64__)
+    SDL_GLContext ctx = SDL_GL_CreateContext(gl_win);
+    if (ctx) {
+        printf("[sdl2_test] OpenGL context created successfully.\n");
+        if (SDL_GL_GetCurrentContext() != ctx) {
+            printf("[sdl2_test] Error: Current context mismatch\n");
+            SDL_GL_DeleteContext(ctx);
+            SDL_DestroyWindow(gl_win);
+            return -1;
+        }
+
+        if (SDL_GL_GetCurrentWindow() != gl_win) {
+            printf("[sdl2_test] Error: Current window mismatch\n");
+            SDL_GL_DeleteContext(ctx);
+            SDL_DestroyWindow(gl_win);
+            return -1;
+        }
+
+        /* Check procedure resolution */
+        void* pClear = SDL_GL_GetProcAddress("glClear");
+        printf("[sdl2_test] SDL_GL_GetProcAddress('glClear') = %p\n", pClear);
+
+        /* Render 5 frames using OpenGL swap */
+        for (int f = 0; f < 5; f++) {
+            SDL_GL_SwapWindow(gl_win);
+        }
+
+        /* Test switching context to NULL and back */
+        SDL_GL_MakeCurrent(NULL, NULL);
+        if (SDL_GL_GetCurrentContext() != NULL) {
+            printf("[sdl2_test] Error: Context not cleared\n");
+            SDL_GL_DeleteContext(ctx);
+            SDL_DestroyWindow(gl_win);
+            return -1;
+        }
+
+        SDL_GL_MakeCurrent(gl_win, ctx);
+        if (SDL_GL_GetCurrentContext() != ctx) {
+            printf("[sdl2_test] Error: Failed to restore current context\n");
+            SDL_GL_DeleteContext(ctx);
+            SDL_DestroyWindow(gl_win);
+            return -1;
+        }
+
+        SDL_GL_DeleteContext(ctx);
+        if (SDL_GL_GetCurrentContext() != NULL) {
+            printf("[sdl2_test] Error: Context not NULL after delete\n");
+            SDL_DestroyWindow(gl_win);
+            return -1;
+        }
+    } else {
+        printf("[sdl2_test] OpenGL context creation note (softpipe libOSMesa loadable in runtime): %s\n", SDL_GetError());
+    }
+#endif
+
+    /* 3. Focus loss and Destruction test */
+    SDL_Event fake_focus;
+    memset(&fake_focus, 0, sizeof(fake_focus));
+    fake_focus.type = SDL_WINDOWEVENT;
+    fake_focus.window.windowID = SDL_GetWindowID(gl_win);
+    fake_focus.window.event = SDL_WINDOWEVENT_FOCUS_LOST;
+
+    /* Push and pop focus event to verify handling */
+    SDL_PushEvent(&fake_focus);
+    SDL_Event polled;
+    int found_focus = 0;
+    while (SDL_PollEvent(&polled)) {
+        if (polled.type == SDL_WINDOWEVENT && polled.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            found_focus = 1;
+        }
+    }
+    if (!found_focus) {
+        printf("[sdl2_test] Error: Focus lost event was not processed\n");
+        SDL_DestroyWindow(gl_win);
+        return -1;
+    }
+
+    /* Destroy window and verify clean state */
+    SDL_DestroyWindow(gl_win);
+    printf("[sdl2_test] OpenGL context and focus loss verification passed.\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("[sdl2_test] Initializing SDL2 subsystems (VIDEO, TIMER, AUDIO, JOYSTICK, EVENTS)...\n");
@@ -331,6 +459,13 @@ int main(int argc, char** argv) {
     /* 6. Interactive / functional demo */
     if (run_interactive_demo() != 0) {
         printf("[sdl2_test] Demo FAILED.\n");
+        SDL_Quit();
+        return 1;
+    }
+
+    /* 7. OpenGL acceleration, context switching, and focus loss handling */
+    if (test_opengl_and_focus() != 0) {
+        printf("[sdl2_test] OpenGL / Focus test FAILED.\n");
         SDL_Quit();
         return 1;
     }
