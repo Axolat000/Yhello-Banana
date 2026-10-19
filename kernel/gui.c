@@ -43,6 +43,7 @@
 #include "../shell/shell.h"
 #include "startmenu.h"
 #include "fileicons.h"
+#include "notification.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
@@ -793,7 +794,17 @@ static void menu_close_redraw(void) {
 }
 
 
+static void do_action(int act);
+
+static void notify_gui_action(int act, void* udata) {
+    (void)udata;
+    do_action(act);
+}
+
 void gui_init(void) {
+    notify_init();
+    notify_set_action_callback(notify_gui_action, NULL);
+
     if (gfx_available()) {
         /* framebuffer desktop is opt-in via startx */
         return;
@@ -2136,10 +2147,16 @@ static int  g_sw_open, g_sw_sel;              /* Alt+Tab: the switcher */
 static int  g_tv_open, g_tv_sel;              /* Win+Tab: task view */
 static int  g_bar_kb, g_bar_sel = -1;         /* Win+T: the taskbar has the keys */
 static int  g_cb_open, g_cb_sel, g_cb_top;       /* Win+V: the clipboard history */
+static int  g_np_open, g_np_sel;                 /* Win+N: notification history */
 static int  cb_key(int code);
 static void cb_toggle(void);
 static void cb_click(const fb_info_t* fi, int mx, int my);
 static int  cb_wheel(const fb_info_t* fi, int mx, int my, int dz);
+static void np_toggle(void);
+static int  np_key(int code);
+static void np_click(const fb_info_t* fi, int mx, int my);
+static int  np_wheel(const fb_info_t* fi, int mx, int my, int dz);
+static void np_draw(const fb_info_t* fi);
 static int  tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
@@ -2255,6 +2272,7 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     if (g_menu_open) startmenu_draw(fi);
 
     draw_volume_osd(fi);
+    notify_draw_toast(fi);
     dnd_draw(fi, mx, my);
     kb_draw_overlays(fi);
     ctxmenu_draw();
@@ -2655,8 +2673,10 @@ static void gui_poll_body(void) {
             }
         }
         gui_fkeys(fi);
+        notify_poll();
+        if (notify_has_active_toast()) g_force_redraw = 1;
         { static uint32_t cbg; if (g_cb_open && clipboard_hist_generation() != cbg) { cbg = clipboard_hist_generation(); g_force_redraw = 1; } }
-        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !g_tv_open && !g_sw_open && !g_bar_kb);
+        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !g_np_open && !g_tv_open && !g_sw_open && !g_bar_kb);
 
         if (!g_backbuf_active) {
             if (size_desktop(fi) < 0) {
@@ -2699,6 +2719,8 @@ static void gui_poll_body(void) {
         if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
         if (ms.dz && g_cb_open && cb_wheel(fi, mx, my, ms.dz)) {
             g_force_redraw = 1;
+        } else if (ms.dz && g_np_open && np_wheel(fi, mx, my, ms.dz)) {
+            g_force_redraw = 1;
         } else if (ms.dz && g_menu_open && startmenu_contains(fi, mx, my)) {
             startmenu_wheel(ms.dz);
         } else if (ms.dz) {
@@ -2724,6 +2746,7 @@ static void gui_poll_body(void) {
         prev_right = right;
         if(captured) { click=rclick=0;left=0; }
         if ((click || rclick) && g_cb_open) { if (click) cb_click(fi, mx, my); else g_cb_open = 0; g_force_redraw = 1; click = rclick = 0; }
+        if ((click || rclick) && g_np_open) { if (click) np_click(fi, mx, my); else g_np_open = 0; g_force_redraw = 1; click = rclick = 0; }
         /* task view / switcher / taskbar focus: a click picks a window or leaves */
         if ((click || rclick) && (g_tv_open || g_sw_open || g_bar_kb)) {
             if (click && g_tv_open) { int i = tv_card_at(fi, mx, my); if (i >= 0) tv_activate(i); }
@@ -2799,6 +2822,12 @@ static void gui_poll_body(void) {
                     }
                     g_menu_open = 0;
                 }
+                click = 0;
+            }
+
+            /* click on active notification toast */
+            if (click && notify_has_active_toast() && notify_click(fi, mx, my)) {
+                g_force_redraw = 1;
                 click = 0;
             }
 
@@ -3357,7 +3386,7 @@ static void tv_card(const fb_info_t* fi, int i, int* x, int* y, int* w, int* h);
 static int tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
-static int kb_modal(void) { return g_cb_open || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
+static int kb_modal(void) { return g_cb_open || g_np_open || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
 
 static void list_windows(void) {
     sync_taskbar();
@@ -3409,6 +3438,7 @@ static void tv_activate(int sel) {
 static int kb_modal_key(int code) {
     if (ctxmenu_is_open()) return ctxmenu_key(code);
     if (g_cb_open) return cb_key(code);
+    if (g_np_open) return np_key(code);
     if (g_sw_open) {
         if (code == KB_ESC) g_sw_open = 0;
         else if (code == KB_ENTER) { tv_activate(g_sw_sel); g_sw_open = 0; }
@@ -3506,6 +3536,7 @@ static int kb_global(int k) {
         break;
     }
     case 'v': cb_toggle(); break;
+    case 'n': np_toggle(); break;
     case 'm': for (int j = 0; j < g_ntb; j++) win_minimize(g_tb[j]); g_front_app = -1; break;
     case 'e': do_action(ACT_FILES); break;
     case 'i': do_action(ACT_SETTINGS); break;
@@ -3748,6 +3779,133 @@ static int cb_wheel(const fb_info_t* fi, int mx, int my, int dz) {
     return 1;
 }
 
+/* ══ Win+N: the notification history panel ═══════════════════════════
+ * A panel above the taskbar, showing received notifications from newest
+ * to oldest. Enter/Space or click triggers the notification's action.
+ * Delete or 'x' clears an entry. "Clear all" clears history. */
+
+#define NP_ROW_H   44
+#define NP_HEAD_H  34
+#define NP_FOOT_H  22
+#define NP_BG      0x001B212Bu
+#define NP_ROW     0x00262D38u
+#define NP_ROW_SEL 0x00405478u
+
+static void np_geom(const fb_info_t* fi, int* px, int* py, int* pw, int* ph, int* rows) {
+    int W = (int)fi->width, H = (int)fi->height;
+    int w = W - 24 < 360 ? W - 24 : 360;
+    int max_rows = (H - BAR_H - 24 - NP_HEAD_H - NP_FOOT_H) / NP_ROW_H;
+    if (max_rows > 6) max_rows = 6;
+    if (max_rows < 1) max_rows = 1;
+    int n = notify_count();
+    int r = n < max_rows ? n : max_rows;
+    *rows = r;
+    *pw = w;
+    *ph = NP_HEAD_H + (r ? r * NP_ROW_H : 52) + NP_FOOT_H;
+    *px = W - w - 12;
+    *py = H - BAR_H - *ph - 10;
+}
+
+static void np_toggle(void) {
+    if (g_np_open) { g_np_open = 0; return; }
+    g_np_open = 1;
+    g_np_sel = 0;
+    g_cb_open = g_tv_open = g_sw_open = g_bar_kb = 0;
+}
+
+static void np_draw(const fb_info_t* fi) {
+    int px, py, pw, ph, rows;
+    np_geom(fi, &px, &py, &pw, &ph, &rows);
+    int n = notify_count();
+    if (g_np_sel >= n) g_np_sel = n > 0 ? n - 1 : 0;
+    if (g_np_sel < 0) g_np_sel = 0;
+
+    draw_bevel_box(px, py, pw, ph, NP_BG, 0x00505E74u, 0x0010151Du);
+    gfx_draw_text(px + 14, py + 13, "Notifications", 0x00FFFFFFu, NP_BG);
+
+    int bw = 10 * 8, bx = px + pw - bw - 12;
+    draw_bevel_box(bx, py + 7, bw, 20, n ? 0x00303740u : 0x00262B33u, 0x00535D6Eu, 0x0015191Fu);
+    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, "Clear all", n ? 0x00E8EEF6u : 0x00687384u, n ? 0x00303740u : 0x00262B33u);
+
+    int y = py + NP_HEAD_H;
+    if (!n) {
+        gfx_draw_text(px + 14, y + 10, "No notifications.", 0x00E8EEF6u, NP_BG);
+        gfx_draw_text(px + 14, y + 28, "Recent alerts will appear here.", 0x009AA6B6u, NP_BG);
+    }
+
+    for (int r = 0; r < rows; r++, y += NP_ROW_H) {
+        notify_item_t item;
+        if (notify_peek(r, &item) < 0) break;
+        int sel = (r == g_np_sel);
+        uint32_t bg = sel ? NP_ROW_SEL : NP_ROW;
+        draw_bevel_box(px + 8, y + 2, pw - 16, NP_ROW_H - 4, bg, sel ? 0x0090B8F0u : 0x00384252u, 0x0010151Du);
+
+        char hdr[48];
+        ksnprintf(hdr, sizeof(hdr), "%s: %s", item.app, item.title);
+        if (strlen(hdr) > 36) { hdr[33] = '.'; hdr[34] = '.'; hdr[35] = '.'; hdr[36] = 0; }
+        gfx_draw_text(px + 16, y + 8, hdr, 0x00FFFFFFu, bg);
+
+        char body[48];
+        kstrlcpy(body, item.body, sizeof(body));
+        if (strlen(body) > 36) { body[33] = '.'; body[34] = '.'; body[35] = '.'; body[36] = 0; }
+        gfx_draw_text(px + 16, y + 24, body, 0x00C2CCD8u, bg);
+    }
+
+    gfx_draw_text(px + 14, py + ph - 15, "Enter: open  Esc: close", 0x009AA6B6u, NP_BG);
+}
+
+static int np_key(int code) {
+    int n = notify_count();
+    if (code == KB_ESC) g_np_open = 0;
+    else if (code == KB_UP) g_np_sel--;
+    else if (code == KB_DOWN || code == KB_TAB) g_np_sel++;
+    else if (code == KB_HOME) g_np_sel = 0;
+    else if (code == KB_END) g_np_sel = n - 1;
+    else if ((code == KB_ENTER || code == KB_SPACE) && n > 0) {
+        notify_item_t item;
+        if (notify_peek(g_np_sel, &item) == 0) {
+            g_np_open = 0;
+            notify_trigger_action(item.id);
+        }
+    } else if (code == KB_DEL && n > 0) {
+        notify_clear_history();
+        g_np_sel = 0;
+    }
+    if (g_np_sel >= notify_count()) g_np_sel = notify_count() - 1;
+    if (g_np_sel < 0) g_np_sel = 0;
+    return 1;
+}
+
+static void np_click(const fb_info_t* fi, int mx, int my) {
+    int px, py, pw, ph, rows;
+    np_geom(fi, &px, &py, &pw, &ph, &rows);
+    if (mx < px || mx >= px + pw || my < py || my >= py + ph) { g_np_open = 0; return; }
+    int bw = 10 * 8, bx = px + pw - bw - 12;
+    if (my >= py + 7 && my < py + 27 && mx >= bx && mx < bx + bw) {
+        notify_clear_history();
+        g_np_sel = 0;
+        return;
+    }
+    int r = (my - py - NP_HEAD_H) / NP_ROW_H;
+    if (my < py + NP_HEAD_H || r < 0 || r >= rows) return;
+    notify_item_t item;
+    if (notify_peek(r, &item) == 0) {
+        g_np_open = 0;
+        notify_trigger_action(item.id);
+    }
+}
+
+static int np_wheel(const fb_info_t* fi, int mx, int my, int dz) {
+    int px, py, pw, ph, rows;
+    np_geom(fi, &px, &py, &pw, &ph, &rows);
+    if (mx < px || mx >= px + pw || my < py || my >= py + ph) return 0;
+    g_np_sel += dz > 0 ? 1 : -1;
+    int n = notify_count();
+    if (g_np_sel >= n) g_np_sel = n > 0 ? n - 1 : 0;
+    if (g_np_sel < 0) g_np_sel = 0;
+    return 1;
+}
+
 static void kb_draw_overlays(const fb_info_t* fi) {
     int W = (int)fi->width, H = (int)fi->height;
     if (g_sw_open && g_nlist) {
@@ -3782,6 +3940,7 @@ static void kb_draw_overlays(const fb_info_t* fi) {
         }
     }
     if (g_cb_open) cb_draw(fi);
+    if (g_np_open) np_draw(fi);
     if (g_bar_kb && g_bar_sel >= 0 && g_bar_sel < g_ntb) {
         int bw = tb_btn_w(fi), x = TB_X + g_bar_sel * bw, y = H - BAR_H + 1;
         gfx_fill_rect(x - 1, y, bw - 2, 2, 0x00FFD34Eu);
