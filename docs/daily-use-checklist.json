@@ -1266,7 +1266,8 @@
       "web/jsdom.c",
       "web/css.c",
       "kernel/browser.c",
-      "tools/test_browser.py"
+      "tools/test_browser.py",
+      "docs/web-engine-strategy-journeys.md"
     ],
     "steps": [
       "Fixer cinq parcours précis : par exemple login messagerie, lire/répondre, dépôt GitHub, modifier un document et upload ; utiliser des comptes de test.",
@@ -1289,7 +1290,8 @@
       "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
       "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py"
     },
-    "rank": 26
+    "rank": 26,
+    "planningReason": "Step 1 established the five precise evaluation journeys in docs/web-engine-strategy-journeys.md (webmail login, read/reply, GitHub repository/diff navigation, collaborative document editing, and multipart upload/download). Steps 2 and 3 evaluate the in-house engine and candidate ports against these concrete criteria without superficial pass claims."
   },
   {
     "id": "quickjs",
