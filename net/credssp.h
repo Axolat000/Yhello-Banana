@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CREDSSP_H
 #define CREDSSP_H
 

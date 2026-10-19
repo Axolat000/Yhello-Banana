@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "app.h"
 #include "gpu_virgl.h"
 #include "appwin.h"

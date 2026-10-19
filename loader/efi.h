@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The parts of the UEFI specification Banana Boot uses (no EDK2/gnu-efi).
  * For x64 firmware (BOOTX64.EFI: the Microsoft calling convention) and IA32
  * firmware (BOOTIA32.EFI: cdecl; built with -malign-double so 64-bit

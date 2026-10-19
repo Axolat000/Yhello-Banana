@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Behavioral tests of compiled kernels, shared memory and saved work-items. */
 static void collective_tests(cl_context ctx, cl_device_id dev, cl_command_queue q) {
     static const char* src =

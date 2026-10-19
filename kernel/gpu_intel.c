@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Intel integrated graphics: GMA 950 (945G / 945GM / 945GME, "gen 3"),
  * HD Graphics 2000 / 3000 (Sandy Bridge, gen 6) and HD Graphics 2500 /
  * 4000 (Ivy Bridge, gen 7). After the Intel graphics PRMs (Programmer's

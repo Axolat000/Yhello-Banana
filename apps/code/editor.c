@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code: text buffers - lines of bytes (UTF-8), a cursor and a
  * selection, snapshots for undo, find, and syntax colours. */
 #include "code.h"

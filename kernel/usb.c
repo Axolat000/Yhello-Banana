@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "touchpad.h"
 #include "kstring.h"
 #include "i2chid.h"

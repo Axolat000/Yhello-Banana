@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # LLVM 18.1.8 for Mesa's optional CPU renderer. The native build provides
 # llvm-config/tablegen; target objects use Banana's C library and ELF loader.
 set -eu

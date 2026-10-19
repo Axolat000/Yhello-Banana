@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """Regenerate the matching host and kernel vector layouts (no SIMD ABI)."""
 from pathlib import Path
 import json

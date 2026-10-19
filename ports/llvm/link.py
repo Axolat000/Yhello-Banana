@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 from pathlib import Path
 import subprocess,json,struct,sys,os
 root=Path(__file__).resolve().parents[2];out=Path(sys.argv[1]).resolve(); info=json.loads((out/'selected.json').read_text());sdk=Path(os.environ.get('LLVM_SDK_OBJECTS',str(root/'ports/mesa/gl3test/build/x86_64')))

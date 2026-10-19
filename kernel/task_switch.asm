@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/task_switch.asm
 ;
 ; void task_switch(uint32_t** old_sp_store, uint32_t* new_sp);

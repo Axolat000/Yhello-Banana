@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: the little C++ runtime that code built with g++
  * -fno-exceptions -fno-rtti needs (HotSpot, ports): operator new / delete,
  * one-time initialisation of local statics, destructors at exit, pure

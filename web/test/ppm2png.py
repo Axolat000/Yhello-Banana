@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import sys, zlib, struct
 d = open(sys.argv[1], "rb").read()
 parts = d.split(b"\n", 3)

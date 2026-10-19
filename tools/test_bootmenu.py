@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check the shared firmware boot menu renderer and export previews without QEMU."""
 from pathlib import Path
 import argparse

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "timer_math.h"
 void timer_math_tests(void (*report)(const char*, int, const char*)) {
 #define CHECK(label, expression) report(label, !!(expression), "")

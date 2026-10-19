@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 static dom_node_t* box(page_t* p,const char* id) { return dom_find_id(p->doc,id); }
 static const char* grid_note(page_t* p,char* note,int size) {
     dom_node_t *a=box(p,"a"),*b=box(p,"b"),*cc=box(p,"c"),*g=box(p,"grid");

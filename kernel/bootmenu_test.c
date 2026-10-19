@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "bootmenu_test.h"
 #include "kheap.h"
 #include "kstring.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fat32.h"
 #include "utf8.h"
 #include "iowait.h"

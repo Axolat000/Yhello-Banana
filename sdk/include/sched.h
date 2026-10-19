@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SCHED_H
 #define _SCHED_H
 #ifdef __cplusplus

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise the real formatter/renderer; export screenshots without booting.
 Build/run the ISO yourself, then use crashtest for the in-OS preview.
 """

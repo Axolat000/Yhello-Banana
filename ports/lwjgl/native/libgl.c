@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * libGL.so.1 for Banana OS, for LWJGL: GL.create() on Linux loads libGL.so.1
  * and takes the OpenGL functions from its glXGetProcAddress. Here they are

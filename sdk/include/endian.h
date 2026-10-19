@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _ENDIAN_H
 #define _ENDIAN_H
 #ifdef __cplusplus

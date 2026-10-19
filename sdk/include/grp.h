@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _GRP_H
 #define _GRP_H
 #ifdef __cplusplus

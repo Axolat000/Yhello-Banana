@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regenerate kernel/wallpaper_data.c from the images in assets/wallpapers.
 
 The kernel has no image decoder (JPEG or PNG - and freestanding, ring-0 C is

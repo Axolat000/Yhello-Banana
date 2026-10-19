@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* TinyCC extension used ONLY by the OpenCL compiler copy. Vector unions have
  * a reserved tag so their normal C layout/ABI can be reused; operations are
  * lowered to scalar lanes, without requiring SIMD support in the backend. */

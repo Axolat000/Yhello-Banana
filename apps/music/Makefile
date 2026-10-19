@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = music
 TITLE       = Music
 VERSION     = 1.0

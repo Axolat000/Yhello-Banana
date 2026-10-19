@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* host-test stand-in for kernel/kheap.h */
 #ifndef KHEAP_H
 #define KHEAP_H

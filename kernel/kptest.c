@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * kptest: a check of kernel preemption (kernel/task.h, task_kpreempt).
  * Worker tasks decode the same picture (PNG / JPEG / GIF / BMP through

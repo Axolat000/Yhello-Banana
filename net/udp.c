@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "firewall.h"
 #include "net.h"
 #include "kstring.h"

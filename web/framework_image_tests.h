@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../kernel/image.h"
 #include "image_decode.h"
 #include "test/image_fixtures.h"

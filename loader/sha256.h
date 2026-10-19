@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* SHA-256 (FIPS 180-4), for the UEFI loader: under Secure Boot it starts
  * only the kernels it was built with (their hashes: kernel_hashes.h, made
  * by the Makefile). */

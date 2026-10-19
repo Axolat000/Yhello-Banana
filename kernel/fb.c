@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fb.h"
 #include "kstring.h"
 #include "gpu.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_SYSMACROS_H
 #define _SYS_SYSMACROS_H
 /* a device number's parts (st_dev, st_rdev), Linux's encoding */

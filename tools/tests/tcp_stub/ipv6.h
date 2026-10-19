@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tools/test_tcp.py: what net/tcp.c needs of net/ipv6.h (IPv6 is not simulated) */
 #ifndef IPV6_H
 #define IPV6_H

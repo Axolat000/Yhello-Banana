@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/smp_tramp.asm
 ;
 ; The first code another processor core runs (kernel/smp.c copies it to

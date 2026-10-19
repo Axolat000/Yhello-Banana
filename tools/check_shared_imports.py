@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check that a port's strong ELF imports exist in its SDK/provider objects."""
 import argparse, subprocess, sys
 from pathlib import Path

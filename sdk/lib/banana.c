@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: windows, drawing, time, sound, network, clipboard */
 #include <stdlib.h>
 #include <string.h>

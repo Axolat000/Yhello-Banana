@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef BANANA_GPU_H
 #define BANANA_GPU_H
 /* Fixed-width request wire format for the optional virtio/virgl backend.

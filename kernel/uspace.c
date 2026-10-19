@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "uspace.h"
 #include "uvm.h"
 #include "paging.h"

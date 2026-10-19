@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code: a small JSON reader and writer (extension manifests,
  * banana.json, the messages extensions exchange with the editor). */
 #include "code.h"

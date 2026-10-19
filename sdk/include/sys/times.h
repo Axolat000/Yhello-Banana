@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_TIMES_H
 #define _SYS_TIMES_H
 #ifdef __cplusplus

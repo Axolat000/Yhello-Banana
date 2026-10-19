@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _NETINET_IP_H
 #define _NETINET_IP_H
 #include <stdint.h>

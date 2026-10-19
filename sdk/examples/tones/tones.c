@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* tones - sound from an app: synthesizes a tune into PCM samples and
  * queues it on the sound card (falls back to PC speaker beeps) */
 #include <stdio.h>

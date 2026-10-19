@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """Cross-compile the LLVM X86 JIT closure used by a native Mesa reference."""
 from pathlib import Path
 import os,sys,json,shlex,subprocess,concurrent.futures,re,hashlib

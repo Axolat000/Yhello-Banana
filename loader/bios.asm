@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; Banana Boot - the BIOS loader's assembly: its two entries, the switch to
 ; protected mode, and bios_int(), which lets the C part (bios.c, 32-bit
 ; protected mode) call the BIOS by going back to real mode for the call.

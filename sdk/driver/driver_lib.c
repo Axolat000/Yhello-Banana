@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS Driver Kit: the few C library functions a driver may need
  * (gcc also calls memset / memcpy / memmove / memcmp by itself) */
 #include "banana_driver.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* java - the Java launcher for Banana OS (OpenJDK 17: the server VM, or Zero).
  *
  *   java [options] <main class> [args...]

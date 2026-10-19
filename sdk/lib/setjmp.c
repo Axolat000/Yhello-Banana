@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: setjmp / longjmp (the callee-saved registers, the stack
  * pointer and the return address), for both CPUs; gcc and TinyCC alike. */
 #include <setjmp.h>

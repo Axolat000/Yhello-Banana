@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host test driver for BananaScript:  script_test js|php <file> */
 #include <stdio.h>
 #include <stdlib.h>

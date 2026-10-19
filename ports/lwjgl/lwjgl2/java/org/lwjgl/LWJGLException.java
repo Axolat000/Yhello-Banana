@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl;
 
 /** LWJGL 2's checked exception (Banana OS: LWJGL 2 over LWJGL 3) */

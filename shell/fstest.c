@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fstest.h"
 #include "../kernel/fs.h"
 #include "../kernel/kstring.h"

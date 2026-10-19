@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # kernel/ext4.c built for Linux (stub/: the kernel's helpers as libc) and
 # checked against Linux's own e2fsprogs: a filesystem made and used, then
 # e2fsck -fn on it; and power cuts in the middle of a flush - replayed by

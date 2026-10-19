@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Hosted run of the exact surface implementation used by fb.c. */
 #include "../../kernel/gpu_surface.h"
 extern int printf(const char*, ...);

@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # TinyCC (LGPL 2.1) for Banana OS: the C compiler inside Banana Code.
 #     ports/tcc/build.sh <output dir>
 # The source is downloaded once (a fixed commit, checked against its

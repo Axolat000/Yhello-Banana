@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """rebuild.py REFBUILD OUT - compile Mesa's libOSMesa again for Banana OS.
 
 REFBUILD: the reference Linux build (meson + ninja) of the same source and

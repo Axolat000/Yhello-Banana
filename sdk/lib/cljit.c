@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* TinyCC (ports/tcc, LGPL 2.1) inside apps with USE_CL = 1: libtcc in one
  * unit, compiling OpenCL kernels into the app's memory and running them
  * (sdk/lib/cl.c). The source is a copy made by sdk/lib/mkcljit.sh. */

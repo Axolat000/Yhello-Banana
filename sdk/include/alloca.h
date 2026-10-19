@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _ALLOCA_H
 #define _ALLOCA_H
 #include <stddef.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Custom properties cascade as token values, then resolve on their own
  * element. Inherited values are already computed: child overrides must
  * not retroactively change a parent's aliases. Included only by css.c. */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* gl3test - checks OpenGL 3.3 (Mesa) on Banana OS.
  *
  *   gl3test           draws offscreen and checks the pixels (prints PASS / FAIL)

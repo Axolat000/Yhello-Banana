@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regenerate the pinned Astro production fixture (requires Node/npm).
 
 Normal OS builds and browser tests use the committed output, without npm.

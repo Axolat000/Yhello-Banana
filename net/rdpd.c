@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "rdpd.h"
 #include "rdp.h"
 #include "tcp.h"

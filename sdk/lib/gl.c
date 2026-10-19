@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * OpenGL for Banana OS: the fixed-function pipeline in software.
  *

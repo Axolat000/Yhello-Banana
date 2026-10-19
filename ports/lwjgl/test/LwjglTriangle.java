@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 // LWJGL on Banana OS: a GLFW window with an OpenGL 3.3 core context, a
 // GLSL 3.30 shader triangle turning on a blue background. Checks the
 // pixels of the first frame (glReadPixels) and that GLFW's callbacks reach

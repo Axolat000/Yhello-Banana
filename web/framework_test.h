@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef FRAMEWORK_TEST_H
 #define FRAMEWORK_TEST_H
 /* The same offline tests run on the host and through selftest browser. */

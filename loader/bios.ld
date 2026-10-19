@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot, the BIOS loader: one flat file, loaded at 0x8000. Its first
  * 2 KiB (the CD entry) run at 0x7C00, where El Torito puts them. */
 OUTPUT_FORMAT(binary)

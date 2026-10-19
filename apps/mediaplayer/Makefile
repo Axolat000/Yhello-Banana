@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = mediaplayer
 TITLE       = Media Player
 VERSION     = 1.0

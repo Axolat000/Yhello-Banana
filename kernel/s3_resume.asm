@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; S3 firmware enters at the real-mode FACS waking vector, with no usable
 ; stack. Restore the saved execution environment before returning to C.
 %define C_CR0 0

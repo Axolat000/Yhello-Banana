@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _TIME_H
 #define _TIME_H
 #ifdef __cplusplus

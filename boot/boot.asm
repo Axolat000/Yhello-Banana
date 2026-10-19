@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; Banana OS 0.5 - boot.asm
 ; Multiboot2 header + kernel entry point
 

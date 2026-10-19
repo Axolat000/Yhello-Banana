@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Banana OS 0.6 Makefile
 # Requires: nasm, gcc-multilib, ld, objcopy, python3, xorriso, mtools
 #

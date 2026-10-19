@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # Packs Java for Banana OS into one package, java.bpk: the java app, and
 # java.zip that `pkg install` unpacks into /usr/java (unpack=, kernel/pkg.c):
 #     /usr/java/jdk             OpenJDK 17          (ports/openjdk/build.sh)

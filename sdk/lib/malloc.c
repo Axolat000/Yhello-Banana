@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: malloc, free, realloc, calloc and aligned allocation.
  *
  * 64-bit: the app's own heap. It used to be a system call for every

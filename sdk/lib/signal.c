@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: signals (<signal.h>) over the system's sig_* calls (API
  * version 19). The system runs entry() on the thread's stack for every
  * signal with a handler; it applies sa_mask, SA_NODEFER and SA_RESETHAND

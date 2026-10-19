@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check the monotonic clock arithmetic without privileged hardware access."""
 from pathlib import Path
 import argparse

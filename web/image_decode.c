@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "image_decode.h"
 #include "../kernel/image.h"
 int web_decode_image(void* ctx,const uint8_t* data,uint32_t len,img_data_t* out,arena_t* A) {

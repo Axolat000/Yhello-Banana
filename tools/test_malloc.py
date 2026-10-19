@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests sdk/lib/malloc.c (the apps' heap) on Linux, without Banana OS:
 built with the SDK's own flags, its malloc/free/... renamed b_* so they do
 not clash with Linux's, then tools/tests/malloc.c runs it hard (random

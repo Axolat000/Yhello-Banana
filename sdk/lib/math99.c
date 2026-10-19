@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK math library: the rest of C99 <math.h> (what C++'s <cmath>
  * names): inverse hyperbolics, erfc, gamma, fma, nextafter, remainder...,
  * the float versions of everything, and the long double versions computed

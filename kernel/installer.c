@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* "Install Banana OS": the live CD's installer window. It finds the hard
  * disk (the one chosen, when there are several), asks for the keyboard
  * layout, a password and what starts at boot,

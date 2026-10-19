@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Bounded explicit column lists: fixed lengths, percentages, fr, minmax and
  * numeric repeat. Unsupported lists are ignored atomically, never half applied. */
 static int grid_track(const char* value, int font, grid_track_t* out) {

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot - what the BIOS loader (bios.c, 32-bit) and the UEFI loader
  * (efi.c, 64-bit) share: the menu, the kernel's command line, ELF loading
  * and the Multiboot2 information the kernels read (the same as GRUB gave

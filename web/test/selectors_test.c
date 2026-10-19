@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host regression test using the production DOM, selector and style APIs:
  * cc -std=c99 -Wall -Wextra -Iweb/test/shim -Iweb \
  *    web/arena.c web/html.c web/css.c web/test/selectors_test.c \

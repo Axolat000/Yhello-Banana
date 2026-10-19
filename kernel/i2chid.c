@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * HID over I2C touchpads (Microsoft's "HID over I2C protocol" 1.0) on the
  * Intel LPSS DesignWare I2C controllers (Skylake and later laptops), by

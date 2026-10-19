@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "crc32c.h"
 
 /* table-driven, 8 bits at a time; the table is made on first use */

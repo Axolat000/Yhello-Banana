@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "media.h"
 #include "audio.h"
 #include "browser.h"

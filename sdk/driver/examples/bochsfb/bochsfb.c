@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* bochsfb - a Driver Kit example of a display driver: the Bochs / QEMU
  * standard VGA ("VBE DISPI", PCI 1234:1111). Banana OS has a driver of
  * its own for it; a display module replaces the built-in driver of its

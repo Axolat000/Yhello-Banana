@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "bootmem.h"
 
 /* Read bytewise: firmware entries can have extended, unaligned strides. */

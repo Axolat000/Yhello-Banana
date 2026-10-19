@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "selftest.h"
 #include "../kernel/gpu.h"
 #include "../kernel/gpu_virgl.h"

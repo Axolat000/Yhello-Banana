@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK math library: portable C (argument reduction + series),
  * so it is the same on the i686 (x87) and x86_64 (SSE) builds. */
 #include <math.h>

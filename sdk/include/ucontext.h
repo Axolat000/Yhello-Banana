@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _UCONTEXT_H
 #define _UCONTEXT_H
 #ifdef __cplusplus

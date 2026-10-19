@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "netconf.h"
 #include "net.h"
 #include "config.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SEMAPHORE_H
 #define _SEMAPHORE_H
 #ifdef __cplusplus

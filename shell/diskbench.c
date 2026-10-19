@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "diskbench.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"

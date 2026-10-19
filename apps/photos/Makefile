@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = photos
 TITLE       = Photos
 VERSION     = 1.0

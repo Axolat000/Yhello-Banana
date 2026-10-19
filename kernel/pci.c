@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "pci.h"
 #include "io.h"
 #include "paging.h"

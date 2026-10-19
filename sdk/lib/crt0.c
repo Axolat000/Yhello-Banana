@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS app startup: the system calls _banana_start() with its call
  * table; it sets up the C library and runs main(). */
 #include "banana_api.h"

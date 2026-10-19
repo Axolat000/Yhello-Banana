@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot (UEFI): from the firmware's 64-bit long mode to the Multiboot2
  * machine state the kernels start in - 32-bit protected mode, paging off,
  * EAX = 0x36D76289, EBX = the information. efi.c copies this code into a

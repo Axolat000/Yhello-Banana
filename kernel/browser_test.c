@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "browser_test.h"
 #include "task.h"
 #include "kstring.h"

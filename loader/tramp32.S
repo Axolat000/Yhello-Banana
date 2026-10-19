@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot (32-bit UEFI): from the firmware's 32-bit protected mode to the
  * Multiboot2 machine state - our flat GDT, paging off, EAX = 0x36D76289,
  * EBX = the information. efi.c copies this into a page of its own, fills in

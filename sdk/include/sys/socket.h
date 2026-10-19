@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_SOCKET_H
 #define _SYS_SOCKET_H
 #ifdef __cplusplus

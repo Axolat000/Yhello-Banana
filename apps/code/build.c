@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code: projects. A folder with a banana.json is a Banana OS app:
  *
  *   { "name": "hello", "title": "Hello", "version": "1.0", "type": "console",

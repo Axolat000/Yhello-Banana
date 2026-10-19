@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # Builds OpenGL 3.3 for Banana OS: Mesa's libOSMesa.so (VirGL when available,
 # softpipe on the processor otherwise; 64-bit), which <GL/gl3.h> apps (USE_GL3 = 1)
 # load from /lib, /usr/lib, /usr/java/lib (the java package) or /mnt/<disk>/lib.

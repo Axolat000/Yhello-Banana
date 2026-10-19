@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "iowait.h"
 #include "task.h"
 #include "timer.h"

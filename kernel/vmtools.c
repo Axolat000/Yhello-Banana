@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "vmtools.h"
 #include "virtio_serial.h"
 #include "qga.h"

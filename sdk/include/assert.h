@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _ASSERT_H
 #define _ASSERT_H
 #ifdef __cplusplus

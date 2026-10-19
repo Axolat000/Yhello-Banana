@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "credssp.h"
 #include "ntlm.h"
 #include "sha256.h"

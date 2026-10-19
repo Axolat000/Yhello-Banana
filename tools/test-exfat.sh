@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # exFAT test: makes an empty exFAT image (mkfs.exfat), boots Banana OS in
 # QEMU with it as a virtio disk (/mnt/virtio) and runs `fstest -k` there
 # (shell/fstest.c: files, appends, a Unicode rename, 400 KiB that grows,

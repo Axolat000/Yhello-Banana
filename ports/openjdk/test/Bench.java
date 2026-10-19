@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 // A small CPU benchmark: the JIT (C1 / C2) compiles these loops after a few
 // rounds, so later rounds should get much faster than the first one.
 public class Bench {

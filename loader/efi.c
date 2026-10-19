@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot - the UEFI loader: BOOTX64.EFI for 64-bit firmware, and the
  * same source as BOOTIA32.EFI for 32-bit UEFI firmware (tablets and early
  * UEFI PCs, often with a 64-bit processor).

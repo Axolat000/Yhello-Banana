@@ -1,0 +1,59 @@
+Banana OS
+Copyright (C) 2026 Enzo Quirici and the Banana OS contributors
+
+Banana OS is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
+
+Banana OS is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along
+with Banana OS (the file LICENSE). If not, see <https://www.gnu.org/licenses/>.
+
+
+Which licence covers what
+-------------------------
+
+GPL-3.0-or-later (LICENSE)
+    The operating system: kernel/, boot/, loader/, shell/, net/, crypto/,
+    usb/, web/, media/, apps/, tools/, the Makefile and build.sh, and the
+    images, sounds and other files they build from, unless a file or a
+    notice below says otherwise.
+
+BSD-2-Clause (sdk/LICENSE, LICENSES/BSD-2-Clause.txt)
+    The SDK - sdk/: its headers, libraries, tools and examples - and Banana
+    OS's own files in ports/ (the glue between Banana OS and the ported
+    programs: launchers, bindings, build scripts). These are what apps link
+    against or are built with, so they stay permissive: an app made with
+    the SDK may use any licence, open or closed. Linking the SDK into an app
+    does not make the app subject to the GPL.
+
+Their own licences (THIRD-PARTY-NOTICES)
+    third_party/, the programs ports/ builds (OpenJDK, Mesa, TinyCC, FFmpeg,
+    LWJGL), the fonts in fonts/, the Khronos headers in sdk/include/GL and
+    sdk/include/KHR, and the test fixtures in web/fixtures and
+    web/test/cases.
+
+Each source file says which of the two it is under, on its first line(s):
+    SPDX-License-Identifier: GPL-3.0-or-later
+    SPDX-License-Identifier: BSD-2-Clause
+Generated files (wallpaper data, embedded scripts, OpenCL and OpenGL tables)
+follow the file they are generated from.
+
+
+Before the GPL
+--------------
+
+Until October 2026 all of Banana OS was under the BSD 2-Clause
+licence. That licence allows the code to be distributed under the GPL, as it
+is now, provided the BSD copyright notice and conditions are kept: they are,
+in LICENSES/BSD-2-Clause.txt. Copies of Banana OS published before the
+change remain available under the BSD licence they were published under, and
+code contributed by others under the BSD licence keeps that permission for
+its own part. New contributions are accepted under the licence of the part
+of the tree they change (GPL-3.0-or-later, or BSD-2-Clause for sdk/ and
+ports/).

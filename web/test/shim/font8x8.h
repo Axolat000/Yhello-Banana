@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef FONT8X8_H
 #define FONT8X8_H
 #include <stdint.h>

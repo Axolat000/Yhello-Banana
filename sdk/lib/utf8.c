@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Restartable UTF-8 conversion. Keep state in the first word so older
  * four-byte C mbstate_t clients remain compatible. */
 #include <wchar.h>

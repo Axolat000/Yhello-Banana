@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "mouse_capture.h"
 #include "kstring.h"
 void mouse_capture_reset(mouse_capture_t* c) { memset(c,0,sizeof(*c));c->win=c->owner=-1; }

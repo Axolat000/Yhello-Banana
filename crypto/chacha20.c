@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "chacha20.h"
 
 #define ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))

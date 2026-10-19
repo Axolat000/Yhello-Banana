@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package banana.lwjgl2.r.org.lwjgl.opengl;
 
 import java.nio.IntBuffer;

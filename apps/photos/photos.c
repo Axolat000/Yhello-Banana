@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Photos - Banana OS's picture viewer.
  *
  * `photos <picture>` (Files opens pictures with it): the picture fitted to

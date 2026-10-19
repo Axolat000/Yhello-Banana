@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * DEFLATE compression (RFC 1951) for ZIP files (kernel/zip.c).
  *

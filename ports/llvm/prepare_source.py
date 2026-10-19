@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """Prepare verified LLVM sources atomically; recover interrupted extractions."""
 from pathlib import Path
 import fcntl

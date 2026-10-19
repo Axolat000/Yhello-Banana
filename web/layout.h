@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef LAYOUT_H
 #define LAYOUT_H
 

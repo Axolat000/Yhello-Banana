@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "gpu_virgl.h"
 #include "gpu.h"
 #include "kheap.h"

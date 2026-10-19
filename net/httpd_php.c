@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "httpd_php.h"
 #include "fs.h"
 #include "kstring.h"

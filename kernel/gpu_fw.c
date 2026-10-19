@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Graphics cards Banana OS has no driver for - AMD Radeon, NVIDIA GeForce,
  * Intel Arc and Xe: the screen stays the one the firmware set up (UEFI GOP
  * or VESA), at the size Banana Boot chose (Settings > Screen sets it for

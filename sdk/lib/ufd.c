@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: the file descriptors the C library makes itself, where the
  * system has none of its own - eventfd counters, epoll sets (over poll()),
  * pipes and AF_UNIX socket pairs (between the app's threads). They are

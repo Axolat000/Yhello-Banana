@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_EVENTFD_H
 #define _SYS_EVENTFD_H
 #ifdef __cplusplus

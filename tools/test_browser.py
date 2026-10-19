@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build and run the browser's offline framework and CSS/JS regression tests.
 
 No network, npm or QEMU needed. The framework suite is also selftest browser

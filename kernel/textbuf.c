@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "textbuf.h"
 #include "utf8.h"
 #include "kheap.h"

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 # Banana OS SDK - build rules for apps.
 #
 # A minimal app Makefile:

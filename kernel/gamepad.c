@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "gamepad.h"
 #include "kstring.h"
 #include "serial.h"

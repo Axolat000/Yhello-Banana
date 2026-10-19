@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* "Choose a file" (filechooser.h): a panel inside another window. */
 #include "filechooser.h"
 #include "fs.h"

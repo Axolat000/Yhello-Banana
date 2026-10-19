@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * ACPI power-off: the PM1 control registers come from the FADT and the S5
  * sleep type from the \_S5_ package in the DSDT - what VMware, real PCs and

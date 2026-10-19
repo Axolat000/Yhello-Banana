@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; Banana Boot - the master boot record (legacy BIOS, USB sticks and disks)
 ;
 ; The image is a "hybrid": the same bytes are a CD (El Torito) and a disk

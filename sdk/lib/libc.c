@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK libc: strings, memory, conversions, sorting, time. */
 #include <stddef.h>
 #include <stdint.h>

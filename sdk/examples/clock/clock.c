@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* clock - an analog + digital clock in a resizable window: math.h for
  * the hands, BANANA_EV_RESIZE to scale the face with the window */
 #include <stdio.h>

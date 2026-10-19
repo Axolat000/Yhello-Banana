@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef SYSCMDS_H
 #define SYSCMDS_H
 

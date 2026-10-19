@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_INOTIFY_H
 #define _SYS_INOTIFY_H
 #ifdef __cplusplus

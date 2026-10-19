@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Mesa 24's C11 emulation predates glibc's C23 call_once declarations.
  * Keep the reference host's unused declarations in a separate namespace. */
 #ifndef BANANA_MESA_HOST_COMPAT_H

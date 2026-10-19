@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* FLAC: frames of CONSTANT / VERBATIM / FIXED / LPC subframes with Rice
  * coded residuals, stereo decorrelation; any block size, 4..32 bits per
  * sample, mono or stereo (more channels: the first two). */

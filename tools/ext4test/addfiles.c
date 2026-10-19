@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* puts N files (in folders of 200) into an installed Banana OS disk image */
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* WAV: RIFF/WAVE with PCM (8, 16, 24, 32 bits), IEEE float or
  * WAVE_FORMAT_EXTENSIBLE around either. */
 #include "codec.h"

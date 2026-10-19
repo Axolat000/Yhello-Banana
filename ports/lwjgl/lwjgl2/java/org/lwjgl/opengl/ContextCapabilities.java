@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl.opengl;
 
 import java.lang.reflect.Field;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Banana OS development helper: build, boot in QEMU, and keep the logs.
 #
 #   tools/dev.sh build            build the ISO (make), output also in build/logs/build.log

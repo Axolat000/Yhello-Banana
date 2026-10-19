@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "shell.h"
 #include "../kernel/boottime.h"
 #include "editor.h"

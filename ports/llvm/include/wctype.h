@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef BANANA_LLVM_WCTYPE_H
 #define BANANA_LLVM_WCTYPE_H
 #include <wchar.h>

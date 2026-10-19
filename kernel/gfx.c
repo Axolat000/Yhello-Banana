@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "font.h"
 #include "kstring.h"
 #include "gfx.h"

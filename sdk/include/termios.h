@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _TERMIOS_H
 #define _TERMIOS_H
 #ifdef __cplusplus

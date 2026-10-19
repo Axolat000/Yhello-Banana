@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* App Store - Banana OS's apps from the package repositories.
  *
  * The same packages as `apt` (kernel/repo.c, API version 11): Discover

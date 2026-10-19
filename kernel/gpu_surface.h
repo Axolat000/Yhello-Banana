@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef GPU_SURFACE_H
 #define GPU_SURFACE_H
 #include "types.h"

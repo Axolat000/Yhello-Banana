@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "i2chid.h"
 #include "terminal.h"
 #include "keyboard.h"

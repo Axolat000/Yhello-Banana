@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "crashtest.h"
 #include "../kernel/crash.h"
 #include "../kernel/fb.h"

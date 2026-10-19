@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "virtio_pci.h"
 #include "io.h"
 #include "kstring.h"

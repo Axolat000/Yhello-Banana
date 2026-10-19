@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Driver modules: hardware drivers made outside Banana OS (the Driver
  * Kit, sdk/driver/), loaded into the kernel. See sdk/driver/banana_driver.h
  * for what a driver sees; this is the kernel's side: the loader, the

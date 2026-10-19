@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "acpi_sleep.h"
 
 static int integer(const uint8_t* p,uint32_t n,uint32_t* value) {

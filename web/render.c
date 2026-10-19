@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "render.h"
 #include "font8x8.h"
 #include "font.h"

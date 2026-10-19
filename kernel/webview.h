@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WEBVIEW_H
 #define WEBVIEW_H
 

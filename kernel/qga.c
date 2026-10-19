@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "qga.h"
 #include "virtio_serial.h"
 #include "kheap.h"

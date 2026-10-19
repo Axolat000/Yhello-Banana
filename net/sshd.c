@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "sshd.h"
 #include "tcp.h"
 #include "tty.h"

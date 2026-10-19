@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = hello
 TITLE       = Hello World
 VERSION     = 1.0

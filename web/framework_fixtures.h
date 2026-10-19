@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef FRAMEWORK_FIXTURES_H
 #define FRAMEWORK_FIXTURES_H
 #include "types.h"

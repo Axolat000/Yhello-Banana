@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tools/test_malloc.py: sdk/lib/malloc.c (built as the SDK builds it, its
  * functions renamed b_*) on Linux, under a stand-in for Banana OS's call
  * table: vm_map is mmap. Checks every byte of random blocks, realloc,

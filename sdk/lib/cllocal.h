@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Source lowering for block-scope __local arrays. Parameter qualifiers are
  * handled by param(); arrays get one aligned allocation per work-group. */
 static int lower_local_arrays(cl_program p, SB* out) {

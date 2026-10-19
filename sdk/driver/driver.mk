@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 # Banana OS Driver Kit - build rules for drivers.
 #
 # A minimal driver Makefile:

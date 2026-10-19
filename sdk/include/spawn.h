@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SPAWN_H
 #define _SPAWN_H
 #ifdef __cplusplus

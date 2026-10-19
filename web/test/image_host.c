@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Compile the actual kernel decoder against host heap/string shims. */
 #include "types.h"
 #include "kheap.h"

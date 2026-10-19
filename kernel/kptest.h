@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef KPTEST_H
 #define KPTEST_H
 /* kernel/kptest.c: worker tasks decode a picture and draw an SVG at once for

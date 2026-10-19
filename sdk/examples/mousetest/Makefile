@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP = mousetest
 TITLE = Mouse capture test
 VERSION = 1.0

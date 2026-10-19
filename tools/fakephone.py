@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A fake Android phone for QEMU over usbredir: adb (with RSA auth) and fastboot.
 
     fakephone.py PORT [adb|fastboot]

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Dynamic stylesheets. Parsed rules have their own arena so replacing a
  * <style> never leaves another permanent copy of its selectors behind. */
 typedef struct page_css_source {

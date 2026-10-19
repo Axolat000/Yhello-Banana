@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Tests for sdk/lib/cl.c: the usual first OpenCL programs. On Linux:
  *   gcc -O2 -DBCL_HOST -I<CL headers> -I<libtcc.h dir> cltest.c cl.c libtcc.a -lm -lpthread -ldl
  * On Banana OS it is the "cltest" example app (prints to its terminal). */

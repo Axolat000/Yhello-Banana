@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef BANANA_LLVM_COMPAT_H
 #define BANANA_LLVM_COMPAT_H
 #include <locale.h>

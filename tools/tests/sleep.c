@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stdio.h>
 static int checks,failed;
 static void report(const char* s,int ok,const char* note) {

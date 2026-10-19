@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/appcall.asm
 ;
 ; int  app_enter(int (*fn)(void*), void* arg, void* stack_top, uint32_t* saved_sp);

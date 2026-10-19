@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* A small browser built on the system's web view: back / forward / reload,
  * an address bar, and a start page that talks to the app (banana.postMessage
  * one way, bweb_post the other). */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* TinyCC (ports/tcc, LGPL 2.1) built into Banana Code: libtcc in one unit,
  * compiling for the CPU Banana Code runs on. Its settings: ports/tcc/config.h. */
 #ifdef __x86_64__

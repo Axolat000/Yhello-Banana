@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CRASH_H
 #define CRASH_H
 #include "types.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fsdisk.h"
 #include "config.h"
 #include "settings.h"

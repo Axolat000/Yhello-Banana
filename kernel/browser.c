@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../web/framework_fixtures.h"
 #include "browser.h"
 #include "../web/image_decode.h"

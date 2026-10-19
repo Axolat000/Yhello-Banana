@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # Builds OpenJDK 17 (64-bit) for Banana OS: VARIANT=server (the default:
 # HotSpot's template interpreter and its C1 / C2 JIT compilers) or VARIANT=zero
 # (the portable C++ interpreter, no JIT):

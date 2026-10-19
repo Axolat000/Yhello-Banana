@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_WAIT_H
 #define _SYS_WAIT_H
 #ifdef __cplusplus

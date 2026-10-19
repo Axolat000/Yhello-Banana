@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code - an editor for Banana OS in the spirit of VS Code.
  *
  *   main.c     the window: activity bar, side bar (Explorer, Search, Build,

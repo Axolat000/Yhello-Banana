@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "kblayouts.h"
 
 /* Every table covers the same keys - the number row with the key left of

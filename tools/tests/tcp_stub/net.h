@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tools/test_tcp.py: what net/tcp.c needs of net/net.h */
 #ifndef NET_H
 #define NET_H

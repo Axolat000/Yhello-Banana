@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* MP3: MPEG-1, MPEG-2 and MPEG-2.5 Layer III. Frames, side information
  * and the bit reservoir; MPEG-1 and LSF scalefactors; Huffman decoding;
  * requantization; mid/side and intensity stereo; short block reordering,

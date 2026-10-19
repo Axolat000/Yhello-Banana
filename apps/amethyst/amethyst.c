@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Amethyst Music - the Banana OS app of Amethyst Music
  * (https://music.office-works.ch/, github.com/qcom-toolbox/Amethyst-Music):
  * the server's catalogue, albums, artists and playlists, recommendations

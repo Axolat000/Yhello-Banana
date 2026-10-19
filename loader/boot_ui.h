@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Shared BIOS/UEFI boot menu. No allocator, firmware calls, floating point or
  * kernel dependencies. All drawing clips to a validated 32-bit framebuffer. */
 #ifndef BOOT_UI_H

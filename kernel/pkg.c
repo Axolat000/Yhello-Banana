@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "pkg.h"
 #include "driver.h"
 #include "app.h"

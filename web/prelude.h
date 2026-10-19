@@ -1,5 +1,6 @@
 /* generated from web/prelude.js by web/test/embed.pl: do not edit */
 static const char k_prelude[] =
+    "/* SPDX-License-Identifier: GPL-3.0-or-later */\n"
     "/* Run in every page before its own scripts: the web APIs that are easier to\n"
     " * write in script than in C.  web/prelude.h is generated from this file by\n"
     " * web/test/embed.pl. */\n"

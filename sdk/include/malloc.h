@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _MALLOC_H
 #define _MALLOC_H
 #ifdef __cplusplus

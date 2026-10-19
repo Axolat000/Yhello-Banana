@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* The OpenJDK port's first test: java -cp /mnt/virtio Hello */
 public class Hello {
     public static void main(String[] args) {

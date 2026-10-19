@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* 64-bit division on 32-bit x86 (what libgcc would provide): GCC calls
  * these for long long / and % in i686 builds. */
 typedef unsigned long long u64;

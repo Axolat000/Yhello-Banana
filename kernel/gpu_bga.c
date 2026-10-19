@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The Bochs "VBE DISPI" display: QEMU's standard VGA (-vga std) and
  * bochs-display, Bochs, VirtualBox's VBoxVGA. Its registers are behind
  * two I/O ports - or, on bochs-display and newer QEMU VGAs, in memory

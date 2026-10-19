@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Panic presentation uses only a static bitmap font and bounded integer
  * formatting. It never enters terminal/gfx/GUI code or allocates memory. */
 #include "crash.h"

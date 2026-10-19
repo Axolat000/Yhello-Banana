@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Initial S3 target: QEMU's PC/PIIX4, std VGA, e1000 and optional virtio-blk.
  * Other platforms need AML method execution and their own driver PM hooks. */
 #include "acpi_sleep.h"

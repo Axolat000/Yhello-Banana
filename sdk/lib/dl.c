@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: shared libraries (<dlfcn.h>, <link.h>) - an ELF loader in
  * the app. A library is mapped (mmap), relocated at once and its
  * constructors run; its undefined symbols come from the app's export

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Host test for sdk/lib/gl.c: renders scenes to PPM files.
  *   gcc -O2 -DBGL_HOST -I<dir with GL/> gltest.c gl.c -lm -lpthread
  *   BGL_THREADS=1 ./gltest out1   vs   ./gltest outN   (must be identical) */

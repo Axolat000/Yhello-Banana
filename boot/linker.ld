@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana OS 0.5 linker script */
 ENTRY(_start)
 

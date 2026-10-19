@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: BSD sockets, poll / select, name lookups (<sys/socket.h>,
  * <netdb.h>, <arpa/inet.h>, <poll.h>, <sys/select.h>, <sys/ioctl.h>) over
  * the system's sock_* calls (API version 18), which return -errno. */

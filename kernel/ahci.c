@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ahci.h"
 #include "iowait.h"
 #include "idt.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Files: the file explorer, laid out like Windows 7's Explorer.
  *

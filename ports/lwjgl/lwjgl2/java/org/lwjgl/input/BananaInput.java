@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl.input;
 
 /** (Banana OS) how org.lwjgl.opengl.Display hands GLFW's input to Keyboard and Mouse */

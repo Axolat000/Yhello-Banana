@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana OS 0.5 linker script - x86_64 kernel (identity mapped, at 1 MiB
  * like the 32-bit one; boot64.asm maps the first 4 GiB 1:1) */
 OUTPUT_FORMAT(elf64-x86-64)

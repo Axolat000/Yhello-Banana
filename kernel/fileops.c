@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Moving, copying, the shared clipboard and the Recycle Bin (fileops.h). */
 #include "fileops.h"
 #include "kstring.h"

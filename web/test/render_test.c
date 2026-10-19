@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host test: HTML file -> DOM -> CSS -> layout -> pixels (PPM on stdout) */
 #include <stdio.h>
 #include <stdlib.h>

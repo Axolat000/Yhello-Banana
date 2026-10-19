@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef BANANA_LLVM_SYSEXITS_H
 #define BANANA_LLVM_SYSEXITS_H
 #define EX_OK 0

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Explicit column tracks and automatic rows. No item-count cap: only one row
  * lives on the stack. Measurement never publishes DOM hit-test rectangles. */
 static int layout_grid(ctx_t* C, dom_node_t* e, int x, int y, int w) {

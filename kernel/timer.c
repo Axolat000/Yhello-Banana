@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "timer.h"
 #include "types.h"
 #include "idt.h"

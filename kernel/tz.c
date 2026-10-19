@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "tz.h"
 #include "rtc.h"
 #include "kstring.h"

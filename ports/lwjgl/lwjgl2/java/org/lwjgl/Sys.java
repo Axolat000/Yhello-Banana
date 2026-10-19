@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl;
 
 /** LWJGL 2's Sys: the clock (milliseconds), the version, URLs */

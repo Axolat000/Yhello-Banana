@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = clock
 TITLE       = Clock
 VERSION     = 1.0

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests kernel/kheap.c (the kernel's heap) on Linux, without Banana OS:
 built with stand-in headers (tools/tests/kheap_stub), its heap in memory
 mapped below 4 GiB. tools/tests/kheap.c runs it hard and times it against

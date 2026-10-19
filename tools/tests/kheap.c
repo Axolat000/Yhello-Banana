@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tools/test_kheap.py: kernel/kheap.c on Linux. Its heap lies in memory
  * mapped below 4 GiB (it keeps addresses in 32 bits), handed to it through a
  * made-up Multiboot2 memory map. Random kmalloc / kfree / krealloc /

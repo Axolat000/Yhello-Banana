@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* BigInt: integers of any size. A BigInt value is boxed - an object whose
  * prototype is I->proto_bigint, the number itself in ->host - and never
  * changes: every operation makes a new one. The operators reach here from

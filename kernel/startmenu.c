@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * The Start menu, Windows 7 style (startmenu.h).
  *

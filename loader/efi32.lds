@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot (32-bit UEFI): the ELF layout objcopy turns into BOOTIA32.EFI
  * (PE32). Sections page-aligned from 0, as a PE image wants. */
 OUTPUT_FORMAT("elf32-i386")

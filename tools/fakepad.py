@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A fake USB game controller for QEMU, over usbredir (the "host" side).
 
     fakepad.py MODE PORT        MODE: hid | x360 | xone

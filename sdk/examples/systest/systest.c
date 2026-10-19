@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* systest - the app half of `selftest` (a Banana OS shell command): each
  * mode is one check, and the exit code is the result (0 = it worked).
  *

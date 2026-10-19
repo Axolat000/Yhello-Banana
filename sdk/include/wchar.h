@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _WCHAR_H
 #define _WCHAR_H
 #ifdef __cplusplus

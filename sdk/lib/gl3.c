@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * OpenGL 3.3 for Banana OS apps (USE_GL3 = 1): a GL 3.3 core context from
  * Mesa's OSMesa (libOSMesa.so, softpipe: drawing on the processor), loaded

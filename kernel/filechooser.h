@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef FILECHOOSER_H
 #define FILECHOOSER_H
 

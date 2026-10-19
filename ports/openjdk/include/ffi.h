@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* -----------------------------------------------------------------*-C-*-
    libffi 3.4.8
      - Copyright (c) 2011, 2014, 2019, 2021, 2022, 2024 Anthony Green

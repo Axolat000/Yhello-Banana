@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "tls.h"
 #include "sha256.h"
 #include "x25519.h"

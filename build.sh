@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Banana OS 0.6 build script
 # Run this on Ubuntu/Debian to build the bootable ISO
 

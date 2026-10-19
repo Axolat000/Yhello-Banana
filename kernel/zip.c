@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * ZIP archives: list, extract, create (APPNOTE.TXT's format, without ZIP64
  * or encryption). An archive is read through fs_read - its central

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = cltest
 TITLE       = OpenCL test
 VERSION     = 1.1

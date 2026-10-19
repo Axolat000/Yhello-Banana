@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = code
 TITLE       = Banana Code
 VERSION     = 1.0

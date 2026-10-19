@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "httpd.h"
 #include "tcp.h"
 #include "fs.h"

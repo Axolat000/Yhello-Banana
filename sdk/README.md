@@ -4,6 +4,8 @@ Build apps for Banana OS on Linux, in C. One `make` compiles an app for both
 CPUs Banana OS runs on (i686 and x86_64) and packs them into a single
 `.bpk` package that installs on either kernel.
 
+The SDK is under the BSD 2-Clause License (`sdk/LICENSE`), not the GPL that covers the rest of Banana OS: apps you build with it - which link its libraries in - may use any licence you like, open or closed.
+
 ```
 sdk/
 ├── include/        banana.h (windows, drawing, events, sound, network, ...),

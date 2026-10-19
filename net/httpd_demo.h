@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef HTTPD_DEMO_H
 #define HTTPD_DEMO_H
 

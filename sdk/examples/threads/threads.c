@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* threads - counts the prime numbers below a limit, first in one thread,
  * then split over several threads that add their results to a shared
  * total under a mutex; then a producer/consumer queue (semaphores) and

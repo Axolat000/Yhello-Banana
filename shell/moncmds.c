@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "moncmds.h"
 #include "../kernel/fpu.h"
 #include "netcmds.h"

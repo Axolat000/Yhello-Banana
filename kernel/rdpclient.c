@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "rdpclient.h"
 #include "appwin.h"
 #include "keyboard.h"

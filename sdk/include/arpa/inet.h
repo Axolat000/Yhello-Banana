@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _ARPA_INET_H
 #define _ARPA_INET_H
 #ifdef __cplusplus

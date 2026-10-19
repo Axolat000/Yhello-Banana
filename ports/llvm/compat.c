@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Compiler-private compatibility; not a second libc. Unsupported process
  * services return errors. The actual allocator, threads, files and JIT
  * mappings come from Banana's SDK. */

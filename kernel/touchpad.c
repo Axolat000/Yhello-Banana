@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Touchpad gestures (see touchpad.h): fingers -> pointer, clicks, scroll.
  */

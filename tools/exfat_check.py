@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Reads an exFAT image on its own (not through Banana OS's driver), to
 check what Banana OS wrote: the tree, and file contents.
 

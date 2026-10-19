@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "random.h"
 #include "sha256.h"
 #include "chacha20.h"

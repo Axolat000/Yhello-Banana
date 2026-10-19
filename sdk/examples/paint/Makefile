@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = paint
 TITLE       = Paint
 VERSION     = 1.0

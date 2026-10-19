@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: POSIX bits over the system calls - file descriptors
  * (open, lseek, fstat, stat), aligned memory, fdopen - for programs
  * ported from elsewhere. */

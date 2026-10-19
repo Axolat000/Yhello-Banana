@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _INTTYPES_H
 #define _INTTYPES_H
 #ifdef __cplusplus

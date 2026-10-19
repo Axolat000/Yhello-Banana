@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: mmap, munmap, mprotect (<sys/mman.h>) over the system's
  * vm_map / vm_unmap / vm_protect (API version 16). A file mapping is
  * anonymous memory the file is read into. */

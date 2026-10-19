@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host test for web/regex.c: pattern, flags, subject -> expected match (or "-" for none) and group 1 */
 #include <stdio.h>
 #include <string.h>

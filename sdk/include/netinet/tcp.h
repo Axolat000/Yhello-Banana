@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _NETINET_TCP_H
 #define _NETINET_TCP_H
 #ifdef __cplusplus

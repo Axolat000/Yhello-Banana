@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Linked against the actual SDK conversion module, with the host only
  * providing errno/assert/stdio. Cover every Unicode scalar and split. */
 #include <wchar.h>

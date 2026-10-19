@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl.opengl;
 
 /** LWJGL 2's PixelFormat: what a window's framebuffer is asked to have (immutable: each with... is a copy) */

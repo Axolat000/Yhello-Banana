@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _STRINGS_H
 #define _STRINGS_H
 #ifdef __cplusplus

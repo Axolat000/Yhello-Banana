@@ -44,9 +44,11 @@ Daniel J. Bernstein, Wesley Janssen, Tanja Lange, Peter Schwabe,
 Matthew Dempsky, Sjaak Smetsers
 License: public domain - https://tweetnacl.cr.yp.to/
 
-The Banana-OS kernel and all original Banana-OS source code (including
-the network stack, TLS and crypto code) remain licensed under the BSD
-2-Clause License.
+Banana OS itself is licensed under the GNU General Public License,
+version 3 or (at your option) any later version (the file LICENSE); its
+SDK (sdk/) and its own files in ports/ under the BSD 2-Clause License
+(LICENSES/BSD-2-Clause.txt). The file COPYRIGHT says which is which. The
+components in this file keep their own licences, all compatible with that.
 
 TinyCC (Tiny C Compiler) - ports/tcc, built into Banana Code (apps/code)
 Copyright (c) 2001-2004 Fabrice Bellard and the TinyCC contributors
@@ -172,3 +174,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+FFmpeg 7.1 (ports/ffmpeg: libavcodec, libavformat, libavutil, libswscale,
+libswresample), built into Media Player (apps/mediaplayer)
+Copyright (c) the FFmpeg developers
+License: GNU Lesser General Public License, version 2.1 or later (built
+without --enable-gpl or --enable-nonfree). Source: https://ffmpeg.org -
+ports/ffmpeg/build.sh fetches that release and shows the configuration;
+Media Player can be rebuilt with another FFmpeg the same way. The LGPL's
+text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+LLVM 18.1.8 (ports/llvm: the optional X86 JIT runtime behind Mesa's
+LLVMpipe renderer; not in the default image)
+Copyright (c) the LLVM Project contributors
+License: Apache License 2.0 with LLVM Exceptions - https://llvm.org/LICENSE.txt

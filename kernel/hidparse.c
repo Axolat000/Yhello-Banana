@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * HID report descriptor parser (HID 1.11, section 6.2.2): short items,
  * global / local state, collections; each Input / Output / Feature main

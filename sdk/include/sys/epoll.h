@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_EPOLL_H
 #define _SYS_EPOLL_H
 #ifdef __cplusplus

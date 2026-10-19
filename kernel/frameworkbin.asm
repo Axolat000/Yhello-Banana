@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; Pinned framework fixtures, shared by the browser demo and its real tests.
 section .rodata
 %macro FIXTURE 2

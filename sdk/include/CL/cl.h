@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef __OPENCL_CL_H
 #define __OPENCL_CL_H
 

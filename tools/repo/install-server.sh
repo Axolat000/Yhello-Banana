@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # install-server.sh - set up a Linux server that hosts a Banana OS package
 # repository (for `apt` and the App Store on Banana OS).
 #

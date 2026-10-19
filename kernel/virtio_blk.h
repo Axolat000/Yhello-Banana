@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef VIRTIO_BLK_H
 #define VIRTIO_BLK_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_SELECT_H
 #define _SYS_SELECT_H
 #ifdef __cplusplus

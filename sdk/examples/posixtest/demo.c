@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* libdemo: a shared library posixtest opens with dlopen. It uses the C
  * library and calls back into the app (both through the app's exports),
  * has data and a constructor. */

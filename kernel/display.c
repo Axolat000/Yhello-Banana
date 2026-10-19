@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Screen resolution: through the active graphics driver (kernel/gpu.h);
  * without one the mode the firmware set stays. */
 #include "display.h"

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = threads
 TITLE       = Threads
 VERSION     = 1.0

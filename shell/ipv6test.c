@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ipv6test.h"
 #include "../net/ipv6.h"
 #include "../net/tcp.h"

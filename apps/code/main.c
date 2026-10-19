@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code - the window. See code.h for the parts. */
 #include "code.h"
 #include <stdarg.h>

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The App Store's facts about the packages built into the kernel, made at
 build time (kernel/builtin_apps.c: builtin_meta) - so the boot does not
 unpack and hash every one of them again to list them (~0.9 s in QEMU).

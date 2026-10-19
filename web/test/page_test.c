@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Host test: a page with scripts, driven by actions, rendered to PPM.
  *   page_test file.html out.ppm [click:#id] [type:text] [key:enter] [tick:ms] [text:#id] ...
  * Files referenced by the page are read relative to the current directory. */

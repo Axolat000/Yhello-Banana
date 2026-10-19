@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Music - a music library player for Banana OS, after Amethyst
  * (github.com/Geoxor/Amethyst): the songs of your folders with their
  * tags and covers, albums and artists, a queue with shuffle and repeat,

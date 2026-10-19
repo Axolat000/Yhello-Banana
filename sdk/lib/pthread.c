@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: POSIX threads (<pthread.h>, <semaphore.h>, <sched.h>) over
  * the system's threads (thread_start, API version 17) and its wait / wake.
  *

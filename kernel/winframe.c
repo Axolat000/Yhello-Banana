@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "winframe.h"
 #include "fb.h"
 #include "timer.h"

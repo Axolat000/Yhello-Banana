@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * OpenCL for Banana OS: the OpenCL 1.2 host API on the processor.
  *

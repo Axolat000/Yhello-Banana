@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * File, folder and place icons (fileicons.h): little drawings on a 16 x 16
  * grid, each cell `u` pixels (1 at 16 px, 2 at 32, 3 at 48).

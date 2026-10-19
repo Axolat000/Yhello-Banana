@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* guess - a console game: input with scanf, colors, random numbers */
 #include <stdio.h>
 #include <banana.h>

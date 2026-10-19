@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = systest
 TITLE       = System Test
 VERSION     = 1.0

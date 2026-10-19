@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef HTTPD_PHP_H
 #define HTTPD_PHP_H
 

@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/fontbin.asm - the system fonts (DejaVu, fonts/LICENSE), embedded in
 ; the kernel; kernel/font.c reads them in place. Assembled for both kernels.
 

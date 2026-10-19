@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tools/test_tcp.py: net/tcp.c on Linux, both ends of a connection in one
  * process (as the OS's loopback: 127.0.0.1 to itself), over a simulated
  * link - a one-way delay, a bandwidth, a bottleneck queue and random loss,

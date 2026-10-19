@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/isr64.asm - interrupt entry points of the x86_64 kernel
 ;
 ; Same scheme as isr.asm: each stub pushes (error_code, int_no) - a dummy

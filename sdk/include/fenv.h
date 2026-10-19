@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _FENV_H
 #define _FENV_H
 #ifdef __cplusplus

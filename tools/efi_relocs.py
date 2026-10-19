@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Banana Boot: checks that a UEFI loader (the ELF before objcopy) needs no
 relocation - the PE file has none, so the code must run wherever the
 firmware puts it.

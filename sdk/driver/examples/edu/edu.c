@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* edu - a Driver Kit example: QEMU's "edu" teaching device (qemu -device
  * edu, PCI 1234:11e8). It shows the parts of a PCI driver: matching the
  * device, its registers in memory (BAR0), an interrupt, a task.

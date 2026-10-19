@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Same decoder configuration as third_party/stb/stb_image_impl.c, host heap. */
 #define STBI_NO_STDIO
 #define STBI_NO_SIMD

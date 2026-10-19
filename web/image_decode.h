@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WEB_IMAGE_DECODE_H
 #define WEB_IMAGE_DECODE_H
 #include "page.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* mandel - the Mandelbrot set: double-precision math in a resizable
  * window, rendered by several threads that take rows from a shared
  * counter. Left click zooms in there, right click zooms out, r resets. */

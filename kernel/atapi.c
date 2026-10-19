@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "atapi.h"
 
 /* ── I/O helpers (each kernel .c file keeps its own copy - see usb.c) ── */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "http.h"
 #include "../kernel/timer.h"
 #include "tcp.h"

@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/exbin.asm - the SDK's example apps (.bpk, zlib-compressed: .bpk.z), built by the
 ; Makefile and embedded in the kernel; kernel/examples.c copies them to
 ; ~/Examples on a fresh system. Assembled for both kernels (elf32/elf64).

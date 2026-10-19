@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Exercise GNU C++ stream/facet ABI and the SDK's multibyte state using
  * the exact runtime linked into the JIT DSO. Called by selftest llvmpipe. */
 #include <sstream>

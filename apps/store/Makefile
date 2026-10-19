@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = store
 TITLE       = App Store
 VERSION     = 1.0

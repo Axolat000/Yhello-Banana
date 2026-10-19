@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "framework_test.h"
 #include "framework_fixtures.h"
 #include "page.h"

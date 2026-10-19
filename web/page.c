@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "page.h"
 #include "kstring.h"
 #include "../kernel/utf8.h"

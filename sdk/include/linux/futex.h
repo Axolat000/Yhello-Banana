@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _LINUX_FUTEX_H
 #define _LINUX_FUTEX_H
 #ifdef __cplusplus

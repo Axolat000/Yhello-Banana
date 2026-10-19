@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* -----------------------------------------------------------------*-C-*-
    ffitarget.h - Copyright (c) 2012, 2014, 2018  Anthony Green
                  Copyright (c) 1996-2003, 2010  Red Hat, Inc.

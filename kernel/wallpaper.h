@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WALLPAPER_H
 #define WALLPAPER_H
 

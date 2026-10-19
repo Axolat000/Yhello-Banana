@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 // Checks what HotSpot's JIT needs from the system: in compiled code, a null
 // pointer and a division by zero are caught as signals (SIGSEGV, SIGFPE) and
 // become Java exceptions; a deep recursion hits the stack's guard pages

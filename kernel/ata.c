@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ata.h"
 #include "iowait.h"
 #include "timer.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* posixtest - checks the POSIX layer apps get from the SDK, for programs
  * ported from Linux (on the way to OpenJDK): one ok / FAIL line per check,
  * the exit code is how many failed. `selftest posix` runs it.

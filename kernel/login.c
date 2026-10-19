@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The login screen at boot: once a password is set (Settings > Startup or
  * `passwd`), Banana OS asks for it before the console or the desktop come
  * up. Drawn over the wallpaper on a framebuffer, a plain prompt otherwise. */

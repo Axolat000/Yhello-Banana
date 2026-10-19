@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 /* (the host test is one thread: the kernel's lock would run cli, which a
  * Linux program may not) */

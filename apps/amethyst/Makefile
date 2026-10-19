@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP         = amethyst
 TITLE       = Amethyst Music
 VERSION     = 1.0

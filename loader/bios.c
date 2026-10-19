@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Boot - the legacy BIOS loader (32-bit protected mode; the BIOS is
  * called through bios_int, which drops back to real mode for each call).
  *

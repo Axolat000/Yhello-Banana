@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* the kernel font, built for the host tests */
 #include <stdint.h>
 #define FONT8X8_H

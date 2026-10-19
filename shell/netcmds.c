@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../net/firewall.h"
 #include "../net/ipv6.h"
 #include "netcmds.h"

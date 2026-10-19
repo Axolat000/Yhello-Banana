@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* libdemo2: needs libdemo (DT_NEEDED) - dlopen loads that one too */
 int demo_add(int a, int b);
 

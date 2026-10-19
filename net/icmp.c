@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "net.h"
 #include "kstring.h"
 #include "timer.h"

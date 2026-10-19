@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef DEFLATE_H
 #define DEFLATE_H
 

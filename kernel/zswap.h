@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef ZSWAP_H
 #define ZSWAP_H
 

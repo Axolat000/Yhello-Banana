@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "svg.h"
 #include "html.h"
 #include "css.h"

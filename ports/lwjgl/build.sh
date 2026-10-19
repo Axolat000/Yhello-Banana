@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # Builds LWJGL 3 (3.3.3, the version Minecraft 1.20.5+ ships) for Banana OS
 # (64-bit), for the Java of ports/openjdk:
 #     ports/lwjgl/build.sh [output dir]      (default: ports/lwjgl/build)

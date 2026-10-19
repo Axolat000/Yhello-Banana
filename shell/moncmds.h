@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef MONCMDS_H
 #define MONCMDS_H
 

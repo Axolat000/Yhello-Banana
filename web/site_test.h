@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef SITE_TEST_H
 #define SITE_TEST_H
 #include "page.h"

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 DRIVER      = edu
 TITLE       = QEMU edu device
 VERSION     = 1.0

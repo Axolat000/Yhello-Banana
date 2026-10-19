@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "site_test.h"
 #include "kheap.h"
 #include "kstring.h"

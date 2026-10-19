@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "codec.h"
 
 void codec_err(char* err, int ecap, const char* msg) {

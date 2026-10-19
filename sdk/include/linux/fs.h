@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _LINUX_FS_H
 #define _LINUX_FS_H
 /* block devices' ioctls (not available to apps) */

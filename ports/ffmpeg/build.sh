@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # Builds FFmpeg (libavformat, libavcodec, libswscale, libswresample,
 # libavutil) as static libraries for Banana OS apps:
 #     ports/ffmpeg/build.sh <i686|x86_64> <output dir> [full|audio]

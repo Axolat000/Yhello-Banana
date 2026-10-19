@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef WINFRAME_H
 #define WINFRAME_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "wallpaper.h"
 #include "wallpaper_data.h"
 #include "fs.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef SRVCMDS_H
 #define SRVCMDS_H
 

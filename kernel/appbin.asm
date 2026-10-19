@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/appbin.asm - the apps that come with Banana OS (Media Player,
 ; Music, Amethyst, Photos, Banana Code, App Store): their packages for this kernel's CPU, zlib-compressed, built by
 ; the Makefile (apps/*/). kernel/builtin_apps.c installs them at boot.

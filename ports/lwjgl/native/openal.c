@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * libopenal.so for Banana OS: the OpenAL 1.1 API (what LWJGL's org.lwjgl.openal
  * binds - Minecraft's sound) over Banana OS's sound output (banana_play).

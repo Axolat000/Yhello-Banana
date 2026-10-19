@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "mouse_capture.h"
 void mouse_capture_tests(void (*report)(const char*,int,const char*)) {
     mouse_capture_t c;mouse_capture_reset(&c);int dx,dy;mouse_state_t m={.dx=17,.dy=-9};

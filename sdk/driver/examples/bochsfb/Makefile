@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 DRIVER      = bochsfb
 TITLE       = Bochs display (example)
 VERSION     = 1.0

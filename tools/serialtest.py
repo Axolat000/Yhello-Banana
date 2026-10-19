@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Boots Banana OS in QEMU without a window and types commands at its
 serial console (COM1 is a console of the shell), one after the other,
 each once the shell's prompt is back. Everything the system writes is

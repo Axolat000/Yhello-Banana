@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = gl3test
 TITLE       = OpenGL 3.3 Test
 VERSION     = 1.0

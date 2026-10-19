@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* paint - a desktop app: a window, mouse and key events, drawing, and
  * saving a .bmp file (which Files and the Wallpaper app can open) */
 #include <stdio.h>

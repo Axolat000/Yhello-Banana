@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK: the rest of the Unix and Linux C library that ported
  * programs (OpenJDK...) expect - the environment, folders, the user,
  * uname, limits, locale, wide characters, file odds and ends. Where Banana

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 APP         = mandel
 TITLE       = Mandelbrot
 VERSION     = 1.0

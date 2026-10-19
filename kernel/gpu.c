@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Graphics drivers: the active display, and what goes through it (see gpu.h) */
 #include "gpu.h"
 #include "fb.h"

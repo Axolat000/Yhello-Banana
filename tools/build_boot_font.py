@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bake the existing DejaVu Sans into a compact 2-bit boot font (Pillow required).
 Normal builds use the committed atlas and need no Python imaging packages.
 """

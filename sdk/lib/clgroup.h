@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Stackful work-items for collective barriers. Included by cl.c after WI,
  * KINFO and JOB. A worker owns one group at a time; groups still run on all
  * CPU cores. A barrier yields to that group's scheduler rather than blocking

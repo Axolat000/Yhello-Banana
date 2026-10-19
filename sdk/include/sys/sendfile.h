@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_SENDFILE_H
 #define _SYS_SENDFILE_H
 #ifdef __cplusplus

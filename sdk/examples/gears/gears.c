@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Gears - OpenGL on Banana OS (USE_GL = 1).
  *
  * Three gears turning, lit, from display lists - the frame rate in the

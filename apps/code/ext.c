@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Banana Code: extensions.
  *
  * An extension is a folder with an extension.json:

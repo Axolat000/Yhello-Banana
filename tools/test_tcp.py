@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests net/tcp.c on Linux, without Banana OS: both ends of a connection
 in one process over a simulated link (delay, bandwidth, a bottleneck queue,
 random loss) on a virtual clock - tools/tests/tcp_sim.c. Every download is

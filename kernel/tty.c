@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "tty.h"
 #include "terminal.h"
 #include "task.h"

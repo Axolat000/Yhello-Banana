@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Run in every page before its own scripts: the web APIs that are easier to
  * write in script than in C.  web/prelude.h is generated from this file by
  * web/test/embed.pl. */

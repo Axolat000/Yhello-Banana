@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "fscmds.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 package org.lwjgl.opengl;
 
 /** LWJGL 2's unchecked OpenGL error */

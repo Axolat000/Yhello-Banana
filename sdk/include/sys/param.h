@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _SYS_PARAM_H
 #define _SYS_PARAM_H
 #ifdef __cplusplus

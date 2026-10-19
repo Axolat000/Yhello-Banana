@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef BANANA_DRIVER_H
 #define BANANA_DRIVER_H
 

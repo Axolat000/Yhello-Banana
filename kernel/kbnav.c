@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Keyboard focus inside a window (kbnav.h). */
 #include "kbnav.h"
 #include "gfx.h"

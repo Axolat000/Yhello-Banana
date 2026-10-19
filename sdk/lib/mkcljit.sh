@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
 # mkcljit.sh TCC_PORT_DIR OUT_DIR - TinyCC's Banana OS source (ports/tcc,
 # made by its build.sh) copied to OUT_DIR for in-memory compilation and
 # the OpenCL vector extension. Banana Code keeps its own compiler unchanged.

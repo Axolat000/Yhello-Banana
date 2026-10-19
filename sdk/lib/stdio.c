@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS SDK stdio: printf/scanf family, FILE streams over the
  * system's file calls, and the terminal as stdin/stdout/stderr. */
 #include <stdio.h>

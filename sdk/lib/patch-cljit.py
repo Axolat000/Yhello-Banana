@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """Apply the OpenCL-only TinyCC extension to a generated compiler copy."""
 from pathlib import Path
 import sys, shutil

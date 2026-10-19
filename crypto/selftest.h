@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CRYPTO_SELFTEST_H
 #define CRYPTO_SELFTEST_H
 

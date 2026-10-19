@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* Banana OS Driver Kit: the entry point the kernel calls (it keeps the
  * table for the driver's code, then runs banana_driver_main) */
 #include "banana_driver.h"

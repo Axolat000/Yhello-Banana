@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check the ACPI sleep package parser without suspending any machine."""
 from pathlib import Path
 import argparse

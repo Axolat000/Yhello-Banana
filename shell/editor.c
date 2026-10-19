@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "editor.h"
 #include "../kernel/utf8.h"
 #include "../kernel/terminal.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "framework_fixtures.h"
 #include "kstring.h"
 #define DECLARE(name) extern const unsigned char framework_##name[], framework_##name##_end[]

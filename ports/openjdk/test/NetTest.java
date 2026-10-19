@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 import java.io.*;
 import java.net.*;
 import java.nio.ByteBuffer;

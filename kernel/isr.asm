@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/isr.asm
 ;
 ; Stub entry points for the 32 CPU exception vectors (0-31). Each pushes a

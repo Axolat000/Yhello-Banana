@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _STDIO_H
 #define _STDIO_H
 #ifdef __cplusplus

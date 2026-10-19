@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * libglfw.so for Banana OS: the GLFW 3.4 API (what LWJGL's org.lwjgl.glfw
  * binds) over Banana OS windows (bwin) and OpenGL 3.3 (bgl3: Mesa's

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Uses the production parser (including its private parse_len) and real
  * DOM/stylesheet/style fields, with the existing host kernel shims.
  * cc -std=c99 -Wall -Wextra -Iweb/test/shim -Iweb \

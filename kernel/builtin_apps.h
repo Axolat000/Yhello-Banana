@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef BUILTIN_APPS_H
 #define BUILTIN_APPS_H
 

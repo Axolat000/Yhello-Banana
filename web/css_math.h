@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef CSS_MATH_H
 #define CSS_MATH_H
 

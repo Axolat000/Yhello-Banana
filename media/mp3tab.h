@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* MPEG audio Layer III tables (ISO/IEC 11172-3, 13818-3), for media/mp3.c.
  *
  * The Huffman code tables, scalefactor band widths and linbits come from

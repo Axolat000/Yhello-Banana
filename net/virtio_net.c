@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "netdev.h"
 #include "pci.h"
 #include "idt.h"

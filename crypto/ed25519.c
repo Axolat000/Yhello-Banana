@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ed25519.h"
 #include "sha512.h"
 #include "kstring.h"

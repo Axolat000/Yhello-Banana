@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _NET_ROUTE_H
 #define _NET_ROUTE_H
 /* the routing table's flags (/proc/net/ipv6_route: none on Banana OS) */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* hello - the smallest Banana OS app */
 #include <stdio.h>
 #include <stdlib.h>

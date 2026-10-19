@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "webview.h"
 #include "browser.h"
 #include "kheap.h"

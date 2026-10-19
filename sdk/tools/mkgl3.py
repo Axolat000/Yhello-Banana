@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """mkgl3.py GLCOREARB_H OUT_H - the function list of <GL/gl3.h>.
 
 Reads Khronos's glcorearb.h and writes OUT_H (sdk/include/GL/gl3procs.h):

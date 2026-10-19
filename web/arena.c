@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "arena.h"
 #include "kheap.h"
 #include "kstring.h"

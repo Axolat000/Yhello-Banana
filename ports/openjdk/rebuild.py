@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """rebuild.py REFOBJS OUT [names...] - compile a native part of OpenJDK again
 for Banana OS.
 

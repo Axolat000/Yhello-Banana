@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef TIMER_MATH_H
 #define TIMER_MATH_H
 #include "types.h"

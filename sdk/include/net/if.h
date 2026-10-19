@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _NET_IF_H
 #define _NET_IF_H
 #ifdef __cplusplus

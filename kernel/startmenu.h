@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef STARTMENU_H
 #define STARTMENU_H
 

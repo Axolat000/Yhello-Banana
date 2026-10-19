@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 /* TinyCC's configuration on Banana OS (ports/tcc/build.sh copies it in).
  * The compiler lives in Banana Code; its files are in /apps/code/tcc:
  *   include/          the SDK's headers

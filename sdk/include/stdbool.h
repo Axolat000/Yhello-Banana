@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
 #ifndef _STDBOOL_H
 #define _STDBOOL_H
 #ifdef __cplusplus

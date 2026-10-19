@@ -1,4 +1,5 @@
 #!/usr/bin/perl
+# SPDX-License-Identifier: GPL-3.0-or-later
 # embed.pl in.js NAME > out.h : a script file as a C string constant
 use strict;
 my ($in, $name) = @ARGV;

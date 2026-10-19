@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Banana Boot: makes the ISO from xorriso a hybrid image - a CD and a disk.
 
 usage: mkimage.py Banana_OS.iso loader/mbr.bin

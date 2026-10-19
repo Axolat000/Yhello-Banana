@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* VMware SVGA II: VMware Workstation / Player / ESXi, VirtualBox's VMSVGA
  * and VBoxSVGA adapters, QEMU -vga vmware.
  *

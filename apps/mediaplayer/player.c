@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Media Player - videos and music with FFmpeg (ports/ffmpeg): MP4, MKV,
  * WebM, AVI, MOV, MPEG, OGG, FLV, WMV... with H.264, H.265, VP8, VP9,
  * MPEG-4, MPEG-1/2, Theora video and AAC, MP3, Opus, Vorbis, FLAC, AC-3

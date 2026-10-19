@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "smp.h"
 #include "fpu.h"
 #include "tlb.h"
