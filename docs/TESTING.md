@@ -26,6 +26,18 @@ socket family mappings. Host characterization tests run via:
 python3 tools/test_dns_socket_state.py --sanitize
 ```
 
+## Monotonic Clock and UTC Time Synchronization
+
+See [Monotonic Clock and UTC Time Synchronization](CLOCK-MONOTONIC-UTC.md) for
+the architectural separation of monotonic time (`timer_ms()`) and real time
+(`rtc_now_utc()`), time correction models (step vs slew), proof of TCP delay and
+deadline invariance under wall-clock jumps, and NTP/SNTP protocol specifications.
+Host characterization tests run via:
+```bash
+python3 tools/test_clock_monotonic_utc.py --sanitize
+```
+
+
 ## Inside Banana OS
 
 ### `selftest [part]`

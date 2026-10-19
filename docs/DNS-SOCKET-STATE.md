@@ -36,7 +36,7 @@ Banana OS implements networking in two tiers:
 | **Mismatched Transaction ID** | UDP response | `rd16(p) != q->id` causes early return from `parse_reply()`; packet ignored | `NET_ERR_TIMEOUT` (if no valid packet follows) | Bounded by `timeout_ms` |
 | **Mismatched Query Section** | UDP response | `memcmp(p + 12, q->question, q->qlen) != 0` or type mismatch causes packet drop | `NET_ERR_TIMEOUT` (if no valid packet follows) | Bounded by `timeout_ms` |
 | **Malformed RDLENGTH / Truncated Record** | UDP response | Offset boundary check `off + rdlen > len` aborts loop cleanly | `NET_ERR_DNS` (or timeout if discarded) | Bounded by `timeout_ms` |
-| **Truncated Reply (`TC` bit = 1, `0x0200`)** | UDP response | `(p[2] & 0xFA) != 0x80` drops truncated response (`TC` bit set); no TCP fallback | `NET_ERR_TIMEOUT` | Bounded by `timeout_ms` |
+| **Truncated Reply (`TC` bit = 1, `0x0200`)** | UDP response | `parse_reply()` sets `q->tc = 1`; `resolve()` falls back to `resolve_tcp()` (RFC 1035 4.2.2) | `NET_OK` on answer | Bounded by remaining `timeout_ms` |
 | **Server Silence / Packet Loss** | Unanswered UDP | 3 attempts with 2000 ms per-attempt wait, polling `net_wait(20)` | `NET_ERR_TIMEOUT` | Exactly `min(timeout_ms, 6000)` ms |
 | **Unconfigured Interface** | Pre-flight check | `net_wait_configured(timeout_ms)` fails if DHCP not bound | `NET_ERR_NOTREADY` | Caller timeout or DHCP completion |
 | **Missing DNS Server** | Pre-flight check | `nif->dns == 0` | `NET_ERR_DNS` | Immediate |
@@ -59,22 +59,23 @@ Banana OS implements networking in two tiers:
 | `gethostbyaddr()` | IPv4 address | Length 4, family `AF_INET`; formats string and resolves | Pointer to `hostent`, or `NULL` (`h_errno = HOST_NOT_FOUND`) |
 | `gethostbyaddr()` | IPv6 address | Length 16, family `AF_INET6`; rejected | `NULL` (`h_errno = HOST_NOT_FOUND`) |
 | `socket()` | `AF_INET, SOCK_STREAM/DGRAM` | Maps to kernel `usock_new(AF_INET, ...)` | Valid socket file descriptor |
-| `socket()` | `AF_INET6, SOCK_STREAM/DGRAM`| Rejected in `kernel/usock.c:136` (`family != AF_INET`) | `-1`, `errno = EAFNOSUPPORT` |
+| `socket()` | `AF_INET6, SOCK_STREAM/DGRAM`| Supported in `kernel/usock.c` (`family == AF_INET6`); connects to `net/ipv6.c` & `net/tcp.c` | Valid socket file descriptor |
 
 ---
 
 ## 4. Architectural Boundaries and Living Checklist Proposal
 
 ### Documented Current Boundaries
-1. **No DNS TCP Fallback**:
+1. **DNS TCP Fallback (Implemented)**:
    - RFC 1035 section 4.2.2 defines TCP fallback when responses have the truncation flag (`TC`) set.
-   - In `net/dns.c`, incoming packets with the TC flag set fail the `(p[2] & 0xFA) == 0x80` check and are dropped, causing resolution to time out.
-2. **SDK IPv6 Socket Separation**:
-   - The Banana SDK `banana_api_t` table currently exports `resolve(name, ip4)`.
-   - `kernel/usock.c` explicitly enforces `family == AF_INET`.
-   - Applications ported via the SDK (such as Java or web clients) rely on `socket(AF_INET6, ...)` returning `EAFNOSUPPORT` to cleanly fall back to IPv4 networking.
-3. **Checklist Evolution**:
-   - A dedicated task `base-17-dns-sockets` is proposed in `docs/daily-use-checklist.json` to track future enhancements (DNS TCP fallback, AAAA resolution in SDK `banana_api`, and IPv6 `usock` support) without expanding the scope of the current base-17 step 2 deliverables.
+   - In `net/dns.c`, incoming packets with the TC flag set now set `q->tc = 1`, and `resolve()` initiates a TCP connection to the DNS server port 53 (via `tcp_connect` or `tcp_connect6`), transmitting the 2-byte length prefixed question and parsing the TCP answer.
+2. **Kernel usock IPv6 Support (Implemented)**:
+   - `kernel/usock.c` supports both `AF_INET` and `AF_INET6` families for `SOCK_STREAM` and `SOCK_DGRAM`.
+   - `AF_INET6` stream sockets connect and listen via `tcp_connect6` and `tcp_listen6`, query peer information via `tcp_peer6`, and format 28-byte `sockaddr_in6` structures.
+   - `AF_INET6` datagram sockets bind via `udp6_bind` and dispatch through `udp6_send`.
+   - `IPPROTO_IPV6` socket option `IPV6_V6ONLY` is supported.
+3. **SDK IPv6 Integration**:
+   - SDK `getaddrinfo` and `banana_api` AF_INET6 resolution is tracked as step 3 of `base-17-dns-sockets`.
 
 ---
 

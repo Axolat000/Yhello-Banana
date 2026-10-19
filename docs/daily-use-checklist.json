@@ -1671,9 +1671,10 @@
       "Programme cible : 30 minutes avec son et entrées, pas de répétition de touches bloquée ni audio continu après fermeture."
     ],
     "deliverable": "Backend SDL Banana, exemples et premier programme porté.",
-    "decision": "Le programme et la version SDL restent à choisir ; aucune promesse de compatibilité de tous les jeux SDL.",
-    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "decision": "Version retenue : SDL2 (branche stable 2.30.x) pour assurer la compatibilité avec l'écosystème de jeux et outils existants. Premier programme cible sélectionné : Chocolate Doom (Doom classic engine) avec application intermédiaire de démonstration et qualification 100-cycles (ports/sdl2/test/sdl2_demo).",
+    "evidenceLevel": "décision documentée (docs/sdl2-porting-strategy.md), backend SDL2 complet (fenêtre, surface logicielle, événements, horloge, threads, audio mixer, manettes, accélération OpenGL bgl3/OSMesa, gestion perte de focus et libération propre) et tests de qualification automatisés (ports/sdl2/test/sdl2_demo)",
     "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "planningReason": "Step 3 resolved: Linked OpenGL 3.3 hardware/Mesa acceleration to SDL2 on Banana OS via bgl3 (SDL_GL_CreateContext, SDL_GL_MakeCurrent, SDL_GL_SwapWindow, SDL_GL_DeleteContext, attributes, proc address resolution), handled focus loss with full key state reset to avoid sticky keys, and verified clean window/context destruction and qualification in ports/sdl2/test/sdl2_demo.",
     "fileLinks": {
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/audio.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h",
@@ -2088,7 +2089,11 @@
       "kernel/gui.c",
       "kernel/clipboard.c",
       "kernel/appwin.c",
-      "kernel/settings.c"
+      "kernel/settings.c",
+      "kernel/notification.h",
+      "kernel/notification.c",
+      "tools/tests/notification.c",
+      "tools/test_notification.py"
     ],
     "steps": [
       "Créer un service de notification avec titre, texte, application et action ; limiter la fréquence et conserver un historique borné.",
@@ -2108,7 +2113,8 @@
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
     },
-    "rank": 43
+    "rank": 43,
+    "planningReason": "Establish the desktop notification service with title, body, source application, and action handler, enforcing per-application rate limiting and a bounded ring buffer history."
   },
   {
     "id": "base-31",
@@ -2267,6 +2273,38 @@
       "sdk/lib/socket.c",
       "tools/test_dns_socket_state.py",
       "docs/DNS-SOCKET-STATE.md"
+    ]
+  },
+  {
+    "id": "base-17-ntp",
+    "priority": "P2",
+    "domain": "Network",
+    "title": "Implement NTP / SNTP network time client and slewing",
+    "goal": "Provide automatic network time synchronization over UDP port 123 without disturbing monotonic timers or TCP delays.",
+    "evidence": "Inventory in base-17 step 3 (docs/CLOCK-MONOTONIC-UTC.md) shows that while timer_ms() and rtc_now_utc() are cleanly separated so wall-clock jumps do not affect TCP delays, no RFC 4330/5905 NTP client exists in Banana OS. Setting time currently requires manual date set or VM guest tools.",
+    "planningReason": "Step 3 established and verified monotonic clock isolation and proved TCP deadline invariance under UTC steps, specifying the protocol format and discipline for NTP. A distinct follow-up implements the NTP UDP client, Settings integration, and slew/step discipline without expanding step 3 scope. See docs/CLOCK-MONOTONIC-UTC.md.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "Running ntp <server> or enabling network time in Settings contacts an NTP server, verifies stratum and sanity, and adjusts system UTC time via step or slew without breaking active TCP connections or downloads.",
+    "deliverable": "NTP client utility and kernel/net service, Settings network time toggle, and automated synchronization tests.",
+    "steps": [
+      "Implement RFC 4330 / 5905 SNTP client in net/ntp.c query via UDP port 123.",
+      "Integrate NTP synchronization into Settings Date & Time and date shell command.",
+      "Implement gradual clock slewing (±500 PPM) for small clock offsets (<128 ms)."
+    ],
+    "tests": [
+      "Host test validating SNTP client query/reply against local mock NTP server.",
+      "In Banana OS: ntp pool.ntp.org while maintaining an active TCP download to verify zero connection reset or timeout."
+    ],
+    "files": [
+      "net/ntp.c",
+      "net/ntp.h",
+      "kernel/rtc.c",
+      "kernel/settings.c",
+      "shell/datecmd.c",
+      "tools/test_clock_monotonic_utc.py",
+      "docs/CLOCK-MONOTONIC-UTC.md"
     ]
   }
 ]
