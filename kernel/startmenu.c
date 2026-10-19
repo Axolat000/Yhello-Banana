@@ -307,18 +307,6 @@ static void clip_text(int x, int y, const char* s, int max, uint32_t fg, uint32_
 
 static int isqrt(int v) { int r = 0; while ((r + 1) * (r + 1) <= v) r++; return r; }
 
-static void disc(int cx, int cy, int r, uint32_t top, uint32_t bot) {
-    for (int dy = -r; dy <= r; dy++) {
-        int w = isqrt(r * r - dy * dy);
-        int t = (dy + r) * 255 / (2 * r);
-        uint32_t c = 0;
-        for (int s = 0; s < 24; s += 8) {
-            int a = (int)((top >> s) & 255), b = (int)((bot >> s) & 255);
-            c |= (uint32_t)(a + (b - a) * t / 255) << s;
-        }
-        gfx_fill_rect(cx - w, cy + dy, 2 * w + 1, 1, c);
-    }
-}
 
 /* a little triangle pointing right (dir 1) or left (-1) */
 static void tri(int x, int y, int dir, uint32_t c) {
@@ -328,24 +316,93 @@ static void tri(int x, int y, int dir, uint32_t c) {
     }
 }
 
+/* ── the Start orb: Windows 7's, with a banana ─────────────────────────
+ * Drawn smooth: every pixel is the average of 4x4 points, each point's
+ * colour worked out from the layers below - a dark rim, a deep blue body
+ * (lighter while pointed at, darker while pressed), a cyan glow at its
+ * bottom, the banana (and its shadow) with a stalk and a dark tip, and
+ * the glass shine over the top half. Points outside the orb keep what is
+ * under it (the taskbar); pointed at, a faint glow rings it. All in
+ * eighths of a pixel, from the orb's centre. */
+
+static uint32_t mix(uint32_t a, uint32_t b, int t256) {          /* a -> b, t of 256 */
+    uint32_t c = 0;
+    for (int s = 0; s < 24; s += 8) {
+        int x = (int)((a >> s) & 255), y = (int)((b >> s) & 255);
+        c |= (uint32_t)(x + (y - x) * t256 / 256) << s;
+    }
+    return c;
+}
+
+static int in_ellipse(int dx, int dy, int rx, int ry) {
+    return (int64_t)dx * dx * ry * ry + (int64_t)dy * dy * rx * rx <= (int64_t)rx * rx * ry * ry;
+}
+
+/* the banana: the crescent between two circles (r = the orb's radius, in eighths) */
+static int in_banana(int dx, int dy, int r) {
+    int ra = r * 66 / 100, rb = r * 62 / 100;                       /* (8.5 and 8 pixels on the taskbar's orb) */
+    int bx = -r * 27 / 100, by = -r * 27 / 100;
+    return dx * dx + dy * dy <= ra * ra && (dx - bx) * (dx - bx) + (dy - by) * (dy - by) > rb * rb;
+}
+
+static uint32_t orb_point(int dx, int dy, int r, uint32_t bg, int pressed, int hover) {
+    int d2 = dx * dx + dy * dy;
+    if (d2 > r * r) {                                                /* outside: the taskbar (and a glow) */
+        int g = r + 20;
+        if (!hover || d2 > g * g) return bg;
+        int d = 0;
+        while ((d + 1) * (d + 1) <= d2) d++;
+        return mix(bg, 0x007FD8FFu, (g - d) * 110 / 20);
+    }
+    if (d2 > (r - 9) * (r - 9)) return 0x00061A33u;                  /* the rim */
+    uint32_t top = pressed ? 0x002566B4u : hover ? 0x005AB0FAu : 0x003D90E2u;
+    uint32_t bot = pressed ? 0x00072A5Cu : hover ? 0x001B5EB2u : 0x000B3F88u;
+    uint32_t c = mix(top, bot, (dy + r) * 256 / (2 * r));
+    /* the glow at the bottom */
+    if (in_ellipse(dx, dy - r * 62 / 100, r * 80 / 100, r * 45 / 100)) c = mix(c, 0x006FE0FFu, hover ? 150 : 110);
+    /* the banana's shadow, then the banana */
+    if (in_banana(dx - 9, dy - 9, r)) c = mix(c, 0x00041428u, 120);
+    if (in_banana(dx, dy, r)) {
+        int edge = r * 66 / 100, dd = 0;
+        while ((dd + 1) * (dd + 1) <= d2) dd++;
+        int t = dd * 256 / edge;                                     /* 0 inside .. 256 at its outer side */
+        c = t > 215 ? 0x00C88A08u : mix(0x00FFEC7Au, 0x00F2B21Cu, t);
+        /* its ends: the stalk (top right), the dark tip (bottom left) */
+        if (dx > r * 18 / 100 && dy < -r * 48 / 100) c = 0x006B4A1Fu;
+        if (dx < -r * 52 / 100 && dy > r * 16 / 100) c = 0x00503416u;
+    }
+    /* the stalk past the crescent's end */
+    if (dx >= r * 22 / 100 && dx <= r * 36 / 100 && dy >= -r * 76 / 100 && dy <= -r * 54 / 100) c = 0x006B4A1Fu;
+    /* the glass: white, strong at the top, gone at the middle */
+    int hy = -r * 42 / 100, hry = r * 52 / 100;
+    if (in_ellipse(dx, dy - hy, r * 80 / 100, hry)) {
+        int a = (hry - (dy - hy)) * 150 / (2 * hry);                 /* 150 at its top .. 0 at its bottom */
+        if (a > 0) c = mix(c, 0x00FFFFFFu, pressed ? a / 2 : a);
+    }
+    return c;
+}
+
 void startmenu_draw_orb(int x, int y, int h, int pressed, int hover) {
     int cx = x + STARTMENU_ORB_W / 2, cy = y + h / 2, r = h / 2 - 1;
-    disc(cx, cy, r, 0x00081C33u, 0x00081C33u);                      /* the rim */
-    uint32_t top = pressed ? 0x003C7CC2u : hover ? 0x0084C4FFu : 0x0063A9EEu;
-    uint32_t bot = pressed ? 0x000E3A70u : hover ? 0x00296FC0u : 0x001A579Bu;
-    disc(cx, cy, r - 1, top, bot);
-    /* the glassy shine on the top half */
-    for (int dy = -r + 2; dy < -1; dy++) {
-        int w = isqrt((r - 3) * (r - 3) - dy * dy);
-        gfx_fill_rect(cx - w, cy + dy, 2 * w + 1, 1, pressed ? 0x004B8BD0u : hover ? 0x00A6D6FFu : 0x0089C1F5u);
-    }
-    /* a banana: a yellow crescent */
-    for (int dy = -6; dy <= 6; dy++)
-        for (int dx = -6; dx <= 6; dx++) {
-            int in1 = dx * dx + dy * dy <= 36, in2 = (dx - 3) * (dx - 3) + (dy + 3) * (dy + 3) <= 30;
-            if (in1 && !in2) gfx_fill_rect(cx + dx, cy + dy, 1, 1, dy > 2 ? 0x00D9A520u : 0x00FFD84Au);
+    int stride, tw, th;
+    uint32_t* t = fb_target(&stride, &tw, &th);
+    if (!t) return;
+    int R = r * 8, ext = r + 3;
+    for (int py = cy - ext; py <= cy + ext; py++) {
+        if (py < 0 || py >= th) continue;
+        for (int px = cx - ext; px <= cx + ext; px++) {
+            if (px < 0 || px >= tw) continue;
+            uint32_t bg = t[py * stride + px];
+            int sr = 0, sg = 0, sb = 0;
+            for (int j = 0; j < 4; j++)
+                for (int i = 0; i < 4; i++) {
+                    int dx = (px - cx) * 8 + 2 * i - 3, dy = (py - cy) * 8 + 2 * j - 3;
+                    uint32_t c = orb_point(dx, dy, R, bg, pressed, hover);
+                    sr += (int)(c >> 16 & 255); sg += (int)(c >> 8 & 255); sb += (int)(c & 255);
+                }
+            t[py * stride + px] = (uint32_t)(sr / 16) << 16 | (uint32_t)(sg / 16) << 8 | (uint32_t)(sb / 16);
         }
-    gfx_fill_rect(cx + 4, cy - 6, 2, 2, 0x006B4A1Fu);                 /* its stalk */
+    }
 }
 
 /* ── drawing ──────────────────────────────────────────────────────── */
