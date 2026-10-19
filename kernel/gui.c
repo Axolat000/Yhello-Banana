@@ -34,6 +34,7 @@
 #include "fileops.h"
 #include "fileicons.h"
 #include "settings.h"
+#include "nettray.h"
 #include "launcher.h"
 #include "taskmgr.h"
 #include "settings.h"
@@ -722,16 +723,6 @@ static void format_clock(char out[9]) {
         u32_to_2dig(dt->second, &out[6]);
         out[8] = '\0';
     }
-}
-
-/* "eth0 10.0.2.15" / "usb0 (dhcp...)" / "no network" */
-static void format_net_status(char* out, uint32_t cap) {
-    netif_t* nif = net_if();
-    if (!nif->dev) { kstrlcpy(out, "no network", cap); return; }
-    if (!nif->configured) { ksnprintf(out, cap, "%s (dhcp...)", nif->dev->ifname); return; }
-    char ip[16];
-    ip4_to_str(nif->ip, ip);
-    ksnprintf(out, cap, "%s %s", nif->dev->ifname, ip);
 }
 
 static void draw_taskbar(void) {
@@ -1555,13 +1546,17 @@ static int tb_x(void) { if (g_npins < 0) pins_load(); return PINS_X + g_npins * 
 #define TB_X      (tb_x())
 #define TB_BTN_W  (g_tb_style == 1 ? 44 : 150)
 
+/* the network icon (kernel/nettray.c), left of the clock */
+static int net_icon_x(const fb_info_t* fi) { return (int)fi->width - 8 - 64 - 14 - NETTRAY_ICON_W; }
+static int net_icon_at(const fb_info_t* fi, int mx, int my) {
+    int x = net_icon_x(fi), bar_y = (int)fi->height - BAR_H;
+    return my >= bar_y && mx >= x - 4 && mx < x + NETTRAY_ICON_W + 2;
+}
+static int g_net_hover;
+
 static int tray_x(const fb_info_t* fi) {
-    char net[40];
-    netif_t* nif = net_if();
-    if (!nif->dev) kstrlcpy(net, "no network", sizeof(net));
-    else ksnprintf(net, sizeof(net), "%s 255.255.255.255", nif->dev->ifname);
     int badge = sysinfo_live_boot() ? 8 * 8 + 18 : 0;     /* "LIVE CD" */
-    return (int)fi->width - 8 - 64 - 16 - (int)strlen(net) * 8 - badge;
+    return net_icon_x(fi) - 6 - badge;
 }
 
 /* the virtual desktops' switcher, left of the tray: a box a desktop */
@@ -1656,15 +1651,21 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
     }
     draw_desk_switcher(fi);
     /* tray: network, clock */
-    char clk[9], net[40];
+    char clk[9];
     format_clock(clk);
-    format_net_status(net, sizeof(net));
     int clk_x = (int)fi->width - 8 - 64;
     gfx_fill_rect(clk_x - 10, bar_y + 6, 1, BAR_H - 12, 0x004F5A6Eu);
     gfx_draw_text(clk_x, bar_y + 10, clk, 0x00E8EEF6u, 0x00192026u);
-    uint32_t col = net_if()->configured ? 0x008FE3A1u : 0x00C9A45Cu;
-    int net_x = clk_x - 18 - (int)strlen(net) * 8;
-    gfx_draw_text(net_x, bar_y + 10, net, col, 0x00192026u);
+    int net_x = net_icon_x(fi);
+    nettray_draw_icon(net_x, bar_y + (BAR_H - 16) / 2, 0x00192026u, g_net_hover || nettray_is_open());
+    if (g_net_hover && !nettray_is_open()) {          /* its tooltip: the state in words */
+        char tip[64];
+        nettray_summary(tip, sizeof(tip));
+        int tw = (int)strlen(tip) * 8 + 12, tx = net_x + NETTRAY_ICON_W - tw;
+        if (tx < 4) tx = 4;
+        draw_bevel_box(tx, bar_y - 26, tw, 22, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
+        gfx_draw_text(tx + 6, bar_y - 22, tip, 0x00E8EEF6u, 0x001D232Cu);
+    }
     /* started from the CD: say so (nothing is kept unless installed) */
     if (sysinfo_live_boot()) {
         int bx = net_x - 14 - 7 * 8 - 8;
@@ -1708,7 +1709,7 @@ static void capture_view(gui_view_t* v, uint32_t sec) {
     v->sec = sec;
     v->term_gen = terminal_generation();
     v->wp_gen = wallpaper_generation();
-    v->net_state = net_if()->configured ? net_if()->ip : 1;
+    v->net_state = (net_if()->configured ? net_if()->ip : 1) ^ nettray_sig();
     v->front_app = g_front_app;
     for (int a = 0; a < APP_COUNT; a++) {
         v->app_order[a] = g_app_order[a];
@@ -2251,6 +2252,7 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     }
 
     draw_taskbar_fb(fi);
+    nettray_draw();                                 /* the network panel, over the windows */
     if (g_desk_osd) {                               /* "Desktop 2", after switching */
         char t[24];
         ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
@@ -2746,6 +2748,11 @@ static void gui_poll_body(void) {
         }
 
         ctxmenu_hover(mx, my);
+        {
+            int nh = net_icon_at(fi, mx, my) && !ctxmenu_is_open();
+            if (nh != g_net_hover) { g_net_hover = nh; g_force_redraw = 1; }
+            nettray_hover(mx, my);
+        }
 
         /* the Start menu follows the pointer, and its submenus open by
          * themselves under it - Windows 95 style */
@@ -2790,10 +2797,27 @@ static void gui_poll_body(void) {
             if (!g_gui_enabled) return;
         }
 
+        /* the network panel: its buttons, or a click elsewhere closes it */
+        if ((click || rclick) && nettray_is_open() && !net_icon_at(fi, mx, my)) {
+            if (click && nettray_contains(mx, my)) {
+                if (nettray_click(mx, my) == NETTRAY_SETTINGS) {
+                    settings_open_page(SETTINGS_PAGE_NETWORK);
+                    g_app_min[APP_SETTINGS] = 0;
+                    raise_app(APP_SETTINGS);
+                }
+                click = 0;
+            } else nettray_close();
+            g_force_redraw = 1;
+        }
+
         if (click) {
             /* the taskbar: Start, a window's button */
             if (click && my >= bar_y) {
-                if (mx >= START_X && mx < START_X + START_W) {
+                if (net_icon_at(fi, mx, my)) {
+                    nettray_toggle(net_icon_x(fi) + NETTRAY_ICON_W + 4, bar_y);
+                    g_menu_open = 0;
+                    g_force_redraw = 1;
+                } else if (mx >= START_X && mx < START_X + START_W) {
                     if (g_menu_open) g_menu_open = 0;
                     else start_open();
                 } else if (desk_switch_at(fi, mx, my) >= 0) {
