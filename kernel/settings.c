@@ -93,6 +93,7 @@ static void button(int x, int y, int w, const char* label, int on) {
 }
 
 static void label(int x, int y, const char* s, uint32_t c) { gfx_draw_text(x, y, s, c, C_PANEL); }
+static int  ipf_key(char c);
 
 static void save_setting(const char* key, const char* value) {
     if (cfg_set(CFG_SETTINGS, key, value, "# Banana OS settings (the Settings app writes this)\n") != 0) {
@@ -816,6 +817,7 @@ static void click_startup(int mx, int my) {
 void settings_key(char c) {
     if (!g_open) return;
     if (fc_active()) { fc_key(c); g_gen++; return; }
+    if (ipf_key(c)) return;                          /* the manual address fields (Network) */
     if (g_page != PG_STARTUP || g_pw_focus < 0) {
         if (c == 27) settings_close();              /* Esc closes, as in the other windows */
         return;
@@ -830,6 +832,25 @@ void settings_key(char c) {
     g_gen++;
 }
 
+/* Network: the card, how it gets its address - automatic (DHCP), or a
+ * manual one typed here (IP address, subnet mask, gateway, DNS server: saved
+ * in /etc/network.conf as `ifconfig` does) - the firewall and IPv6 */
+static int  g_net_manual = -1;                   /* the form shown: -1 as the card is set up, 0 auto, 1 manual */
+static int  g_ipf_focus = -1;                    /* the field being typed in */
+static char g_ipf[4][16];                        /* IP address, subnet mask, gateway, DNS server */
+static const char* const IPF_NAME[4] = { "IP address:", "Subnet mask:", "Gateway:", "DNS server:" };
+#define NET_FX   140                             /* where the fields begin */
+#define NET_LOW  (g_net_manual == 1 ? 250 : 220) /* the firewall's row */
+
+/* the fields, filled from what the card has now */
+static void ipf_fill(netif_t* nf) {
+    ip4_t v[4] = { nf->ip, nf->netmask ? nf->netmask : IP4(255, 255, 255, 0), nf->gateway, nf->dns };
+    for (int i = 0; i < 4; i++) {
+        if (v[i] && (nf->configured || i == 1)) ip4_to_str(v[i], g_ipf[i]);
+        else g_ipf[i][0] = 0;
+    }
+}
+
 static void draw_network(void) {
     int x = cx0(), y = cy0();
     label(x, y, "Network", C_HEAD);
@@ -839,24 +860,78 @@ static void draw_network(void) {
         label(x, y + 24, "No network card was found.", C_DIM);
         return;
     }
-    ksnprintf(line, sizeof(line), "Card: %s", nf->dev->ifname);
+    if (g_net_manual < 0) { g_net_manual = !nf->dhcp; ipf_fill(nf); }
+    ksnprintf(line, sizeof(line), "Card: %s (%s)", nf->dev->ifname, nf->dev->model ? nf->dev->model : nf->dev->name);
     label(x, y + 24, line, C_TEXT);
     ksnprintf(line, sizeof(line), "Status: %s", nf->configured ? "connected" : "not connected");
     label(x, y + 42, line, nf->configured ? 0x0080E080u : 0x00E0A060u);
-    ksnprintf(line, sizeof(line), "Mode: %s", nf->dhcp ? "automatic (DHCP)" : "manual (static address)");
-    label(x, y + 60, line, C_TEXT);
-    ip4_to_str(nf->ip, a);     ksnprintf(line, sizeof(line), "Address:  %s", nf->configured ? a : "-");  label(x, y + 84, line, C_TEXT);
-    ip4_to_str(nf->netmask, a); ksnprintf(line, sizeof(line), "Netmask:  %s", nf->configured ? a : "-"); label(x, y + 100, line, C_TEXT);
-    ip4_to_str(nf->gateway, a); ksnprintf(line, sizeof(line), "Gateway:  %s", nf->configured ? a : "-"); label(x, y + 116, line, C_TEXT);
-    ip4_to_str(nf->dns, a);     ksnprintf(line, sizeof(line), "DNS:      %s", nf->configured ? a : "-"); label(x, y + 132, line, C_TEXT);
-    button(x, y + 160, 200, nf->dhcp ? "Renew address (DHCP)" : "Switch to automatic", 0);
-    label(x, y + 194, "A manual address: `ifconfig` in a terminal.", C_DIM);
+    /* the address: automatic or manual */
+    label(x, y + 70, "Get an address:", C_TEXT);
+    button(x + NET_FX, y + 66, 150, "Automatic (DHCP)", g_net_manual == 0);
+    button(x + NET_FX + 156, y + 66, 90, "Manual", g_net_manual == 1);
+    if (g_net_manual == 0) {
+        ip4_to_str(nf->ip, a);     ksnprintf(line, sizeof(line), "IP address:   %s", nf->configured ? a : "-"); label(x, y + 100, line, C_TEXT);
+        ip4_to_str(nf->netmask, a); ksnprintf(line, sizeof(line), "Subnet mask:  %s", nf->configured ? a : "-"); label(x, y + 116, line, C_TEXT);
+        ip4_to_str(nf->gateway, a); ksnprintf(line, sizeof(line), "Gateway:      %s", nf->configured ? a : "-"); label(x, y + 132, line, C_TEXT);
+        ip4_to_str(nf->dns, a);     ksnprintf(line, sizeof(line), "DNS server:   %s", nf->configured ? a : "-"); label(x, y + 148, line, C_TEXT);
+        button(x, y + 176, 200, nf->dhcp ? "Renew address (DHCP)" : "Use automatic (DHCP)", 0);
+    } else {
+        for (int f = 0; f < 4; f++) {
+            int fy = y + 98 + f * 26;
+            label(x, fy + 4, IPF_NAME[f], C_TEXT);
+            kbnav_add(&g_nav, x + NET_FX, fy, 160, 20);
+            bevel(x + NET_FX, fy, 160, 20, 0x00141920u, 0x0010141Cu, g_ipf_focus == f ? C_ACCENT : 0x00404B5Cu);
+            gfx_draw_text(x + NET_FX + 6, fy + 6, g_ipf[f], C_TEXT, 0x00141920u);
+            if (g_ipf_focus == f && (timer_ms() / 500) % 2 == 0)
+                gfx_fill_rect(x + NET_FX + 6 + (int)strlen(g_ipf[f]) * 8, fy + 4, 2, 12, C_TEXT);
+        }
+        label(x + NET_FX + 170, y + 128, "(gateway and DNS", C_DIM);
+        label(x + NET_FX + 170, y + 144, " may stay empty)", C_DIM);
+        button(x + NET_FX, y + 204, 100, "Apply", 1);
+    }
     /* the firewall and IPv6: both off unless turned on here */
-    label(x, y + 230, "Firewall: refuses connections from outside", C_TEXT);
-    button(x + 360, y + 226, 64, fw_enabled() ? "On" : "Off", fw_enabled());
-    label(x, y + 252, "(ports to open: `firewall allow tcp PORT`)", C_DIM);
-    label(x, y + 280, "IPv6", C_TEXT);
-    button(x + 360, y + 276, 64, ipv6_enabled() ? "On" : "Off", ipv6_enabled());
+    int ly = y + NET_LOW;
+    label(x, ly + 4, "Firewall: refuses connections from outside", C_TEXT);
+    button(x + 360, ly, 64, fw_enabled() ? "On" : "Off", fw_enabled());
+    label(x, ly + 26, "(ports to open: `firewall allow tcp PORT`)", C_DIM);
+    label(x, ly + 54, "IPv6", C_TEXT);
+    button(x + 360, ly + 50, 64, ipv6_enabled() ? "On" : "Off", ipv6_enabled());
+}
+
+/* Apply: the manual address, at once and for the next boots */
+static void ipf_apply(void) {
+    netif_t* nf = net_if();
+    ip4_t v[4] = { 0, 0, 0, 0 };
+    for (int f = 0; f < 4; f++) {
+        if (!g_ipf[f][0]) {
+            if (f < 2) { ksnprintf(g_status, sizeof(g_status), "Type the %s", f ? "subnet mask" : "IP address"); g_ipf_focus = f; return; }
+            continue;
+        }
+        if (!str_to_ip4(g_ipf[f], &v[f])) {
+            ksnprintf(g_status, sizeof(g_status), "\"%s\" is not an address like 192.168.1.20", g_ipf[f]);
+            g_ipf_focus = f;
+            return;
+        }
+    }
+    if (!nf || !nf->dev) return;
+    net_set_static(v[0], v[1], v[2], v[3]);
+    int disk = netconf_save_static(nf->dev, v[0], v[1], v[2], v[3]);
+    g_ipf_focus = -1;
+    kstrlcpy(g_status, disk ? "Address set, and kept for the next boots" : "Address set (kept until the computer restarts)", sizeof(g_status));
+}
+
+/* typing in the address fields: digits and dots, Tab / Enter to the next, Enter on the last applies */
+static int ipf_key(char c) {
+    if (g_page != PG_NETWORK || g_net_manual != 1 || g_ipf_focus < 0) return 0;
+    char* s = g_ipf[g_ipf_focus];
+    int n = (int)strlen(s);
+    if (c == '\t') g_ipf_focus = (g_ipf_focus + 1) % 4;
+    else if (c == '\n') { if (g_ipf_focus < 3) g_ipf_focus++; else ipf_apply(); }
+    else if (c == 27) g_ipf_focus = -1;
+    else if (c == '\b') { if (n) s[n - 1] = 0; }
+    else if (((c >= '0' && c <= '9') || c == '.') && n < 15) { s[n] = c; s[n + 1] = 0; }
+    g_gen++;
+    return 1;
 }
 
 /* Date & time: the clock set by hand (- / + on each part), what the
@@ -1336,6 +1411,7 @@ int settings_navkey(int code) {
     g_gen++;
     if (fc_active()) return fc_nav(code);
     if (g_pw_focus >= 0) return 0;                 /* typing a password: Tab and Enter are its own */
+    if (g_page == PG_NETWORK && g_net_manual == 1 && g_ipf_focus >= 0) return 0;   /* (the address fields: theirs too) */
     int cx, cy;
     int r = kbnav_key(&g_nav, code, &cx, &cy);
     if (r == 1) {
@@ -1488,19 +1564,31 @@ void settings_click(int mx, int my) {
         click_startup(mx, my);
     } else if (g_page == PG_NETWORK) {
         netif_t* nf = net_if();
-        if (nf && nf->dev && inside(mx, my, x, y + 160, 200, 20)) {
+        if (!nf || !nf->dev) return;
+        g_ipf_focus = -1;
+        if (inside(mx, my, x + NET_FX, y + 66, 150, 20)) { g_net_manual = 0; return; }              /* Automatic */
+        if (inside(mx, my, x + NET_FX + 156, y + 66, 90, 20)) {                                    /* Manual */
+            if (g_net_manual != 1) { g_net_manual = 1; ipf_fill(nf); }
+            g_ipf_focus = 0;
+            return;
+        }
+        if (g_net_manual == 1) {
+            for (int f = 0; f < 4; f++)
+                if (inside(mx, my, x + NET_FX, y + 98 + f * 26, 160, 20)) { g_ipf_focus = f; return; }
+            if (inside(mx, my, x + NET_FX, y + 204, 100, 20)) { ipf_apply(); return; }
+        } else if (inside(mx, my, x, y + 176, 200, 20)) {                                         /* renew / back to DHCP */
             if (!nf->dhcp) netconf_save_dhcp(nf->dev);
             nf->configured = 0;
             dhcp_start();
             kstrlcpy(g_status, "Asking the network for an address...", sizeof(g_status));
             return;
         }
-        if (nf && nf->dev && inside(mx, my, x + 360, y + 226, 64, 20)) {
+        if (inside(mx, my, x + 360, y + NET_LOW, 64, 20)) {
             fw_enable(!fw_enabled());
             kstrlcpy(g_status, fw_enabled() ? "Firewall on" : "Firewall off", sizeof(g_status));
             return;
         }
-        if (nf && nf->dev && inside(mx, my, x + 360, y + 276, 64, 20)) {
+        if (inside(mx, my, x + 360, y + NET_LOW + 50, 64, 20)) {
             ipv6_enable(!ipv6_enabled());
             kstrlcpy(g_status, ipv6_enabled() ? "IPv6 on" : "IPv6 off", sizeof(g_status));
             return;
