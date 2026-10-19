@@ -16,6 +16,10 @@ typedef int  (*fc_filter_t)(const char* name);
 typedef void (*fc_done_t)(const char* path);
 
 void     fc_open(const char* title, const char* start_dir, fc_filter_t filter, fc_done_t done);
+/* Save As: a file name to type (name: the one to start with), the folder to
+ * pick, Text Documents (*.txt) or All Files; done gets the path (a name that
+ * is taken asks to replace it first) */
+void     fc_save(const char* title, const char* start_dir, const char* name, fc_done_t done);
 int      fc_active(void);
 void     fc_close(void);
 void     fc_draw(int x, int y, int w, int h);

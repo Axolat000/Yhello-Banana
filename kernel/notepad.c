@@ -11,6 +11,8 @@
 #include "clipboard.h"
 #include "winframe.h"
 #include "gui.h"
+#include "filechooser.h"
+#include "kbnav.h"
 
 /*
  * Notepad: a textbuf_t (kernel/textbuf.c) in a window. Click to place the
@@ -58,6 +60,7 @@ static char       g_input[FS_PATH_LEN];
 static char       g_find[64];
 static int        g_after_save;              /* P_CLOSE: close once saved */
 static int        g_confirm_new;             /* New pressed once with unsaved changes */
+static int        chooser_on(void);
 
 static void new_text(void);
 static void status(const char* s, int err);
@@ -126,6 +129,7 @@ static void clamp_scroll(void);
 
 void notepad_wheel(int mx, int my, int dz) {
     (void)mx; (void)my;
+    if (chooser_on()) { fc_wheel(dz); g_gen++; return; }   /* (the Open / Save As list) */
     g_top += dz * 3;
     clamp_scroll();
     g_gen++;
@@ -204,8 +208,55 @@ static void start_prompt(int kind, const char* initial) {
     g_gen++;
 }
 
+/* ── Open / Save As: the file chooser (kernel/filechooser.c) over the text,
+ *    like Windows 7's dialogs ── */
+
+static int g_fc;                             /* the chooser open is Notepad's */
+
+static void np_open_done(const char* path) { g_fc = 0; load(path); g_gen++; }
+
+static void np_save_done(const char* path) {
+    g_fc = 0;
+    if (save_to(path) == 0 && g_after_save) { g_after_save = 0; notepad_close(); }
+    g_gen++;
+}
+
+/* where the dialogs start: the open file's folder, else Documents */
+static void start_dir(char* out, int cap) {
+    if (g_path[0]) {
+        kstrlcpy(out, g_path, (size_t)cap);
+        char* s = strrchr(out, '/');
+        if (s && s != out) { *s = 0; return; }
+    }
+    kstrlcpy(out, fs_find_dir("/home/banana/Documents") >= 0 ? "/home/banana/Documents" : "/home/banana", (size_t)cap);
+}
+
+static void open_dialog(void) {
+    char dir[FS_PATH_LEN];
+    start_dir(dir, sizeof(dir));
+    g_after_save = 0;
+    g_fc = 1;
+    fc_open("Open", dir, NULL, np_open_done);
+    g_gen++;
+}
+
+static void save_dialog(void) {
+    char dir[FS_PATH_LEN];
+    start_dir(dir, sizeof(dir));
+    const char* name = g_path[0] && strrchr(g_path, '/') ? strrchr(g_path, '/') + 1 : "Untitled.txt";
+    g_fc = 1;
+    fc_save("Save As", dir, name, np_save_done);
+    g_gen++;
+}
+
+/* the chooser is open over the text (and is Notepad's) */
+static int chooser_on(void) {
+    if (g_fc && !fc_active()) g_fc = 0;          /* (closed: Cancel, Esc) */
+    return g_fc;
+}
+
 static void save(void) {
-    if (!g_path[0]) { start_prompt(P_SAVEAS, "/home/banana/"); return; }
+    if (!g_path[0]) { save_dialog(); return; }
     save_to(g_path);
 }
 
@@ -267,8 +318,62 @@ static void find_next(void) {
 }
 
 static void request_close(void) {
-    if (g_tb.dirty) { start_prompt(P_CLOSE, ""); status("Save the changes? y = save, n = discard, Esc = cancel", 0); return; }
+    if (g_tb.dirty) { start_prompt(P_CLOSE, ""); status("", 0); return; }   /* (the box asks: draw_close_box) */
     notepad_close();
+}
+
+/* "Do you want to save changes to ...?" - Save / Don't Save / Cancel, in
+ * the middle of the window, as Windows 7's Notepad asks */
+#define CB_W 380
+#define CB_H 108
+static void close_box(int* bx, int* by, int* bw) {
+    *bw = g_win.w - 40 < CB_W ? g_win.w - 40 : CB_W;
+    *bx = g_win.x + (g_win.w - *bw) / 2;
+    *by = g_win.y + (g_win.h - CB_H) / 2;
+}
+
+/* its buttons, right to left: Cancel, Don't Save, Save (0, 1, 2), or -1 */
+static int close_box_hit(int mx, int my) {
+    int bx, by, bw;
+    close_box(&bx, &by, &bw);
+    if (my < by + CB_H - 32 || my >= by + CB_H - 10) return -1;
+    for (int i = 0; i < 3; i++) {
+        int x = bx + bw - 12 - (i + 1) * 100 + 8;
+        if (mx >= x && mx < x + 92) return i;
+    }
+    return -1;
+}
+
+static void close_choose(int k) {
+    g_prompt = P_NONE;
+    if (k == 2) {                                          /* Save (and close once saved) */
+        if (!g_path[0]) { save_dialog(); g_after_save = 1; }
+        else if (save_to(g_path) == 0) notepad_close();
+    } else if (k == 1) { g_tb.dirty = 0; notepad_close(); }   /* Don't Save */
+    g_gen++;
+}
+
+static void draw_close_box(void) {
+    int bx, by, bw;
+    close_box(&bx, &by, &bw);
+    gfx_fill_rect(bx + 4, by + 4, bw, CB_H, 0x00080A0Eu);
+    gfx_fill_rect(bx, by, bw, CB_H, 0x00262C36u);
+    gfx_fill_rect(bx, by, bw, 20, 0x00304868u);
+    gfx_draw_text(bx + 8, by + 6, "Notepad", 0x00FFFFFFu, 0x00304868u);
+    char line[96];
+    const char* name = g_path[0] && strrchr(g_path, '/') ? strrchr(g_path, '/') + 1 : "Untitled";
+    ksnprintf(line, sizeof(line), "Do you want to save changes to %s?", name);
+    int ml = (bw - 24) / 8;
+    if (ml > 0 && ml < (int)sizeof(line) && (int)strlen(line) > ml) { line[ml - 1] = '?'; line[ml] = 0; }
+    gfx_draw_text(bx + 12, by + 36, line, 0x00E8EEF6u, 0x00262C36u);
+    static const char* const B[3] = { "Cancel", "Don't Save", "Save" };
+    for (int i = 0; i < 3; i++) {
+        int x = bx + bw - 12 - (i + 1) * 100 + 8, y = by + CB_H - 32;
+        uint32_t base = i == 2 ? 0x003A7BD5u : 0x00303740u;
+        gfx_fill_rect(x, y, 92, 22, base);
+        gfx_fill_rect(x, y, 92, 1, 0x00535D6Eu);
+        gfx_draw_text(x + (92 - (int)strlen(B[i]) * 8) / 2, y + 7, B[i], 0x00FFFFFFu, base);
+    }
 }
 
 static void prompt_done(int ok) {
@@ -339,7 +444,8 @@ uint32_t notepad_signature(void) {
     if (!g_open) return 0;
     /* the caret blinks while Notepad has the keyboard */
     uint32_t blink = gui_notepad_focused() ? (timer_ms() / 500) & 1 : 0;
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ blink;
+    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ blink ^
+           (g_fc ? fc_generation() * 40503u : 0);       /* (the Open / Save As dialog) */
 }
 
 /* text position under the mouse */
@@ -379,14 +485,16 @@ void notepad_click(int mx, int my) {
         return;
     }
     if (win_grip_press(&g_win, mx, my)) return;
+    if (chooser_on()) { fc_click(mx, my); return; }     /* Open / Save As */
+    if (g_prompt == P_CLOSE) { int k = close_box_hit(mx, my); if (k == 0) { g_prompt = P_NONE; g_gen++; } else if (k > 0) close_choose(k); return; }
     if (ly >= TOOL_Y && ly < TOOL_Y + TOOL_H) {
         for (int i = 0; i < TOOL_COUNT; i++) {
             if (lx < TOOLS[i].x || lx >= TOOLS[i].x + TOOLS[i].w) continue;
             switch (i) {
             case 0: cmd_new(); break;
-            case 1: start_prompt(P_OPEN, g_path[0] ? g_path : "/home/banana/"); break;
+            case 1: open_dialog(); break;
             case 2: save(); break;
-            case 3: start_prompt(P_SAVEAS, g_path[0] ? g_path : "/home/banana/"); break;
+            case 3: save_dialog(); break;
             case 4: cut(); break;
             case 5: copy(); break;
             case 6: notepad_paste(); break;
@@ -488,18 +596,10 @@ static void key_motion(char k) {
 
 static void prompt_key(char c) {
     size_t n = strlen(g_input);
-    if (g_prompt == P_CLOSE) {
-        if (c == 'y' || c == 'Y') {
-            g_prompt = P_NONE;
-            if (!g_path[0]) { g_after_save = 1; start_prompt(P_SAVEAS, "/home/banana/"); }
-            else if (save_to(g_path) == 0) notepad_close();
-        } else if (c == 'n' || c == 'N') {
-            g_prompt = P_NONE;
-            g_tb.dirty = 0;
-            notepad_close();
-        } else if (c == 27) {
-            prompt_done(0);
-        }
+    if (g_prompt == P_CLOSE) {                     /* Enter / s / y: Save, n: Don't Save, Esc: Cancel */
+        if (c == '\n' || c == 's' || c == 'S' || c == 'y' || c == 'Y') close_choose(2);
+        else if (c == 'n' || c == 'N') close_choose(1);
+        else if (c == 27) prompt_done(0);
         return;
     }
     if (c == '\n') prompt_done(1);
@@ -512,6 +612,26 @@ static void prompt_key(char c) {
 void notepad_key(char c) {
     if (!g_open) return;
     g_gen++;
+    /* a dialog (Open / Save As, or "save the changes?") has the keys; an
+     * arrow's ESC [ X comes in at once, so a lone Esc is known right away */
+    if (chooser_on() || g_prompt == P_CLOSE) {
+        g_esc = 0;
+        if (c == 27) {
+            char c2 = keyboard_try_getchar();
+            if (c2 == '[') {
+                char c3 = keyboard_try_getchar();
+                if (c3 >= '0' && c3 <= '9') { keyboard_try_getchar(); c3 = c3 == '5' ? 'I' : c3 == '6' ? 'G' : 0; }
+                int code = c3 == 'A' ? KB_UP : c3 == 'B' ? KB_DOWN : c3 == 'C' ? KB_RIGHT : c3 == 'D' ? KB_LEFT :
+                           c3 == 'H' ? KB_HOME : c3 == 'F' ? KB_END : c3 == 'I' ? KB_PGUP : c3 == 'G' ? KB_PGDN : 0;
+                if (g_fc && code) fc_nav(code);
+                return;
+            }
+            if (g_fc) fc_key(27); else prompt_key(27);
+            return;
+        }
+        if (g_fc) fc_key(c); else prompt_key(c);
+        return;
+    }
     /* ESC [ X (ours) or ESC [ n ~ (xterm, over SSH never reaches here but cheap) */
     if (g_esc == 1) {
         if (c == '[') { g_esc = 2; return; }
@@ -541,7 +661,7 @@ void notepad_key(char c) {
     case 24: cut(); return;                                        /* Ctrl+X */
     case 22: notepad_paste(); return;                              /* Ctrl+V */
     case 19: save(); return;                                       /* Ctrl+S */
-    case 15: start_prompt(P_OPEN, g_path[0] ? g_path : "/home/banana/"); return;   /* Ctrl+O */
+    case 15: open_dialog(); return;                                /* Ctrl+O */
     case 14: cmd_new(); return;                                    /* Ctrl+N */
     case 6:  start_prompt(P_FIND, g_find); return;                 /* Ctrl+F */
     case 7:  find_next(); return;                                  /* Ctrl+G */
@@ -651,6 +771,9 @@ void notepad_draw(const fb_info_t* fi) {
         draw_clip(x + 8, sy + 4, line, (w - 24) / 8, C_DIM, 0x00161B22u);
     }
     gfx_draw_grip(x + w, y + h);
+    /* the dialogs, over the text */
+    if (chooser_on()) fc_draw(x + 6, y + TOOL_Y, w - 12, h - TOOL_Y - STATUS_H - 10);   /* (the status line stays) */
+    if (g_prompt == P_CLOSE) draw_close_box();
 }
 
 void notepad_fkey(int k) {
