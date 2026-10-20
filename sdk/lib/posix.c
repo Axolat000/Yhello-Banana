@@ -17,7 +17,11 @@
 
 extern const banana_api_t* __banana;
 
+int __ufd_drm_open(void);
+
 int open(const char* path, int flags, ...) {
+    /* the GPU (an Intel one's 3D: ufd.c) */
+    if (path && (!strcmp(path, "/dev/dri/card0") || !strcmp(path, "/dev/dri/renderD128"))) return __ufd_drm_open();
     int f = 0;
     int acc = flags & O_ACCMODE;
     if (acc == O_RDONLY || acc == O_RDWR) f |= BANANA_O_READ;

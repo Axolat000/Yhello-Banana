@@ -38,6 +38,7 @@
 #include "kstring.h"
 #include "serial.h"
 #include "paging.h"
+#include "gpu_i915.h"
 
 /* display registers (offsets in the MMIO BAR, the same from gen 3 to gen 9) */
 #define PIPEASRC      0x6001C
@@ -45,6 +46,7 @@
 #define VTOTAL_A      0x6000C
 #define DSPACNTR      0x70180      /* gen 9: PLANE_CTL_1_A (bit 31: on, the same) */
 #define DSPASTRIDE    0x70188
+#define DSPASURF      0x7019C      /* gen 4+: the plane's surface in the GTT */
 #define CURACNTR      0x70080
 #define FRMCOUNT_A    0x70040      /* gen 4+: frame counter; gen 3: PIPEAFRAMEHIGH */
 #define FRAMEPIXEL_A  0x70044      /* gen 3: frame counter's low 8 bits in 31:24 */
@@ -447,5 +449,25 @@ int gpu_intel_probe(const pci_dev_t* d) {
     if (g_cur_ok) { g_gpu.cursor_image = it_cursor_image; g_gpu.cursor_move = it_cursor_move; g_gpu.cursor_irq_safe = 1; }
     if (g_blc) g_gpu.backlight = it_backlight;
     g_gpu.info = it_info;
+    if (g_gen >= 5 && g_gen <= 7) {
+        /* 3D (kernel/gpu_i915.c): its own part of the GTT - not the firmware's
+         * framebuffer (the stolen memory, and the surface shown), not the
+         * cursor's pages at the top */
+        i915_hw_t hw;
+        memset(&hw, 0, sizeof(hw));
+        hw.mmio = g_mmio;
+        hw.mmio_size = g_mmio_size;
+        hw.devid = d->device;
+        hw.revision = (uint8_t)pci_read32(d->bus, d->dev, d->fn, 8);
+        hw.gen = g_gen;
+        hw.hsw = g_hsw;
+        hw.gtt_entries = g_gtt_entries;
+        uint64_t shown = (uint64_t)(pr(DSPASURF) & ~0xFFFu) + (uint64_t)pr(DSPASTRIDE) * (uint32_t)g_h;
+        uint64_t lo = g_stolen;
+        if (shown > lo) lo = shown;
+        hw.reserved_lo = (uint32_t)((lo + 0xFFFFFu) >> 12) & ~0xFFu;      /* (a whole MiB) */
+        hw.reserved_hi = 16;
+        if (g_gtt_entries > hw.reserved_lo + hw.reserved_hi + 65536) i915_attach(&hw);
+    }
     return gpu_register(&g_gpu);
 }

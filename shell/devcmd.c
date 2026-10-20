@@ -7,6 +7,7 @@
 #include "../kernel/kheap.h"
 #include "../kernel/gui.h"
 #include "../kernel/gpu.h"
+#include "../kernel/gpu_i915.h"
 #include "../usb/usbcore.h"
 
 /*
@@ -116,6 +117,15 @@ static int lspci_cb(const pci_dev_t* p, void* ctx) {
     return 0;
 }
 
+static int g_tests_ok, g_tests_n;
+static void report_test(const char* name, int ok, const char* detail) {
+    char line[320];
+    ksnprintf(line, sizeof(line), "  %s  %s%s%s", ok ? "ok  " : "FAIL", name, detail && detail[0] ? ": " : "", detail ? detail : "");
+    say(line);
+    g_tests_n++;
+    g_tests_ok += ok != 0;
+}
+
 int devcmd_dispatch(int argc, char** argv) {
     if (argc < 1) return 0;
     if (!strcmp(argv[0], "lspci")) {
@@ -129,6 +139,33 @@ int devcmd_dispatch(int argc, char** argv) {
     }
     if (!strcmp(argv[0], "devmgmt.msc") || !strcmp(argv[0], "devmgmt")) {
         if (!gui_open_devmgr()) say("devmgr: the Device Manager window is part of the desktop (startx); here: devmgr");
+        return 1;
+    }
+    if (!strcmp(argv[0], "gpu3d")) {
+        const char* sub = argc > 1 ? argv[1] : "";
+        char buf[400];
+        if (!strcmp(sub, "test")) {
+            say("gpu3d: testing the render engine (if the screen freezes, the GPU hung: note what was printed last)");
+            g_tests_ok = g_tests_n = 0;
+            i915_tests(report_test);
+            ksnprintf(buf, sizeof(buf), "gpu3d: %d of %d passed", g_tests_ok, g_tests_n);
+            say(buf);
+            return 1;
+        }
+        if (!strcmp(sub, "on") || !strcmp(sub, "off")) {
+            gem_set_enabled(sub[1] == 'n');
+            say(sub[1] == 'n' ? "gpu3d: on - OpenGL apps started from now on use the GPU (gpu3d off: back to the processor)"
+                              : "gpu3d: off - OpenGL apps started from now on draw on the processor");
+            if (sub[1] == 'n' && !i915_present()) { terminal_write("gpu3d: but "); say(i915_why()); }
+            return 1;
+        }
+        if (sub[0] && strcmp(sub, "status")) { say("usage: gpu3d [status | on | off | test]   (Intel HD Graphics, 1st - 4th generation Core)"); return 1; }
+        say(gem_enabled() ? "gpu3d: on (OpenGL apps use the GPU)" : "gpu3d: off (OpenGL apps draw on the processor; gpu3d on to use the GPU)");
+        if (!i915_present()) { terminal_write("gpu3d: "); say(i915_why()); return 1; }
+        i915_info(buf, sizeof(buf));
+        say(buf);
+        gem_stats(buf, sizeof(buf));
+        say(buf);
         return 1;
     }
     if (!strcmp(argv[0], "gpu")) {

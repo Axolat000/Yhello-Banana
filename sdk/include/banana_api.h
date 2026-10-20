@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 23u
+#define BANANA_API_VERSION 24u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -492,6 +492,10 @@ typedef struct banana_api {
     int (*gpu_call)(unsigned op, const void* request, unsigned request_size, void* data, unsigned size);
     /* v23: the desktop's language - "en", "fr", "de" (Settings > Language) - into out: 0, or -1 */
     int (*language)(char* out, int cap);
+    /* v24: an Intel GPU's 3D (gen 5 - 7.5, for Mesa's crocus): one of Linux's
+     * DRM / i915 requests - req its ioctl number, arg its structure - what
+     * the SDK's ioctl() on a /dev/dri/card0 it opened sends. 0, or -errno */
+    int (*drm_ioctl)(unsigned long req, void* arg);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

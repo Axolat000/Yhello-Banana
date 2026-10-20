@@ -18,6 +18,8 @@
 #include "../kernel/emojipick.h"
 #include "../kernel/pci.h"
 #include "../kernel/uspace.h"
+#include "../kernel/uvm.h"
+#include "../kernel/upage.h"
 #include "../kernel/mouse_capture.h"
 #include "../kernel/usb.h"
 #include "../kernel/gui.h"
@@ -937,6 +939,45 @@ static void t_time(void) {
     tz_use(was);
 }
 
+/* device pages in an app's address space: what a GPU buffer's mapping is
+ * (kernel/gpu_gem.c) - not the app's memory, so never freed with it */
+static void t_uvmdev(void) {
+    section("device pages in an app's address space (GPU buffers: build 235)");
+#ifndef __x86_64__
+    skip("device pages", "the 64-bit kernel only");
+#else
+    uspace_t* us = uspace_create();
+    uint32_t* pg[3];
+    uint64_t fr[3];
+    int have = us != NULL;
+    for (int i = 0; i < 3; i++) {
+        pg[i] = (uint32_t*)upage_alloc();
+        if (!pg[i]) { have = 0; continue; }
+        for (int k = 0; k < 1024; k++) pg[i][k] = 0xD0D00000u + (uint32_t)(i * 1024 + k);
+        fr[i] = (uint64_t)(uintptr_t)pg[i];
+    }
+    if (!have) {
+        report("device pages: memory for the test", 0, "");
+    } else {
+        uintptr_t a = uvm_map_frames(us, fr, 3, UVM_READ | UVM_WRITE, 0);
+        report("three pages mapped into an address space", a && uvm_owns(us, (void*)a, 3 * 4096) &&
+               uvm_user_writable(us, NULL, a, 3 * 4096), "");
+        report("their protection cannot be changed", a && uvm_protect(us, a, 4096, UVM_READ) != 0, "");
+        report("unmapping them with another page's frame is refused", a && uvm_unmap_frames(us, a, 3, fr[1]) != 0, "");
+        report("unmapped: gone from the address space", a && uvm_unmap_frames(us, a, 3, fr[0]) == 0 && !uvm_owns(us, (void*)a, 4096), "");
+        uint64_t used = upage_used_bytes();
+        a = uvm_map_frames(us, fr, 3, UVM_READ | UVM_WRITE, 1);
+        uspace_destroy(us);
+        us = NULL;
+        int intact = 1;
+        for (int i = 0; i < 3; i++) for (int k = 0; k < 1024; k++) intact &= pg[i][k] == 0xD0D00000u + (uint32_t)(i * 1024 + k);
+        report("the address space's end leaves them their owner's", a && upage_used_bytes() == used && intact, "");
+    }
+    for (int i = 0; i < 3; i++) if (pg[i]) upage_free(pg[i]);
+    if (us) uspace_destroy(us);
+#endif
+}
+
 static void t_swap(void) {
     section("compressed memory: swap in RAM (build 182)");
 #ifndef __x86_64__
@@ -1102,7 +1143,7 @@ int selftest_cmd(int argc, char** argv) {
         ipv6test_run(argc > 2 ? argv[2] : NULL, ipv6_port, report);
     } else if (install() == 0) {
         if (!only || !strcmp(only, "ring3")) t_ring3();
-        if (!only || !strcmp(only, "memory")) t_memory();
+        if (!only || !strcmp(only, "memory")) { t_memory(); t_uvmdev(); }
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
         if (!only || !strcmp(only, "clock")) t_clock();

@@ -2,6 +2,7 @@
 #include "app.h"
 #include "i18n.h"
 #include "gpu_virgl.h"
+#include "gpu_i915.h"
 #include "appwin.h"
 #include "audio.h"
 #include "fs.h"
@@ -1652,6 +1653,24 @@ static int a_gpu_call(unsigned op, const void* request, unsigned request_size, v
 }
 static int a_cpu_count(void) { return cpu_count(); }
 
+/* v24: an Intel GPU's 3D - Linux's i915 requests (kernel/gpu_gem.c, which
+ * checks every pointer in them with app_user_ok) */
+static int a_drm_ioctl(unsigned long req, void* arg) {
+    app_proc_t* p = cur();
+    return p ? gem_ioctl(p->id + 1, req, arg) : -19;
+}
+
+#ifdef __x86_64__
+int app_user_ok(const void* ptr, uint64_t n) {
+    app_proc_t* p = cur();
+    return p && own(p, ptr, (size_t)n);
+}
+uspace_t* app_user_space(void) {
+    app_proc_t* p = cur();
+    return p ? p->us : NULL;
+}
+#endif
+
 /* wait / wake: a thread sleeps while *addr == expected, until another one
  * changes it and calls wake (or the timeout passes) - what the SDK builds
  * condition variables and semaphores on */
@@ -1867,6 +1886,7 @@ static void spec_init(void) {
     SPEC(time_utc, "", 0);
     SPEC(utc_offset, "i", 0);
     SPEC(language, "bi", 0);
+    SPEC(drm_ioctl, "ii", 0);            /* (its structure: checked in kernel/gpu_gem.c, by its size) */
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2401,6 +2421,7 @@ static void api_init(void) {
     g_api.time_utc = G(a_time_utc);
     g_api.utc_offset = G(a_utc_offset);
     g_api.language = G(a_language);
+    g_api.drm_ioctl = G(a_drm_ioctl);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);
@@ -2685,6 +2706,7 @@ static void release(app_proc_t* p) {
         if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
         else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
     gpu_virgl_release(p->id + 1);
+    gem_release(p->id + 1);                 /* (its GPU buffers: once the GPU is done with them) */
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
     webview_close_owner(p->id);
     discard(p);

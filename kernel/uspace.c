@@ -21,6 +21,7 @@
 #define P_ACCESSED 0x020ull
 #define P_KEPT    0x200ull              /* (a free bit) a mapped page made inaccessible: PROT_NONE */
 #define P_ZSW     0x400ull              /* (a free bit) not present: compressed, the entry number in the address bits (kernel/zswap.c) */
+#define P_DEV     0x800ull              /* (a free bit) a device page (uvm_map_frames): not the app's memory */
 #define ADDR_MASK 0x000FFFFFFFFFF000ull
 #define GIBS      512                   /* 1 GiB slots of PML4[0]: the first 512 GiB */
 #define UVM_PML4  ((int)(UVM_BASE >> 39))
@@ -170,6 +171,7 @@ void uspace_destroy(uspace_t* us) {
                 if (!(pd[j] & P_PRESENT)) continue;
                 uint64_t* pt = (uint64_t*)(uintptr_t)(pd[j] & ADDR_MASK);
                 for (int k = 0; k < 512; k++) {
+                    if (pt[k] & P_DEV) continue;                 /* (a GPU buffer's: kernel/gpu_gem.c frees it) */
                     if (pt[k] & (P_PRESENT | P_KEPT)) upage_free((void*)(uintptr_t)(pt[k] & ADDR_MASK));
                     else if (pt[k] & P_ZSW) {
                         uint32_t idx = (uint32_t)((pt[k] & ADDR_MASK) >> 12);
@@ -424,13 +426,17 @@ static void shootdown(uspace_t* us) {
 static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
     void* pg[REL_BATCH];
     for (uint64_t a = s; a < e; ) {
-        int n = 0;
+        int n = 0, dev = 0;
         uintptr_t f = spin_lock_irq(&us->vm_lock);
         int cur = is_current(us);
-        while (a < e && n < REL_BATCH) {
+        while (a < e && n + dev < REL_BATCH) {
             uint64_t next = a + 4096;
             uint64_t* pte = vm_pte(us, a, 0, &next);
-            if (pte && (*pte & (P_PRESENT | P_KEPT))) {
+            if (pte && (*pte & P_DEV)) {
+                *pte = 0;                                    /* (a device page: only out of the tables) */
+                if (cur) invlpg(a);
+                dev++;
+            } else if (pte && (*pte & (P_PRESENT | P_KEPT))) {
                 pg[n++] = (void*)(uintptr_t)(*pte & ADDR_MASK);
                 us->vm_pages--;
                 *pte = 0;
@@ -450,7 +456,7 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
             a = next;
         }
         spin_unlock_irq(&us->vm_lock, f);
-        if (!n) continue;
+        if (!n && !dev) continue;
         shootdown(us);
         for (int k = 0; k < n; k++) upage_free(pg[k]);
     }
@@ -505,7 +511,14 @@ int uvm_protect(uspace_t* us, uintptr_t addr, uint64_t len, int prot) {
     if (!in_region(addr, len)) return -1;
     uintptr_t f = spin_lock_irq(&us->vm_lock);
     int rc = -1;
-    if (vma_covers(us, addr, addr + len, 0) && vma_cut(us, addr, addr + len) == 0 && vma_add(us, addr, addr + len, prot) == 0) {
+    int dev = 0;
+    for (uint64_t a = addr; a < addr + len && !dev; ) {
+        int i = vma_at(us, a);
+        if (i < 0) break;
+        dev = (us->vma[i].prot & UVM_DEV) != 0;
+        a = us->vma[i].end;
+    }
+    if (!dev && vma_covers(us, addr, addr + len, 0) && vma_cut(us, addr, addr + len) == 0 && vma_add(us, addr, addr + len, prot) == 0) {
         int cur = is_current(us);
         for (uint64_t a = addr; a < addr + len; ) {
             uint64_t next = a + 4096;
@@ -580,7 +593,7 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* o
                     else if (!pg && on_disk) ok = 3;                       /* (no memory: make some first) */
                 }
             }
-        } else if (pte && !(*pte & P_KEPT)) {
+        } else if (pte && !(*pte & P_KEPT) && !(prot & UVM_DEV)) {
             void* pg = upage_alloc();                     /* (kernel/upage.c: given back when unmapped) */
             if (pg) {
                 memset(pg, 0, 4096);
@@ -595,6 +608,41 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* o
 }
 
 uint64_t uvm_resident(uspace_t* us) { return us ? us->vm_pages * 4096 : 0; }
+
+uintptr_t uvm_map_frames(uspace_t* us, const uint64_t* frames, uint32_t n, int prot, int wc) {
+    if (!us || !n || n > (1u << 20)) return 0;
+    uint64_t len = (uint64_t)n * 4096u;
+    prot = (prot & (UVM_READ | UVM_WRITE)) | UVM_DEV;
+    uint64_t bits = P_PRESENT | P_USER | P_DEV | ((prot & UVM_WRITE) ? P_WRITE : 0) | (wc ? paging_user_wc_bits() : 0);
+    uintptr_t f = spin_lock_irq(&us->vm_lock);
+    uint64_t a = vm_find(us, len, 0);
+    if (a && vma_add(us, a, a + len, prot)) a = 0;
+    uint32_t i = 0;
+    for (; a && i < n; i++) {
+        uint64_t* pte = vm_pte(us, a + (uint64_t)i * 4096u, 1, NULL);
+        if (!pte) break;
+        *pte = (frames[i] & ADDR_MASK) | bits;
+    }
+    if (a && i < n) {                                     /* (no memory for a page table: undone) */
+        for (uint32_t k = 0; k < i; k++) { uint64_t* pte = vm_pte(us, a + (uint64_t)k * 4096u, 0, NULL); if (pte) *pte = 0; }
+        vma_cut(us, a, a + len);
+        a = 0;
+    }
+    spin_unlock_irq(&us->vm_lock, f);
+    return (uintptr_t)a;
+}
+
+int uvm_unmap_frames(uspace_t* us, uintptr_t addr, uint32_t n, uint64_t frame0) {
+    if (!us || !n || (addr & 4095) || !in_region(addr, (uint64_t)n * 4096u)) return -1;
+    uint64_t len = (uint64_t)n * 4096u;
+    uintptr_t f = spin_lock_irq(&us->vm_lock);
+    uint64_t* pte = vm_pte(us, addr, 0, NULL);
+    int ok = pte && (*pte & P_DEV) && (*pte & ADDR_MASK) == (frame0 & ADDR_MASK) && vma_cut(us, addr, addr + len) == 0;
+    spin_unlock_irq(&us->vm_lock, f);
+    if (!ok) return -1;
+    vm_release(us, addr, addr + len);
+    return 0;
+}
 
 /* the page table entry for va in us's own tables (any part of it), or 0 */
 static uint64_t walk(uspace_t* us, uint64_t va) {
@@ -646,7 +694,7 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
             while (a < end && n < OUT_BATCH && done + (uint32_t)n < max && seen++ < 1024) {   /* (the lock: not long) */
                 uint64_t next = a + 4096;
                 uint64_t* pte = vm_pte(us, a, 0, &next);
-                if (pte && (*pte & P_PRESENT) && (*pte & P_USER)) {
+                if (pte && (*pte & P_PRESENT) && (*pte & P_USER) && !(*pte & P_DEV)) {
                     if (!force && (*pte & P_ACCESSED)) {
                         *pte &= ~P_ACCESSED;              /* used lately: its turn comes if it stays unused */
                         cleared = 1;
@@ -777,6 +825,8 @@ int       uvm_owns(uspace_t* us, const void* p, uint64_t n) { (void)us; (void)p;
 int       uvm_owns_str(uspace_t* us, const char* s) { (void)us; (void)s; return 0; }
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk) { (void)us; (void)m; (void)addr; (void)err; (void)on_disk; return 0; }
 uint64_t  uvm_resident(uspace_t* us) { (void)us; return 0; }
+uintptr_t uvm_map_frames(uspace_t* us, const uint64_t* frames, uint32_t n, int prot, int wc) { (void)us; (void)frames; (void)n; (void)prot; (void)wc; return 0; }
+int       uvm_unmap_frames(uspace_t* us, uintptr_t addr, uint32_t n, uint64_t frame0) { (void)us; (void)addr; (void)n; (void)frame0; return -1; }
 uint32_t  uvm_page_out_all(int force, uint32_t max) { (void)force; (void)max; return 0; }
 uint64_t  uvm_compressed(uspace_t* us) { (void)us; return 0; }
 int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) { (void)us; (void)m; (void)a; (void)n; return 1; }

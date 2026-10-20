@@ -29,6 +29,7 @@
 #define UVM_WRITE  2
 #define UVM_EXEC   4
 #define UVM_FIXED  1                         /* at addr exactly, replacing what is there */
+#define UVM_DEV    8                         /* (kernel only) a range of device pages: uvm_map_frames */
 
 /* maps len bytes (rounded up to pages) at addr (a hint, or exactly with
  * UVM_FIXED): the address, or 0 */
@@ -46,6 +47,14 @@ int       uvm_owns_str(uspace_t* us, const char* s);
  * to read in where the fault may wait - then this again); 3 if there was no
  * memory for the page (on_disk given: make some, then this again); 0 otherwise */
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk);
+/* maps n given pages - not the app's memory: a GPU buffer's (kernel/gpu_gem.c)
+ * - at a free place of the region: the address, or 0. They are never
+ * compressed or swapped, and an unmap (or the app's end) only takes them
+ * out of its tables; wc: write-combining. uvm_protect refuses them. */
+uintptr_t uvm_map_frames(uspace_t* us, const uint64_t* frames, uint32_t n, int prot, int wc);
+/* unmaps such a range if addr still shows frame0 there (the app may have
+ * unmapped it and put something else there): 0, -1 */
+int       uvm_unmap_frames(uspace_t* us, uintptr_t addr, uint32_t n, uint64_t frame0);
 /* bytes of memory its mapped pages use now */
 uint64_t  uvm_resident(uspace_t* us);
 /* bytes of its pages compressed away now (kernel/zswap.c) */

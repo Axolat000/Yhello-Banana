@@ -31,7 +31,7 @@ int __kpoll(struct pollfd* fds, nfds_t n, int timeout_ms);       /* socket.c: th
 #define EV_MAX    0xfffffffffffffffeull                         /* an eventfd's largest count */
 #define SLICE_MS  10                     /* how often a wait on system fds looks at ours too */
 
-enum { U_EVENT = 1, U_EPOLL, U_STREAM };
+enum { U_EVENT = 1, U_EPOLL, U_STREAM, U_DRM };
 
 typedef struct {                         /* one direction of a pipe or a socket pair */
     char*    buf;                        /* (PIPE_SIZE, made on the first write) */
@@ -403,6 +403,24 @@ int eventfd(unsigned int initval, int flags) {
 int eventfd_read(int fd, eventfd_t* value) { return read(fd, value, sizeof(*value)) == (ssize_t)sizeof(*value) ? 0 : -1; }
 int eventfd_write(int fd, eventfd_t value) { return write(fd, &value, sizeof(value)) == (ssize_t)sizeof(value) ? 0 : -1; }
 
+/* ── /dev/dri/card0: an Intel GPU's 3D (API v24) ──────────────────── */
+
+int __ufd_drm_open(void) {
+    if (__banana->version < 24 || !BANANA_HAS(__banana, drm_ioctl)) { errno = ENOENT; return -1; }
+    /* (DRM_IOCTL_VERSION, nothing to copy: is there such a GPU?) */
+    struct { int a, b, c, pad; unsigned long long nl, n, dl, d, sl, sd; } v;
+    memset(&v, 0, sizeof(v));
+    int r = __banana->drm_ioctl(0xC0406400ul, &v);
+    if (r < 0) { errno = r == -19 ? ENOENT : -r; return -1; }
+    uobj_t* o = new_obj(U_DRM, 0);
+    if (!o) return -1;
+    lock();
+    int fd = slot_for(o, 0);
+    unlock();
+    if (fd < 0) { free(o); errno = EMFILE; }
+    return fd;
+}
+
 /* ── epoll ────────────────────────────────────────────────────────── */
 
 int epoll_create1(int flags) {
@@ -675,7 +693,8 @@ int __ufd_fstat(int fd, struct stat* st) {
     uobj_t* o = get(fd);
     if (!o) { unlock(); errno = EBADF; return -1; }
     memset(st, 0, sizeof(*st));
-    st->st_mode = o->type != U_STREAM ? 0600 : o->is_sock ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+    st->st_mode = o->type == U_DRM ? S_IFCHR | 0666 : o->type != U_STREAM ? 0600 : o->is_sock ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+    if (o->type == U_DRM) st->st_rdev = (226u << 8) | 128u;     /* (Linux's DRM: major 226, the render node) */
     st->st_nlink = 1;
     st->st_uid = st->st_gid = 1000;
     st->st_ino = (ino_t)fd;
@@ -688,6 +707,13 @@ int __ufd_ioctl(int fd, unsigned long req, void* arg) {
     lock();
     uobj_t* o = get(fd);
     int rc = 0;
+    if (o && o->type == U_DRM) {
+        /* the GPU: the system's i915 interface (it may wait for the GPU: not under the lock) */
+        unlock();
+        int r = __banana->drm_ioctl(req, arg);
+        if (r < 0) { errno = -r; return -1; }
+        return r;
+    }
     if (!o) { errno = EBADF; rc = -1; }
     else if (req == FIONBIO) o->nonblock = *(int*)arg != 0;
     else if (req == FIONREAD && o->type == U_STREAM) *(int*)arg = o->in ? (int)o->in->len : 0;

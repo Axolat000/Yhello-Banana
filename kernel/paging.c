@@ -106,6 +106,8 @@ void paging_pat_init(void) {
     g_pat = 1;
 }
 
+uint64_t paging_user_wc_bits(void) { return g_pat ? P_PWT : (P_PCD | P_PWT); }
+
 int paging_set_wc(uint64_t phys, uint64_t size) {
     if (!g_pat || !size || !mmio_map(phys, size)) return -1;
     uint64_t* pml4 = (uint64_t*)(paging_kernel_cr3() & ADDR_MASK);
@@ -198,6 +200,7 @@ int paging_guard(uintptr_t addr, uint32_t size, int guard) {
 
 
 void paging_pat_init(void) {}
+uint64_t paging_user_wc_bits(void) { return 0; }
 int  paging_set_wc(uint64_t phys, uint64_t size) { (void)phys; (void)size; return -1; }
 
 int mmio_map(uint64_t phys, uint64_t size) {
