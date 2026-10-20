@@ -40,6 +40,7 @@
 #include "shortcut.h"
 #include "launcher.h"
 #include "taskmgr.h"
+#include "devmgr.h"
 #include "settings.h"
 #include "pkg.h"
 #include "image.h"
@@ -64,7 +65,7 @@
  * down, Lock, Exit to shell). */
 /* (About and Wallpaper live in Settings now: reached from the desktop's menu) */
 enum { ACT_TERMINAL = 0, ACT_FILES, ACT_BROWSER, ACT_NOTEPAD, ACT_APPS, ACT_TASKMGR, ACT_SETTINGS, ACT_QUIT, ACT_ABOUT,
-       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP, ACT_SLEEP };
+       ACT_WALLPAPER, ACT_LOCK, ACT_INSTALL, ACT_PROGRAMS, ACT_POWER, ACT_RESTART, ACT_SHUTDOWN, ACT_RUN_APP, ACT_SLEEP, ACT_DEVMGR };
 /* slots: the installer's ("Install Banana OS") is there only on the live CD */
 #define MENU_ITEMS_MAX 10
 #define MENU_SLOT_INSTALL 8
@@ -135,7 +136,7 @@ static int g_menu_sel = 0;     /* an ACT_* */
  * windows of installed apps) and the terminal windows share one stacking
  * order: the app windows have their own back-to-front order, and at most
  * one of them - g_front_app - is above the terminals. */
-enum { APP_FILES = 0, APP_BROWSER, APP_NOTEPAD, APP_LAUNCHER, APP_TASKMGR, APP_SETTINGS, APP_INSTALLER, APP_APPWIN, APP_COUNT };
+enum { APP_FILES = 0, APP_BROWSER, APP_NOTEPAD, APP_LAUNCHER, APP_TASKMGR, APP_SETTINGS, APP_INSTALLER, APP_DEVMGR, APP_APPWIN, APP_COUNT };
 typedef struct {
     int      (*is_open)(void);
     void     (*draw)(const fb_info_t* fi);
@@ -157,10 +158,11 @@ static const app_t g_apps[APP_COUNT] = {
     { taskmgr_is_open, taskmgr_draw, taskmgr_contains, taskmgr_click, taskmgr_mouse, taskmgr_signature, taskmgr_close, taskmgr_rclick, "Task Manager" },
     { settings_is_open, settings_draw, settings_contains, settings_click, settings_mouse, settings_signature, settings_close, settings_rclick, "Settings" },
     { installer_is_open, installer_draw, installer_contains, installer_click, installer_mouse, installer_signature, installer_close, installer_rclick, "Install Banana OS" },
+    { devmgr_is_open, devmgr_draw, devmgr_contains, devmgr_click, devmgr_mouse, devmgr_signature, devmgr_close, devmgr_rclick, "Device Manager" },
     { appwin_is_open, appwin_draw, appwin_contains, appwin_click, appwin_mouse, appwin_signature, appwin_close_all, appwin_rclick, "App" },
 };
 static int g_front_app = -1;                        /* -1: a terminal window is in front */
-static int g_app_order[APP_COUNT] = { APP_FILES, APP_BROWSER, APP_NOTEPAD, APP_LAUNCHER, APP_TASKMGR, APP_SETTINGS, APP_INSTALLER, APP_APPWIN };   /* back to front */
+static int g_app_order[APP_COUNT] = { APP_FILES, APP_BROWSER, APP_NOTEPAD, APP_LAUNCHER, APP_TASKMGR, APP_SETTINGS, APP_INSTALLER, APP_DEVMGR, APP_APPWIN };   /* back to front */
 static int g_app_min[APP_COUNT];                    /* minimized to the taskbar */
 
 /* ── the window manager's state (see "the window manager" below) ──
@@ -191,7 +193,7 @@ static void raise_app(int a) {
 /* the topmost app window at a point, -1 if none (with_front: also the one above the terminals) */
 /* the mouse wheel, per app window (NULL: it does not scroll) */
 static void (*const g_app_wheel[APP_COUNT])(int mx, int my, int dz) = {
-    explorer_wheel, browser_wheel, notepad_wheel, NULL, taskmgr_wheel, settings_wheel, NULL, appwin_wheel,
+    explorer_wheel, browser_wheel, notepad_wheel, NULL, taskmgr_wheel, settings_wheel, NULL, devmgr_wheel, appwin_wheel,
 };
 
 static int app_at(int mx, int my, int with_front) {
@@ -336,6 +338,17 @@ static void draw_icon_taskmgr(int x, int y, uint32_t bg) {
     IR(5, 4, 2, 6, 0x0057B65Au);
     IR(8, 6, 2, 4, 0x0057B65Au);
     IR(11, 2, 2, 8, 0x0057B65Au);
+}
+
+/* a screen with a chip in front */
+static void draw_icon_devmgr(int x, int y, uint32_t bg) {
+    (void)bg;
+    icon_bevel(x, y, 14, 10, 0x00C8D2E0u, 0x00EEF2F8u, 0x00566477u);
+    IR(2, 2, 10, 6, 0x002F7FD0u);
+    IR(5, 10, 4, 2, 0x00566477u);
+    IR(3, 12, 8, 2, 0x00566477u);
+    IR(7, 6, 7, 7, 0x00263241u);
+    IR(9, 8, 3, 3, 0x0057B65Au);
 }
 
 /* a gear */
@@ -1301,6 +1314,7 @@ static win_geom_t* app_geom(int a) {
     case APP_TASKMGR:   return taskmgr_geom();
     case APP_SETTINGS:  return settings_geom();
     case APP_INSTALLER: return installer_geom();
+    case APP_DEVMGR: return devmgr_geom();
     default:            return NULL;
     }
 }
@@ -1632,6 +1646,7 @@ static void draw_win_glyph(int h, int x, int y, uint32_t bg) {
         else if (i == APP_LAUNCHER) draw_icon_apps(x, y, bg);
         else if (i == APP_SETTINGS) draw_icon_settings(x, y, bg);
         else if (i == APP_INSTALLER) draw_icon_install(x, y, bg);
+        else if (i == APP_DEVMGR) draw_icon_devmgr(x, y, bg);
         else draw_icon_taskmgr(x, y, bg);
         return;
     }
@@ -2128,6 +2143,7 @@ static void sm_action(int sm) {
     case SM_NOTEPAD:  act = ACT_NOTEPAD; break;
     case SM_APPS:     act = ACT_APPS; break;
     case SM_TASKMGR:  act = ACT_TASKMGR; break;
+    case SM_DEVMGR:  act = ACT_DEVMGR; break;
     case SM_SETTINGS: act = ACT_SETTINGS; break;
     case SM_INSTALL:  act = ACT_INSTALL; break;
     case SM_SHUTDOWN: act = ACT_SHUTDOWN; break;
@@ -2173,6 +2189,7 @@ static void sm_program_icon(int sm, const char* app, int x, int y, int big, uint
     case SM_NOTEPAD:  draw_icon_notepad(x, y, bg); break;
     case SM_APPS:     draw_icon_apps(x, y, bg); break;
     case SM_TASKMGR:  draw_icon_taskmgr(x, y, bg); break;
+    case SM_DEVMGR:  draw_icon_devmgr(x, y, bg); break;
     case SM_SETTINGS: draw_icon_settings(x, y, bg); break;
     case SM_INSTALL:  draw_icon_install(x, y, bg); break;
     default:          g_app_icon_name = app ? app : ""; draw_icon_app(x, y, bg); break;
@@ -2568,6 +2585,7 @@ static void open_desktop_menu(int mx, int my) {
         { _("Terminal"), ACT_TERMINAL, 0 },
         { _("Files"), ACT_FILES, 0 },
         { _("Task Manager"), ACT_TASKMGR, 0 },
+        { _("Device Manager"), ACT_DEVMGR, 0 },
         { _("Change wallpaper..."), ACT_WALLPAPER, 0 },
         { _("About Banana OS"), ACT_ABOUT, 0 },
         { CTX_SEP, 0, 0 },
@@ -2864,7 +2882,7 @@ static void gui_poll_body(void) {
          * and the Start menu first). Apps and Task Manager read no keys
          * (Esc closes them). */
         if (g_ask.open || gui_notepad_focused() || gui_appwin_focused() || (kb_modal() && g_front_app >= 0) ||
-            ((g_front_app == APP_LAUNCHER || g_front_app == APP_TASKMGR || g_front_app == APP_FILES || g_front_app == APP_SETTINGS || g_front_app == APP_INSTALLER) &&
+            ((g_front_app == APP_LAUNCHER || g_front_app == APP_TASKMGR || g_front_app == APP_FILES || g_front_app == APP_SETTINGS || g_front_app == APP_INSTALLER || g_front_app == APP_DEVMGR) &&
              app_visible(g_front_app) && tty_current() < 0)) {
             for (int k = 0; k < 64; k++) {
                 char c = keyboard_try_getchar();
@@ -2899,7 +2917,7 @@ static void gui_poll_body(void) {
                     continue;
                 }
                 /* Settings, Task Manager, Apps: the focus moves between their controls */
-                if (!g_menu_open && (g_front_app == APP_SETTINGS || g_front_app == APP_TASKMGR || g_front_app == APP_LAUNCHER)) {
+                if (!g_menu_open && (g_front_app == APP_SETTINGS || g_front_app == APP_TASKMGR || g_front_app == APP_LAUNCHER || g_front_app == APP_DEVMGR)) {
                     int code = 0;
                     if (c == 27) {
                         char c2 = keyboard_try_getchar();
@@ -2920,6 +2938,7 @@ static void gui_poll_body(void) {
                     if (code) {
                         if (g_front_app == APP_SETTINGS) took = settings_navkey(code);
                         else if (g_front_app == APP_TASKMGR) took = taskmgr_navkey(code);
+                        else if (g_front_app == APP_DEVMGR) took = devmgr_navkey(code);
                         else took = launcher_navkey(code);
                     }
                     if (!took) {
@@ -3402,7 +3421,7 @@ int gui_focused_vt(void) {
     if (g_front_app == APP_BROWSER && browser_is_open() && !g_app_min[APP_BROWSER]) return BROWSER_VT;
     if (g_front_app == APP_NOTEPAD && notepad_is_open() && !g_app_min[APP_NOTEPAD]) return NOTEPAD_VT;
     if (g_front_app == APP_APPWIN && appwin_any_visible()) return APPWIN_VT;
-    if ((g_front_app == APP_LAUNCHER || g_front_app == APP_TASKMGR || g_front_app == APP_FILES || g_front_app == APP_SETTINGS || g_front_app == APP_INSTALLER) && app_visible(g_front_app))
+    if ((g_front_app == APP_LAUNCHER || g_front_app == APP_TASKMGR || g_front_app == APP_FILES || g_front_app == APP_SETTINGS || g_front_app == APP_INSTALLER || g_front_app == APP_DEVMGR) && app_visible(g_front_app))
         return APPWIN_VT + 1;          /* keys handed out by gui_poll() */
 
     /* Frontmost OPEN window, if any - g_term_order always lists every
@@ -3440,6 +3459,7 @@ static void do_action(int act) {
     case ACT_NOTEPAD: notepad_open(NULL); g_app_min[APP_NOTEPAD] = 0; raise_app(APP_NOTEPAD); break;
     case ACT_APPS: launcher_open(); g_app_min[APP_LAUNCHER] = 0; raise_app(APP_LAUNCHER); break;
     case ACT_TASKMGR: taskmgr_open(); g_app_min[APP_TASKMGR] = 0; raise_app(APP_TASKMGR); break;
+    case ACT_DEVMGR: devmgr_open(); g_app_min[APP_DEVMGR] = 0; raise_app(APP_DEVMGR); break;
     case ACT_SETTINGS: settings_open(); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
     case ACT_WALLPAPER: settings_open_page(SETTINGS_PAGE_DISPLAY); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
     case ACT_QUIT: gui_set_enabled(0); break;
@@ -3537,6 +3557,21 @@ int gui_open_settings_app(const char* name) {
     if (!gfx_available() || !g_gui_enabled) return 0;
     settings_show_app(name);
     do_action(ACT_SETTINGS);
+    return 1;
+}
+
+/* Settings at one of its pages (SETTINGS_PAGE_*) */
+int gui_open_settings_page(int page) {
+    if (!gfx_available() || !g_gui_enabled) return 0;
+    settings_open_page(page);
+    g_app_min[APP_SETTINGS] = 0;
+    raise_app(APP_SETTINGS);
+    return 1;
+}
+
+int gui_open_devmgr(void) {
+    if (!gfx_available() || !g_gui_enabled) return 0;
+    do_action(ACT_DEVMGR);
     return 1;
 }
 
@@ -4639,7 +4674,7 @@ static int win_pin_target(int h, int* act, char* app, int cap) {
     app[0] = 0;
     if (k == WK_TERM) { *act = ACT_TERMINAL; return 1; }
     if (k == WK_APP) {
-        static const int MAP[APP_COUNT] = { ACT_FILES, ACT_BROWSER, ACT_NOTEPAD, ACT_APPS, ACT_TASKMGR, ACT_SETTINGS, -1, -1 };
+        static const int MAP[APP_COUNT] = { ACT_FILES, ACT_BROWSER, ACT_NOTEPAD, ACT_APPS, ACT_TASKMGR, ACT_SETTINGS, -1, ACT_DEVMGR, -1 };
         *act = i < APP_COUNT ? MAP[i] : -1;
         return *act >= 0;
     }

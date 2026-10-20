@@ -23,6 +23,7 @@
 #include "adbcmd.h"
 #include "datecmd.h"
 #include "themecmd.h"
+#include "devcmd.h"
 #include "diskbench.h"
 #include "../kernel/ext4.h"
 
@@ -332,6 +333,7 @@ int syscmd_dispatch(const char* line) {
     if (strcmp(argv[0], "selftest") == 0) return selftest_cmd(argc, argv);
     if (datecmd_dispatch(argc, argv)) return 1;
     if (themecmd_dispatch(argc, argv)) return 1;
+    if (devcmd_dispatch(argc, argv)) return 1;
     if (strcmp(argv[0], "diskbench") == 0) return diskbench_cmd(argc, argv);
     if (strcmp(argv[0], "drop_caches") == 0) {
         /* as Linux's /proc/sys/vm/drop_caches: what RAM holds of the disk goes */

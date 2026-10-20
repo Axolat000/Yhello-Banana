@@ -389,6 +389,21 @@ static const page_t PAGES[] = {
       "Without a graphics driver for the card, the size changes from the next start.", NULL, "resolution 1920x1080", "lsgpu" },
     { "exit", "desktop", "exit", "close this terminal window (or end an SSH session)", NULL, NULL, NULL, NULL },
     /* ── hardware ── */
+    { "devmgr", "hardware", "devmgr [-c | show N|NAME | problems | rescan | gui]", "Device Manager: every device and its driver",
+      "Lists the computer's devices by type, as Windows' Device Manager does - disk drives, display adapters, keyboards, "
+      "network adapters, processors, USB controllers... - with the driver that runs each one; ! marks a device with no driver "
+      "(under Other devices). -c shows them by connection: each under the bridge, controller or hub it is plugged into. "
+      "show prints one device's properties: maker, location, status, driver, hardware ID (PCI\\VEN_8086&DEV_100E...) and "
+      "resources (IRQ, memory and I/O ranges). gui (or devmgmt.msc) opens the Device Manager window; it is also in the Start "
+      "menu (All Programs) and the desktop's right-click menu.",
+      "-c|by connection\nshow N|one device's properties (its number, part of its name, or its driver)\nproblems|the devices without a driver\nrescan|look for USB devices plugged in or out first\ngui|the window",
+      "devmgr\ndevmgr -c\ndevmgr show e1000\ndevmgr gui", "lspci, lsusb, lsblk, drivers" },
+    { "lsdev", "hardware", "lsdev", "the same as devmgr", NULL, NULL, NULL, "devmgr" },
+    { "devmgmt.msc", "hardware", "devmgmt.msc", "the Device Manager window", NULL, NULL, NULL, "devmgr" },
+    { "lspci", "hardware", "lspci [-v] [-n]", "the PCI devices, as Linux's lspci",
+      "One line per PCI function: its address (bus:device.function), class, maker, name and IDs. -v adds its interrupt, "
+      "its memory and I/O regions and the Banana OS driver in use; -n prints the numbers only.",
+      "-v|interrupt, regions, driver\n-n|numeric IDs", "lspci\nlspci -v", "devmgr, lsusb" },
     { "lsusb", "hardware", "lsusb", "USB controllers and devices", NULL, NULL, NULL, "usb" },
     { "usb", "hardware", "usb rescan", "look for USB devices plugged in or out", NULL, NULL, NULL, "lsusb" },
     { "usbctl", "hardware", "usbctl", "USB legacy handoff state", NULL, NULL, NULL, NULL },
