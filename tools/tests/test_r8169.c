@@ -24,6 +24,28 @@ static int      sent, sent_ok_frame;
 static uint8_t  last_tx[2048];
 static uint32_t last_tx_len;
 static uint32_t rx_slot, tx_slot;
+static int      hang_after = -1;          /* the transmit engine stops after this many frames, until a reset */
+static int      resets_seen;
+static uint32_t now_ms = 1000;
+uint32_t timer_ms(void) { return now_ms; }
+
+/* PCI configuration space: the card (bus 1) and the bridge above it (bus 0, device 28) */
+static uint8_t cfg_card[256], cfg_bridge[256];
+static uint8_t* cfg(uint8_t bus, uint8_t dev) { return bus == 1 && dev == 0 ? cfg_card : bus == 0 && dev == 28 ? cfg_bridge : 0; }
+uint16_t pci_read16(uint8_t b, uint8_t d, uint8_t f, uint8_t o) { (void)f; uint8_t* c = cfg(b, d); return c ? (uint16_t)(c[o] | c[o + 1] << 8) : 0xFFFF; }
+uint32_t pci_read32(uint8_t b, uint8_t d, uint8_t f, uint8_t o) { return pci_read16(b, d, f, o) | (uint32_t)pci_read16(b, d, f, (uint8_t)(o + 2)) << 16; }
+void pci_write16(uint8_t b, uint8_t d, uint8_t f, uint8_t o, uint16_t v) { (void)f; uint8_t* c = cfg(b, d); if (c) { c[o] = (uint8_t)v; c[o + 1] = (uint8_t)(v >> 8); } }
+int pci_scan(int (*cb)(const pci_dev_t*, void*), void* ctx) {
+    pci_dev_t br; memset(&br, 0, sizeof(br)); br.bus = 0; br.dev = 28; br.vendor = 0x8086; br.class_code = 6; br.subclass = 4;
+    return cb(&br, ctx);
+}
+static void pcie_cap(uint8_t* c, uint16_t lnkctl) {
+    c[0x06] = 0x10;                       /* a capability list */
+    c[0x34] = 0x40;
+    c[0x40] = 0x01; c[0x41] = 0x70;       /* power management, then */
+    c[0x70] = 0x10; c[0x71] = 0x00;       /* PCI Express */
+    c[0x80] = (uint8_t)lnkctl; c[0x81] = (uint8_t)(lnkctl >> 8);
+}
 
 typedef struct { uint32_t opts1, opts2, lo, hi; } desc_t;
 static desc_t* ring(uint32_t reg) { return (desc_t*)(uintptr_t)(R[reg] | R[reg + 1] << 8 | R[reg + 2] << 16 | (uint32_t)R[reg + 3] << 24); }
@@ -46,6 +68,8 @@ static void tx_poll(void) {
         desc_t* d = &t[tx_slot];
         if (!(d->opts1 & 0x80000000u)) break;
         if (!(R[0x37] & 0x04)) break;                                /* CMD TE */
+        if (hang_after == 0) break;                                  /* hung: the frame stays the card's */
+        if (hang_after > 0) hang_after--;
         uint32_t len = d->opts1 & 0xFFFF;
         memcpy(last_tx, (void*)(uintptr_t)d->lo, len < sizeof(last_tx) ? len : sizeof(last_tx));
         last_tx_len = len;
@@ -90,7 +114,8 @@ static void wr(uint16_t port, uint32_t v, int n) {
     }
     for (int i = 0; i < n; i++) R[r + i] = (uint8_t)(v >> (8 * i));
     if (r == 0x37 && (v & 0x10)) {                                   /* reset: the rings start over (the OOB state stays) */
-        R[0x37] = 0; rx_slot = tx_slot = 0;
+        R[0x37] = 0; rx_slot = tx_slot = 0; resets_seen++;
+        if (hang_after == 0) hang_after = -1;                        /* a reset brings it back */
     }
     if (r == 0x38 && (v & 0x40)) tx_poll();
     if (r == 0x60 && n == 4 && (v & 0x80000000u)) {                  /* PHY write, done at once */
@@ -110,7 +135,7 @@ void fake_outl(uint16_t p, uint32_t v) { wr(p, v, 4); }
 static uint16_t g_dev_id = 0x8168;
 int pci_find(uint16_t v, uint16_t d, pci_dev_t* out) {
     if (v != 0x10EC || d != g_dev_id) return 0;
-    memset(out, 0, sizeof(*out)); out->vendor = v; out->device = d; out->class_code = 2; out->irq_line = 11;
+    memset(out, 0, sizeof(*out)); out->vendor = v; out->device = d; out->class_code = 2; out->irq_line = 11; out->bus = 1;
     return 1;
 }
 uintptr_t pci_bar(const pci_dev_t* d, int bar, int* is_io) { (void)d; if (bar == 0) { *is_io = 1; return 0xC000; } *is_io = 0; return 0; }
@@ -125,11 +150,15 @@ void net_rx(netdev_t* nd, const uint8_t* f, uint32_t len) { (void)nd; got_rx++; 
 static int failed;
 static void chip_power_on(uint32_t xid, int firmware_left) {
     memset(R, 0, sizeof(R)); memset(ocp, 0, sizeof(ocp));
-    rx_slot = tx_slot = 0; sent = 0; got_rx = 0;
+    rx_slot = tx_slot = 0; sent = 0; got_rx = 0; hang_after = -1; resets_seen = 0;
+    memset(cfg_card, 0, sizeof(cfg_card)); memset(cfg_bridge, 0, sizeof(cfg_bridge));
+    pcie_cap(cfg_card, 0x0042); pcie_cap(cfg_bridge, 0x0043);      /* the firmware's ASPM: L1, L0s+L1 */
+    cfg_bridge[0x19] = 1;                                            /* the bridge's secondary bus */
+    R[0x56] = 0x01; R[0x53] = 0x80;                                  /* the chip's own ASPM / CLKREQ on */
     const uint8_t mac[6] = { 0x00, 0xe0, 0x4c, 0x68, 0x11, 0x68 };
     memcpy(R, mac, 6);
     put32(0x40, xid << 20);
-    model_g = xid >= 0x4C0;
+    model_g = xid >= 0x4C0 && g_dev_id != 0x8136;
     if (model_g) {
         R[0x6F] = 0xC0;                                              /* PLL on */
         if (firmware_left) { R[0xD3] = 0x80; put32(0xF0, 0x00080000u); R[0x6F] = 0x00; }
@@ -166,6 +195,27 @@ static void run(const char* name, uint32_t xid, int firmware_left) {
     if (got_rx - before != 100) { printf("    FAIL: of 100 more frames %d came in\n", got_rx - before); ok = 0; }
     for (int k = 0; k < 40; k++) nd->send(nd, f, sizeof(f));
     if (sent != 41) { printf("    FAIL: of 40 more frames %d went out\n", sent - 1); ok = 0; }
+    /* PCIe power saving off, at both ends of the link and in the chip */
+    if ((cfg_card[0x80] & 3) || (cfg_bridge[0x80] & 3)) { printf("    FAIL: ASPM still on (card %x, bridge %x)\n", cfg_card[0x80] & 3, cfg_bridge[0x80] & 3); ok = 0; }
+    if ((cfg_card[0x80] & 0x40) != 0x40) { printf("    FAIL: the other Link Control bits were not kept\n"); ok = 0; }
+    if ((R[0x56] & 1) || (R[0x53] & 0x80)) { printf("    FAIL: the chip's ASPM / CLKREQ still on\n"); ok = 0; }
+    /* the card hangs its transmit engine: the driver must notice and start it again */
+    int sent0 = sent;
+    hang_after = 3;
+    for (int k = 0; k < 20; k++) nd->send(nd, f, sizeof(f));          /* 3 go out, then it is stuck */
+    now_ms += 1000; nd->poll(nd);
+    now_ms += 4000; nd->poll(nd);                                      /* 5 s later */
+    int resets = resets_seen;
+    for (int k = 0; k < 10; k++) nd->send(nd, f, sizeof(f));
+    in[20] = 0x99;
+    int took2 = inject_rx(in, sizeof(in));
+    before = got_rx;
+    nd->poll(nd);
+    if (!resets) { printf("    FAIL: the hung card was never reset\n"); ok = 0; }
+    else if (sent - sent0 < 13 || !took2 || got_rx != before + 1 || got[20] != 0x99) {
+        printf("    FAIL: after the reset: %d sent, %d received\n", sent - sent0 - 3, got_rx - before); ok = 0;
+    } else if (memcmp(R, nd->mac, 6)) { printf("    FAIL: the MAC address was lost in the reset\n"); ok = 0; }
+    else printf("    a hung transmit: reset, then %d frames out and one in\n", sent - sent0 - 3);
     printf("  %s\n", ok ? "ok" : "FAIL");
     failed += !ok;
 }
@@ -175,6 +225,9 @@ int main(void) {
     run("RTL8168h (XID 541), left by the firmware: out of band, receive gated, PLL off", 0x541, 1);
     run("RTL8168g (XID 4c0), left by the firmware", 0x4C0, 1);
     run("RTL8168c (XID 380), an older one", 0x380, 0);
+    g_dev_id = 0x8136;
+    run("RTL8107E (PCI 8136, XID 4c8): no 8168g sequence", 0x4C8, 0);
+    run("RTL8106E (PCI 8136, XID 448)", 0x448, 0);
     printf("%s: %d failed\n", failed ? "FAIL" : "ok", failed);
     return failed ? 1 : 0;
 }
