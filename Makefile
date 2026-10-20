@@ -16,11 +16,12 @@ COMMON  = -ffreestanding -fno-stack-protector -fno-pic -nostdlib -nostdinc \
           -mno-sse -mno-sse2 -mno-mmx -mno-3dnow $(INCS)
 
 # 32-bit
-CFLAGS  = -m32 -mstackrealign $(COMMON) -MMD -MP
+CFLAGS  = -m32 -march=i686 -mtune=generic -mstackrealign $(COMMON) -MMD -MP
 LDFLAGS = -m elf_i386 -nostdlib -T boot/linker.ld
+# Explicit ISA targets keep hosted-compiler defaults from requiring BMI2/AVX.
 # 64-bit: no red zone (interrupts run on the same stack), small code model
 # (everything below 2 GiB), no SSE (so interrupt handlers need not save it)
-CFLAGS64  = -m64 -mcmodel=small -mno-red-zone -fno-pie $(COMMON) -MMD -MP
+CFLAGS64  = -m64 -march=x86-64 -mtune=generic -mcmodel=small -mno-red-zone -fno-pie $(COMMON) -MMD -MP
 LDFLAGS64 = -m elf_x86_64 -nostdlib -z max-page-size=0x1000 -T boot/linker64.ld
 AS      = nasm
 
@@ -136,13 +137,13 @@ define efi_finish
 endef
 
 loader/BOOTX64.EFI: $(EFI_DEPS) loader/tramp.S loader/efi.lds
-	$(CC) -m64 -mno-red-zone $(LOADER_CFLAGS_EFI) -c loader/efi.c -o loader/efi64.o
+	$(CC) -m64 -march=x86-64 -mtune=generic -mno-red-zone $(LOADER_CFLAGS_EFI) -c loader/efi.c -o loader/efi64.o
 	$(CC) -m64 -c loader/tramp.S -o loader/tramp64.o
 	ld -m elf_x86_64 -nostdlib -pie --no-dynamic-linker -z nocombreloc -T loader/efi.lds -o loader/bootx64.so loader/efi64.o loader/tramp64.o
 	$(call efi_finish,loader/bootx64.so,efi-app-x86_64)
 
 loader/BOOTIA32.EFI: $(EFI_DEPS) loader/tramp32.S loader/efi32.lds
-	$(CC) -m32 -malign-double $(LOADER_CFLAGS_EFI) -c loader/efi.c -o loader/efi32.o
+	$(CC) -m32 -march=i686 -mtune=generic -malign-double $(LOADER_CFLAGS_EFI) -c loader/efi.c -o loader/efi32.o
 	$(CC) -m32 -c loader/tramp32.S -o loader/tramp32.o
 	ld -m elf_i386 -nostdlib -pie --no-dynamic-linker -z nocombreloc -T loader/efi32.lds -o loader/bootia32.so loader/efi32.o loader/tramp32.o
 	$(call efi_finish,loader/bootia32.so,efi-app-ia32)

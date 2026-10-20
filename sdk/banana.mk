@@ -62,7 +62,7 @@ APP_CFLAGS = -ffreestanding -fno-stack-protector -fstack-clash-protection -fpie 
              -fno-math-errno -O2 -Wall -Wextra \
              -I$(BANANA_SDK)/include $(CFLAGS)
 CFLAGS_i686   = -m32 -march=i686 -mstackrealign
-CFLAGS_x86_64 = -m64 -mno-red-zone -mcmodel=small
+CFLAGS_x86_64 = -m64 -march=x86-64 -mtune=generic -mno-red-zone -mcmodel=small
 LDFLAGS_i686   = -m elf_i386
 LDFLAGS_x86_64 = -m elf_x86_64
 APP_LDFLAGS = -pie --no-dynamic-linker -z noexecstack -z norelro -z max-page-size=4096 \

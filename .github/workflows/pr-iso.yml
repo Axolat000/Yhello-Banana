@@ -38,7 +38,7 @@ jobs:
           path: |
             ports/ffmpeg/src
             ports/ffmpeg/build
-          key: pr-iso-ffmpeg-7.1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
+          key: pr-iso-ffmpeg-7.1-baseline-v1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
 
       - name: Build the unsigned test ISO
         shell: bash

@@ -96,7 +96,14 @@ cc_all() {   # cc_all OUTDIR flags... -- sources...: compile, list the failures
         gcc $fl $BCFLAGS -c "$f" -o "$o" 2>"$o.log" || { bad="$bad $(basename "$f")"; rm -f "$o"; }
         [ -s "$o.log" ] || rm -f "$o.log"
     done
-    [ -z "$bad" ] || { echo "failed:$bad (logs: $d/*.log)"; exit 1; }
+    if [ -n "$bad" ]; then
+        echo "failed:$bad (logs: $d/*.log)"
+        for source in $bad; do
+            log="$d/${source%.*}.o.log"
+            [ ! -f "$log" ] || { echo "== $log"; sed -n '1,100p' "$log"; }
+        done
+        exit 1
+    fi
 }
 so() {   # so NAME SONAME objects/flags...
     n=$1; s=$2; shift 2
@@ -132,8 +139,9 @@ cc_all "$W/opengl" $LCF -I"$L/opengl/src/main/c" -- $GLSRC
 so liblwjgl_opengl.so liblwjgl_opengl.so -Wl,--version-script="$VS" "$W"/opengl/*.o
 
 # liblwjgl_stb.so (stb's own sources, in the generated files)
+# stb_dxt calls memcpy without including string.h; supply the SDK declaration.
 # shellcheck disable=SC2086
-cc_all "$W/stb" $LCF -isystem "$L/stb/src/main/c" -- "$L"/stb/src/generated/c/*.c
+cc_all "$W/stb" $LCF -include string.h -isystem "$L/stb/src/main/c" -- "$L"/stb/src/generated/c/*.c
 so liblwjgl_stb.so liblwjgl_stb.so -Wl,--version-script="$VS" "$W"/stb/*.o
 
 # libglfw.so (GLFW on bwin + bgl3) and libGL.so.1
