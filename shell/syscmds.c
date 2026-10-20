@@ -23,6 +23,7 @@
 #include "datecmd.h"
 #include "diskbench.h"
 #include "../kernel/ext4.h"
+#include "../kernel/session.h"
 
 static void say(const char* fmt, ...) {
     char buf[256];
@@ -371,5 +372,58 @@ int syscmd_dispatch(const char* line) {
         if (!gui_open_taskmgr()) terminal_writeln("taskmgr: the Task Manager is part of the desktop (startx) - try `top` here");
         return 1;
     }
+    if (strcmp(argv[0], "session") == 0) {
+        if (argc < 2 || strcmp(argv[1], "status") == 0) {
+            session_state_t st;
+            session_capture(&st);
+            char buf[128];
+            ksnprintf(buf, sizeof(buf), "session: %d terminals, files=%d, browser=%d, notepad=%d%s, apps=%d",
+                      st.terminals_open, st.files_open, st.browser_open, st.notepad_open,
+                      st.notepad_dirty ? " (unsaved edits)" : "", st.app_count);
+            terminal_writeln(buf);
+            if (st.unsaved_count > 0) {
+                ksnprintf(buf, sizeof(buf), "warning: %d unsaved document(s) detected", st.unsaved_count);
+                terminal_writeln(buf);
+            }
+            ksnprintf(buf, sizeof(buf), "restore on startup: %s", session_restore_is_enabled() ? "enabled" : "disabled");
+            terminal_writeln(buf);
+            return 1;
+        }
+        if (strcmp(argv[1], "save") == 0) {
+            session_save();
+            terminal_writeln("session: desktop session state saved to /etc/desktop_session.conf");
+            return 1;
+        }
+        if (strcmp(argv[1], "restore") == 0) {
+            session_state_t st;
+            if (session_load(&st) == 0) {
+                int n = session_restore(&st);
+                char buf[64];
+                ksnprintf(buf, sizeof(buf), "session: restored %d windows/apps", n);
+                terminal_writeln(buf);
+            } else {
+                terminal_writeln("session: no saved session found");
+            }
+            return 1;
+        }
+        if (strcmp(argv[1], "clear") == 0) {
+            session_clear();
+            terminal_writeln("session: saved session cleared");
+            return 1;
+        }
+        if (strcmp(argv[1], "enable") == 0) {
+            session_restore_set_enabled(1);
+            terminal_writeln("session: restore on startup enabled");
+            return 1;
+        }
+        if (strcmp(argv[1], "disable") == 0) {
+            session_restore_set_enabled(0);
+            terminal_writeln("session: restore on startup disabled");
+            return 1;
+        }
+        terminal_writeln("usage: session [status | save | restore | clear | enable | disable]");
+        return 1;
+    }
     return 0;
+
 }
