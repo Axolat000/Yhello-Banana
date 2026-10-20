@@ -381,8 +381,9 @@ static void t_tlb(void) {
 /* ── UTF-8 everywhere: terminal cells, drawing, VGA, FAT names ── */
 static void t_utf8(void) {
     section("UTF-8: any character in the terminal, the editor and file names");
-    /* the terminal: each UTF-8 character one cell, holding its code point */
-    static const uint32_t want[] = { 'a', 0xE9, 0x20AC, 0x3A9, 0x416, 0x2500, 0x1F34C, 0xFFFD, 'z' };
+    /* the terminal: each UTF-8 character one cell, holding its code point
+     * (an emoji two: the second marked TERMINAL_WIDE_CONT) */
+    static const uint32_t want[] = { 'a', 0xE9, 0x20AC, 0x3A9, 0x416, 0x2500, 0x1F34C, TERMINAL_WIDE_CONT, 0xFFFD, 'z' };
     const char* text = "a\xC3\xA9\xE2\x82\xAC\xCE\xA9\xD0\x96\xE2\x94\x80\xF0\x9F\x8D\x8C\x80z";  /* (\x80: a stray byte) */
     int vt = terminal_vt_alloc(), was = terminal_vt_get_active();
     if (vt < 0) {
@@ -398,7 +399,7 @@ static void t_utf8(void) {
         int ok = ch != NULL, at = -1;
         for (unsigned i = 0; ok && i < sizeof(want) / sizeof(want[0]); i++) if (ch[i] != want[i]) { ok = 0; at = (int)i; }
         char note[96];
-        if (ok) ksnprintf(note, sizeof(note), "a e-acute euro Omega Zhe box-line banana, a stray byte as U+FFFD");
+        if (ok) ksnprintf(note, sizeof(note), "a e-acute euro Omega Zhe box-line banana (2 cells), a stray byte as U+FFFD");
         else ksnprintf(note, sizeof(note), "cell %d holds U+%04X", at, ch ? ch[at] : 0);
         report("terminal cells hold any character", ok, note);
         terminal_vt_free(vt);
@@ -418,6 +419,18 @@ static void t_utf8(void) {
         report("beyond Latin-1 drawn with DejaVu Sans Mono (euro, Omega, Zhe, box line)", glyphs == 4, glyphs == 4 ? "" : "a glyph came out empty");
     } else {
         skip("beyond Latin-1 drawn with DejaVu Sans Mono", "the font is not loaded");
+    }
+    /* double width, like wcwidth(): emoji, CJK, Hangul, fullwidth forms two
+     * columns, combining marks none */
+    {
+        const char* line = "a\xF0\x9F\x8D\x8C\xE4\xB8\xAD" "e\xCC\x81" "\xEF\xBC\xA1";   /* a, banana, CJK middle, e + acute, fullwidth A */
+        int len = (int)strlen(line);
+        int ok = u8_wcwidth('a') == 1 && u8_wcwidth(0xE9) == 1 && u8_wcwidth(0x1F34C) == 2 && u8_wcwidth(0x1F600) == 2 &&
+                 u8_wcwidth(0x4E2D) == 2 && u8_wcwidth(0xAC00) == 2 && u8_wcwidth(0x3042) == 2 && u8_wcwidth(0xFF21) == 2 &&
+                 u8_wcwidth(0x301) == 0 && u8_wcwidth(0x200D) == 0 && u8_wcwidth(0xFE0F) == 0 && u8_wcwidth(0x2500) == 1 &&
+                 u8_width(line, len) == 8 && u8_byte_at_col(line, len, 1) == 1 && u8_byte_at_col(line, len, 2) == 1 &&
+                 u8_byte_at_col(line, len, 3) == 5 && u8_byte_at_col(line, len, 5) == 8 && u8_byte_at_col(line, len, 6) == 11;
+        report("wide characters take two columns (emoji, CJK, Hangul, fullwidth), combining marks none", ok, "");
     }
     /* VGA text mode: code page 437 has some of it */
     int vga = terminal_cp437(0xE9) == (char)0x82 && terminal_cp437(0x2500) == (char)0xC4 &&

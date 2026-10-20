@@ -2308,12 +2308,12 @@ static void ic_lock(int x, int y, uint32_t c, uint32_t bg) {
 static int addr_part(int x, int y, const char* s, int n, int maxc, uint32_t fg, uint32_t bg) {
     char buf[200];
     if (n <= 0 || maxc <= 0) return 0;
-    int nb = u8_byte_at(s, n, maxc);
+    int nb = u8_byte_at_col(s, n, maxc);
     if (nb > (int)sizeof(buf) - 1) nb = (int)sizeof(buf) - 1;
     memcpy(buf, s, (size_t)nb);
     buf[nb] = 0;
     gfx_draw_text(x, y, buf, fg, bg);
-    return u8_cols(buf, nb);
+    return u8_width(buf, nb);
 }
 
 /* the address bar: focused, the text being edited with its caret (all of
@@ -2335,15 +2335,15 @@ static void draw_addr_bar(tab_t* t, int x0, int ty, int aw) {
         int maxc = (aw - 12) / 8;
         if (g_addr_cur > len) g_addr_cur = len;
         if (g_addr_view > g_addr_cur) g_addr_view = g_addr_cur;
-        while (u8_cols(a + g_addr_view, g_addr_cur - g_addr_view) > maxc - 1) g_addr_view = u8_next(a, len, g_addr_view);
+        while (u8_width(a + g_addr_view, g_addr_cur - g_addr_view) > maxc - 1) g_addr_view = u8_next(a, len, g_addr_view);
         int from = g_addr_all ? 0 : g_addr_view;
         if (g_addr_all && len) {
-            int cols = u8_cols(a, u8_byte_at(a, len, maxc));
+            int cols = u8_width(a, u8_byte_at_col(a, len, maxc));
             gfx_fill_rect(x0 + 4, ty + 4, cols * 8 + 2, 12, 0x00B4D5FEu);
             addr_part(x0 + 5, ty + 6, a, len, maxc, 0x00101010u, 0x00B4D5FEu);
         } else {
             addr_part(x0 + 5, ty + 6, a + from, len - from, maxc, 0x00101010u, abg);
-            gfx_fill_rect(x0 + 5 + u8_cols(a + g_addr_view, g_addr_cur - g_addr_view) * 8, ty + 4, 1, 12, 0x00202020u);
+            gfx_fill_rect(x0 + 5 + u8_width(a + g_addr_view, g_addr_cur - g_addr_view) * 8, ty + 4, 1, 12, 0x00202020u);
         }
         return;
     }
@@ -2556,7 +2556,7 @@ void browser_click(int mx, int my) {
                 g_addr_focus = 1;
                 g_addr_all = 0;
                 if (g_addr_view > len) g_addr_view = len;
-                g_addr_cur = g_addr_view + u8_byte_at(t->addr + g_addr_view, len - g_addr_view, col < 0 ? 0 : col);
+                g_addr_cur = g_addr_view + u8_byte_at_col(t->addr + g_addr_view, len - g_addr_view, col < 0 ? 0 : col);
             }
         }
         else if (lx >= ADDR_X + aw + 48 && lx < ADDR_X + aw + 48 + DLBTN_W) push_cmd(CMD_DOWNLOADS, 0, 0);

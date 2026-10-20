@@ -88,7 +88,7 @@ static void label(int x, int y, const char* s, uint32_t c) { gfx_draw_text(x, y,
 static void button(int x, int y, int w, const char* text, int primary, int enabled) {
     uint32_t base = !enabled ? 0x00262B33u : primary ? C_ACCENT : 0x00303740u;
     bevel(x, y, w, 22, base, 0x00535D6Eu, 0x0015191Fu);
-    int tw = u8_cols(text, (int)strlen(text)) * 8;
+    int tw = u8_width(text, (int)strlen(text)) * 8;
     gfx_draw_text(x + (w - tw) / 2, y + 7, text, enabled ? C_TEXT : 0x00687384u, base);
 }
 static void checkbox(int x, int y, int on, const char* text) {

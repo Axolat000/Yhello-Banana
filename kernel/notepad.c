@@ -719,8 +719,10 @@ void notepad_draw(const fb_info_t* fi) {
         if (li >= g_tb.n) break;
         tb_line_t* l = &g_tb.lines[li];
         int ty = py + 2 + r * LINE_H;
-        int xi = u8_byte_at(l->s, (int)l->len, g_left);
-        for (int cidx = 0; cidx < cols; cidx++) {
+        int xi = u8_byte_at_col(l->s, (int)l->len, g_left);
+        int cidx = u8_width(l->s, xi) - g_left;
+        if (cidx < 0) { xi = u8_next(l->s, (int)l->len, xi); cidx = 1; }  /* (half a wide character scrolled off) */
+        while (cidx < cols) {
             int in = has_sel && (li > sy0 || (li == sy0 && xi >= sx0)) && (li < sy1 || (li == sy1 && xi < sx1));
             /* the selection covers the line break too */
             if (xi >= (int)l->len) {
@@ -729,9 +731,12 @@ void notepad_draw(const fb_info_t* fi) {
             }
             uint32_t cp = u8_decode(l->s, (int)l->len, &xi);    /* (xi moves to the next one) */
             uint32_t ch = (cp == '\t' || cp < 32) ? ' ' : cp;
+            int cw = gfx_char_cols(ch);                          /* (an emoji or CJK character: two cells) */
+            if (!cw) continue;
             uint32_t bg = in ? C_SELBG : C_PAGE;
-            if (in) gfx_fill_rect(px + 3 + cidx * CHAR_W, ty - 1, CHAR_W, LINE_H, bg);
+            if (in) gfx_fill_rect(px + 3 + cidx * CHAR_W, ty - 1, CHAR_W * cw, LINE_H, bg);
             if (ch != ' ') gfx_draw_cell_cp(px + 3 + cidx * CHAR_W, ty, ch, C_INK, bg);   /* (any character: kernel/gfx.c) */
+            cidx += cw;
         }
     }
     /* caret */

@@ -2004,31 +2004,46 @@ static void print_prompt(int persona) {
 
 /* ── line editor painting ───────────────────────────────────────── */
 
-static void line_place_cursor(int start, int cur) {
+/* where the first n bytes of the input text end, as a linear cell offset
+ * from start: a wide character (an emoji) is two cells, and one that would
+ * start in a row's last cell goes to the next row (kernel/terminal.c) */
+static int line_pos(int start, const char* buf, int n) {
+    int w = (int)terminal_get_width(), pos = start;
+    for (int i = 0; i < n; ) {
+        int cw = u8_wcwidth(u8_decode(buf, n, &i));
+        if (cw == 2 && w > 1 && pos % w == w - 1) pos++;
+        pos += cw;
+    }
+    return pos;
+}
+
+/* the cursor after the first n bytes of the input text */
+static void line_place_cursor(int start, const char* buf, int n) {
     int w = (int)terminal_get_width();
-    int pos = start + cur;
+    int pos = line_pos(start, buf, n);
     terminal_serial_mirror(0);
     terminal_set_cursor((size_t)(pos / w), (size_t)(pos % w));
     terminal_serial_mirror(1);
 }
 
-/* Rewrites the input text from `*start`, blanking what a shorter line
- * left behind. Writing past the last row scrolls the screen, so the
- * start offset is recomputed from where the cursor actually ended up. */
+/* Rewrites the input text from `*start`, blanking what a longer line
+ * left behind (prev_len: the cells it took). Writing past the last row
+ * scrolls the screen, so the start offset moves up by as many rows as
+ * the cursor ended up short of where the text ends. */
 static void line_repaint(int* start, const char* buf, int len, int prev_len, int cur) {
     int w = (int)terminal_get_width();
-    int cols = u8_cols(buf, len);                /* prev_len: columns too */
-    int total = (prev_len > cols) ? prev_len : cols;
+    int cells = line_pos(*start, buf, len) - *start;
+    int total = (prev_len > cells) ? prev_len : cells;
     terminal_serial_mirror(0);
     terminal_set_cursor((size_t)(*start / w), (size_t)(*start % w));
     for (int i = 0; i < len; i++) terminal_putchar(buf[i]);
-    for (int i = cols; i < total; i++) terminal_putchar(' ');
+    for (int i = cells; i < total; i++) terminal_putchar(' ');
     size_t r, c;
     terminal_get_cursor(&r, &c);
-    *start = (int)(r * (size_t)w + c) - total;
+    *start -= *start + total - (int)(r * (size_t)w + c);
     if (*start < 0) *start = 0;
     terminal_serial_mirror(1);
-    line_place_cursor(*start, u8_cols(buf, cur));
+    line_place_cursor(*start, buf, cur);
 }
 
 /* The serial console gets a plain ANSI repaint of the line instead. */
@@ -2057,7 +2072,7 @@ static void line_serial_echo(const char* buf, int len, int cur, int persona) {
     echo_out(tt, "\x1b[K");
     if (len > cur) {
         char seq[16];
-        ksnprintf(seq, sizeof(seq), "\x1b[%dD", u8_cols(buf + cur, len - cur));
+        ksnprintf(seq, sizeof(seq), "\x1b[%dD", u8_width(buf + cur, len - cur));
         echo_out(tt, seq);
     }
 }
@@ -2134,7 +2149,7 @@ static void shell_readline(char* buf, int maxlen, int persona) {
                 else if (c3 == 'H' && cur > 0) cur = 0;            /* Home */
                 else if (c3 == 'F' && cur < len) cur = len;        /* End */
                 else continue;
-                line_place_cursor(start, u8_cols(buf, cur));
+                line_place_cursor(start, buf, cur);
                 line_serial_echo(buf, len, cur, persona);
                 continue;
             }
@@ -2146,7 +2161,7 @@ static void shell_readline(char* buf, int maxlen, int persona) {
                 buf[len] = 0;
                 line_repaint(&start, buf, len, prev_len, cur);
                 line_serial_echo(buf, len, cur, persona);
-                prev_len = u8_cols(buf, len);
+                prev_len = line_pos(start, buf, len) - start;
                 continue;
             }
             if (c3 == 'A') { /* history up */
@@ -2189,12 +2204,12 @@ static void shell_readline(char* buf, int maxlen, int persona) {
             }
         } else if (c == 3) { /* Ctrl+C: cancel line, do not execute history entry */
             buf[0] = '\0';
-            line_place_cursor(start, u8_cols(buf, len));
+            line_place_cursor(start, buf, len);
             terminal_write("^C\n");
             return;
         } else if (c == '\n') {
             buf[len] = '\0'; /* ensure empty Enter stays empty */
-            line_place_cursor(start, u8_cols(buf, len));   /* newline after the whole (wrapped) line */
+            line_place_cursor(start, buf, len);   /* newline after the whole (wrapped) line */
             terminal_putchar('\n');
             break;
         } else if (c == '\b') {
@@ -2226,7 +2241,7 @@ static void shell_readline(char* buf, int maxlen, int persona) {
         /* Repaint the editable text in place (it may span several rows) */
         line_repaint(&start, buf, len, prev_len, cur);
         line_serial_echo(buf, len, cur, persona);
-        prev_len = u8_cols(buf, len);
+        prev_len = line_pos(start, buf, len) - start;
     }
 
     /* "!!" (bash/csh-style history-bang) has to resolve here, against

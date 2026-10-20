@@ -550,6 +550,7 @@ static void term_copy_selection(const term_win_t* w) {
         uint32_t line_start = n;
         for (int c = a; c <= b && c < tw; c++) {
             uint32_t ch = chars[r * stride + c];
+            if (ch == TERMINAL_WIDE_CONT) continue;             /* (a wide character's second cell) */
             if (ch >= 0x80) n += (uint32_t)u8_encode(ch, out + n);
             else out[n++] = ch ? (char)ch : ' ';
         }
@@ -671,6 +672,7 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
             int idx = (y + row_off) * stride + x;
             uint8_t color = cols[idx];
             uint32_t c = chars[idx];
+            if (c == TERMINAL_WIDE_CONT) continue;              /* (drawn across both cells by the first) */
             if (term_cell_selected(win, y + row_off, x)) {     /* selection: inverted */
                 gfx_draw_cell_cp(cx + x * CW, cy + y * CH, c ? c : ' ', 0x00101010u, 0x00C8D8F0u);
                 continue;
@@ -690,7 +692,8 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
             int idx = (int)cr * stride + (int)cc;
             uint8_t color = cols[idx];
             uint8_t fg = color & 0x0F;
-            gfx_fill_rect(cx + (int)cc * CW, cy + scr_row * CH + CH - 1, CW, 1, vga_color_rgb(fg));
+            int cells = (int)cc + 1 < tw && chars[idx + 1] == TERMINAL_WIDE_CONT ? 2 : 1;
+            gfx_fill_rect(cx + (int)cc * CW, cy + scr_row * CH + CH - 1, CW * cells, 1, vga_color_rgb(fg));
         }
     }
 }
@@ -3927,7 +3930,7 @@ static void cb_preview(const char* s, int cols, char lines[2][96]) {
         char c = *p == '\n' || *p == '\r' || *p == '\t' ? ' ' : *p;
         if (c == ' ' && (n == 0 || lines[l][n - 1] == ' ')) continue;     /* (runs of spaces as one) */
         int clen = (unsigned char)c < 0x80 ? 1 : (unsigned char)c >= 0xF0 ? 4 : (unsigned char)c >= 0xE0 ? 3 : 2;
-        int used = u8_cols(lines[l], n);
+        int used = u8_width(lines[l], n);
         if (used >= cols) {
             if (l == 1) { more = 1; break; }
             l = 1;
@@ -3942,7 +3945,7 @@ static void cb_preview(const char* s, int cols, char lines[2][96]) {
     if (more) {
         char* t = lines[l];
         int m = (int)strlen(t);
-        while (m > 0 && u8_cols(t, m) > cols - 3) { m--; while (m > 0 && ((unsigned char)t[m] & 0xC0) == 0x80) m--; }
+        while (m > 0 && u8_width(t, m) > cols - 3) { m--; while (m > 0 && ((unsigned char)t[m] & 0xC0) == 0x80) m--; }
         t[m] = 0;
         kstrlcat(t, "...", 96);
     }
