@@ -51,6 +51,7 @@ int gui_appwin_focused(void);
 int gui_open_apps(void);
 int gui_open_taskmgr(void);
 int gui_open_devmgr(void);
+int gui_open_diskmgr(void);
 int gui_open_settings_page(int page);   /* SETTINGS_PAGE_* */
 int gui_open_settings(void);   /* the Settings window (0 without the desktop) */
 int gui_open_settings_app(const char* name);   /* Settings > Apps (name selected, or NULL) */

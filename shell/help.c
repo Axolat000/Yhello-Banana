@@ -389,6 +389,27 @@ static const page_t PAGES[] = {
       "Without a graphics driver for the card, the size changes from the next start.", NULL, "resolution 1920x1080", "lsgpu" },
     { "exit", "desktop", "exit", "close this terminal window (or end an SSH session)", NULL, NULL, NULL, NULL },
     /* ── hardware ── */
+    { "diskmgr", "disks", "diskmgr [list | show DISK | init DISK mbr|gpt | create DISK [SIZE] [fat32|exfat] [LABEL] | format DISK[pN] fat32|exfat [LABEL] | delete DISKpN | mount DISKpN | unmount DISKpN | gui]",
+      "Disk Management: partitions, formatting",
+      "Shows the disks - their size, partition table (MBR or GPT), partitions, free space, and what each volume holds "
+      "(FAT32, exFAT, NTFS, ext4...), its name and where it is mounted - and changes them: init writes a new, empty "
+      "partition table; create makes a volume in the biggest free space (or freeN, as show numbers them) of SIZE (500M, 2G, "
+      "all: the default) and formats it; format formats a partition (or a whole disk without a table) as FAT32 (every "
+      "computer reads it, files up to 4 GB; 33 MB at least) or exFAT (big files); delete removes a partition. The changes "
+      "erase what is there, so they ask for -y. The disk Banana OS runs from and CD drives are never changed. gui (or "
+      "diskmgmt.msc) opens the Disk Management window; it is also in the Start menu (All Programs) and the desktop's menu.",
+      "-y|go ahead with a change that erases data",
+      "diskmgr list\ndiskmgr init usb0 gpt -y\ndiskmgr create usb0 2G exfat PHOTOS -y\ndiskmgr format usb0p1 fat32 STICK -y\ndiskmgr delete sata1p2 -y",
+      "lsblk, mount, umount, mkfs.fat" },
+    { "diskpart", "disks", "diskpart", "the same as diskmgr", NULL, NULL, NULL, "diskmgr" },
+    { "diskmgmt.msc", "disks", "diskmgmt.msc", "the Disk Management window", NULL, NULL, NULL, "diskmgr" },
+    { "mkfs.fat", "disks", "mkfs.fat [-n LABEL] DISK[pN]", "format as FAT32 (mkfs.vfat too)",
+      "Formats a partition (usb0p1) or a whole disk without a partition table (usb0) as FAT32, as Linux's mkfs.fat does. "
+      "Never the disk Banana OS runs from.", "-n LABEL|the volume's name (11 letters)", "mkfs.fat -n STICK usb0p1", "mkfs.exfat, diskmgr" },
+    { "mkfs.vfat", "disks", "mkfs.vfat [-n LABEL] DISK[pN]", "the same as mkfs.fat", NULL, NULL, NULL, "mkfs.fat" },
+    { "mkfs.exfat", "disks", "mkfs.exfat [-n LABEL] DISK[pN]", "format as exFAT",
+      "Formats a partition or a whole disk without a partition table as exFAT (files bigger than 4 GB; read by Windows, "
+      "macOS and Linux).", "-n LABEL|the volume's name (11 letters)", "mkfs.exfat -n BIG usb0p1", "mkfs.fat, diskmgr" },
     { "devmgr", "hardware", "devmgr [-c | show N|NAME | problems | rescan | gui]", "Device Manager: every device and its driver",
       "Lists the computer's devices by type, as Windows' Device Manager does - disk drives, display adapters, keyboards, "
       "network adapters, processors, USB controllers... - with the driver that runs each one; ! marks a device with no driver "

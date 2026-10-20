@@ -82,7 +82,7 @@ static int     g_esc;
 static const struct { int sm; const char* label; } BUILTIN[] = {
     { SM_BROWSER, "Browser" }, { SM_FILES, "Files" }, { SM_TERMINAL, "Terminal" }, { SM_NOTEPAD, "Notepad" },
     { SM_TASKMGR, "Task Manager" }, { SM_APPS, "Apps" }, { SM_SETTINGS, "Settings" },
-    { SM_DEVMGR, "Device Manager" },
+    { SM_DEVMGR, "Device Manager" }, { SM_DISKMGR, "Disk Management" },
 };
 #define NBUILTIN (int)(sizeof(BUILTIN) / sizeof(BUILTIN[0]))
 

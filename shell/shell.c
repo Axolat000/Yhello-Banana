@@ -1259,7 +1259,7 @@ static const char* const known_cmds[] = {
     /* kernel/vmtools.c */
     "vmtools",
     /* shell/help.c */
-    "man", "apropos", "lsblk", "devmgr", "lsdev", "lspci", "devmgmt.msc", (void*)0
+    "man", "apropos", "lsblk", "devmgr", "lsdev", "lspci", "devmgmt.msc", "diskmgr", "diskmgmt.msc", "diskpart", "mkfs.fat", "mkfs.vfat", "mkfs.exfat", (void*)0
 };
 
 /* ── $PATH: where commands that are not built in are looked for ───── */
