@@ -561,6 +561,17 @@ static afd_t* get_fd(app_proc_t* p, int fd) {
     return f;
 }
 
+static int a_fd_sync(int fd) {
+    app_proc_t* p = cur();
+    if (!p) return -9;                      /* EBADF */
+    if (fd >= 0 && fd <= 2) return -22;      /* EINVAL: terminal */
+    afd_t* f = get_fd(p, fd);
+    if (!f) return -9;                      /* EBADF */
+    if (f->sock) return -22;                 /* EINVAL */
+    /* Fail closed until the volume-aware synchronization path is wired. */
+    return -38;                            /* ENOSYS */
+}
+
 static int a_open(const char* path, int flags) {
     app_proc_t* p = cur();
     if (!p || !path || !*path) return -1;
@@ -1852,6 +1863,7 @@ static void spec_init(void) {
     SPEC(win_mouse_captured, "i", 0);
     SPEC(time_utc, "", 0);
     SPEC(utc_offset, "i", 0);
+    SPEC(fd_sync, "i", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2358,6 +2370,7 @@ static void api_init(void) {
     g_api.win_mouse_captured = G(a_win_mouse_captured);
     g_api.time_utc = G(a_time_utc);
     g_api.utc_offset = G(a_utc_offset);
+    g_api.fd_sync = G(a_fd_sync);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);

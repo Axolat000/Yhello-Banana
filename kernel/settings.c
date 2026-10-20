@@ -838,9 +838,12 @@ static void draw_network(void) {
     }
     ksnprintf(line, sizeof(line), "Card: %s", nf->dev->ifname);
     label(x, y + 24, line, C_TEXT);
-    ksnprintf(line, sizeof(line), "Status: %s", nf->configured ? "connected" : "not connected");
-    label(x, y + 42, line, nf->configured ? 0x0080E080u : 0x00E0A060u);
-    ksnprintf(line, sizeof(line), "Mode: %s", nf->dhcp ? "automatic (DHCP)" : "manual (static address)");
+    int link = nf->dev->link_up(nf->dev);
+    ksnprintf(line, sizeof(line), "Link: %s; address %s", link ? "up" : "down",
+              nf->configured ? "configured" : "not configured");
+    label(x, y + 42, line, link && nf->configured ? 0x0080E080u : 0x00E0A060u);
+    if (nf->dhcp) ksnprintf(line, sizeof(line), "Mode: DHCP (%s)", dhcp_state_str());
+    else kstrlcpy(line, "Mode: manual (static address)", sizeof(line));
     label(x, y + 60, line, C_TEXT);
     ip4_to_str(nf->ip, a);     ksnprintf(line, sizeof(line), "Address:  %s", nf->configured ? a : "-");  label(x, y + 84, line, C_TEXT);
     ip4_to_str(nf->netmask, a); ksnprintf(line, sizeof(line), "Netmask:  %s", nf->configured ? a : "-"); label(x, y + 100, line, C_TEXT);

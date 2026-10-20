@@ -1,4 +1,5 @@
 #include "task.h"
+#include "latency.h"
 #include "idt.h"
 #include "kstring.h"
 #include "timer.h"
@@ -109,9 +110,11 @@ static inline uint64_t rdtsc(void) {
 static inline uintptr_t irq_save(void) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    if (latency_enabled) latency_irq_begin(f);
     return f;
 }
 static inline void irq_restore(uintptr_t f) {
+    if (latency_enabled) latency_irq_end(f);
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
@@ -211,6 +214,7 @@ typedef struct {
 #define AP_HOME_MS  100           /* the boot core sees each task this often (Ctrl+C, End task, painting) */
 
 static ap_t g_ap[SMP_MAX_CPUS];
+static uint64_t g_core_ms[SMP_MAX_CPUS];
 static uint32_t g_core_pct[SMP_MAX_CPUS];   /* per core, from sysmon's last sample */
 
 /* The idle core to wake for queued work: best one whose hardware-thread
@@ -759,6 +763,7 @@ static void recompute_cpu_window(void) {
         t->cpu_pct = pct > 100 ? 100 : pct;
     }
     /* each core: the time it ran tasks (the boot core's idle loop and halts count as idle) */
+    g_core_ms[0] += boot_ms;
     g_core_pct[0] = boot_ms * 100u / total > 100 ? 100 : boot_ms * 100u / total;
     for (int c = 1; c < cpu_count() && c < SMP_MAX_CPUS; c++) {
         uint32_t ms = __sync_fetch_and_and(&g_ap[c].busy_ms, 0);
@@ -766,8 +771,13 @@ static void recompute_cpu_window(void) {
             uint32_t from = g_ap[c].counted;
             if ((int32_t)(now - from) > 0) { ms += now - from; g_ap[c].counted = now; }
         }
+        g_core_ms[c] += ms;
         g_core_pct[c] = ms * 100u / total > 100 ? 100 : ms * 100u / total;
     }
+}
+
+uint64_t task_core_ms(int cpu) {
+    return cpu >= 0 && cpu < SMP_MAX_CPUS ? g_core_ms[cpu] : 0;
 }
 
 uint32_t task_core_pct(int cpu) {
@@ -815,6 +825,7 @@ static void sysmon_entry(void) {
     for (;;) {
         recompute_cpu_window();
         sample_load();
+        latency_poll();
         if (timer_ms() > 15000) report_long_runs();     /* (after the boot) */
         for (int c = 1; c < cpu_count(); c++)
             if (g_ap[c].used == 1) {

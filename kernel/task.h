@@ -131,6 +131,7 @@ int  task_count(void);
 void task_snapshot(task_info_t* out, int max_count);
 const char* task_state_str(task_state_t s);
 /* how busy processor core `cpu` was over the last sysmon sample (0-100) */
+uint64_t task_core_ms(int cpu);   /* cumulative busy ms, updated by sysmon */
 uint32_t task_core_pct(int cpu);
 
 /* ── other processor cores (kernel/smp.c starts them) ───────────────

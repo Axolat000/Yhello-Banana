@@ -5,9 +5,10 @@
 
 /*
  * BSD sockets for apps (kernel/app.c keeps them in an app's file
- * descriptors): TCP and UDP over IPv4, the loopback included, on the
- * stack of net/. Addresses are Linux's struct sockaddr_in, constants
- * Linux's values, errors negative errno numbers (-ECONNREFUSED...).
+ * descriptors): TCP and UDP over IPv4 and IPv6, the loopback included,
+ * on the stack of net/. Addresses are Linux's struct sockaddr_in and
+ * sockaddr_in6, constants Linux's values, errors negative errno numbers
+ * (-ECONNREFUSED...).
  *
  * The calls that wait (connect, accept, recv, send) wait in short steps,
  * calling the wait callback between them: it lets the app be stopped

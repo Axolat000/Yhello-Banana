@@ -234,6 +234,8 @@ static const page_t PAGES[] = {
     { "htop", "system", "htop", "the colour monitor",
       "A meter per processor core, memory and disk, then the tasks. P sorts by processor use, N by number, "
       "T by time; q quits.", NULL, NULL, "top, sched" },
+    { "latency", "system", "latency [on | off | status]", "responsiveness telemetry to the serial log",
+      "on starts a new boot-core session; off prints a final sample. See docs/responsiveness-telemetry.md for coverage and units.", NULL, NULL, "sched" },
     { "free", "system", "free [-h|-k|-m|-g]", "memory: total, used, free",
       "The RAM: total, used, free, and the file data kept in RAM that could be given back.", NULL, "free -h", "ram_info, df, swap" },
     { "swap", "system", "swap [on | off | now | disk]", "swap: compressed memory and the swap area on the disk",

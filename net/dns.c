@@ -1,12 +1,13 @@
 #include "net.h"
 #include "ipv6.h"
+#include "tcp.h"
 #include "kstring.h"
 #include "timer.h"
 #include "random.h"
 
 /* Stub DNS resolver (RFC 1035): recursive A/AAAA-record queries over UDP to
  * the DHCP-provided server, following CNAMEs inside the answer, with a
- * small TTL-respecting cache. */
+ * small TTL-respecting cache. Falls back to TCP when the UDP reply is truncated (TC=1). */
 
 #define DNS_CACHE 16
 
@@ -25,6 +26,7 @@ static dns_cache_t g_cache[DNS_CACHE];
 typedef struct {
     uint16_t id;
     int      done;
+    int      tc;
     int      rcode;
     ip4_t    ip;
     uint32_t ttl;
@@ -77,10 +79,15 @@ static uint32_t skip_name(const uint8_t* p, uint32_t len, uint32_t off) {
 }
 
 static void parse_reply(dns_query_t* q, const uint8_t* p, uint32_t len) {
-    if (len < 12 || rd16(p) != q->id || (p[2] & 0xFA) != 0x80 || rd16(p + 4) != 1) return;
+    if (len < 12 || rd16(p) != q->id || (p[2] & 0xF8) != 0x80 || rd16(p + 4) != 1) return;
     if (12u + q->qlen + 4u > len || memcmp(p + 12, q->question, q->qlen) ||
         rd16(p + 12 + q->qlen) != q->type || rd16(p + 14 + q->qlen) != 1) return;
     q->rcode = p[3] & 0x0F;
+    if (p[2] & 0x02) {
+        q->tc = 1;
+        q->done = 1;
+        return;
+    }
     uint16_t qd = rd16(p + 4), an = rd16(p + 6);
     uint32_t off = 12;
     for (uint16_t i = 0; i < qd; i++) {
@@ -89,8 +96,8 @@ static void parse_reply(dns_query_t* q, const uint8_t* p, uint32_t len) {
         off += 4;
     }
     /* A recursive server normally includes the final A/AAAA record after
-     * a CNAME in the same answer section. Separate CNAME queries and DNS
-     * TCP fallback for truncated replies are not implemented here. */
+     * a CNAME in the same answer section. Separate CNAME queries are
+     * not implemented here. */
     for (uint16_t i = 0; i < an; i++) {
         off = skip_name(p, len, off);
         if (!off || off + 10 > len) break;
@@ -117,6 +124,64 @@ static void on_reply(ip4_t src, uint16_t sport, const uint8_t* p, uint32_t len, 
 static void on_reply6(const ip6_t* src, uint16_t sport, const uint8_t* p, uint32_t len, void* ctx) {
     dns_query_t* q = ctx;
     if (sport == 53 && !memcmp(src, &q->server6, 16)) parse_reply(q, p, len);
+}
+
+static int tcp_read_all(tcp_conn_t* c, uint8_t* buf, uint32_t len, uint32_t timeout_ms) {
+    uint32_t got = 0;
+    while (got < len) {
+        int r = tcp_recv(c, buf + got, len - got, timeout_ms);
+        if (r <= 0) return r == 0 ? NET_ERR_CLOSED : r;
+        got += (uint32_t)r;
+    }
+    return NET_OK;
+}
+
+static int resolve_tcp(dns_query_t* q, const uint8_t* pkt, uint32_t qlen, int over6, uint32_t timeout_ms) {
+    int err = 0;
+    tcp_conn_t* c = over6 ? tcp_connect6(&q->server6, 53, timeout_ms, &err)
+                          : tcp_connect(q->server, 53, timeout_ms, &err);
+    if (!c) return err ? err : NET_ERR_DNS;
+
+    uint8_t tcp_req[512 + 2];
+    if (qlen + 2 > sizeof(tcp_req)) {
+        tcp_close(c);
+        return NET_ERR_NOMEM;
+    }
+    wr16(tcp_req, (uint16_t)qlen);
+    memcpy(tcp_req + 2, pkt, qlen);
+
+    int sent = tcp_send(c, tcp_req, qlen + 2, timeout_ms);
+    if (sent != (int)(qlen + 2)) {
+        tcp_close(c);
+        return sent < 0 ? sent : NET_ERR_DNS;
+    }
+
+    uint8_t len_buf[2];
+    int rc = tcp_read_all(c, len_buf, 2, timeout_ms);
+    if (rc != NET_OK) {
+        tcp_close(c);
+        return rc;
+    }
+    uint16_t rlen = rd16(len_buf);
+    if (rlen < 12 || rlen > 4096) {
+        tcp_close(c);
+        return NET_ERR_DNS;
+    }
+
+    uint8_t reply_buf[1024];
+    uint8_t* rdata = reply_buf;
+    if (rlen > sizeof(reply_buf)) {
+        tcp_close(c);
+        return NET_ERR_NOMEM;
+    }
+    rc = tcp_read_all(c, rdata, rlen, timeout_ms);
+    tcp_close(c);
+    if (rc != NET_OK) return rc;
+
+    q->done = 0;
+    q->tc = 0;
+    parse_reply(q, rdata, rlen);
+    return NET_OK;
 }
 
 static int encode_name(const char* name, uint8_t* out, uint32_t cap) {
@@ -193,6 +258,11 @@ static int resolve(const char* name, void* out, uint32_t timeout_ms, uint16_t ty
             net_wait(20);
         }
         if (timer_ms() - start >= timeout_ms) break;
+    }
+    if (q.done && q.tc) {
+        uint32_t elapsed = timer_ms() - start;
+        uint32_t remaining = elapsed < timeout_ms ? timeout_ms - elapsed : 1000;
+        resolve_tcp(&q, pkt, qlen, over6, remaining);
     }
     if (q.done) {
         if (q.rcode == 0 && q.found) {

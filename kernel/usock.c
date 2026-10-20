@@ -8,10 +8,13 @@
 
 /* Linux's values (the SDK's <sys/socket.h> has the same) */
 #define AF_INET      2
+#define AF_INET6     10
 #define SOCK_STREAM  1
 #define SOCK_DGRAM   2
 #define SOL_SOCKET   1
 #define IPPROTO_TCP  6
+#define IPPROTO_IPV6 41
+#define IPV6_V6ONLY  26
 #define SO_REUSEADDR 2
 #define SO_TYPE      3
 #define SO_ERROR     4
@@ -34,32 +37,74 @@
 #define POLLERR      0x8
 #define POLLHUP      0x10
 
+#ifndef EPIPE
 #define EPIPE        32
+#endif
+#ifndef EAGAIN
 #define EAGAIN       11
+#endif
+#ifndef EINVAL
 #define EINVAL       22
+#endif
+#ifndef ENOMEM
 #define ENOMEM       12
+#endif
+#ifndef EINTR
 #define EINTR        4
+#endif
+#ifndef EMSGSIZE
 #define EMSGSIZE     90
+#endif
+#ifndef ENOPROTOOPT
 #define ENOPROTOOPT  92
+#endif
+#ifndef EPROTONOSUPPORT
 #define EPROTONOSUPPORT 93
+#endif
+#ifndef EOPNOTSUPP
 #define EOPNOTSUPP   95
+#endif
+#ifndef EAFNOSUPPORT
 #define EAFNOSUPPORT 97
+#endif
+#ifndef EADDRINUSE
 #define EADDRINUSE   98
+#endif
+#ifndef ENETDOWN
 #define ENETDOWN     100
+#endif
+#ifndef ENETUNREACH
 #define ENETUNREACH  101
+#endif
+#ifndef ECONNRESET
 #define ECONNRESET   104
+#endif
+#ifndef EISCONN
 #define EISCONN      106
+#endif
+#ifndef ENOTCONN
 #define ENOTCONN     107
+#endif
+#ifndef ETIMEDOUT
 #define ETIMEDOUT    110
+#endif
+#ifndef ECONNREFUSED
 #define ECONNREFUSED 111
+#endif
+#ifndef EHOSTUNREACH
 #define EHOSTUNREACH 113
+#endif
+#ifndef EPROTO
 #define EPROTO       71
+#endif
 
 enum { S_NEW, S_BOUND, S_LISTEN, S_CONN };
 
 typedef struct dgram {
     struct dgram* next;
+    int           family;
     ip4_t         ip;
+    ip6_t         ip6;
     uint16_t      port;
     uint32_t      len;
     uint8_t       data[];
@@ -68,18 +113,20 @@ typedef struct dgram {
 #define DGRAM_QUEUE 64
 
 struct usock {
+    int             family;
     int             type, nonblock, state;
     tcp_conn_t*     c;
     tcp_listener_t* l;
     uint16_t        lport;
     int             auto_port;     /* lport picked by bind (port 0): listen may pick another */
     ip4_t           rip;
+    ip6_t           rip6;
     uint16_t        rport;
     int             has_peer;
     int             err;                  /* SO_ERROR */
     uint32_t        rcvtimeo, sndtimeo;   /* ms (0: none) */
     int             shut_rd, shut_wr;
-    int             reuse, nodelay, keepalive, broadcast;
+    int             reuse, nodelay, keepalive, broadcast, v6only;
     int             udp_bound;
     dgram_t*        qh;
     dgram_t*        qt;
@@ -104,20 +151,48 @@ static int net_errno(int e) {
     }
 }
 
-/* struct sockaddr_in: family (host order), port and address (network order) */
-static int sa_get(const void* sa, int len, ip4_t* ip, uint16_t* port) {
+/* struct sockaddr_in (16 bytes) and struct sockaddr_in6 (28 bytes) */
+static int sa_get(const void* sa, int len, int expected_family,
+                  ip4_t* ip4, ip6_t* ip6, uint16_t* port, int* out_family) {
     const uint8_t* b = (const uint8_t*)sa;
-    if (!b || len < 8) return -EINVAL;
-    if ((b[0] | b[1] << 8) != AF_INET) return -EAFNOSUPPORT;
-    *port = (uint16_t)(b[2] << 8 | b[3]);
-    *ip = (ip4_t)b[4] << 24 | (ip4_t)b[5] << 16 | (ip4_t)b[6] << 8 | b[7];
-    return 0;
+    if (!b || len < 2) return -EINVAL;
+    uint16_t fam = (uint16_t)(b[0] | (b[1] << 8));
+    if (expected_family && fam != (uint16_t)expected_family) return -EAFNOSUPPORT;
+
+    if (fam == AF_INET) {
+        if (len < 8) return -EINVAL;
+        if (port) *port = (uint16_t)(b[2] << 8 | b[3]);
+        if (ip4) *ip4 = (ip4_t)b[4] << 24 | (ip4_t)b[5] << 16 | (ip4_t)b[6] << 8 | b[7];
+        if (out_family) *out_family = AF_INET;
+        return 0;
+    }
+    if (fam == AF_INET6) {
+        if (len < 24) return -EINVAL; /* sin6_family(2) + sin6_port(2) + sin6_flowinfo(4) + sin6_addr(16) */
+        if (port) *port = (uint16_t)(b[2] << 8 | b[3]);
+        if (ip6) memcpy(ip6->b, b + 8, 16);
+        if (out_family) *out_family = AF_INET6;
+        return 0;
+    }
+    return -EAFNOSUPPORT;
 }
 
-static void sa_put(void* sa, int* len, ip4_t ip, uint16_t port) {
+static void sa_put(void* sa, int* len, int family, ip4_t ip4, const ip6_t* ip6, uint16_t port) {
     if (!sa || !len) return;
+    if (family == AF_INET6) {
+        uint8_t b[28];
+        memset(b, 0, sizeof(b));
+        b[0] = (uint8_t)AF_INET6;
+        b[1] = (uint8_t)(AF_INET6 >> 8);
+        b[2] = (uint8_t)(port >> 8);
+        b[3] = (uint8_t)port;
+        if (ip6) memcpy(b + 8, ip6->b, 16);
+        int n = *len < 28 ? (*len < 0 ? 0 : *len) : 28;
+        memcpy(sa, b, (size_t)n);
+        *len = 28;
+        return;
+    }
     uint8_t b[16] = { AF_INET, 0, (uint8_t)(port >> 8), (uint8_t)port,
-                      (uint8_t)(ip >> 24), (uint8_t)(ip >> 16), (uint8_t)(ip >> 8), (uint8_t)ip };
+                      (uint8_t)(ip4 >> 24), (uint8_t)(ip4 >> 16), (uint8_t)(ip4 >> 8), (uint8_t)ip4 };
     int n = *len < 16 ? (*len < 0 ? 0 : *len) : 16;
     memcpy(sa, b, (size_t)n);
     *len = 16;
@@ -132,23 +207,52 @@ static ip4_t local_ip(ip4_t rip) {
     return nf && nf->configured ? nf->ip : 0;
 }
 
+static ip6_t local_ip6(const ip6_t* rip6) {
+    ip6_t src;
+    memset(&src, 0, sizeof(src));
+    if (rip6 && ipv6_source(rip6, &src) == NET_OK) return src;
+    if (ipv6_global(&src, NULL) || ipv6_link_local(&src)) return src;
+    return src;
+}
+
 usock_t* usock_new(int family, int type, int* err) {
-    if (family != AF_INET) { *err = -EAFNOSUPPORT; return NULL; }
+    if (family != AF_INET && family != AF_INET6) { *err = -EAFNOSUPPORT; return NULL; }
     if (type != SOCK_STREAM && type != SOCK_DGRAM) { *err = -EPROTONOSUPPORT; return NULL; }
     usock_t* s = (usock_t*)kzalloc(sizeof(usock_t));
     if (!s) { *err = -ENOMEM; return NULL; }
+    s->family = family;
     s->type = type;
     return s;
 }
 
-/* a datagram for a UDP socket (net/udp.c, as packets come in) */
+/* a datagram for an IPv4 UDP socket */
 static void udp_in(ip4_t src, uint16_t sport, const uint8_t* data, uint32_t len, void* ctx) {
     usock_t* s = (usock_t*)ctx;
     if (s->qn >= DGRAM_QUEUE) return;               /* full: dropped, as UDP may */
     dgram_t* d = (dgram_t*)kmalloc(sizeof(dgram_t) + len);
     if (!d) return;
     d->next = NULL;
+    d->family = AF_INET;
     d->ip = src;
+    memset(&d->ip6, 0, sizeof(d->ip6));
+    d->port = sport;
+    d->len = len;
+    memcpy(d->data, data, len);
+    if (s->qt) s->qt->next = d; else s->qh = d;
+    s->qt = d;
+    s->qn++;
+}
+
+/* a datagram for an IPv6 UDP socket */
+static void udp6_in(const ip6_t* src, uint16_t sport, const uint8_t* data, uint32_t len, void* ctx) {
+    usock_t* s = (usock_t*)ctx;
+    if (s->qn >= DGRAM_QUEUE) return;
+    dgram_t* d = (dgram_t*)kmalloc(sizeof(dgram_t) + len);
+    if (!d) return;
+    d->next = NULL;
+    d->family = AF_INET6;
+    d->ip = 0;
+    if (src) d->ip6 = *src; else memset(&d->ip6, 0, sizeof(d->ip6));
     d->port = sport;
     d->len = len;
     memcpy(d->data, data, len);
@@ -160,8 +264,10 @@ static void udp_in(ip4_t src, uint16_t sport, const uint8_t* data, uint32_t len,
 static int udp_bind_port(usock_t* s, uint16_t port) {
     if (s->udp_bound) return -EINVAL;
     for (int tries = 0; tries < 64; tries++) {
-        uint16_t p = port ? port : ephemeral();
-        if (udp_bind(p, udp_in, s) == 0) {
+        uint16_t p = port ? port : (s->family == AF_INET6 ? udp6_ephemeral_port() : ephemeral());
+        if (!p) p = ephemeral();
+        int rc = (s->family == AF_INET6) ? udp6_bind(p, udp6_in, s) : udp_bind(p, udp_in, s);
+        if (rc == 0) {
             s->lport = p;
             s->udp_bound = 1;
             s->state = S_BOUND;
@@ -176,15 +282,20 @@ void usock_close(usock_t* s) {
     if (!s) return;
     if (s->c) tcp_close(s->c);                       /* (graceful: the stack finishes it) */
     if (s->l) tcp_unlisten(s->l);
-    if (s->udp_bound) udp_unbind(s->lport);
+    if (s->udp_bound) {
+        if (s->family == AF_INET6) udp6_unbind(s->lport);
+        else udp_unbind(s->lport);
+    }
     while (s->qh) { dgram_t* d = s->qh; s->qh = d->next; kfree(d); }
     kfree(s);
 }
 
 int usock_bind(usock_t* s, const void* sa, int len) {
-    ip4_t ip;
-    uint16_t port;
-    int rc = sa_get(sa, len, &ip, &port);
+    ip4_t ip = 0;
+    ip6_t ip6;
+    memset(&ip6, 0, sizeof(ip6));
+    uint16_t port = 0;
+    int rc = sa_get(sa, len, s->family, &ip, &ip6, &port, NULL);
     if (rc) return rc;
     if (s->state != S_NEW) return -EINVAL;
     if (s->type == SOCK_DGRAM) return udp_bind_port(s, port);
@@ -202,7 +313,7 @@ int usock_listen(usock_t* s, int backlog) {
     int err = 0;
     for (int tries = 0; tries < 64; tries++) {
         uint16_t p = s->lport && (!s->auto_port || !tries) ? s->lport : ephemeral();
-        s->l = tcp_listen(p, &err);
+        s->l = (s->family == AF_INET6) ? tcp_listen6(p, &err) : tcp_listen(p, &err);
         if (s->l) { s->lport = p; s->state = S_LISTEN; return 0; }
         if (s->lport && !s->auto_port) break;
     }
@@ -217,13 +328,20 @@ usock_t* usock_accept(usock_t* s, void* sa, int* len, int* err) {
         if (c) {
             usock_t* n = (usock_t*)kzalloc(sizeof(usock_t));
             if (!n) { tcp_abort(c); *err = -ENOMEM; return NULL; }
+            n->family = s->family;
             n->type = SOCK_STREAM;
             n->c = c;
             n->state = S_CONN;
             n->lport = s->lport;
-            tcp_peer(c, &n->rip, &n->rport);
-            n->has_peer = 1;
-            sa_put(sa, len, n->rip, n->rport);
+            if (s->family == AF_INET6) {
+                tcp_peer6(c, &n->rip6, &n->rport);
+                n->has_peer = 1;
+                sa_put(sa, len, AF_INET6, 0, &n->rip6, n->rport);
+            } else {
+                tcp_peer(c, &n->rip, &n->rport);
+                n->has_peer = 1;
+                sa_put(sa, len, AF_INET, n->rip, NULL, n->rport);
+            }
             return n;
         }
         if (s->nonblock || (s->rcvtimeo && timer_ms() - start >= s->rcvtimeo)) { *err = -EAGAIN; return NULL; }
@@ -232,13 +350,16 @@ usock_t* usock_accept(usock_t* s, void* sa, int* len, int* err) {
 }
 
 int usock_connect(usock_t* s, const void* sa, int len) {
-    ip4_t ip;
-    uint16_t port;
-    int rc = sa_get(sa, len, &ip, &port);
+    ip4_t ip = 0;
+    ip6_t ip6;
+    memset(&ip6, 0, sizeof(ip6));
+    uint16_t port = 0;
+    int rc = sa_get(sa, len, s->family, &ip, &ip6, &port, NULL);
     if (rc) return rc;
     if (s->type == SOCK_DGRAM) {                    /* the default peer */
         if (!s->udp_bound && (rc = udp_bind_port(s, 0)) != 0) return rc;
-        s->rip = ip;
+        if (s->family == AF_INET6) s->rip6 = ip6;
+        else s->rip = ip;
         s->rport = port;
         s->has_peer = 1;
         return 0;
@@ -246,11 +367,14 @@ int usock_connect(usock_t* s, const void* sa, int len) {
     if (s->state == S_CONN) return -EISCONN;
     if (s->state == S_LISTEN) return -EINVAL;
     int err = 0;
-    tcp_conn_t* c = tcp_connect(ip, port, s->sndtimeo ? s->sndtimeo : 30000, &err);
+    tcp_conn_t* c = (s->family == AF_INET6)
+        ? tcp_connect6(&ip6, port, s->sndtimeo ? s->sndtimeo : 30000, &err)
+        : tcp_connect(ip, port, s->sndtimeo ? s->sndtimeo : 30000, &err);
     if (!c) { s->err = -net_errno(err); return net_errno(err); }
     s->c = c;
     s->state = S_CONN;
-    s->rip = ip;
+    if (s->family == AF_INET6) s->rip6 = ip6;
+    else s->rip = ip;
     s->rport = port;
     s->has_peer = 1;
     s->lport = tcp_local_port(c);
@@ -261,13 +385,24 @@ long usock_send(usock_t* s, const void* buf, uint32_t len, int flags, const void
     if (s->shut_wr) return -EPIPE;
     if (s->type == SOCK_DGRAM) {
         ip4_t ip = s->rip;
+        ip6_t ip6 = s->rip6;
         uint16_t port = s->rport;
-        if (sa) { int rc = sa_get(sa, salen, &ip, &port); if (rc) return rc; }
-        else if (!s->has_peer) return -ENOTCONN;
-        if (len > 1472) return -EMSGSIZE;
-        if (!s->udp_bound) { int rc = udp_bind_port(s, 0); if (rc) return rc; }
-        int rc = udp_send(ip, s->lport, port, buf, len);
-        return rc < 0 ? net_errno(rc) : (long)len;
+        if (sa) {
+            int rc = sa_get(sa, salen, s->family, &ip, &ip6, &port, NULL);
+            if (rc) return rc;
+        } else if (!s->has_peer) return -ENOTCONN;
+
+        if (s->family == AF_INET6) {
+            if (len > IP6_MAX_PAYLOAD - 8) return -EMSGSIZE;
+            if (!s->udp_bound) { int rc = udp_bind_port(s, 0); if (rc) return rc; }
+            int rc = udp6_send(&ip6, s->lport, port, buf, len);
+            return rc < 0 ? net_errno(rc) : (long)len;
+        } else {
+            if (len > 1472) return -EMSGSIZE;
+            if (!s->udp_bound) { int rc = udp_bind_port(s, 0); if (rc) return rc; }
+            int rc = udp_send(ip, s->lport, port, buf, len);
+            return rc < 0 ? net_errno(rc) : (long)len;
+        }
     }
     if (s->state != S_CONN) return -ENOTCONN;
     if (!len) return 0;
@@ -294,7 +429,7 @@ long usock_recv(usock_t* s, void* buf, uint32_t len, int flags, void* sa, int* s
         dgram_t* d = s->qh;
         uint32_t n = d->len < len ? d->len : len;
         memcpy(buf, d->data, n);
-        sa_put(sa, salen, d->ip, d->port);
+        sa_put(sa, salen, d->family, d->ip, &d->ip6, d->port);
         if (!(flags & MSG_PEEK)) {
             s->qh = d->next;
             if (!s->qh) s->qt = NULL;
@@ -387,17 +522,34 @@ int usock_opt(usock_t* s, int set, int level, int name, void* val, int* len) {
         }
         return set ? 0 : opt_int(val, len, 0);
     }
+    if (level == IPPROTO_IPV6) {
+        if (name == IPV6_V6ONLY) {
+            if (set) { s->v6only = iv != 0; return 0; }
+            return opt_int(val, len, s->v6only);
+        }
+        return set ? 0 : opt_int(val, len, 0);
+    }
     if (level == 0) return set ? 0 : opt_int(val, len, 0);      /* IPPROTO_IP: TOS, TTL... */
     return -ENOPROTOOPT;
 }
 
 int usock_name(usock_t* s, int peer, void* sa, int* len) {
-    if (peer) {
-        if (!s->has_peer) return -ENOTCONN;
-        sa_put(sa, len, s->rip, s->rport);
+    if (s->family == AF_INET6) {
+        if (peer) {
+            if (!s->has_peer) return -ENOTCONN;
+            sa_put(sa, len, AF_INET6, 0, &s->rip6, s->rport);
+            return 0;
+        }
+        ip6_t loc = s->has_peer ? local_ip6(&s->rip6) : local_ip6(NULL);
+        sa_put(sa, len, AF_INET6, 0, &loc, s->lport);
         return 0;
     }
-    sa_put(sa, len, s->has_peer ? local_ip(s->rip) : 0, s->lport);
+    if (peer) {
+        if (!s->has_peer) return -ENOTCONN;
+        sa_put(sa, len, AF_INET, s->rip, NULL, s->rport);
+        return 0;
+    }
+    sa_put(sa, len, AF_INET, s->has_peer ? local_ip(s->rip) : 0, NULL, s->lport);
     return 0;
 }
 
