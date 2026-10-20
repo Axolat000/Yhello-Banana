@@ -367,7 +367,8 @@
       "tools/dev.sh",
       "tools/serialtest.py",
       "docs/TESTING.md",
-      "tools/ext4test/run.sh"
+      "tools/ext4test/run.sh",
+      "tools/ci-install-test.sh"
     ],
     "steps": [
       "Créer un job QEMU BIOS et un job UEFI 64 bits ; installer les dépendances documentées et archiver les logs série.",
@@ -391,7 +392,8 @@
       "tools/dev.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/dev.sh",
       "tools/serialtest.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/serialtest.py",
       "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md",
-      "tools/ext4test/run.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/run.sh"
+      "tools/ext4test/run.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ext4test/run.sh",
+      "tools/ci-install-test.sh": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/ci-install-test.sh"
     },
     "rank": 8
   },
