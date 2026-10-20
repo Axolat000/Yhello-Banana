@@ -360,19 +360,22 @@ static uint32_t orb_point(int dx, int dy, int r, uint32_t bg, int pressed, int h
     uint32_t c = mix(top, bot, (dy + r) * 256 / (2 * r));
     /* the glow at the bottom */
     if (in_ellipse(dx, dy - r * 62 / 100, r * 80 / 100, r * 45 / 100)) c = mix(c, 0x006FE0FFu, hover ? 150 : 110);
-    /* the banana's shadow, then the banana */
-    if (in_banana(dx - 9, dy - 9, r)) c = mix(c, 0x00041428u, 120);
-    if (in_banana(dx, dy, r)) {
+    /* the banana's shadow, then the banana - drawn mirrored (bx: the banana's
+     * x), its stalk top left and its tip bottom right; the shadow still falls
+     * down and to the right */
+    int bx = -dx;
+    if (in_banana(9 - dx, dy - 9, r)) c = mix(c, 0x00041428u, 120);
+    if (in_banana(bx, dy, r)) {
         int edge = r * 66 / 100, dd = 0;
         while ((dd + 1) * (dd + 1) <= d2) dd++;
         int t = dd * 256 / edge;                                     /* 0 inside .. 256 at its outer side */
         c = t > 215 ? 0x00C88A08u : mix(0x00FFEC7Au, 0x00F2B21Cu, t);
-        /* its ends: the stalk (top right), the dark tip (bottom left) */
-        if (dx > r * 18 / 100 && dy < -r * 48 / 100) c = 0x006B4A1Fu;
-        if (dx < -r * 52 / 100 && dy > r * 16 / 100) c = 0x00503416u;
+        /* its ends: the stalk, the dark tip */
+        if (bx > r * 18 / 100 && dy < -r * 48 / 100) c = 0x006B4A1Fu;
+        if (bx < -r * 52 / 100 && dy > r * 16 / 100) c = 0x00503416u;
     }
     /* the stalk past the crescent's end */
-    if (dx >= r * 22 / 100 && dx <= r * 36 / 100 && dy >= -r * 76 / 100 && dy <= -r * 54 / 100) c = 0x006B4A1Fu;
+    if (bx >= r * 22 / 100 && bx <= r * 36 / 100 && dy >= -r * 76 / 100 && dy <= -r * 54 / 100) c = 0x006B4A1Fu;
     /* the glass: white, strong at the top, gone at the middle */
     int hy = -r * 42 / 100, hry = r * 52 / 100;
     if (in_ellipse(dx, dy - hy, r * 80 / 100, hry)) {

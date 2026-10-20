@@ -45,8 +45,13 @@ static int ttf_cell(int x, int y, int w, int h, uint32_t cp, uint32_t fg) {
     char u[4];
     uint32_t n = (uint32_t)u8_encode(cp, u);
     int px = h * 13 / 8, a, d;
-    font_metrics(FONT_MONO, px, &a, &d, NULL);
     int adv = font_text_width(FONT_MONO, px, u, n);
+    if (adv > w + 1) {                            /* wider than a cell (an emoji): smaller, to fit */
+        px = px * w / adv;
+        if (px < 6) px = 6;
+        adv = font_text_width(FONT_MONO, px, u, n);
+    }
+    font_metrics(FONT_MONO, px, &a, &d, NULL);
     font_draw(t, stride, x, y, x + w, y + h, FONT_MONO, px, x + (w - adv) / 2, y + (h - (a + d)) / 2 + a, u, n, fg, 0);
     return 1;
 }
@@ -182,8 +187,13 @@ void gfx_draw_cell_cp(int x, int y, uint32_t cp, uint32_t fg, uint32_t bg) {
         char u[4];
         uint32_t n = (uint32_t)u8_encode(cp, u);
         int px = TSIZE[g_tsize].px, a, d;
-        font_metrics(FONT_UI, px, &a, &d, NULL);
         int adv = font_text_width(FONT_UI, px, u, n);
+        if (adv > cw + 2) {                       /* wider than a cell (an emoji): smaller, to fit */
+            px = px * (cw + 2) / adv;
+            if (px < 6) px = 6;
+            adv = font_text_width(FONT_UI, px, u, n);
+        }
+        font_metrics(FONT_UI, px, &a, &d, NULL);
         font_draw(t, stride, x, y, x + cw + 2, y + ch, FONT_UI, px, x + (cw - adv) / 2, y + (ch - (a + d)) / 2 + a, u, n, fg, 0);
         return;
     }
