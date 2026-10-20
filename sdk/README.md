@@ -16,7 +16,8 @@ sdk/
 ├── tools/bpkg      the packager (pack, list, extract, check)
 ├── tools/bananatheme  themes for the desktop: new, check, preview (PNG), pack
 ├── themes/         the theme format (README.md) and examples
-└── examples/       hello, guess (console), paint, clock, mandel (desktop), tones (sound)
+└── examples/       hello, guess (console), paint, clock, mandel (desktop), tones (sound),
+                    gl3test, glinfo, gles2 (OpenGL, EGL, OpenGL ES through Mesa)
 ```
 
 ## Requirements
