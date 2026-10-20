@@ -188,7 +188,7 @@ static void raise_app(int a) {
 /* the topmost app window at a point, -1 if none (with_front: also the one above the terminals) */
 /* the mouse wheel, per app window (NULL: it does not scroll) */
 static void (*const g_app_wheel[APP_COUNT])(int mx, int my, int dz) = {
-    explorer_wheel, browser_wheel, notepad_wheel, NULL, NULL, settings_wheel, NULL, appwin_wheel,
+    explorer_wheel, browser_wheel, notepad_wheel, NULL, taskmgr_wheel, settings_wheel, NULL, appwin_wheel,
 };
 
 static int app_at(int mx, int my, int with_front) {
