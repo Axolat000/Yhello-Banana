@@ -1840,6 +1840,7 @@ uint32_t settings_signature(void) {
 void settings_boot(void) {
     char v[32];
     i18n_boot();                        /* the language (English unless chosen) */
+    gpu_radeon_boot();                  /* the experimental Radeon driver, when asked for */
     if (cfg_get(CFG_SETTINGS, "volume", v, sizeof(v))) {
         uint32_t n = 0;
         if (k_parse_u32(v, &n) && n <= 100) audio_set_volume((int)n);

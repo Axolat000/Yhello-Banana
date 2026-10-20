@@ -6,6 +6,7 @@
 #include "../kernel/kstring.h"
 #include "../kernel/kheap.h"
 #include "../kernel/gui.h"
+#include "../kernel/gpu.h"
 #include "../usb/usbcore.h"
 
 /*
@@ -128,6 +129,23 @@ int devcmd_dispatch(int argc, char** argv) {
     }
     if (!strcmp(argv[0], "devmgmt.msc") || !strcmp(argv[0], "devmgmt")) {
         if (!gui_open_devmgr()) say("devmgr: the Device Manager window is part of the desktop (startx); here: devmgr");
+        return 1;
+    }
+    if (!strcmp(argv[0], "gpu")) {
+        const char* w = argc > 2 ? argv[2] : "";
+        if (argc < 2 || strcmp(argv[1], "experimental")) { say("usage: gpu experimental [on | off]   (lsgpu: the graphics card)"); return 1; }
+        if (!strcmp(w, "on")) {
+            gpu_set_experimental(1);
+            say("gpu: experimental drivers on (AMD Radeon HD 5000-7000, RX 400/500: hardware cursor and vsync)");
+            if (gpu_radeon_try() == 0) say("gpu: the Radeon driver runs now");
+            else { terminal_write("gpu: not used here: "); say(gpu_radeon_status()); }
+        } else if (!strcmp(w, "off")) {
+            gpu_set_experimental(0);
+            say("gpu: experimental drivers off from the next start");
+        } else {
+            terminal_write(gpu_experimental() ? "gpu: experimental drivers on - " : "gpu: experimental drivers off - ");
+            say(gpu_radeon_status());
+        }
         return 1;
     }
     if (strcmp(argv[0], "devmgr") && strcmp(argv[0], "lsdev")) return 0;

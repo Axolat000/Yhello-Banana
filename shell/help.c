@@ -421,6 +421,14 @@ static const page_t PAGES[] = {
       "devmgr\ndevmgr -c\ndevmgr show e1000\ndevmgr gui", "lspci, lsusb, lsblk, drivers" },
     { "lsdev", "hardware", "lsdev", "the same as devmgr", NULL, NULL, NULL, "devmgr" },
     { "devmgmt.msc", "hardware", "devmgmt.msc", "the Device Manager window", NULL, NULL, NULL, "devmgr" },
+    { "gpu", "hardware", "gpu experimental [on | off]", "experimental graphics drivers",
+      "Turns on (or off) the graphics drivers written without the hardware to try them on: for AMD Radeon HD 5000 / 6000 / "
+      "7000 TeraScale 2 cards (the HD 7450...) and RX 400 / 500 Polaris cards (the RX 580...), a hardware mouse pointer and "
+      "vsync over the firmware's screen. The driver first checks that the card scans out exactly the screen the firmware "
+      "handed over, else it leaves the card alone. The choice is kept; off takes effect at the next start. With no word: "
+      "whether it is on and what the driver found. Intel HD Graphics (1st to 8th generation Core) need no switch: their "
+      "driver is always on. NVIDIA cards keep the firmware's screen.",
+      NULL, "gpu experimental on\ngpu experimental", "lsgpu, devmgr" },
     { "lspci", "hardware", "lspci [-v] [-n]", "the PCI devices, as Linux's lspci",
       "One line per PCI function: its address (bus:device.function), class, maker, name and IDs. -v adds its interrupt, "
       "its memory and I/O regions and the Banana OS driver in use; -n prints the numbers only.",
