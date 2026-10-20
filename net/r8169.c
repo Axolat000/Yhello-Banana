@@ -17,6 +17,15 @@
  * OWN in a descriptor says whether the card or the driver has it, EOR
  * marks the ring's last one. The PHY is told to negotiate the link
  * (it also comes out of power-down that way); the link state is PHYstatus.
+ *
+ * The RTL8168g / 8168h and later (the chip on most mainboards since about
+ * 2013, XID 4c0 and up) have a small controller of their own that the
+ * firmware (PXE, UEFI's network stack, Realtek's management engine) may
+ * have left in charge ("out of band"), with the receive path gated off:
+ * frames then go out but none come in - DHCP never gets its answer. As
+ * Linux's r8169 does (rtl_hw_init_8168g, rtl8169_hw_reset), the driver
+ * takes the chip back from it, waits for its FIFOs, powers the PLL and
+ * opens the receive gate once the rings are set.
  */
 
 #define R_IDR0      0x00      /* the MAC address, 6 bytes */
@@ -31,10 +40,20 @@
 #define R_9346CR    0x50
 #define R_PHYAR     0x60
 #define R_PHYSTATUS 0x6C
+#define R_PMCH      0x6F      /* (8168g+) power management: the PLL */
+#define R_OCPDR     0xB0      /* (8168g+) MAC OCP register access */
+#define R_MCU       0xD3      /* (8168g+) the chip's own controller */
 #define R_RMS       0xDA      /* the biggest frame received */
 #define R_CPCR      0xE0
 #define R_RDSAR     0xE4      /* receive descriptors, 64-bit */
 #define R_MTPS      0xEC      /* the biggest frame sent (x128 bytes) */
+#define R_MISC      0xF0      /* (8168g+) */
+
+#define MCU_NOW_IS_OOB    0x80
+#define MCU_RXTX_EMPTY    0x30
+#define MCU_LINK_LIST_RDY 0x02
+#define MISC_RXDV_GATED   0x00080000u
+#define TCR_TXCFG_EMPTY   0x00000800u
 
 #define CMD_RST 0x10
 #define CMD_RE  0x08
@@ -78,6 +97,54 @@ static void w32(uint32_t r, uint32_t v) { if (g_mmio) *(volatile uint32_t*)(g_mm
 static void phy_write(int reg, uint16_t v) {
     w32(R_PHYAR, 0x80000000u | ((uint32_t)(reg & 0x1F) << 16) | v);
     for (int i = 0; i < 2000 && (r32(R_PHYAR) & 0x80000000u); i++) io_wait();
+}
+
+/* (8168g+) the MAC's OCP registers, through OCPDR */
+static uint16_t mac_ocp_read(uint32_t reg) {
+    w32(R_OCPDR, reg << 15);
+    return (uint16_t)r32(R_OCPDR);
+}
+static void mac_ocp_write(uint32_t reg, uint16_t v) {
+    w32(R_OCPDR, 0x80000000u | (reg << 15) | v);
+}
+
+/* up to ms milliseconds for the 32-bit register reg to have all of bits (or none, want 0) */
+static int wait_bits32(uint32_t reg, uint32_t bits, int want) {
+    for (int i = 0; i < 100000; i++) {
+        uint32_t v = r32(reg) & bits;
+        if (want ? v == bits : v == 0) return 1;
+        io_wait();
+    }
+    return 0;
+}
+static int wait_bits8(uint32_t reg, uint8_t bits) {
+    for (int i = 0; i < 100000; i++) {
+        if ((r8(reg) & bits) == bits) return 1;
+        io_wait();
+    }
+    return 0;
+}
+static int wait_ll_fifo(void) {               /* the link-list share FIFO */
+    for (int i = 0; i < 100000; i++) {
+        if (mac_ocp_read(0xE00E) & 0x2000) return 1;
+        io_wait();
+    }
+    return 0;
+}
+
+/* (8168g+) the chip back from its own controller, its receive path quiet */
+static void take_over_8168g(void) {
+    w32(R_MISC, r32(R_MISC) | MISC_RXDV_GATED);           /* nothing more comes in while we change things */
+    wait_bits32(R_TCR, TCR_TXCFG_EMPTY, 1);
+    wait_bits8(R_MCU, MCU_RXTX_EMPTY);
+    w8(R_CMD, (uint8_t)(r8(R_CMD) & ~(CMD_TE | CMD_RE)));
+    for (int i = 0; i < 1000; i++) io_wait();
+    w8(R_MCU, (uint8_t)(r8(R_MCU) & ~MCU_NOW_IS_OOB));   /* ours now, not the firmware's */
+    mac_ocp_write(0xE8DE, (uint16_t)(mac_ocp_read(0xE8DE) & ~0x4000));
+    wait_ll_fifo();
+    mac_ocp_write(0xE8DE, (uint16_t)(mac_ocp_read(0xE8DE) | 0x8000));
+    wait_ll_fifo();
+    w8(R_PMCH, (uint8_t)(r8(R_PMCH) | 0xC0));            /* the PLL on */
 }
 
 static void give_rx(int i) {
@@ -173,6 +240,10 @@ netdev_t* r8169_probe(void) {
     }
     pci_enable(&pd);
 
+    uint32_t xid = (r32(R_TCR) >> 20) & 0x7CFu;  /* which revision of the chip */
+    int g_plus = xid >= 0x4C0;                   /* 8168g / 8168h / 8411b / 8168fp... */
+    if (g_plus) take_over_8168g();
+
     /* reset: the command register's RST bit clears itself when done */
     w8(R_CMD, CMD_RST);
     int ok = 0;
@@ -181,7 +252,6 @@ netdev_t* r8169_probe(void) {
 
     memset(&g_nd, 0, sizeof(g_nd));
     for (int i = 0; i < 6; i++) g_nd.mac[i] = r8(R_IDR0 + (uint32_t)i);
-    uint32_t xid = (r32(R_TCR) >> 20) & 0x7CFu;  /* which revision of the chip */
 
     for (int i = 0; i < RX_COUNT; i++) {
         g_rx[i].addr_lo = (uint32_t)(uintptr_t)g_rxbuf[i];
@@ -207,6 +277,10 @@ netdev_t* r8169_probe(void) {
     w16(R_ISR, 0xFFFF);
     w16(R_IMR, 0x003F);                          /* receive/transmit OK and errors, link change, no buffer */
     w8(R_9346CR, 0x00);
+    if (g_plus) {
+        w32(R_MISC, r32(R_MISC) & ~MISC_RXDV_GATED);      /* the receive path open */
+        w8(R_CMD, CMD_TE | CMD_RE);
+    }
 
     /* the PHY: auto-negotiation on and restarted (this also ends a power-down) */
     phy_write(0x1F, 0);                          /* (register page 0, on the chips that have pages) */
@@ -221,7 +295,8 @@ netdev_t* r8169_probe(void) {
     if (pd.irq_line > 0 && pd.irq_line < 16) irq_install(pd.irq_line, rtl_irq);
     else g_nd.irq = 0xFF;
 
-    klog("r8169: %s (XID %03x) at %s 0x%x irq %u mac %02x:%02x:%02x:%02x:%02x:%02x\n", model, xid,
+    klog("r8169: %s (XID %03x%s) at %s 0x%x irq %u mac %02x:%02x:%02x:%02x:%02x:%02x\n", model, xid,
+         g_plus ? ", 8168g+" : "",
          g_mmio ? "mmio" : "io", g_mmio ? (uint32_t)(uintptr_t)g_mmio : g_io, pd.irq_line,
          g_nd.mac[0], g_nd.mac[1], g_nd.mac[2], g_nd.mac[3], g_nd.mac[4], g_nd.mac[5]);
     return &g_nd;
