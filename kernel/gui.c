@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "crash.h"
+#include "i18n.h"
 #include "theme.h"
 #include "boottime.h"
 #include "acpi_sleep.h"
@@ -635,7 +636,7 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
     draw_bevel_box(w.x, w.y, w.w, w.h, frame, TC(0x4A5466), TC(0x0E1116));
     gfx_fill_rect(w.x + 2, w.y + 2, w.w - 4, w.h - 4, body);
     draw_bevel_box(w.x + 3, w.y + 3, w.w - 6, title_h - 1, title, title_hi, title_lo);
-    gfx_draw_text(w.x + 10, w.y + 7, "Terminal", active ? TC(0xF2F7FF) : TC(0xCED8E6), title);
+    gfx_draw_text(w.x + 10, w.y + 7, _("Terminal"), active ? TC(0xF2F7FF) : TC(0xCED8E6), title);
 
     /* minimize, maximize / restore, close */
     win_draw_button_row(w.x + w.w, w.y + 4, 12, 1, w.maxed);
@@ -1099,9 +1100,9 @@ static void win_title(int h, char* out, int cap) {
     if (k == WK_TERM) {
         int n = 0;
         for (int j = 0; j <= i; j++) if (g_terms[j].open) n++;
-        ksnprintf(out, (size_t)cap, "Terminal %d", n);
+        ksnprintf(out, (size_t)cap, "%s %d", _("Terminal"), n);
     } else if (k == WK_APP) {
-        kstrlcpy(out, g_apps[i].title, (size_t)cap);
+        kstrlcpy(out, _(g_apps[i].title), (size_t)cap);
     } else {
         appwin_info(i, out, cap, NULL);
     }
@@ -1712,7 +1713,7 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
     if (sysinfo_live_boot()) {
         int bx = net_x - 14 - 7 * 8 - 8;
         gfx_fill_rect(bx, bar_y + 5, 7 * 8 + 8, BAR_H - 10, TC(0xD9822B));
-        gfx_draw_text(bx + 4, bar_y + 10, "LIVE CD", TC(0xFFFFFF), TC(0xD9822B));
+        gfx_draw_text(bx + 4, bar_y + 10, _("LIVE CD"), TC(0xFFFFFF), TC(0xD9822B));
     }
 }
 
@@ -1750,7 +1751,7 @@ static void capture_view(gui_view_t* v, uint32_t sec) {
     }
     v->sec = sec;
     v->term_gen = terminal_generation();
-    v->wp_gen = wallpaper_generation() ^ theme_generation() * 2654435761u;   /* (a new theme: everything again) */
+    v->wp_gen = wallpaper_generation() ^ theme_generation() * 2654435761u ^ i18n_generation() * 40503u;   /* (a new theme: everything again) */
     v->net_state = (net_if()->configured ? net_if()->ip : 1) ^ nettray_sig();
     v->front_app = g_front_app;
     for (int a = 0; a < APP_COUNT; a++) {
@@ -1970,14 +1971,14 @@ static void desk_refresh(int force) {
     if (!force && g_ndesk && timer_ms() - g_desk_checked < 2000) return;
     g_desk_checked = timer_ms();
     g_ndesk = 0;
-    desk_add(ACT_TERMINAL, "Terminal", NULL);
-    desk_add(ACT_FILES, "Files", NULL);
-    desk_add(ACT_BROWSER, "Browser", NULL);
-    desk_add(ACT_NOTEPAD, "Notepad", NULL);
-    desk_add(ACT_APPS, "Apps", NULL);
-    desk_add(ACT_TASKMGR, "Task Manager", NULL);
-    desk_add(ACT_SETTINGS, "Settings", NULL);
-    if (installer_available()) desk_add(ACT_INSTALL, "Install Banana OS", NULL);
+    desk_add(ACT_TERMINAL, _("Terminal"), NULL);
+    desk_add(ACT_FILES, _("Files"), NULL);
+    desk_add(ACT_BROWSER, _("Browser"), NULL);
+    desk_add(ACT_NOTEPAD, _("Notepad"), NULL);
+    desk_add(ACT_APPS, _("Apps"), NULL);
+    desk_add(ACT_TASKMGR, _("Task Manager"), NULL);
+    desk_add(ACT_SETTINGS, _("Settings"), NULL);
+    if (installer_available()) desk_add(ACT_INSTALL, _("Install Banana OS"), NULL);
     int n = pkg_list(g_pkgs, DESK_MAX);
     for (int i = 0; i < n && i < DESK_MAX; i++)
         desk_add(ACT_RUN_APP, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name, g_pkgs[i].name);
@@ -2504,9 +2505,9 @@ static void ask_draw(const fb_info_t* fi) {
     gfx_draw_text(x + 14, y + 90, g_ask.hint, TC(0x9AA6B6), TC(0x1D232C));
     if (g_ask.err[0]) gfx_draw_text(x + 14, y + 112, g_ask.err, TC(0xF08070), TC(0x1D232C));
     draw_bevel_box(x + w - 186, y + h - 36, 80, 24, TC(0x405478), TC(0x6B7892), TC(0x222A36));
-    gfx_draw_text(x + w - 186 + 32, y + h - 31, "OK", TC(0xFFFFFF), TC(0x405478));
+    gfx_draw_text(x + w - 186 + 32, y + h - 31, _("OK"), TC(0xFFFFFF), TC(0x405478));
     draw_bevel_box(x + w - 96, y + h - 36, 80, 24, TC(0x303740), TC(0x535D6E), TC(0x15191F));
-    gfx_draw_text(x + w - 96 + 16, y + h - 31, "Cancel", TC(0xE8EEF6), TC(0x303740));
+    gfx_draw_text(x + w - 96 + 16, y + h - 31, _("Cancel"), TC(0xE8EEF6), TC(0x303740));
 }
 
 /* a click while it is open (it takes every click) */
@@ -2539,7 +2540,7 @@ static void desktop_menu_cb(int id, void* arg) {
     case DM_NEWFOLDER: desk_new(1); break;
     case DM_NEWFILE: desk_new(0); break;
     case DM_NEWLINK:
-        ask_open("Create shortcut", "What should the shortcut open?",
+        ask_open(_("Create shortcut"), "What should the shortcut open?",
                  "e.g. Notepad, example.com or ~/Music", new_shortcut_done);
         break;
     case DM_UNHIDE: g_nhidden = 0; hidden_save(); desk_refresh(1); break;
@@ -2554,24 +2555,24 @@ static void desktop_menu_cb(int id, void* arg) {
 static void open_desktop_menu(int mx, int my) {
     if (g_nhidden < 0) hidden_load();
     ctx_item_t items[] = {
-        { "New folder", DM_NEWFOLDER, 0 },
-        { "New text document", DM_NEWFILE, 0 },
-        { "New shortcut...", DM_NEWLINK, 0 },
-        { "Paste", DM_PASTE, fileops_clip_count() == 0 },
+        { _("New folder"), DM_NEWFOLDER, 0 },
+        { _("New text document"), DM_NEWFILE, 0 },
+        { _("New shortcut..."), DM_NEWLINK, 0 },
+        { _("Paste"), DM_PASTE, fileops_clip_count() == 0 },
         { CTX_SEP, 0, 0 },
-        { "Arrange icons", DM_ARRANGE, 0 },
-        { "Restore removed icons", DM_UNHIDE, g_nhidden == 0 },
-        { "Refresh", DM_REFRESH, 0 },
-        { "Open the Desktop folder", DM_OPENDIR, 0 },
+        { _("Arrange icons"), DM_ARRANGE, 0 },
+        { _("Restore removed icons"), DM_UNHIDE, g_nhidden == 0 },
+        { _("Refresh"), DM_REFRESH, 0 },
+        { _("Open the Desktop folder"), DM_OPENDIR, 0 },
         { CTX_SEP, 0, 0 },
-        { "Terminal", ACT_TERMINAL, 0 },
-        { "Files", ACT_FILES, 0 },
-        { "Task Manager", ACT_TASKMGR, 0 },
-        { "Change wallpaper...", ACT_WALLPAPER, 0 },
-        { "About Banana OS", ACT_ABOUT, 0 },
+        { _("Terminal"), ACT_TERMINAL, 0 },
+        { _("Files"), ACT_FILES, 0 },
+        { _("Task Manager"), ACT_TASKMGR, 0 },
+        { _("Change wallpaper..."), ACT_WALLPAPER, 0 },
+        { _("About Banana OS"), ACT_ABOUT, 0 },
         { CTX_SEP, 0, 0 },
-        { "Lock screen", ACT_LOCK, 0 },
-        { "Exit to shell", ACT_QUIT, 0 },
+        { _("Lock screen"), ACT_LOCK, 0 },
+        { _("Exit to shell"), ACT_QUIT, 0 },
     };
     ctxmenu_open(mx, my, items, (int)(sizeof(items) / sizeof(items[0])), desktop_menu_cb, NULL);
 }
@@ -2686,9 +2687,9 @@ static void open_taskbar_menu(const fb_info_t* fi, int mx, int my) {
     if (p >= 0) {
         g_tbmenu_pin = p;
         ctx_item_t items[] = {
-            { "Open", TBM_PIN_OPEN, 0 },
+            { _("Open"), TBM_PIN_OPEN, 0 },
             { CTX_SEP, 0, 0 },
-            { "Unpin from taskbar", TBM_UNPIN, 0 },
+            { _("Unpin from taskbar"), TBM_UNPIN, 0 },
         };
         ctxmenu_open(mx, my, items, 3, taskbar_menu_cb, NULL);
         return;
@@ -2703,29 +2704,29 @@ static void open_taskbar_menu(const fb_info_t* fi, int mx, int my) {
         int pinned = can && pin_find(act, app) >= 0;
         g_tbmenu_pin = pinned ? pin_find(act, app) : -1;
         ctx_item_t items[] = {
-            { "Restore", TBM_RESTORE, !min && win_front() == g_tbmenu_win },
-            { "Minimize", TBM_MINIMIZE, min },
+            { _("Restore"), TBM_RESTORE, !min && win_front() == g_tbmenu_win },
+            { _("Minimize"), TBM_MINIMIZE, min },
             { CTX_SEP, 0, 0 },
             { pinned ? "Unpin from taskbar" : "Pin to taskbar", pinned ? TBM_UNPIN : TBM_PIN, !can },
             { CTX_SEP, 0, 0 },
-            { "Close window", TBM_CLOSE, 0 },
+            { _("Close window"), TBM_CLOSE, 0 },
             { CTX_SEP, 0, 0 },
-            { "Task Manager", TBM_TASKMGR, 0 },
+            { _("Task Manager"), TBM_TASKMGR, 0 },
         };
         ctxmenu_open(mx, my, items, 8, taskbar_menu_cb, NULL);
         return;
     }
     ctx_item_t items[] = {
-        { "Task Manager", TBM_TASKMGR, 0 },
+        { _("Task Manager"), TBM_TASKMGR, 0 },
         { CTX_SEP, 0, 0 },
-        { "Show the desktop", TBM_SHOW_DESKTOP, g_ntb == 0 },
-        { "Restore all windows", TBM_RESTORE_ALL, g_ntb == 0 },
+        { _("Show the desktop"), TBM_SHOW_DESKTOP, g_ntb == 0 },
+        { _("Restore all windows"), TBM_RESTORE_ALL, g_ntb == 0 },
         { CTX_SEP, 0, 0 },
-        { "New terminal", TBM_TERMINAL, 0 },
+        { _("New terminal"), TBM_TERMINAL, 0 },
         { g_tb_desks ? "Hide desktop buttons" : "Show desktop buttons", TBM_DESKS, 0 },
-        { "Taskbar settings", TBM_SETTINGS, 0 },
-        { "Lock screen", TBM_LOCK, 0 },
-        { "Exit to shell", TBM_QUIT, 0 },
+        { _("Taskbar settings"), TBM_SETTINGS, 0 },
+        { _("Lock screen"), TBM_LOCK, 0 },
+        { _("Exit to shell"), TBM_QUIT, 0 },
     };
     ctxmenu_open(mx, my, items, (int)(sizeof(items) / sizeof(items[0])), taskbar_menu_cb, NULL);
 }
@@ -2753,13 +2754,13 @@ static void open_term_menu(int wi, int mx, int my) {
     uint32_t n;
     clipboard_get(&n);
     ctx_item_t items[] = {
-        { "Copy", TM_COPY, !g_terms[wi].sel },
-        { "Paste", TM_PASTE, n == 0 },
-        { "Clear", TM_CLEAR, 0 },
+        { _("Copy"), TM_COPY, !g_terms[wi].sel },
+        { _("Paste"), TM_PASTE, n == 0 },
+        { _("Clear"), TM_CLEAR, 0 },
         { CTX_SEP, 0, 0 },
-        { "New terminal", TM_NEW, 0 },
-        { "Minimize", TM_MINIMIZE, 0 },
-        { "Close", TM_CLOSE, 0 },
+        { _("New terminal"), TM_NEW, 0 },
+        { _("Minimize"), TM_MINIMIZE, 0 },
+        { _("Close"), TM_CLOSE, 0 },
     };
     ctxmenu_open(mx, my, items, 7, term_menu_cb, NULL);
 }
@@ -2771,14 +2772,14 @@ static void notepad_rclick_menu(int mx, int my) {
     uint32_t n;
     clipboard_get(&n);
     ctx_item_t items[] = {
-        { "Cut", 24, 0 },
-        { "Copy", 3, 0 },
-        { "Paste", 22, n == 0 },
-        { "Select all", 1, 0 },
+        { _("Cut"), 24, 0 },
+        { _("Copy"), 3, 0 },
+        { _("Paste"), 22, n == 0 },
+        { _("Select all"), 1, 0 },
         { CTX_SEP, 0, 0 },
-        { "Find...", 6, 0 },
-        { "Open...", 15, 0 },
-        { "Save", 19, 0 },
+        { _("Find..."), 6, 0 },
+        { _("Open..."), 15, 0 },
+        { _("Save"), 19, 0 },
     };
     ctxmenu_open(mx, my, items, 8, notepad_menu_cb, NULL);
 }
@@ -3942,7 +3943,7 @@ static void kb_card(int x, int y, int w, int h, int handle, int sel, int big) {
     int maxc = (w - 12) / 8;
     if (maxc > 0 && (int)strlen(t) > maxc) { t[maxc] = 0; if (maxc > 1) t[maxc - 1] = '.'; }
     gfx_draw_text(x + (w - (int)strlen(t) * 8) / 2, y + h - (big ? 22 : 16), t, TC(0xE8EEF6), bg);
-    if (win_minimized(handle)) gfx_draw_text(x + (w - 9 * 8) / 2, y + h - 10, "minimized", TC(0x9AA6B6), bg);
+    if (win_minimized(handle)) gfx_draw_text(x + (w - 9 * 8) / 2, y + h - 10, _("minimized"), TC(0x9AA6B6), bg);
 }
 
 /* ══ Win+V: the clipboard history ════════════════════════════════════
@@ -4043,15 +4044,15 @@ static void cb_draw(const fb_info_t* fi) {
     cb_geom(fi, &px, &py, &pw, &ph, &rows);
     cb_clamp(rows);
     draw_bevel_box(px, py, pw, ph, CB_BG, TC(0x505E74), TC(0x0C0F14));
-    gfx_draw_text(px + 14, py + 13, "Clipboard", TC(0xFFFFFF), CB_BG);
+    gfx_draw_text(px + 14, py + 13, _("Clipboard"), TC(0xFFFFFF), CB_BG);
     int n = clipboard_hist_count();
     int bw = 10 * 8, bx = px + pw - bw - 12;
     draw_bevel_box(bx, py + 7, bw, 20, n ? TC(0x303740) : TC(0x262B33), TC(0x535D6E), TC(0x15191F));
-    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, "Clear all", n ? TC(0xE8EEF6) : TC(0x687384), n ? TC(0x303740) : TC(0x262B33));
+    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, _("Clear all"), n ? TC(0xE8EEF6) : TC(0x687384), n ? TC(0x303740) : TC(0x262B33));
     int y = py + CB_HEAD_H;
     if (!n) {
-        gfx_draw_text(px + 14, y + 10, "Nothing copied yet.", TC(0xE8EEF6), CB_BG);
-        gfx_draw_text(px + 14, y + 28, "Copy text (Ctrl+C) to see it here.", TC(0x9AA6B6), CB_BG);
+        gfx_draw_text(px + 14, y + 10, _("Nothing copied yet."), TC(0xE8EEF6), CB_BG);
+        gfx_draw_text(px + 14, y + 28, _("Copy text (Ctrl+C) to see it here."), TC(0x9AA6B6), CB_BG);
     }
     char* buf = (char*)kmalloc(400);
     for (int r = 0; r < rows && buf; r++, y += CB_ROW_H) {
@@ -4075,7 +4076,7 @@ static void cb_draw(const fb_info_t* fi) {
         ksnprintf(m, sizeof(m), "%d-%d of %d", g_cb_top + 1, g_cb_top + rows, n);
         gfx_draw_text(px + pw - 12 - (int)strlen(m) * 8, py + ph - 15, m, TC(0x9AA6B6), CB_BG);
     }
-    gfx_draw_text(px + 14, py + ph - 15, "Enter: paste  Del: delete  P: pin", TC(0x9AA6B6), CB_BG);
+    gfx_draw_text(px + 14, py + ph - 15, _("Enter: paste  Del: delete  P: pin"), TC(0x9AA6B6), CB_BG);
 }
 
 static int cb_key(int code) {
@@ -4154,9 +4155,9 @@ static void kb_draw_overlays(const fb_info_t* fi) {
         int stride, tw, th;
         t = fb_target(&stride, &tw, &th);
         if (t) for (int y = 0; y < th - BAR_H; y++) for (int x = 0; x < tw; x++) { uint32_t p = t[y * stride + x]; t[y * stride + x] = (p >> 2) & 0x003F3F3Fu; }
-        gfx_draw_text_scaled(40, 30, 2, "Task view", TC(0xFFFFFF), 0x00000000u);
-        gfx_draw_text(40, 66, "Arrows choose, Enter switches, Delete closes, Esc goes back", TC(0x9AA6B6), 0x00000000u);
-        if (!g_nlist) gfx_draw_text(40, 110, "No windows are open.", TC(0xE8EEF6), 0);
+        gfx_draw_text_scaled(40, 30, 2, _("Task view"), TC(0xFFFFFF), 0x00000000u);
+        gfx_draw_text(40, 66, _("Arrows choose, Enter switches, Delete closes, Esc goes back"), TC(0x9AA6B6), 0x00000000u);
+        if (!g_nlist) gfx_draw_text(40, 110, _("No windows are open."), TC(0xE8EEF6), 0);
         for (int i = 0; i < g_nlist; i++) {
             int x, y, cw, ch;
             tv_card(fi, i, &x, &y, &cw, &ch);

@@ -25,6 +25,7 @@
  * their app, pictures open in Photos, fonts install, USB sticks eject.
  */
 #include "explorer.h"
+#include "i18n.h"
 #include "theme.h"
 #include "keyboard.h"
 #include "utf8.h"
@@ -546,7 +547,7 @@ static void delete_for_good(void) {
 
 static void install_package(const char* path) {
     char msg[160], m2[112];
-    set_status("Installing...");
+    set_status(_("Installing..."));
     if (pkg_install(path, msg, sizeof(msg)) == 0) { kstrlcpy(m2, msg, sizeof(m2)); set_status(m2); }
     else { ksnprintf(m2, sizeof(m2), "Not installed: %s", msg); set_status_c(m2, 1); }
 }
@@ -588,7 +589,7 @@ static int open_media(const char* path, const char* name) {
 
 static void set_wallpaper(const char* path, const char* name) {
     char err[80], msg[112];
-    set_status("Setting the wallpaper...");
+    set_status(_("Setting the wallpaper..."));
     if (wallpaper_set_file(path, IMAGE_FILL, err, sizeof(err)) == 0) { ksnprintf(msg, sizeof(msg), "Wallpaper: %s", name); set_status(msg); }
     else { ksnprintf(msg, sizeof(msg), "Not a usable picture: %s", err); set_status_c(msg, 1); }
 }
@@ -706,7 +707,7 @@ static void clip_selected(int cut) {
 static void paste_here(void) {
     if (fileops_clip_count()) {
         char msg[112];
-        set_status("Copying...");
+        set_status(_("Copying..."));
         fileops_paste(g_path, msg, sizeof(msg));
         scan();
         set_status(msg);
@@ -756,13 +757,13 @@ void explorer_start_rename(void) {
     if (g_sel < 0) return;
     g_renaming = g_sel;
     kstrlcpy(g_rename, item_name(&g_items[g_sel]), sizeof(g_rename));
-    set_status("Type the new name - Enter: rename, Esc: cancel");
+    set_status(_("Type the new name - Enter: rename, Esc: cancel"));
 }
 
 static void finish_rename(void) {
     int i = g_renaming;
     g_renaming = -1;
-    if (i < 0 || i >= g_count || !g_rename[0] || strchr(g_rename, '/')) { set_status("Not renamed"); return; }
+    if (i < 0 || i >= g_count || !g_rename[0] || strchr(g_rename, '/')) { set_status(_("Not renamed")); return; }
     char from[FS_PATH_LEN], to[FS_PATH_LEN], msg[112];
     child_path(item_name(&g_items[i]), from, sizeof(from));
     child_path(g_rename, to, sizeof(to));
@@ -863,7 +864,7 @@ static void extract_zip(const char* path, const char* name, int here) {
     zip_stats_t st;
     if (here) kstrlcpy(dest, g_path, sizeof(dest));
     else { stem_of(name, 0, stem, sizeof(stem)); free_name(stem, "", dest, sizeof(dest)); }
-    set_status("Extracting...");
+    set_status(_("Extracting..."));
     int rc = zip_extract(path, dest, 0, NULL, NULL, &st, err, sizeof(err));
     if (rc < 0) {
         if (!here && fs_find_dir(dest) >= 0 && !st.files && !st.dirs) fs_delete(dest, 1);
@@ -892,7 +893,7 @@ static void compress_selected(void) {
     char stem[FS_NAME_LEN], zp[FS_PATH_LEN], err[FS_PATH_LEN + 80], msg[160];
     stem_of(item_name(&g_items[g_sel]), g_items[g_sel].is_dir, stem, sizeof(stem));
     free_name(stem, ".zip", zp, sizeof(zp));
-    set_status("Compressing...");
+    set_status(_("Compressing..."));
     zip_stats_t st;
     int rc = zip_create(zp, ptrs, n, 0, NULL, NULL, &st, err, sizeof(err));
     scan();
@@ -940,12 +941,12 @@ static void menu_cb(int id, void* arg) {
     case M_NEWFOLDER: new_folder(); break;
     case M_NEWFILE: new_text_file(); break;
     case M_TERMINAL: terminal_at(g_sel >= 0 && g_items[g_sel].is_dir ? path : g_path); break;
-    case M_REFRESH: scan(); set_status("Refreshed"); break;
+    case M_REFRESH: scan(); set_status(_("Refreshed")); break;
     case M_USB: go("/mnt/usb"); break;
     case M_EJECT: eject_here(); break;
     case M_PROPS: properties(); break;
     case M_SHORTCUT:                              /* a shortcut to it on the desktop */
-        if (g_sel >= 0 && g_sel < g_count && gui_desktop_shortcut(item_name(&g_items[g_sel]), path) == 0) set_status("A shortcut is on the desktop");
+        if (g_sel >= 0 && g_sel < g_count && gui_desktop_shortcut(item_name(&g_items[g_sel]), path) == 0) set_status(_("A shortcut is on the desktop"));
         break;
     case M_CLOSE: explorer_close(); break;
     case M_VIEW_DETAILS: g_view_icons = 0; g_scroll = 0; break;
@@ -1372,7 +1373,7 @@ void explorer_key(char c) {
     g_gen++;
     if (g_renaming >= 0) {
         if (c == '\n') finish_rename();
-        else if (c == 27) { g_renaming = -1; set_status("Not renamed"); }
+        else if (c == 27) { g_renaming = -1; set_status(_("Not renamed")); }
         else if (c != '/') text_edit(g_rename, FS_NAME_LEN, c);
         return;
     }
@@ -1449,7 +1450,7 @@ void explorer_fkey(int k) {
     if (k == KEYF_F1 + 1) explorer_start_rename();                       /* F2 */
     else if (k == KEYF_F1 + 2) g_search_focus = 1;                      /* F3 */
     else if (k == KEYF_F1 + 3) { g_addr_edit = 1; kstrlcpy(g_addr, g_path, sizeof(g_addr)); }   /* F4 */
-    else if (k == KEYF_F1 + 4) { scan(); set_status("Refreshed"); }     /* F5 */
+    else if (k == KEYF_F1 + 4) { scan(); set_status(_("Refreshed")); }     /* F5 */
     g_gen++;
 }
 

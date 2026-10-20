@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "nettray.h"
+#include "i18n.h"
 #include "theme.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -188,14 +189,14 @@ void nettray_draw(void) {
     gfx_fill_rect(g_x, g_y, PW, g_h, C_BG);
     gfx_fill_rect(g_x, g_y, PW, 1, C_EDGE); gfx_fill_rect(g_x, g_y + g_h - 1, PW, 1, C_EDGE);
     gfx_fill_rect(g_x, g_y, 1, g_h, C_EDGE); gfx_fill_rect(g_x + PW - 1, g_y, 1, g_h, C_EDGE);
-    gfx_draw_text(x, y, "Network", C_HEAD, C_BG);
+    gfx_draw_text(x, y, _("Network"), C_HEAD, C_BG);
     y += LH;
     gfx_fill_rect(x, y + 2, PW - 2 * PAD, 1, TC(0x343E4E));
     y += 8;
     g_nbtn = 0;
     if (!n) {
-        gfx_draw_text(x, y, "No network adapter found.", C_TEXT, C_BG);
-        gfx_draw_text(x, y + LH, "Plug one in, or see the README.", C_DIM, C_BG);
+        gfx_draw_text(x, y, _("No network adapter found."), C_TEXT, C_BG);
+        gfx_draw_text(x, y + LH, _("Plug one in, or see the README."), C_DIM, C_BG);
         y += LH * 2;
     }
     char t[64], v[48];
@@ -233,7 +234,7 @@ void nettray_draw(void) {
             ksnprintf(v, sizeof(v), "%s / %s", s1, s2);
             row(x + 24, y, "Sent / recvd", v); y += LH;
         } else {
-            button(i, x + 24, y + 2, "Use this one", d);
+            button(i, x + 24, y + 2, _("Use this one"), d);
             y += LH;
         }
         y += 8;
@@ -241,7 +242,7 @@ void nettray_draw(void) {
     gfx_fill_rect(x, y - 4, PW - 2 * PAD, 1, TC(0x343E4E));
     y += 4;
     int sx = x, sw = 18 * 8;
-    gfx_draw_text(sx, y, "Network settings...", g_hover == NT_MAX ? C_HEAD : C_LINK, C_BG);
+    gfx_draw_text(sx, y, _("Network settings..."), g_hover == NT_MAX ? C_HEAD : C_LINK, C_BG);
     gfx_fill_rect(sx, y + 15, sw + 8, 1, g_hover == NT_MAX ? C_HEAD : C_LINK);
     if (g_nbtn < NT_MAX + 1) {
         g_btn[g_nbtn].x = sx; g_btn[g_nbtn].y = y - 2; g_btn[g_nbtn].w = sw + 8; g_btn[g_nbtn].h = LH;

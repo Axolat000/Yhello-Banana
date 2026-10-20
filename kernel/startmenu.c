@@ -16,6 +16,7 @@
  *   +---------------------------------------------------+
  */
 #include "kheap.h"
+#include "i18n.h"
 #include "theme.h"
 #include "startmenu.h"
 #include "gfx.h"
@@ -30,7 +31,8 @@
 
 #define HOME     "/home/banana"
 #define LW       256                /* the white programs pane */
-#define RW       160                /* the places column */
+#define RW_MIN   160                /* the places column: wider for longer (translated) names */
+#define RW       places_w()
 #define W        (LW + RW + 18)
 #define BOTTOM_H 42                 /* the search box / Shut down strip */
 #define BIG_ROW  38
@@ -118,14 +120,14 @@ static void add_all_programs(const char* q) {
         lab[n] = g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name; sm[n] = 0; pi[n] = i; n++;
     }
     for (int i = 1; i < n; i++)                         /* A-Z */
-        for (int j = i; j > 0 && strcasecmp(lab[j], lab[j - 1]) < 0; j--) {
+        for (int j = i; j > 0 && strcasecmp(_(lab[j]), _(lab[j - 1])) < 0; j--) {
             const char* tl = lab[j]; lab[j] = lab[j - 1]; lab[j - 1] = tl;
             int ts = sm[j]; sm[j] = sm[j - 1]; sm[j - 1] = ts;
             int tp = pi[j]; pi[j] = pi[j - 1]; pi[j - 1] = tp;
         }
     for (int i = 0; i < n; i++)
-        if (contains_ci(lab[i], q) || (pi[i] >= 0 && contains_ci(g_pkgs[pi[i]].name, q)))
-            add_prog(sm[i], pi[i] >= 0 ? g_pkgs[pi[i]].name : NULL, lab[i]);
+        if (contains_ci(_(lab[i]), q) || (pi[i] >= 0 && contains_ci(g_pkgs[pi[i]].name, q)))
+            add_prog(sm[i], pi[i] >= 0 ? g_pkgs[pi[i]].name : NULL, _(lab[i]));
 }
 
 /* files whose name has the query, under the home folder (a few) */
@@ -252,6 +254,17 @@ static const place_t PLACES[] = {
     { "Install Banana OS", NULL, SM_INSTALL, 0 },
 };
 #define NPLACES (int)(sizeof(PLACES) / sizeof(PLACES[0]))
+
+static int places_w(void) {
+    int w = RW_MIN;
+    for (int i = 0; i < NPLACES; i++) {
+        if (!PLACES[i].label) continue;
+        const char* t = _(PLACES[i].label);
+        int tw = u8_width(t, (int)strlen(t)) * 8 + 24;
+        if (tw > w) w = tw;
+    }
+    return w;
+}
 
 static int place_shown(int i) { return PLACES[i].sm != SM_INSTALL || (g_host.installer && g_host.installer()); }
 
@@ -422,11 +435,11 @@ static void draw_left(const fb_info_t* fi) {
         int ry = y + ey, rh = row_h(e);
         if (e->kind == E_SEP) { gfx_fill_rect(x + 10, ry + 4, LW - 20, 1, C_SEPL); continue; }
         if (e->kind == E_HEAD) {
-            gfx_draw_text(x + 10, ry + 8, e->label, C_HEAD, C_WHITE);
+            gfx_draw_text(x + 10, ry + 8, _(e->label), C_HEAD, C_WHITE);
             gfx_fill_rect(x + 18 + (int)strlen(e->label) * 8, ry + 11, LW - 30 - (int)strlen(e->label) * 8, 1, C_SEPL);
             continue;
         }
-        if (e->kind == E_NONE) { gfx_draw_text(x + 14, ry + 10, e->label, C_DIM, C_WHITE); continue; }
+        if (e->kind == E_NONE) { gfx_draw_text(x + 14, ry + 10, _(e->label), C_DIM, C_WHITE); continue; }
         uint32_t bg = C_WHITE;
         if (i == g_hl || i == g_sel) { frame(x + 4, ry, LW - 8, rh - 2, C_HL, C_HL_B); bg = C_HL; }
         int big = g_mode == 0;
@@ -453,7 +466,7 @@ static void draw_left(const fb_info_t* fi) {
     uint32_t bg = C_WHITE;
     if (g_hbtn == B_ALL) { frame(bx, by, bw, bh, C_HL, C_HL_B); bg = C_HL; }
     tri(bx + 12, by + 10, g_mode == 1 ? -1 : 1, TCL(0x346A2B));
-    gfx_draw_text(bx + 26, by + 10, g_mode == 1 ? "Back" : "All Programs", C_TEXT, bg);
+    gfx_draw_text(bx + 26, by + 10, g_mode == 1 ? _("Back") : _("All Programs"), C_TEXT, bg);
 }
 
 static void draw_right(const fb_info_t* fi) {
@@ -480,7 +493,7 @@ static void draw_right(const fb_info_t* fi) {
         /* (the glass behind is a gradient: text on it without a box) */
         if (hl) { frame(x + 2, ry, RW - 4, R_ROW - 2, C_RHL, C_RHL_B); bg = C_RHL; }
         int ty = ry + 8;
-        if (hl) gfx_draw_text(x + 12, ty, PLACES[i].label, C_WHITE, bg);
+        if (hl) gfx_draw_text(x + 12, ty, _(PLACES[i].label), C_WHITE, bg);
         else {
             /* transparent text: draw it on the gradient's colour at that height */
             int t = (ry - y) * 255 / (menu_h(fi) > 1 ? menu_h(fi) : 1);
@@ -489,8 +502,8 @@ static void draw_right(const fb_info_t* fi) {
                 int a = (int)((C_GLASS1 >> s) & 255), b = (int)((C_GLASS2 >> s) & 255);
                 c |= (uint32_t)(a + (b - a) * t / 255) << s;
             }
-            gfx_fill_rect(x + 10, ty - 2, (int)strlen(PLACES[i].label) * 8 + 4, 12, c);
-            gfx_draw_text(x + 12, ty, PLACES[i].label, C_WHITE, c);
+            gfx_fill_rect(x + 10, ty - 2, (int)strlen(_(PLACES[i].label)) * 8 + 4, 12, c);
+            gfx_draw_text(x + 12, ty, _(PLACES[i].label), C_WHITE, c);
         }
     }
 }
@@ -509,13 +522,13 @@ static void draw_bottom(const fb_info_t* fi) {
             gfx_fill_rect(bx + 8 + n * 8, by + 5, 1, 16, C_TEXT);
         }
     } else {
-        gfx_draw_text(bx + 8, by + 9, "Search programs and files", TCL(0x8C99A8), C_WHITE);
+        gfx_draw_text(bx + 8, by + 9, _("Search programs and files"), TCL(0x8C99A8), C_WHITE);
     }
     /* Shut down and its arrow */
     button_rect(fi, B_SHUTDOWN, &bx, &by, &bw, &bh);
     uint32_t f1 = g_hbtn == B_SHUTDOWN ? TCL(0x4F86C4) : TCL(0x315F95);
     frame(bx, by, bw, bh, f1, TCL(0x91B6DE));
-    gfx_draw_text(bx + (bw - 9 * 8) / 2, by + 9, "Shut down", C_WHITE, f1);
+    gfx_draw_text(bx + (bw - 9 * 8) / 2, by + 9, _("Shut down"), C_WHITE, f1);
     button_rect(fi, B_ARROW, &bx, &by, &bw, &bh);
     uint32_t f2 = g_hbtn == B_ARROW ? TCL(0x4F86C4) : TCL(0x315F95);
     frame(bx - 1, by, bw + 1, bh, f2, TCL(0x91B6DE));
@@ -623,12 +636,12 @@ static void power_menu(const fb_info_t* fi) {
     button_rect(fi, B_ARROW, &x, &y, &w, &h);
     ctx_item_t items[6];
     int n = 0;
-    items[n++] = (ctx_item_t){ "Restart", SM_RESTART, 0 };
+    items[n++] = (ctx_item_t){ _("Restart"), SM_RESTART, 0 };
     char reason[160];
-    items[n++] = (ctx_item_t){ "Sleep", SM_SLEEP, acpi_s3_status(reason,sizeof(reason))!=0 };
-    items[n++] = (ctx_item_t){ "Lock", SM_LOCK, 0 };
+    items[n++] = (ctx_item_t){ _("Sleep"), SM_SLEEP, acpi_s3_status(reason,sizeof(reason))!=0 };
+    items[n++] = (ctx_item_t){ _("Lock"), SM_LOCK, 0 };
     items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
-    items[n++] = (ctx_item_t){ "Exit to the shell", SM_QUIT, 0 };
+    items[n++] = (ctx_item_t){ _("Exit to the shell"), SM_QUIT, 0 };
     ctxmenu_open(x + w, y - n * 22, items, n, power_cb, NULL);
 }
 

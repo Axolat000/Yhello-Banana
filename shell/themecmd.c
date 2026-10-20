@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "themecmd.h"
+#include "../kernel/i18n.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"
 #include "../kernel/theme.h"
@@ -50,7 +51,31 @@ static void contrast(const char* what, uint32_t a, uint32_t b, int min) {
     }
 }
 
+/* language [en | fr | de | it | rm]: the desktop's */
+static int language_cmd(int argc, char** argv) {
+    char line[96];
+    if (argc < 2) {
+        ksnprintf(line, sizeof(line), "Language: %s (%s)", i18n_name(i18n_current()), i18n_lang());
+        say(line);
+        for (int i = 0; i < i18n_count(); i++) {
+            ksnprintf(line, sizeof(line), "%c %s  %s", i == i18n_current() ? '*' : ' ', i18n_code(i), i18n_name(i));
+            say(line);
+        }
+        return 1;
+    }
+    for (int i = 0; i < i18n_count(); i++)
+        if (!strcmp(argv[1], i18n_code(i)) || !strcasecmp(argv[1], i18n_name(i))) {
+            i18n_set(i18n_code(i));
+            ksnprintf(line, sizeof(line), "Language: %s", i18n_name(i));
+            say(line);
+            return 1;
+        }
+    say("usage: language [en | fr | de | it | rm]");
+    return 1;
+}
+
 int themecmd_dispatch(int argc, char** argv) {
+    if (argc >= 1 && !strcmp(argv[0], "language")) return language_cmd(argc, argv);
     if (argc < 1 || strcmp(argv[0], "theme")) return 0;
     if (!theme_count()) theme_init();
     const char* sub = argc > 1 ? argv[1] : "";

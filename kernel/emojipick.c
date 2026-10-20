@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "emojipick.h"
+#include "i18n.h"
 #include "theme.h"
 #include "font.h"
 #include "gfx.h"
@@ -468,7 +469,7 @@ void ep_draw(const fb_info_t* fi, int bar_h) {
         gfx_draw_text(sx + 8, sy + 7, g_query, C_TEXT, TC(0x262D38));
         gfx_fill_rect(sx + 8 + (int)strlen(g_query) * 8, sy + 4, 1, 14, C_TEXT);
     } else {
-        gfx_draw_text(sx + 8, sy + 7, "Type to search emoji", C_DIM, TC(0x262D38));
+        gfx_draw_text(sx + 8, sy + 7, _("Type to search emoji"), C_DIM, TC(0x262D38));
     }
 
     /* the tabs */
@@ -507,7 +508,7 @@ void ep_draw(const fb_info_t* fi, int bar_h) {
         kstrlcpy(line, g_query[0] ? "Search" : TAB_NAME[g_tab], sizeof(line));
     }
     gfx_draw_text(px + 12, fy + 7, line, C_TEXT, C_BG);
-    gfx_draw_text(px + PW - 12 - 13 * 8, fy + 7, "Enter: insert", C_DIM, C_BG);
+    gfx_draw_text(px + PW - 12 - 13 * 8, fy + 7, _("Enter: insert"), C_DIM, C_BG);
 }
 
 /* ── keys and the mouse ── */

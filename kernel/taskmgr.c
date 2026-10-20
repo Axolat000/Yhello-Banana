@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "taskmgr.h"
+#include "i18n.h"
 #include "theme.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -261,7 +262,7 @@ static void build_rows(void) {
     row_t* r = &g_rows[g_nrows++];
     memset(r, 0, sizeof(*r));
     r->kind = R_GROUP;
-    ksnprintf(r->text, sizeof(r->text), "Apps (%d)", g_napps);
+    ksnprintf(r->text, sizeof(r->text), "%s (%d)", _("Apps"), g_napps);
     for (int i = 0; i < nw && g_nrows < MAX_ROWS; i++) {
         r = &g_rows[g_nrows++];
         memset(r, 0, sizeof(*r));
@@ -269,7 +270,7 @@ static void build_rows(void) {
         r->handle = w[i].handle;
         r->cpu = -1;
         kstrlcpy(r->text, w[i].title, sizeof(r->text));
-        kstrlcpy(r->status, w[i].minimized ? "Minimized" : w[i].focused ? "Active" : "", sizeof(r->status));
+        kstrlcpy(r->status, w[i].minimized ? _("Minimized") : w[i].focused ? _("Active") : "", sizeof(r->status));
     }
     for (int i = 0; i < na && g_nrows < MAX_ROWS; i++) {
         r = &g_rows[g_nrows++];
@@ -296,7 +297,7 @@ static void build_rows(void) {
         kstrlcpy(r->status, task_state_str(g_tasks[i].state), sizeof(r->status));
         g_nbg++;
     }
-    if (gi < g_nrows) ksnprintf(g_rows[gi].text, sizeof(g_rows[gi].text), "Background processes (%d)", g_nbg);
+    if (gi < g_nrows) ksnprintf(g_rows[gi].text, sizeof(g_rows[gi].text), "%s (%d)", _("Background processes"), g_nbg);
     if (g_sel >= g_nrows) g_sel = -1;
 }
 
@@ -407,8 +408,8 @@ static const char* const W10_TABS[4] = { "Processes", "Performance", "Users", "D
 static const int W10_PAGE[4] = { 0, 1, 3, 2 };            /* (P_PROCS, P_PERF, P_USERS, P_DETAILS) */
 static int w10_tab_x(int i, int* w) {
     int x = g_win.x + 6;
-    for (int k = 0; k < i; k++) x += (int)strlen(W10_TABS[k]) * 8 + 20;
-    *w = (int)strlen(W10_TABS[i]) * 8 + 20;
+    for (int k = 0; k < i; k++) x += (int)strlen(_(W10_TABS[k])) * 8 + 20;
+    *w = (int)strlen(_(W10_TABS[i])) * 8 + 20;
     return x;
 }
 
@@ -500,10 +501,10 @@ void taskmgr_rclick(int mx, int my) {
     g_menu_row = r;
     if (g_rows[r].kind == R_TASK) { prio_menu(mx, my, g_rows[r].pid); return; }
     ctx_item_t items[] = {
-        { "Switch to", 1, g_rows[r].kind != R_WINDOW },
-        { "End task", 2, 0 },
+        { _("Switch to"), 1, g_rows[r].kind != R_WINDOW },
+        { _("End task"), 2, 0 },
         { CTX_SEP, 0, 0 },
-        { "Go to details", 3, 0 },
+        { _("Go to details"), 3, 0 },
     };
     ctxmenu_open(mx, my, items, 4, menu_cb, NULL);
 }
@@ -645,7 +646,7 @@ static void draw_rail(void) {
         uint32_t bg = on ? C_HOVER : C_RAIL;
         rail_icon(i, x + 16, iy + 7, on ? C_ACCENT : C_DIM);
         (void)bg;
-        gfx_draw_text(x + 42, iy + 11, PAGE_NAMES[i], on ? C_TEXT : C_DIM, bg);
+        gfx_draw_text(x + 42, iy + 11, _(PAGE_NAMES[i]), on ? C_TEXT : C_DIM, bg);
     }
 }
 
@@ -664,25 +665,25 @@ static void col_head(int x, int w, const char* total, const char* name, int pct)
 
 static void draw_processes(void) {
     int cx = content_x(), cw = content_w();
-    page_title("Processes");
+    page_title(_("Processes"));
     int sel_ok = g_sel >= 0 && g_sel < g_nrows;
     int bx, by;
     end_rect(&bx, &by);
-    button(bx, by, 96, "End task", sel_ok && g_rows[g_sel].kind != R_TASK);
+    button(bx, by, 96, _("End task"), sel_ok && g_rows[g_sel].kind != R_TASK);
     switch_rect(&bx, &by);
-    button(bx, by, 92, "Switch to", sel_ok && g_rows[g_sel].kind == R_WINDOW);
+    button(bx, by, 92, _("Switch to"), sel_ok && g_rows[g_sel].kind == R_WINDOW);
 
     char t[24];
     int cpu = last(g_cpu_hist), mem = last(g_mem_hist), dsk = last(g_disk_hist);
-    gfx_draw_text(cx + 8, table_y() + 19, "Name", C_DIM, C_BG);
-    col_head(col_x(0), COL_STAT, NULL, "Status", -1);
-    ksnprintf(t, sizeof(t), "%d%%", cpu);       col_head(col_x(1), COL_CPU, t, "CPU", cpu);
-    ksnprintf(t, sizeof(t), "%d%%", mem);       col_head(col_x(2), COL_MEM, t, "Memory", mem);
-    ksnprintf(t, sizeof(t), "%d%%", dsk);       col_head(col_x(3), COL_DISK, t, "Disk", dsk);
+    gfx_draw_text(cx + 8, table_y() + 19, _("Name"), C_DIM, C_BG);
+    col_head(col_x(0), COL_STAT, NULL, _("Status"), -1);
+    ksnprintf(t, sizeof(t), "%d%%", cpu);       col_head(col_x(1), COL_CPU, t, _("CPU"), cpu);
+    ksnprintf(t, sizeof(t), "%d%%", mem);       col_head(col_x(2), COL_MEM, t, _("Memory"), mem);
+    ksnprintf(t, sizeof(t), "%d%%", dsk);       col_head(col_x(3), COL_DISK, t, _("Disk"), dsk);
     netdev_t* nd = net_dev();
     int netp = nd ? (int)((g_rx_rate + g_tx_rate) / 125000u) : 0;   /* % of a 100 Mbps link (approximate) */
     ksnprintf(t, sizeof(t), "%d%%", netp > 100 ? 100 : netp);
-    col_head(col_x(4), COL_NET, t, "Network", netp);
+    col_head(col_x(4), COL_NET, t, _("Network"), netp);
     gfx_fill_rect(cx, rows_y() - 2, cw, 1, C_LINE);
 
     int maxr = rows_max();
@@ -832,7 +833,7 @@ static void kvl(int i, const char* k, const char* v) {
 
 static void draw_performance(void) {
     int cx = content_x(), cw = content_w(), ty = perf_top();
-    page_title("Performance");
+    page_title(_("Performance"));
     /* the tiles */
     for (int d = 0; d < D_COUNT; d++) {
         int y = ty + d * 62, on = d == g_dev;
@@ -883,7 +884,7 @@ static void draw_performance(void) {
     if (g_dev == D_CPU) {
         int cores = cpu_count() < 1 ? 1 : cpu_count();
         if (g_cores_view && cores > 1) {
-            gfx_draw_text(px, gy - 14, "Logical processors", C_DIM, C_BG);
+            gfx_draw_text(px, gy - 14, _("Logical processors"), C_DIM, C_BG);
             int n = cores > MAX_CORE ? MAX_CORE : cores, per = n <= 4 ? n : (n + 1) / 2, rows = (n + per - 1) / per;
             int cw2 = (pw - (per - 1) * 6) / per, ch2 = (gh - (rows - 1) * 6) / rows;
             for (int i = 0; i < n; i++) big_graph(px + (i % per) * (cw2 + 6), gy + (i / per) * (ch2 + 6), cw2, ch2, g_core_hist[i], NULL, 100, col);
@@ -898,35 +899,35 @@ static void draw_performance(void) {
         for (int i = 0; i < g_ntasks; i++) if (g_tasks[i].state != TASK_UNUSED) threads++;
         layout_stats(px, pw, sy, 2);
         ksnprintf(a, sizeof(a), "%d%%", last(g_cpu_hist));
-        bigstat(0, 0, "Utilization", a);
+        bigstat(0, 0, _("Utilization"), a);
         ksnprintf(a, sizeof(a), "%d", app_count());
-        bigstat(1, 0, "Apps", a);
+        bigstat(1, 0, _("Apps"), a);
         ksnprintf(a, sizeof(a), "%d", threads);
-        bigstat(2, 0, "Tasks", a);
+        bigstat(2, 0, _("Tasks"), a);
         ksnprintf(a, sizeof(a), "%u:%02u:%02u:%02u", up / 86400, up / 3600 % 24, up / 60 % 60, up % 60);
-        bigstat(0, g_pw >= 470 ? 1 : 2, "Up time", a);
+        bigstat(0, g_pw >= 470 ? 1 : 2, _("Up time"), a);
         uint32_t l1, l2, l3;
         caches(&l1, &l2, &l3);
         if (g_pw < 470) g_ky += 44;
         int k = 0;
         ksnprintf(a, sizeof(a), "%d", smp_phys_cores() > 0 ? smp_phys_cores() : cores);
-        kvl(k++, "Cores:", a);
+        kvl(k++, _("Cores:"), a);
         ksnprintf(a, sizeof(a), "%d", cores);
-        kvl(k++, "Logical processors:", a);
-        kvl(k++, "Virtual machine:", in_vm() ? "Yes" : "No");
-        if (l1) { ksnprintf(a, sizeof(a), "%u KB", l1); kvl(k++, "L1 cache:", a); }
-        if (l2) { human_kb(l2, a, sizeof(a)); kvl(k++, "L2 cache:", a); }
-        if (l3) { human_kb(l3, a, sizeof(a)); kvl(k++, "L3 cache:", a); }
+        kvl(k++, _("Logical processors:"), a);
+        kvl(k++, _("Virtual machine:"), in_vm() ? "Yes" : "No");
+        if (l1) { ksnprintf(a, sizeof(a), "%u KB", l1); kvl(k++, _("L1 cache:"), a); }
+        if (l2) { human_kb(l2, a, sizeof(a)); kvl(k++, _("L2 cache:"), a); }
+        if (l3) { human_kb(l3, a, sizeof(a)); kvl(k++, _("L3 cache:"), a); }
         int temp = sensors_cpu_temp();
-        if (temp != SENSOR_NONE) { ksnprintf(a, sizeof(a), "%d C", temp); kvl(k++, "Temperature:", a); }
+        if (temp != SENSOR_NONE) { ksnprintf(a, sizeof(a), "%d C", temp); kvl(k++, _("Temperature:"), a); }
     } else if (g_dev == D_MEM) {
-        gfx_draw_text(px, gy - 14, "Memory usage", C_DIM, C_BG);
+        gfx_draw_text(px, gy - 14, _("Memory usage"), C_DIM, C_BG);
         human_kb(m.total_kb, a, sizeof(a));
         gfx_draw_text(px + pw - (int)strlen(a) * 8, gy - 14, a, C_DIM, C_BG);
         big_graph(px, gy, pw, gh - 34, g_mem_hist, NULL, 100, col);
         /* the composition: in use | cached files | free */
         int by = gy + gh - 18;
-        gfx_draw_text(px, by - 12, "Memory composition", C_DIM, C_BG);
+        gfx_draw_text(px, by - 12, _("Memory composition"), C_DIM, C_BG);
         frame(px, by, pw, 18, C_PANEL, col);
         int u = m.total_kb ? (int)((uint64_t)(m.used_kb - m.cached_kb) * (uint32_t)(pw - 2) / m.total_kb) : 0;
         int kc = m.total_kb ? (int)((uint64_t)m.cached_kb * (uint32_t)(pw - 2) / m.total_kb) : 0;
@@ -936,44 +937,44 @@ static void draw_performance(void) {
         zswap_stats(&zs);
         layout_stats(px, pw, sy, 2);
         human_kb(m.used_kb - m.cached_kb, a, sizeof(a));
-        bigstat(0, 0, "In use", a);
+        bigstat(0, 0, _("In use"), a);
         human_kb(m.avail_kb, a, sizeof(a));
-        bigstat(1, 0, "Available", a);
+        bigstat(1, 0, _("Available"), a);
         human_kb(m.cached_kb, a, sizeof(a));
-        bigstat(2, 0, "Cached", a);
+        bigstat(2, 0, _("Cached"), a);
         int k = 0;
         human_kb(zs.pages * 4u, a, sizeof(a));
         human_kb((uint32_t)(zs.bytes / 1024u), b, sizeof(b));
         ksnprintf(line, sizeof(line), "%s in %s", a, b);
-        kvl(k++, "Compressed:", line);
+        kvl(k++, _("Compressed:"), line);
         human_kb(m.kernel_kb, a, sizeof(a));
-        kvl(k++, "Kernel:", a);
+        kvl(k++, _("Kernel:"), a);
         human_kb(m.files_kb, a, sizeof(a));
-        kvl(k++, "File data:", a);
+        kvl(k++, _("File data:"), a);
         human_kb(m.free_kb, a, sizeof(a));
-        kvl(k++, "Free:", a);
+        kvl(k++, _("Free:"), a);
         human_kb(m.largest_kb, a, sizeof(a));
-        kvl(k++, "Largest block:", a);
+        kvl(k++, _("Largest block:"), a);
         human_kb(zs.disk_pages * 4u, a, sizeof(a));
-        kvl(k++, "Swapped out:", zswap_disk_bytes() ? a : "no swap area");
+        kvl(k++, _("Swapped out:"), zswap_disk_bytes() ? a : "no swap area");
     } else if (g_dev == D_DISK) {
-        gfx_draw_text(px, gy - 14, "Active time", C_DIM, C_BG);
+        gfx_draw_text(px, gy - 14, _("Active time"), C_DIM, C_BG);
         gfx_draw_text(px + pw - 32, gy - 14, "100%", C_DIM, C_BG);
         big_graph(px, gy, pw, gh, g_disk_hist, NULL, 100, col);
         layout_stats(px, pw, sy, 2);
         ksnprintf(a, sizeof(a), "%d%%", last(g_disk_hist));
-        bigstat(0, 0, "Active time", a);
+        bigstat(0, 0, _("Active time"), a);
         rate(g_rd_rate, a, sizeof(a));
-        bigstat(1, 0, "Read speed", a);
+        bigstat(1, 0, _("Read speed"), a);
         rate(g_wr_rate, a, sizeof(a));
-        bigstat(2, 0, "Write speed", a);
+        bigstat(2, 0, _("Write speed"), a);
         uint64_t rd, wr;
         disk_io_stats(&rd, &wr, NULL);
         int k = 0;
         human_bytes64(rd, a, sizeof(a));
-        kvl(k++, "Read since start:", a);
+        kvl(k++, _("Read since start:"), a);
         human_bytes64(wr, a, sizeof(a));
-        kvl(k++, "Written:", a);
+        kvl(k++, _("Written:"), a);
         for (int i = 0; i < BLOCKDEV_MAX && k < 8; i++) {
             blockdev_t* bd = blockdev_get(i);
             if (!bd || !bd->present) continue;
@@ -987,58 +988,58 @@ static void draw_performance(void) {
         }
     } else if (g_dev == D_NET) {
         netdev_t* nd = net_dev();
-        gfx_draw_text(px, gy - 14, "Throughput", C_DIM, C_BG);
+        gfx_draw_text(px, gy - 14, _("Throughput"), C_DIM, C_BG);
         bits(net_max(), a, sizeof(a));
         gfx_draw_text(px + pw - (int)strlen(a) * 8, gy - 14, a, C_DIM, C_BG);
         big_graph(px, gy, pw, gh, NULL, g_net_hist, net_max(), col);
         layout_stats(px, pw, sy, 1);
         bits(g_tx_rate, a, sizeof(a));
-        bigstat(0, 0, "Send", a);
+        bigstat(0, 0, _("Send"), a);
         bits(g_rx_rate, a, sizeof(a));
-        bigstat(1, 0, "Receive", a);
+        bigstat(1, 0, _("Receive"), a);
         netif_t* nif = net_if();
         int k = 0;
-        kvl(k++, "Adapter name:", nd ? nd->ifname : "none");
+        kvl(k++, _("Adapter name:"), nd ? nd->ifname : "none");
         char ip[16] = "-";
         if (nd && nif->configured) ip4_to_str(nif->ip, ip);
-        kvl(k++, "IPv4 address:", ip);
+        kvl(k++, _("IPv4 address:"), ip);
         if (nd) {
             ksnprintf(a, sizeof(a), "%02x:%02x:%02x:%02x:%02x:%02x", nd->mac[0], nd->mac[1], nd->mac[2], nd->mac[3], nd->mac[4], nd->mac[5]);
-            kvl(k++, "MAC address:", a);
+            kvl(k++, _("MAC address:"), a);
             human_kb(nd->tx_bytes / 1024, a, sizeof(a));
-            kvl(k++, "Sent:", a);
+            kvl(k++, _("Sent:"), a);
             human_kb(nd->rx_bytes / 1024, a, sizeof(a));
-            kvl(k++, "Received:", a);
+            kvl(k++, _("Received:"), a);
             ksnprintf(a, sizeof(a), "%u errors, %u dropped", nd->rx_errors + nd->tx_errors, nd->rx_dropped);
-            kvl(k++, "Problems:", a);
+            kvl(k++, _("Problems:"), a);
         }
     } else {
         gpu_t* g = gpu_active();
         const fb_info_t* fi = fb_info();
         frame(px, gy, pw, gh, C_PANEL, col);
-        gfx_draw_text(px + 16, gy + gh / 2 - 4, "Its load is not measured.", C_DIM, C_PANEL);
+        gfx_draw_text(px + 16, gy + gh / 2 - 4, _("Its load is not measured."), C_DIM, C_PANEL);
         layout_stats(px, pw, sy, 0);
         g_kx = px; g_ky = sy;
         int k = 0;
-        kvl(k++, "Adapter:", g ? g->name : "VBE / UEFI framebuffer");
-        kvl(k++, "Driver:", g ? g->driver : "none (firmware's mode)");
+        kvl(k++, _("Adapter:"), g ? g->name : "VBE / UEFI framebuffer");
+        kvl(k++, _("Driver:"), g ? g->driver : "none (firmware's mode)");
         if (fi) {
             ksnprintf(a, sizeof(a), "%u x %u, %u-bit", fi->width, fi->height, fi->bpp);
-            kvl(k++, "Screen:", a);
+            kvl(k++, _("Screen:"), a);
             human_kb(fi->pitch * fi->height / 1024, a, sizeof(a));
-            kvl(k++, "Framebuffer:", a);
+            kvl(k++, _("Framebuffer:"), a);
         }
-        kvl(k++, "Sound:", audio_device_name());
+        kvl(k++, _("Sound:"), audio_device_name());
     }
 }
 
 static void draw_details(void) {
     int cx = content_x(), cw = content_w();
-    page_title("Details");
-    if (!w10()) gfx_draw_text(cx + cw - 39 * 8, head_y() + 10, "Right-click a task: its priority", C_DIM, C_BG);
+    page_title(_("Details"));
+    if (!w10()) gfx_draw_text(cx + cw - 39 * 8, head_y() + 10, _("Right-click a task: its priority"), C_DIM, C_BG);
     snap_tasks();
     gfx_fill_rect(cx, table_y() + 12, cw, ROW_H, C_PANEL);
-    gfx_draw_text(cx + 8, table_y() + 18, "Name                    PID  Status     Core  CPU   CPU time  Prio", C_DIM, C_PANEL);
+    gfx_draw_text(cx + 8, table_y() + 18, _("Name                    PID  Status     Core  CPU   CPU time  Prio"), C_DIM, C_PANEL);
     int row = 0, maxr = rows_max(), skip = g_scroll;
     char line[128];
     for (int i = 0; i < g_ntasks && row < maxr; i++) {
@@ -1059,16 +1060,16 @@ static void draw_details(void) {
 
 static void draw_users(void) {
     int cx = content_x(), cw = content_w();
-    page_title("Users");
+    page_title(_("Users"));
     gfx_fill_rect(cx, table_y() + 12, cw, ROW_H, C_PANEL);
-    gfx_draw_text(cx + 8, table_y() + 18, "User", C_DIM, C_PANEL);
-    gfx_draw_text(cx + cw - 300, table_y() + 18, "Status", C_DIM, C_PANEL);
-    gfx_draw_text(cx + cw - 180, table_y() + 18, "CPU", C_DIM, C_PANEL);
-    gfx_draw_text(cx + cw - 100, table_y() + 18, "Memory", C_DIM, C_PANEL);
+    gfx_draw_text(cx + 8, table_y() + 18, _("User"), C_DIM, C_PANEL);
+    gfx_draw_text(cx + cw - 300, table_y() + 18, _("Status"), C_DIM, C_PANEL);
+    gfx_draw_text(cx + cw - 180, table_y() + 18, _("CPU"), C_DIM, C_PANEL);
+    gfx_draw_text(cx + cw - 100, table_y() + 18, _("Memory"), C_DIM, C_PANEL);
     int ry = rows_y();
     frame(cx + 10, ry + 2, 16, 16, TC(0x405478), TC(0x90B8F0));
     gfx_draw_text(cx + 14, ry + 6, "b", C_TEXT, TC(0x405478));
-    gfx_draw_text(cx + 34, ry + 6, "banana (you)", C_TEXT, C_BG);
+    gfx_draw_text(cx + 34, ry + 6, _("banana (you)"), C_TEXT, C_BG);
     char a[24];
     ksnprintf(a, sizeof(a), "%d app%s", g_napps, g_napps == 1 ? "" : "s");
     gfx_draw_text(cx + cw - 300, ry + 6, a, C_DIM, C_BG);
@@ -1080,7 +1081,7 @@ static void draw_users(void) {
     human_kb(m.used_kb - m.cached_kb, a, sizeof(a));
     gfx_fill_rect(cx + cw - 106, ry, 100, ROW_H - 1, heat(last(g_mem_hist)));
     gfx_draw_text(cx + cw - 100, ry + 6, a, C_TEXT, heat(last(g_mem_hist)));
-    gfx_draw_text(cx + 34, ry + 30, "Banana OS has one user; SSH sessions run as it too.", C_DIM, C_BG);
+    gfx_draw_text(cx + 34, ry + 30, _("Banana OS has one user; SSH sessions run as it too."), C_DIM, C_BG);
 }
 
 /* ══ the classic Windows look (XP / 7): grey, tabs, green meters ═════════ */
@@ -1140,8 +1141,8 @@ static int k_page_h(void) { return g_win.h - TITLE_H - 44 - 30; }
 static int k_list_bottom(void) { return k_page_y() + k_page_h() - 40; }
 static int k_tab_x(int i, int* w) {
     int x = g_win.x + 10;
-    for (int k = 0; k < i; k++) x += (int)strlen(K_TAB_NAMES[k]) * 8 + 16;
-    *w = (int)strlen(K_TAB_NAMES[i]) * 8 + 16;
+    for (int k = 0; k < i; k++) x += (int)strlen(_(K_TAB_NAMES[k])) * 8 + 16;
+    *w = (int)strlen(_(K_TAB_NAMES[i])) * 8 + 16;
     return x;
 }
 
@@ -1201,10 +1202,10 @@ static void classic_draw(void) {
     /* the window: grey, a blue title bar */
     k_raised(x, y, W, H);
     for (int i = 0; i < W - 6; i++) gfx_fill_rect(x + 3 + i, y + 3, 1, TITLE_H - 2, mix(0x000A246Au, 0x00A6CAF0u, i * 256 / (W - 6)));
-    gfx_draw_text(x + 8, y + 8, "Windows Task Manager", 0x00FFFFFFu, 0x000A246Au);
+    gfx_draw_text(x + 8, y + 8, _("Windows Task Manager"), 0x00FFFFFFu, 0x000A246Au);
     win_draw_buttons(&g_win, 4, 12);
     static const char* const MENU[5] = { "File", "Options", "View", "Windows", "Help" };
-    for (int i = 0, mx = x + 8; i < 5; mx += (int)strlen(MENU[i]) * 8 + 16, i++) gfx_draw_text(mx, y + TITLE_H + 6, MENU[i], K_TEXT, K_FACE);
+    for (int i = 0, mx = x + 8; i < 5; mx += (int)strlen(_(MENU[i])) * 8 + 16, i++) gfx_draw_text(mx, y + TITLE_H + 6, _(MENU[i]), K_TEXT, K_FACE);
     /* the tabs, the page under them */
     int px = k_page_x(), py = k_page_y(), pw = k_page_w(), ph = k_page_h();
     k_raised(px, py, pw, ph);
@@ -1213,7 +1214,7 @@ static void classic_draw(void) {
         kbnav_add(&g_nav, tx, py - 20, tw, 20);
         k_raised(tx, ty, tw, 22 + (on ? 2 : 0));
         if (on) gfx_fill_rect(tx + 1, py - 1, tw - 2, 3, K_FACE);
-        gfx_draw_text(tx + 8, ty + 7, K_TAB_NAMES[i], K_TEXT, K_FACE);
+        gfx_draw_text(tx + 8, ty + 7, _(K_TAB_NAMES[i]), K_TEXT, K_FACE);
     }
     meminfo_t m;
     meminfo_get(&m);
@@ -1222,14 +1223,14 @@ static void classic_draw(void) {
         k_sunken(lx, ly, lw, k_list_bottom() - ly, 0x00FFFFFFu);
         k_raised(lx + 2, ly + 2, lw - 4, 18);
         if (g_ktab == K_APPS) {
-            gfx_draw_text(lx + 8, ly + 7, "Task", K_TEXT, K_FACE);
-            gfx_draw_text(lx + lw - 110, ly + 7, "Status", K_TEXT, K_FACE);
+            gfx_draw_text(lx + 8, ly + 7, _("Task"), K_TEXT, K_FACE);
+            gfx_draw_text(lx + lw - 110, ly + 7, _("Status"), K_TEXT, K_FACE);
         } else {
-            gfx_draw_text(lx + 8, ly + 7, "Image Name", K_TEXT, K_FACE);
-            gfx_draw_text(lx + lw - 330, ly + 7, "User Name", K_TEXT, K_FACE);
-            gfx_draw_text(lx + lw - 220, ly + 7, "PID", K_TEXT, K_FACE);
-            gfx_draw_text(lx + lw - 160, ly + 7, "CPU", K_TEXT, K_FACE);
-            gfx_draw_text(lx + lw - 100, ly + 7, "Mem Usage", K_TEXT, K_FACE);
+            gfx_draw_text(lx + 8, ly + 7, _("Image Name"), K_TEXT, K_FACE);
+            gfx_draw_text(lx + lw - 330, ly + 7, _("User Name"), K_TEXT, K_FACE);
+            gfx_draw_text(lx + lw - 220, ly + 7, _("PID"), K_TEXT, K_FACE);
+            gfx_draw_text(lx + lw - 160, ly + 7, _("CPU"), K_TEXT, K_FACE);
+            gfx_draw_text(lx + lw - 100, ly + 7, _("Mem Usage"), K_TEXT, K_FACE);
         }
         int n = k_rows(), maxr = k_list_max();
         if (g_scroll > n - maxr) g_scroll = n - maxr;
@@ -1246,7 +1247,7 @@ static void classic_draw(void) {
                 if ((int)strlen(nm) > (lw - 140) / 8) nm[(lw - 140) / 8] = 0;
                 gfx_fill_rect(lx + 6, ry + 4, 8, 8, rw->kind == R_WINDOW ? 0x003A7BD5u : 0x00D0A030u);
                 gfx_draw_text(lx + 20, ry + 4, nm, fg, bg);
-                gfx_draw_text(lx + lw - 110, ry + 4, "Running", fg, bg);
+                gfx_draw_text(lx + lw - 110, ry + 4, _("Running"), fg, bg);
             } else {
                 if (rw->kind == R_TASK) ksnprintf(a, sizeof(a), "%s", nm);
                 else ksnprintf(a, sizeof(a), "%s.exe", nm);
@@ -1263,30 +1264,30 @@ static void classic_draw(void) {
         }
         int by = k_list_bottom() + 10, sel_ok = g_ksel >= 0 && g_ksel < g_nrows;
         if (g_ktab == K_APPS) {
-            k_button(px + pw - 300, by, 92, "End Task", sel_ok);
-            k_button(px + pw - 200, by, 92, "Switch To", sel_ok && g_rows[g_ksel].kind == R_WINDOW);
-            k_button(px + pw - 100, by, 92, "New Task...", 0);
+            k_button(px + pw - 300, by, 92, _("End Task"), sel_ok);
+            k_button(px + pw - 200, by, 92, _("Switch To"), sel_ok && g_rows[g_ksel].kind == R_WINDOW);
+            k_button(px + pw - 100, by, 92, _("New Task..."), 0);
         } else {
-            gfx_draw_text(px + 12, by + 7, "Show processes from all users", K_TEXT, K_FACE);
-            k_button(px + pw - 120, by, 112, "End Process", sel_ok && g_rows[g_ksel].kind != R_TASK);
+            gfx_draw_text(px + 12, by + 7, _("Show processes from all users"), K_TEXT, K_FACE);
+            k_button(px + pw - 120, by, 112, _("End Process"), sel_ok && g_rows[g_ksel].kind != R_TASK);
         }
     } else if (g_ktab == K_PERF) {
         int col = 100, gx = lx + col + 10, gw = lw - col - 10, gh = (ph - 120) / 2 - 18;
         if (gh < 40) gh = 40;
         int cpu = last(g_cpu_hist), mem = last(g_mem_hist);
-        k_group(lx, ly, col, gh + 18, "CPU Usage");
+        k_group(lx, ly, col, gh + 18, _("CPU Usage"));
         ksnprintf(a, sizeof(a), "%d %%", cpu);
         k_meter(lx + 8, ly + 14, col - 16, gh - 2, cpu, a, K_GREEN);
-        k_group(gx, ly, gw, gh + 18, "CPU Usage History");
+        k_group(gx, ly, gw, gh + 18, _("CPU Usage History"));
         int cores = cpu_count() < 1 ? 1 : cpu_count();
         if (cores > MAX_CORE) cores = MAX_CORE;
         int each = (gw - 16 - (cores - 1) * 4) / cores;
         for (int c = 0; c < cores; c++) k_history(gx + 8 + c * (each + 4), ly + 14, each, gh - 2, g_core_hist[c], NULL, 100, K_GREEN);
         int my2 = ly + gh + 24;
-        k_group(lx, my2, col, gh + 18, "Mem Usage");
+        k_group(lx, my2, col, gh + 18, _("Mem Usage"));
         ksnprintf(a, sizeof(a), "%u MB", (m.used_kb - m.cached_kb) / 1024);
         k_meter(lx + 8, my2 + 14, col - 16, gh - 2, mem, a, K_GREEN);
-        k_group(gx, my2, gw, gh + 18, "Physical Memory Usage History");
+        k_group(gx, my2, gw, gh + 18, _("Physical Memory Usage History"));
         k_history(gx + 8, my2 + 14, gw - 16, gh - 2, g_mem_hist, NULL, 100, K_YELLOW);
         /* the numbers */
         int ty = my2 + gh + 26, cw3 = (lw - 16) / 3;
@@ -1294,16 +1295,16 @@ static void classic_draw(void) {
         int threads = 0;
         for (int i = 0; i < g_ntasks; i++) if (g_tasks[i].state != TASK_UNUSED) threads++;
         uint32_t up = timer_ms() / 1000;
-        k_group(lx, ty, cw3, 74, "Totals");
+        k_group(lx, ty, cw3, 74, _("Totals"));
         ksnprintf(line, sizeof(line), "Tasks       %6d", threads);       gfx_draw_text(lx + 8, ty + 16, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Apps        %6d", app_count());   gfx_draw_text(lx + 8, ty + 30, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Windows     %6d", g_napps - app_count() > 0 ? g_napps - app_count() : 0); gfx_draw_text(lx + 8, ty + 44, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Up Time %u:%02u:%02u", up / 3600, up / 60 % 60, up % 60); gfx_draw_text(lx + 8, ty + 58, line, K_TEXT, K_FACE);
-        k_group(lx + cw3 + 8, ty, cw3, 74, "Physical Memory (K)");
+        k_group(lx + cw3 + 8, ty, cw3, 74, _("Physical Memory (K)"));
         ksnprintf(line, sizeof(line), "Total     %9u", m.total_kb);  gfx_draw_text(lx + cw3 + 16, ty + 16, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Available %9u", m.avail_kb);  gfx_draw_text(lx + cw3 + 16, ty + 30, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Sys Cache %9u", m.cached_kb); gfx_draw_text(lx + cw3 + 16, ty + 44, line, K_TEXT, K_FACE);
-        k_group(lx + 2 * (cw3 + 8), ty, cw3, 74, "Kernel Memory (K)");
+        k_group(lx + 2 * (cw3 + 8), ty, cw3, 74, _("Kernel Memory (K)"));
         ksnprintf(line, sizeof(line), "Total     %9u", m.kernel_kb); gfx_draw_text(lx + 2 * (cw3 + 8) + 8, ty + 16, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Files     %9u", m.files_kb);  gfx_draw_text(lx + 2 * (cw3 + 8) + 8, ty + 30, line, K_TEXT, K_FACE);
         ksnprintf(line, sizeof(line), "Free      %9u", m.free_kb);   gfx_draw_text(lx + 2 * (cw3 + 8) + 8, ty + 44, line, K_TEXT, K_FACE);
@@ -1317,17 +1318,17 @@ static void classic_draw(void) {
         int ty = ly + gh + 8;
         k_sunken(lx, ty, lw, 60, 0x00FFFFFFu);
         k_raised(lx + 2, ty + 2, lw - 4, 18);
-        gfx_draw_text(lx + 8, ty + 7, "Adapter Name", K_TEXT, K_FACE);
-        gfx_draw_text(lx + lw - 330, ty + 7, "Network Utilization", K_TEXT, K_FACE);
-        gfx_draw_text(lx + lw - 160, ty + 7, "Link Speed", K_TEXT, K_FACE);
-        gfx_draw_text(lx + lw - 70, ty + 7, "State", K_TEXT, K_FACE);
+        gfx_draw_text(lx + 8, ty + 7, _("Adapter Name"), K_TEXT, K_FACE);
+        gfx_draw_text(lx + lw - 330, ty + 7, _("Network Utilization"), K_TEXT, K_FACE);
+        gfx_draw_text(lx + lw - 160, ty + 7, _("Link Speed"), K_TEXT, K_FACE);
+        gfx_draw_text(lx + lw - 70, ty + 7, _("State"), K_TEXT, K_FACE);
         if (nd) {
             kstrlcpy(a, nd->model ? nd->model : nd->ifname, 28);
             gfx_draw_text(lx + 8, ty + 26, a, K_TEXT, 0x00FFFFFFu);
             uint32_t pc100 = (g_rx_rate + g_tx_rate) / 1250u;      /* hundredths of a % of 100 Mbps */
             ksnprintf(b, sizeof(b), "%u.%02u %%", pc100 / 100, pc100 % 100);
             gfx_draw_text(lx + lw - 330, ty + 26, b, K_TEXT, 0x00FFFFFFu);
-            gfx_draw_text(lx + lw - 160, ty + 26, "100 Mbps", K_TEXT, 0x00FFFFFFu);
+            gfx_draw_text(lx + lw - 160, ty + 26, _("100 Mbps"), K_TEXT, 0x00FFFFFFu);
             gfx_draw_text(lx + lw - 70, ty + 26, net_if()->configured ? "Connected" : "Waiting", K_TEXT, 0x00FFFFFFu);
         }
     } else {
@@ -1335,7 +1336,7 @@ static void classic_draw(void) {
         k_raised(lx + 2, ly + 2, lw - 4, 18);
         static const char* const UH[5] = { "User", "ID", "Status", "Client Name", "Session" };
         static const int UX[5] = { 8, 140, 190, 280, 400 };
-        for (int i = 0; i < 5; i++) gfx_draw_text(lx + UX[i], ly + 7, UH[i], K_TEXT, K_FACE);
+        for (int i = 0; i < 5; i++) gfx_draw_text(lx + UX[i], ly + 7, _(UH[i]), K_TEXT, K_FACE);
         static const char* const UV[5] = { "banana", "0", "Active", "", "Console" };
         for (int i = 0; i < 5; i++) gfx_draw_text(lx + UX[i], ly + 26, UV[i], K_TEXT, 0x00FFFFFFu);
     }
@@ -1396,7 +1397,7 @@ static void classic_rclick(int mx, int my) {
     g_ksel = ri;
     if (g_rows[ri].kind == R_TASK) { prio_menu(mx, my, g_rows[ri].pid); return; }
     g_menu_row = ri;
-    ctx_item_t items[] = { { "Switch To", 1, g_rows[ri].kind != R_WINDOW }, { "End Task", 2, 0 } };
+    ctx_item_t items[] = { { _("Switch To"), 1, g_rows[ri].kind != R_WINDOW }, { _("End Task"), 2, 0 } };
     ctxmenu_open(mx, my, items, 2, menu_cb, NULL);
 }
 
@@ -1451,15 +1452,15 @@ static void banana_draw(void) {
     int x = g_win.x, y = g_win.y, W = g_win.w, H = g_win.h;
     b_bevel(x, y, W, H, B_PANEL, TC(0x505D72), TC(0x10141C));
     b_bevel(x + 3, y + 3, W - 6, TITLE_H - 1, B_TITLE, TC(0x647692), TC(0x111923));
-    gfx_draw_text(x + 10, y + 7, "Task Manager", TC(0xFFFFFF), B_TITLE);
+    gfx_draw_text(x + 10, y + 7, _("Task Manager"), TC(0xFFFFFF), B_TITLE);
     win_draw_buttons(&g_win, 4, 12);
     int tx = x + 6;
     for (int t = 0; t < 3; t++) {
-        int w = (int)strlen(B_TAB_NAMES[t]) * 8 + 20;
+        int w = (int)strlen(_(B_TAB_NAMES[t])) * 8 + 20;
         uint32_t bg = t == g_btab ? TC(0xF2F2F2) : TC(0x3A4250);
         b_bevel(tx, y + B_TABS_Y, w, B_TAB_H, bg, TC(0x808A9A), TC(0x202630));
         kbnav_add(&g_nav, tx, y + B_TABS_Y, w, B_TAB_H);
-        gfx_draw_text(tx + 10, y + B_TABS_Y + 6, B_TAB_NAMES[t], t == g_btab ? TC(0x101010) : B_TEXT, bg);
+        gfx_draw_text(tx + 10, y + B_TABS_Y + 6, _(B_TAB_NAMES[t]), t == g_btab ? TC(0x101010) : B_TEXT, bg);
         tx += w + 4;
     }
     char line[128];
@@ -1468,8 +1469,8 @@ static void banana_draw(void) {
         int lh = H - B_BODY_Y - 56;
         b_bevel(lx, y + B_BODY_Y, lw, lh, B_LIST, TC(0x10141C), TC(0x404B5C));
         gfx_fill_rect(lx + 1, y + B_BODY_Y + 1, lw - 2, B_ROW_H, TC(0x252C37));
-        gfx_draw_text(lx + 8, y + B_BODY_Y + 4, "Name", B_DIM, TC(0x252C37));
-        gfx_draw_text(lx + lw - 200, y + B_BODY_Y + 4, "Status", B_DIM, TC(0x252C37));
+        gfx_draw_text(lx + 8, y + B_BODY_Y + 4, _("Name"), B_DIM, TC(0x252C37));
+        gfx_draw_text(lx + lw - 200, y + B_BODY_Y + 4, _("Status"), B_DIM, TC(0x252C37));
         int maxr = (lh - B_ROW_H - 4) / B_ROW_H, n = b_apps();
         for (int i = 0; i < n && i < maxr; i++) {
             int ri = b_app(i), ry = b_list_top() + i * B_ROW_H;
@@ -1489,16 +1490,16 @@ static void banana_draw(void) {
                 gfx_draw_text(lx + lw - 200, ry + 3, info, B_DIM, bg);
             } else gfx_draw_text(lx + lw - 200, ry + 3, g_rows[ri].status[0] ? g_rows[ri].status : "window", B_DIM, bg);
         }
-        if (!n) gfx_draw_text(lx + 8, b_list_top() + 4, "Nothing is open.", B_DIM, B_LIST);
+        if (!n) gfx_draw_text(lx + 8, b_list_top() + 4, _("Nothing is open."), B_DIM, B_LIST);
         int by = y + H - 44, sel_ok = g_bsel >= 0 && g_bsel < g_nrows;
-        b_button(x + W - 208, by, 100, "Switch to", sel_ok && g_rows[g_bsel].kind == R_WINDOW);
-        b_button(x + W - 100, by, 92, "End task", sel_ok);
+        b_button(x + W - 208, by, 100, _("Switch to"), sel_ok && g_rows[g_bsel].kind == R_WINDOW);
+        b_button(x + W - 100, by, 92, _("End task"), sel_ok);
     } else if (g_btab == 1) {
         snap_tasks();
         int lh = H - B_BODY_Y - 30;
         b_bevel(lx, y + B_BODY_Y, lw, lh, B_LIST, TC(0x10141C), TC(0x404B5C));
         gfx_fill_rect(lx + 1, y + B_BODY_Y + 1, lw - 2, B_ROW_H, TC(0x252C37));
-        gfx_draw_text(lx + 8, y + B_BODY_Y + 4, "PID  Name                    State     CPU   Time   Prio", B_DIM, TC(0x252C37));
+        gfx_draw_text(lx + 8, y + B_BODY_Y + 4, _("PID  Name                    State     CPU   Time   Prio"), B_DIM, TC(0x252C37));
         int row = 0, maxr = (lh - B_ROW_H - 4) / B_ROW_H;
         for (int i = 0; i < g_ntasks && row < maxr; i++) {
             if (g_tasks[i].state == TASK_UNUSED) continue;
@@ -1560,7 +1561,7 @@ static void banana_click(int mx, int my) {
     if (ly >= B_TABS_Y && ly < B_TABS_Y + B_TAB_H) {
         int x = 6;
         for (int t = 0; t < 3; t++) {
-            int w = (int)strlen(B_TAB_NAMES[t]) * 8 + 20;
+            int w = (int)strlen(_(B_TAB_NAMES[t])) * 8 + 20;
             if (lx >= x && lx < x + w) { g_btab = t; g_bsel = -1; g_status[0] = 0; }
             x += w + 4;
         }
@@ -1600,7 +1601,7 @@ static void banana_rclick(int mx, int my) {
     int ri = r < b_apps() ? b_app(r) : -1;
     if (ri < 0) return;
     g_bsel = g_menu_row = ri;
-    ctx_item_t items[] = { { "Switch to", 1, g_rows[ri].kind != R_WINDOW }, { CTX_SEP, 0, 0 }, { "End task", 2, 0 } };
+    ctx_item_t items[] = { { _("Switch to"), 1, g_rows[ri].kind != R_WINDOW }, { CTX_SEP, 0, 0 }, { _("End task"), 2, 0 } };
     ctxmenu_open(mx, my, items, 3, menu_cb, NULL);
 }
 
@@ -1609,7 +1610,7 @@ static void draw_w10_bars(void) {
     int x = g_win.x, y = g_win.y, W = g_win.w;
     gfx_fill_rect(x + 1, y + W10_MENU_Y, W - 2, 19, C_BG);
     static const char* const MENU[3] = { "File", "Options", "View" };
-    for (int i = 0, mx = x + 8; i < 3; mx += (int)strlen(MENU[i]) * 8 + 16, i++) gfx_draw_text(mx, y + W10_MENU_Y + 6, MENU[i], C_TEXT, C_BG);
+    for (int i = 0, mx = x + 8; i < 3; mx += (int)strlen(_(MENU[i])) * 8 + 16, i++) gfx_draw_text(mx, y + W10_MENU_Y + 6, _(MENU[i]), C_TEXT, C_BG);
     gfx_fill_rect(x + 1, y + W10_TABS_Y + W10_TAB_H - 1, W - 2, 1, C_LINE);
     int sel_tab = 0;
     for (int i = 0; i < 4; i++) if (W10_PAGE[i] == g_page) sel_tab = i;
@@ -1622,13 +1623,13 @@ static void draw_w10_bars(void) {
             gfx_fill_rect(tx, y + W10_TABS_Y, 1, W10_TAB_H, C_LINE);
             gfx_fill_rect(tx + tw - 1, y + W10_TABS_Y, 1, W10_TAB_H, C_LINE);
         }
-        gfx_draw_text(tx + 10, y + W10_TABS_Y + 8, W10_TABS[i], C_TEXT, C_BG);
+        gfx_draw_text(tx + 10, y + W10_TABS_Y + 8, _(W10_TABS[i]), C_TEXT, C_BG);
     }
     /* the button bar at the bottom */
     int by = g_win.y + g_win.h - 38;
     gfx_fill_rect(x + 1, by, W - 2, 37, C_RAIL);
     gfx_fill_rect(x + 1, by, W - 2, 1, C_LINE);
-    gfx_draw_text(x + 12, by + 15, "^ Fewer details", TCL(0x0066CC), C_RAIL);
+    gfx_draw_text(x + 12, by + 15, _("^ Fewer details"), TCL(0x0066CC), C_RAIL);
 }
 
 
@@ -1646,7 +1647,7 @@ void taskmgr_draw(const fb_info_t* fi) {
     gfx_fill_rect(x + 10, y + 13, 3, 4, C_ACCENT);
     gfx_fill_rect(x + 14, y + 9, 3, 8, C_ACCENT);
     gfx_fill_rect(x + 18, y + 6, 3, 11, C_ACCENT);
-    gfx_draw_text(x + 28, y + 8, "Task Manager", C_TEXT, w10() ? C_BG : C_RAIL);
+    gfx_draw_text(x + 28, y + 8, _("Task Manager"), C_TEXT, w10() ? C_BG : C_RAIL);
     win_draw_buttons(&g_win, 4, 12);
     if (w10()) draw_w10_bars();
     else draw_rail();

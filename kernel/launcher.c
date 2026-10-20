@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "launcher.h"
+#include "i18n.h"
 #include "theme.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -137,10 +138,10 @@ void launcher_rclick(int mx, int my) {
     if (i < 0) return;
     g_menu_app = i;
     ctx_item_t items[] = {
-        { "Open", 1, 0 },
-        { "Details", 2, 0 },
+        { _("Open"), 1, 0 },
+        { _("Details"), 2, 0 },
         { CTX_SEP, 0, 0 },
-        { "Uninstall", 3, 0 },
+        { _("Uninstall"), 3, 0 },
     };
     ctxmenu_open(mx, my, items, 4, menu_cb, NULL);
 }
@@ -179,10 +180,10 @@ void launcher_click(int mx, int my) {
     if (ly >= TOOL_Y && ly < TOOL_Y + 18) {
         if (lx >= 8 && lx < 120) {
             char err[96];
-            if (pkg_run("store", 0, NULL, 1, err, sizeof(err)) >= 0) set_status("Opening the App Store...");
-            else { explorer_open("/home/banana/Examples"); gui_raise_files(); set_status("Double-click a .bpk to install it"); }
+            if (pkg_run("store", 0, NULL, 1, err, sizeof(err)) >= 0) set_status(_("Opening the App Store..."));
+            else { explorer_open("/home/banana/Examples"); gui_raise_files(); set_status(_("Double-click a .bpk to install it")); }
         }
-        else if (lx >= 126 && lx < 206) { rescan(); set_status("Refreshed"); }
+        else if (lx >= 126 && lx < 206) { rescan(); set_status(_("Refreshed")); }
         return;
     }
     /* scroll arrows at the right of the toolbar */
@@ -206,23 +207,23 @@ void launcher_draw(const fb_info_t* fi) {
     int x = g_win.x, y = g_win.y, W = g_win.w, H = g_win.h;
     bevel(x, y, W, H, C_PANEL, TC(0x505D72), TC(0x10141C));
     bevel(x + 3, y + 3, W - 6, TITLE_H - 1, C_TITLE, TC(0x647692), TC(0x111923));
-    gfx_draw_text(x + 10, y + 7, "Apps", TC(0xFFFFFF), C_TITLE);
+    gfx_draw_text(x + 10, y + 7, _("Apps"), TC(0xFFFFFF), C_TITLE);
     win_draw_buttons(&g_win, 4, 12);
     kbnav_begin(&g_nav);
     kbnav_add(&g_nav, x + 8, y + TOOL_Y, 112, 18);
     kbnav_add(&g_nav, x + 126, y + TOOL_Y, 80, 18);
 
     bevel(x + 8, y + TOOL_Y, 112, 18, TC(0x303740), TC(0x535D6E), TC(0x15191F));
-    gfx_draw_text(x + 16, y + TOOL_Y + 5, "Get apps...", C_TEXT, TC(0x303740));
+    gfx_draw_text(x + 16, y + TOOL_Y + 5, _("Get apps..."), C_TEXT, TC(0x303740));
     bevel(x + 126, y + TOOL_Y, 80, 18, TC(0x303740), TC(0x535D6E), TC(0x15191F));
-    gfx_draw_text(x + 138, y + TOOL_Y + 5, "Refresh", C_TEXT, TC(0x303740));
+    gfx_draw_text(x + 138, y + TOOL_Y + 5, _("Refresh"), C_TEXT, TC(0x303740));
 
     if (g_napps == 0) {
-        gfx_draw_text(x + 16, y + GRID_Y + 10, "No apps installed yet.", C_TEXT, C_PANEL);
-        gfx_draw_text(x + 16, y + GRID_Y + 30, "Get apps... opens the App Store; or double-click a .bpk", C_DIM, C_PANEL);
-        gfx_draw_text(x + 16, y + GRID_Y + 44, "(try ~/Examples, a USB stick in /mnt/usb, or a", C_DIM, C_PANEL);
-        gfx_draw_text(x + 16, y + GRID_Y + 58, "download), or type: pkg install <file.bpk>", C_DIM, C_PANEL);
-        gfx_draw_text(x + 16, y + GRID_Y + 82, "Build your own with the Linux SDK (sdk/).", C_DIM, C_PANEL);
+        gfx_draw_text(x + 16, y + GRID_Y + 10, _("No apps installed yet."), C_TEXT, C_PANEL);
+        gfx_draw_text(x + 16, y + GRID_Y + 30, _("Get apps... opens the App Store; or double-click a .bpk"), C_DIM, C_PANEL);
+        gfx_draw_text(x + 16, y + GRID_Y + 44, _("(try ~/Examples, a USB stick in /mnt/usb, or a"), C_DIM, C_PANEL);
+        gfx_draw_text(x + 16, y + GRID_Y + 58, _("download), or type: pkg install <file.bpk>"), C_DIM, C_PANEL);
+        gfx_draw_text(x + 16, y + GRID_Y + 82, _("Build your own with the Linux SDK (sdk/)."), C_DIM, C_PANEL);
     }
     for (int i = 0; i < g_napps; i++) {
         int tx, ty;

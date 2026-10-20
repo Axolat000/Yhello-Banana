@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* "Choose a file" (filechooser.h): a panel inside another window. */
 #include "filechooser.h"
+#include "i18n.h"
 #include "theme.h"
 #include "fs.h"
 #include "gfx.h"
@@ -209,8 +210,8 @@ void fc_draw(int x, int y, int w, int h) {
     gfx_fill_rect(x, y, w, h, C_BG);
     gfx_draw_text(x, y + 2, g_title, C_HEAD, C_BG);
     /* Up, New folder, and the folder */
-    button(x, y + 20, 40, "Up", 0);
-    button(x + 44, y + 20, NEWDIR_W, "New folder", 0);
+    button(x, y + 20, 40, _("Up"), 0);
+    button(x + 44, y + 20, NEWDIR_W, _("New folder"), 0);
     int px = x + 44 + NEWDIR_W + 4;
     char path[FS_PATH_LEN];
     kstrlcpy(path, g_dir, sizeof(path));
@@ -263,23 +264,23 @@ void fc_draw(int x, int y, int w, int h) {
     if (g_save) {
         /* File name: [...........]   Save as type: [Text Documents (*.txt) v] */
         int fy = field_y(), fx = x + 112;
-        gfx_draw_text(x + 4, fy + 6, "File name:", C_TEXT, C_BG);
+        gfx_draw_text(x + 4, fy + 6, _("File name:"), C_TEXT, C_BG);
         gfx_fill_rect(fx, fy, x + w - fx, 22, TC(0xFFFFFF));
         gfx_fill_rect(fx, fy + 21, x + w - fx, 1, C_ACCENT);
         int fmax = (x + w - fx - 12) / 8, fl = (int)strlen(g_fname);
         const char* fs = g_fname + (fl > fmax - 1 ? fl - (fmax - 1) : 0);
         gfx_draw_text(fx + 4, fy + 7, fs, TC(0x101010), TC(0xFFFFFF));
         if (!g_confirm) gfx_fill_rect(fx + 4 + (int)strlen(fs) * 8, fy + 5, 1, 13, TC(0x202020));
-        gfx_draw_text(x + 4, fy + 34, "Save as type:", C_TEXT, C_BG);
+        gfx_draw_text(x + 4, fy + 34, _("Save as type:"), C_TEXT, C_BG);
         gfx_fill_rect(fx, fy + 28, TYPE_W, 22, C_LIST);
         gfx_draw_text(fx + 6, fy + 35, type_name(), C_TEXT, C_LIST);
         gfx_draw_text(fx + TYPE_W - 14, fy + 35, "v", C_DIM, C_LIST);
-        button(x + w - 172, by, 80, "Cancel", 0);
-        button(x + w - 84, by, 84, "Save", g_fname[0] != 0);
+        button(x + w - 172, by, 80, _("Cancel"), 0);
+        button(x + w - 84, by, 84, _("Save"), g_fname[0] != 0);
     } else {
         int can_open = g_sel >= 0 && g_sel < g_n;
-        button(x + w - 172, by, 80, "Cancel", 0);
-        button(x + w - 84, by, 84, "Open", can_open);
+        button(x + w - 172, by, 80, _("Cancel"), 0);
+        button(x + w - 84, by, 84, _("Open"), can_open);
         if (can_open && !g_ent[g_sel].is_dir) {
             char line[80];
             ksnprintf(line, sizeof(line), "%s", g_ent[g_sel].name);
@@ -302,9 +303,9 @@ void fc_draw(int x, int y, int w, int h) {
         int ml = (cw - 24) / 8;
         if (ml > 0 && ml < (int)sizeof(line)) line[ml] = 0;
         gfx_draw_text(cx + 12, cy + 14, line, C_HEAD, TC(0x262C36));
-        gfx_draw_text(cx + 12, cy + 32, "Do you want to replace it?", C_TEXT, TC(0x262C36));
-        button(cx + cw - 184, cy + ch - 32, 80, "Yes", 1);
-        button(cx + cw - 96, cy + ch - 32, 80, "No", 0);
+        gfx_draw_text(cx + 12, cy + 32, _("Do you want to replace it?"), C_TEXT, TC(0x262C36));
+        button(cx + cw - 184, cy + ch - 32, 80, _("Yes"), 1);
+        button(cx + cw - 96, cy + ch - 32, 80, _("No"), 0);
     }
 }
 

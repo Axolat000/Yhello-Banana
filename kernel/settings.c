@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../net/firewall.h"
+#include "i18n.h"
 #include "theme.h"
 #include "../net/ipv6.h"
 #include "settings.h"
@@ -59,8 +60,8 @@ void shell_power(int reboot);
 #define C_ACCENT TC(0x3A7BD5)
 #define C_SEL    TC(0x2C3E5C)
 
-enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
-static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
+enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_LANGUAGE, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
+static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Language", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
 
 #define KB_ROW 20                           /* Keyboard: a row of the layout list (two columns) */
 
@@ -167,17 +168,17 @@ static void save_volume(void) {
 
 static void draw_display(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Wallpaper", C_HEAD);
+    label(x, y, _("Wallpaper"), C_HEAD);
     const char* file = wallpaper_current_file();
     char line[96];
     if (file && *file) {
         const char* b = strrchr(file, '/');
-        ksnprintf(line, sizeof(line), "Now: your picture %s (%s)", b ? b + 1 : file, MODE_NAMES[wallpaper_current_mode() < 4 ? wallpaper_current_mode() : 0]);
+        ksnprintf(line, sizeof(line), "%s %s (%s)", _("Now: your picture"), b ? b + 1 : file, _(MODE_NAMES[wallpaper_current_mode() < 4 ? wallpaper_current_mode() : 0]));
         if ((int)strlen(line) * 8 > cw()) line[cw() / 8] = 0;
     }
     else {
         const wallpaper_preset_t* p = wallpaper_preset(wallpaper_current_preset());
-        ksnprintf(line, sizeof(line), "Now: %s", p ? p->name : "-");
+        ksnprintf(line, sizeof(line), "%s %s", _("Now:"), p ? p->name : "-");
     }
     label(x, y + 18, line, C_DIM);
     int n = wallpaper_preset_count();
@@ -207,9 +208,9 @@ static void draw_display(void) {
 
     /* the user's pictures: those used lately */
     int py = pics_y();
-    label(x, py, "Your pictures", C_HEAD);
+    label(x, py, _("Your pictures"), C_HEAD);
     int nr = wallpaper_recent_count();
-    if (!nr) label(x, py + 22, "The pictures you choose show up here.", C_DIM);
+    if (!nr) label(x, py + 22, _("The pictures you choose show up here."), C_DIM);
     for (int i = 0; i < nr; i++) {
         int tx, ty;
         pic_rect(i, &tx, &ty);
@@ -219,7 +220,7 @@ static void draw_display(void) {
         kbnav_add(&g_nav, tx, ty + 14, THUMB_W, THUMB_H - 14);
         const uint32_t* th = wallpaper_recent_thumb(i, THUMB_W, THUMB_H);
         if (th) blit(tx, ty, THUMB_W, THUMB_H, th);
-        else { gfx_fill_rect(tx, ty, THUMB_W, THUMB_H, TC(0x303740)); label(tx + 4, ty + 20, "(missing)", C_DIM); }
+        else { gfx_fill_rect(tx, ty, THUMB_W, THUMB_H, TC(0x303740)); label(tx + 4, ty + 20, _("(missing)"), C_DIM); }
         /* remove it from the list: x in its corner */
         gfx_fill_rect(tx + THUMB_W - 12, ty, 12, 12, TC(0x202630));
         gfx_draw_text(tx + THUMB_W - 10, ty + 2, "x", C_TEXT, TC(0x202630));
@@ -231,11 +232,11 @@ static void draw_display(void) {
 
     /* Browse..., and how a picture covers the screen */
     int by = wp_buttons_y();
-    button(x, by, 96, "Browse...", 0);
+    button(x, by, 96, _("Browse..."), 0);
     int pic = file && *file;
-    label(x + 112, by + 6, "Position:", pic ? C_TEXT : C_DIM);
+    label(x + 112, by + 6, _("Position:"), pic ? C_TEXT : C_DIM);
     for (int m = 0; m < 4; m++)
-        button(x + 192 + m * 68, by, 64, MODE_NAMES[m], pic && wallpaper_current_mode() == MODES[m]);
+        button(x + 192 + m * 68, by, 64, _(MODE_NAMES[m]), pic && wallpaper_current_mode() == MODES[m]);
 }
 
 /* ── Fonts: the text size, the installed fonts, which one the interface
@@ -259,13 +260,13 @@ static void radio(int x, int y, int on) {
 
 static void draw_fonts(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Text size", C_HEAD);
-    label(x + 88, y, "(terminal windows, Notepad, desktop icon names)", C_DIM);
+    label(x, y, _("Text size"), C_HEAD);
+    label(x + 88, y, _("(terminal windows, Notepad, desktop icon names)"), C_DIM);
     for (int s = 0; s < GFX_TEXT_SIZES; s++) button(x + s * 92, y + 18, 86, gfx_text_size_name(s), gfx_text_size() == s);
 
-    label(x, y + 56, "Fonts", C_HEAD);
-    label(ui_col() - 20, y + 56, "Interface", C_DIM);
-    label(doc_col() - 4, y + 56, "Documents", C_DIM);
+    label(x, y + 56, _("Fonts"), C_HEAD);
+    label(ui_col() - 20, y + 56, _("Interface"), C_DIM);
+    label(doc_col() - 4, y + 56, _("Documents"), C_DIM);
     int stride, tw, th;
     uint32_t* t = fb_target(&stride, &tw, &th);
     int ly = fonts_list_y(), n = font_rows_total(), rows = fonts_rows();
@@ -283,16 +284,16 @@ static void draw_fonts(void) {
         /* a sample in the font itself */
         if (face >= 0 && t) font_draw(t, stride, x, ry, ui_col() - 30, ry + FROW_H - 2, face, 15, x + 6, ry + 28,
                                       "The quick brown fox 0123", 24, TC(0xC8D4E4), 0);
-        else if (face == -2) gfx_draw_text(x + 6, ry + 18, "The quick brown fox 0123", TC(0xC8D4E4), (i & 1) ? TC(0x222932) : TC(0x1F252E));
+        else if (face == -2) gfx_draw_text(x + 6, ry + 18, _("The quick brown fox 0123"), TC(0xC8D4E4), (i & 1) ? TC(0x222932) : TC(0x1F252E));
         int ui_on = face == -2 ? !gfx_smooth_text() : gfx_smooth_text() && font_ui() == face;
         if (face != FONT_SANS) radio(ui_col(), ry + 9, ui_on);
         if (face != -2 && face != FONT_MONO) radio(doc_col() + 20, ry + 9, face == FONT_SANS ? font_doc() < 0 : font_doc() == face);
         if (r >= 3) button(x + cw() - 30, ry + 6, 26, "X", 0);       /* uninstall */
     }
-    if (n > rows) label(x + cw() - 120, ly + rows * FROW_H + 2, "(wheel: more)", C_DIM);
+    if (n > rows) label(x + cw() - 120, ly + rows * FROW_H + 2, _("(wheel: more)"), C_DIM);
     int by = g_win.y + g_win.h - 50;
-    button(x, by, 120, "Install font...", 0);
-    label(x + 132, by + 6, "a .ttf file (or right-click one in Files)", C_DIM);
+    button(x, by, 120, _("Install font..."), 0);
+    label(x + 132, by + 6, _("a .ttf file (or right-click one in Files)"), C_DIM);
 }
 
 /* ── installing a font ── */
@@ -361,7 +362,7 @@ static void click_fonts(int mx, int my) {
         }
     int by = g_win.y + g_win.h - 50;
     if (inside(mx, my, x, by, 120, 20)) {
-        fc_open("Choose a font to install (.ttf)", "/home/banana/Downloads", is_ttf, font_chosen);
+        fc_open(_("Choose a font to install (.ttf)"), "/home/banana/Downloads", is_ttf, font_chosen);
         return;
     }
     int ly = fonts_list_y(), n = font_rows_total(), rows = fonts_rows();
@@ -418,7 +419,7 @@ void settings_wheel(int mx, int my, int dz) {
 
 static void draw_sound(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Sound", C_HEAD);
+    label(x, y, _("Sound"), C_HEAD);
     char line[96];
     ksnprintf(line, sizeof(line), "Device: %s", audio_device_name());
     label(x, y + 18, line, C_DIM);
@@ -431,9 +432,9 @@ static void draw_sound(void) {
     gfx_fill_rect(sx + 1, sy + 7, (sw - 2) * vol / 100, 6, g_muted ? TC(0x606A78) : C_ACCENT);
     int kx = sx + (sw - 10) * vol / 100;
     bevel(kx, sy, 10, 20, TC(0xC8D2E0), TC(0xFFFFFF), TC(0x606A78));
-    button(sx + sw + 12, sy, 40, "Max", 0);
+    button(sx + sw + 12, sy, 40, _("Max"), 0);
     button(x, sy + 36, 100, g_muted ? "Unmute" : "Mute", g_muted);
-    button(x + 112, sy + 36, 120, "Test sound", 0);
+    button(x + 112, sy + 36, 120, _("Test sound"), 0);
 }
 
 static void checkbox(int x, int y, int on);
@@ -456,8 +457,8 @@ static void save_speed(void) {
 
 static void draw_mouse(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Mouse", C_HEAD);
-    label(x, y + 18, "How far the pointer moves when you move the mouse:", C_DIM);
+    label(x, y, _("Mouse"), C_HEAD);
+    label(x, y + 18, _("How far the pointer moves when you move the mouse:"), C_DIM);
     int sp = mouse_get_speed();
     char line[64];
     ksnprintf(line, sizeof(line), "Pointer speed: %d%s", sp, sp == 5 ? " (normal)" : sp < 5 ? " (slower)" : " (faster)");
@@ -469,17 +470,17 @@ static void draw_mouse(void) {
     for (int i = 0; i < 10; i++) gfx_fill_rect(sx + 4 + (sw - 10) * i / 9, sy + 22, 2, 4, C_DIM);
     int kx = sx + (sw - 10) * (sp - 1) / 9;
     bevel(kx, sy, 10, 20, TC(0xC8D2E0), TC(0xFFFFFF), TC(0x606A78));
-    label(sx, sy + 32, "Slow", C_DIM);
-    label(sx + sw - 32, sy + 32, "Fast", C_DIM);
-    button(x, sy + 56, 70, "Slower", 0);
-    button(x + 80, sy + 56, 70, "Faster", 0);
-    button(x + 160, sy + 56, 70, "Normal", sp == 5);
+    label(sx, sy + 32, _("Slow"), C_DIM);
+    label(sx + sw - 32, sy + 32, _("Fast"), C_DIM);
+    button(x, sy + 56, 70, _("Slower"), 0);
+    button(x + 80, sy + 56, 70, _("Faster"), 0);
+    button(x + 160, sy + 56, 70, _("Normal"), sp == 5);
 
-    label(x, sy + 100, "Touchpad", C_HEAD);
+    label(x, sy + 100, _("Touchpad"), C_HEAD);
     checkbox(x, sy + 124, tp_tap_to_click);
-    label(x + 24, sy + 127, "Tap to click (two fingers: right click)", C_TEXT);
+    label(x + 24, sy + 127, _("Tap to click (two fingers: right click)"), C_TEXT);
     checkbox(x, sy + 150, tp_natural_scroll);
-    label(x + 24, sy + 153, "Natural scrolling (the page follows the fingers)", C_TEXT);
+    label(x + 24, sy + 153, _("Natural scrolling (the page follows the fingers)"), C_TEXT);
     char tdesc[96];
     touchpad_describe(tdesc, sizeof(tdesc));
     label(x, sy + 182, tdesc + 3, C_DIM);       /* (without the " | ") */
@@ -487,10 +488,37 @@ static void draw_mouse(void) {
 
 static int kb_per_col(void) { return (keyboard_layout_count() + 1) / 2; }
 
+/* Language: the desktop's (kernel/i18n.c) */
+static void draw_language(void) {
+    int x = cx0(), y = cy0();
+    label(x, y, _("Language"), C_HEAD);
+    label(x, y + 18, _("The language of the desktop - menus, windows, Settings:"), C_DIM);
+    for (int i = 0; i < i18n_count(); i++) {
+        int ry = y + 44 + i * 26, on = i == i18n_current();
+        kbnav_add(&g_nav, x, ry - 2, 260, 20);
+        bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
+        if (on) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
+        label(x + 24, ry + 3, i18n_name(i), on ? C_HEAD : C_TEXT);
+    }
+    int ny = y + 44 + i18n_count() * 26 + 14;
+    label(x, ny, _("Apps follow it when they are translated; the others stay in English."), C_DIM);
+    label(x, ny + 16, _("Commands in the terminal stay in English."), C_DIM);
+}
+
+static void click_language(int mx, int my) {
+    int x = cx0(), y = cy0();
+    for (int i = 0; i < i18n_count(); i++)
+        if (inside(mx, my, x, y + 44 + i * 26 - 4, 300, 24)) {
+            i18n_set(i18n_code(i));
+            ksnprintf(g_status, sizeof(g_status), "%s: %s", _("Language"), i18n_name(i));
+            return;
+        }
+}
+
 static void draw_keyboard(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Keyboard layout", C_HEAD);
-    label(x, y + 18, "Choose how the keys of your keyboard are read:", C_DIM);
+    label(x, y, _("Keyboard layout"), C_HEAD);
+    label(x, y + 18, _("Choose how the keys of your keyboard are read:"), C_DIM);
     const char* cur = keyboard_layout_name();
     int per = kb_per_col(), colw = cw() / 2;
     for (int i = 0; i < keyboard_layout_count(); i++) {
@@ -507,8 +535,8 @@ static void draw_keyboard(void) {
         if (maxc > 0 && maxc < (int)sizeof(lb)) lb[maxc] = 0;
         label(rx + 22, ry + 3, lb, on ? C_HEAD : C_TEXT);
     }
-    label(x, y + 50 + per * KB_ROW, "AltGr: the right Alt key (or Ctrl+Alt).", C_DIM);
-    label(x, y + 66 + per * KB_ROW, "Win+Space: English (US) and back to this layout.", C_DIM);
+    label(x, y + 50 + per * KB_ROW, _("AltGr: the right Alt key (or Ctrl+Alt)."), C_DIM);
+    label(x, y + 66 + per * KB_ROW, _("Win+Space: English (US) and back to this layout."), C_DIM);
 }
 
 /* Screen, on any PC: the sizes the firmware offers, set by the boot loader
@@ -523,7 +551,7 @@ static void bm_rect(int i, int* x, int* y) {     /* i = 0: automatic, then the m
 
 static void draw_screen_boot(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Screen resolution", C_HEAD);
+    label(x, y, _("Screen resolution"), C_HEAD);
     const fb_info_t* fi = fb_info();
     char line[112], saved[24] = "";
     ksnprintf(line, sizeof(line), "Now: %u x %u", fi ? fi->width : 0, fi ? fi->height : 0);
@@ -531,8 +559,8 @@ static void draw_screen_boot(void) {
     display_mode_t modes[48];
     int n = display_boot_modes(modes, 48);
     if (!n) {
-        label(x, y + 44, "This display keeps the size it was started with: the boot loader", C_DIM);
-        label(x, y + 60, "gave no list of sizes (started by another loader).", C_DIM);
+        label(x, y + 44, _("This display keeps the size it was started with: the boot loader"), C_DIM);
+        label(x, y + 60, _("gave no list of sizes (started by another loader)."), C_DIM);
         return;
     }
     cfg_get(CFG_SETTINGS, "boot_resolution", saved, sizeof(saved));
@@ -555,9 +583,9 @@ static void draw_screen_boot(void) {
         label(bx + 22, by + 3, nm, on ? C_HEAD : C_TEXT);
     }
     int ry = g_win.y + g_win.h - 54;
-    label(x, ry - 16, "* the size now", C_DIM);
-    if (g_restart_pending) button(x, ry, 130, "Restart now", 1);
-    else if (!installed) label(x, ry + 4, "Banana Boot menu: Left / Right changes the screen size.", C_DIM);
+    label(x, ry - 16, _("* the size now"), C_DIM);
+    if (g_restart_pending) button(x, ry, 130, _("Restart now"), 1);
+    else if (!installed) label(x, ry + 4, _("Banana Boot menu: Left / Right changes the screen size."), C_DIM);
 }
 
 static void click_screen_boot(int mx, int my) {
@@ -617,8 +645,8 @@ static const char* const TM_SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", 
 
 static void draw_themes(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Themes", C_HEAD);
-    label(x + 64, y, "(the colours of windows, the taskbar and menus)", C_DIM);
+    label(x, y, _("Themes"), C_HEAD);
+    label(x + 64, y, _("(the colours of windows, the taskbar and menus)"), C_DIM);
     int n = theme_count(), cur = theme_current();
     for (int i = 0; i < n; i++) {
         int tx, ty;
@@ -634,21 +662,21 @@ static void draw_themes(void) {
     }
     /* Task Manager's look: the theme's, or one chosen */
     int ty = g_win.y + g_win.h - 80, ov = theme_taskmgr_override();
-    label(x, ty + 6, "Task Manager:", C_TEXT);
+    label(x, ty + 6, _("Task Manager:"), C_TEXT);
     char auto_lbl[32];
-    ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", TM_SHORT[theme_get(cur) ? theme_get(cur)->taskmgr : 0]);
+    ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", _(TM_SHORT[theme_get(cur) ? theme_get(cur)->taskmgr : 0]));
     button(x + 112, ty, 8 + (int)strlen(auto_lbl) * 8, auto_lbl, ov < 0);
     int bx2 = x + 112 + 16 + (int)strlen(auto_lbl) * 8;
     for (int s = 0; s < TM_STYLES; s++) {
         static const char* const SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", "Win 11" };
-        int bw = (int)strlen(SHORT[s]) * 8 + 12;
-        button(bx2, ty, bw, SHORT[s], ov == s);
+        int bw = (int)strlen(_(SHORT[s])) * 8 + 12;
+        button(bx2, ty, bw, _(SHORT[s]), ov == s);
         bx2 += bw + 6;
     }
     int by = g_win.y + g_win.h - 50;
-    button(x, by, 128, "Install theme...", 0);
-    button(x + 136, by, 128, "Save a copy", 0);
-    label(x + 272, by + 6, "make your own: sdk/themes", C_DIM);
+    button(x, by, 128, _("Install theme..."), 0);
+    button(x + 136, by, 128, _("Save a copy"), 0);
+    label(x + 272, by + 6, _("make your own: sdk/themes"), C_DIM);
 }
 
 static int is_theme_file(const char* n) {
@@ -680,20 +708,20 @@ static void click_themes(int mx, int my) {
     if (my >= ty && my < ty + 20) {
         char auto_lbl[32];
         const theme_t* ct = theme_get(theme_current());
-        ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", TM_SHORT[ct ? ct->taskmgr : 0]);
+        ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", _(TM_SHORT[ct ? ct->taskmgr : 0]));
         int ax = x + 112, aw = 8 + (int)strlen(auto_lbl) * 8;
         if (mx >= ax && mx < ax + aw) { theme_set_taskmgr_override(-1); ksnprintf(g_status, sizeof(g_status), "Task Manager: the theme's look"); return; }
         int bx2 = ax + aw + 8;
         for (int s = 0; s < TM_STYLES; s++) {
             static const char* const SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", "Win 11" };
-            int bw = (int)strlen(SHORT[s]) * 8 + 12;
-            if (mx >= bx2 && mx < bx2 + bw) { theme_set_taskmgr_override(s); ksnprintf(g_status, sizeof(g_status), "Task Manager: %s", TM_STYLE_NAMES[s]); return; }
+            int bw = (int)strlen(_(SHORT[s])) * 8 + 12;
+            if (mx >= bx2 && mx < bx2 + bw) { theme_set_taskmgr_override(s); ksnprintf(g_status, sizeof(g_status), "Task Manager: %s", _(TM_STYLE_NAMES[s])); return; }
             bx2 += bw + 6;
         }
         return;
     }
     if (inside(mx, my, x, by, 128, 20)) {
-        fc_open("Choose a theme to install (.theme, .btheme)", "/home/banana/Downloads", is_theme_file, theme_chosen);
+        fc_open(_("Choose a theme to install (.theme, .btheme)"), "/home/banana/Downloads", is_theme_file, theme_chosen);
         return;
     }
     if (inside(mx, my, x + 136, by, 128, 20)) {
@@ -711,15 +739,15 @@ static void click_themes(int mx, int my) {
 static const char* const TB_STYLES[3] = { "Icons and titles", "Icons only", "Titles only" };
 static void draw_taskbar_page(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Taskbar buttons", C_HEAD);
-    label(x, y + 18, "How the open windows show on the taskbar:", C_DIM);
+    label(x, y, _("Taskbar buttons"), C_HEAD);
+    label(x, y + 18, _("How the open windows show on the taskbar:"), C_DIM);
     int cur = gui_taskbar_style();
     for (int i = 0; i < 3; i++) {
         int ry = y + 44 + i * ITEM_H;
         kbnav_add(&g_nav, x, ry - 2, 260, 18);
         bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
         if (i == cur) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
-        label(x + 24, ry + 3, TB_STYLES[i], i == cur ? C_HEAD : C_TEXT);
+        label(x + 24, ry + 3, _(TB_STYLES[i]), i == cur ? C_HEAD : C_TEXT);
         /* a small preview */
         int px = x + 200, py = ry - 2;
         gfx_fill_rect(px, py, 110, 18, TC(0x192026));
@@ -731,20 +759,20 @@ static void draw_taskbar_page(void) {
     kbnav_add(&g_nav, x, dy - 2, 300, 18);
     bevel(x, dy, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     if (on) { gfx_fill_rect(x + 3, dy + 6, 3, 3, C_ACCENT); gfx_fill_rect(x + 5, dy + 8, 3, 3, C_ACCENT); gfx_fill_rect(x + 7, dy + 6, 2, 2, C_ACCENT); gfx_fill_rect(x + 9, dy + 4, 2, 2, C_ACCENT); }
-    label(x + 24, dy + 3, "Show the virtual desktop buttons (1 2 3 4)", on ? C_HEAD : C_TEXT);
-    label(x + 24, dy + 19, "Hidden, Win+Ctrl+Left / Right still switch desktops", C_DIM);
+    label(x + 24, dy + 3, _("Show the virtual desktop buttons (1 2 3 4)"), on ? C_HEAD : C_TEXT);
+    label(x + 24, dy + 19, _("Hidden, Win+Ctrl+Left / Right still switch desktops"), C_DIM);
     int py = dy + 46;
-    label(x, py, "Pinned apps", C_HEAD);
-    label(x, py + 20, "Right-click a window's taskbar button or an", C_DIM);
-    label(x, py + 36, "app's desktop icon: Pin to taskbar.", C_DIM);
-    label(x, py + 52, "Right-click a pinned app to unpin it.", C_DIM);
+    label(x, py, _("Pinned apps"), C_HEAD);
+    label(x, py + 20, _("Right-click a window's taskbar button or an"), C_DIM);
+    label(x, py + 36, _("app's desktop icon: Pin to taskbar."), C_DIM);
+    label(x, py + 52, _("Right-click a pinned app to unpin it."), C_DIM);
 }
 
 /* Screen: the resolution */
 static void draw_screen(void) {
     if (!display_can_change()) { draw_screen_boot(); return; }
     int x = cx0(), y = cy0();
-    label(x, y, "Screen resolution", C_HEAD);
+    label(x, y, _("Screen resolution"), C_HEAD);
     const fb_info_t* fi = fb_info();
     char line[96];
     ksnprintf(line, sizeof(line), "Now: %u x %u", fi ? fi->width : 0, fi ? fi->height : 0);
@@ -803,8 +831,8 @@ static int  su_pw_y(int y) { return y + 44 + SU_ROWS * SU_ROW_H + 14; }
 
 static void draw_startup(void) {
     int x = cx0(), y = cy0(), w = cw();
-    label(x, y, "Startup", C_HEAD);
-    label(x, y + 18, "Started by themselves when Banana OS boots:", C_DIM);
+    label(x, y, _("Startup"), C_HEAD);
+    label(x, y + 18, _("Started by themselves when Banana OS boots:"), C_DIM);
     int ry[SU_ROWS];
     su_rows(y, ry);
     char line[96];
@@ -815,7 +843,7 @@ static void draw_startup(void) {
                                                         : "Log in automatically (always: no password is set)", C_TEXT);
 
     checkbox(x, ry[0], rc_on("desktop"));
-    label(x + 24, ry[0] + 3, "Desktop (start the GUI instead of the text console)", C_TEXT);
+    label(x + 24, ry[0] + 3, _("Desktop (start the GUI instead of the text console)"), C_TEXT);
 
     checkbox(x, ry[1], rc_on("httpd"));
     ksnprintf(line, sizeof(line), "Web server (httpd), port %u", rc_port("httpd", 80));
@@ -837,14 +865,14 @@ static void draw_startup(void) {
 
     /* the password */
     int py = su_pw_y(y);
-    label(x, py, "Password (for SSH and RDP logins)", C_HEAD);
+    label(x, py, _("Password (for SSH and RDP logins)"), C_HEAD);
     int set = passwd_is_set(PASSWD_USER);
     label(x, py + 18, set ? "A password is set." : "No password yet: the SSH server will not start without one.",
           set ? C_DIM : TC(0xFFC060));
     static const char* const NAMES[2] = { "New:", "Again:" };
     for (int f = 0; f < 2; f++) {
         int fy = py + 42 + f * 26;
-        label(x, fy + 4, NAMES[f], C_TEXT);
+        label(x, fy + 4, _(NAMES[f]), C_TEXT);
         bevel(x + 60, fy, 200, 20, TC(0x141920), TC(0x10141C), g_pw_focus == f ? C_ACCENT : TC(0x404B5C));
         int n = u8_cols(g_pw[f], (int)strlen(g_pw[f]));
         char stars[40];
@@ -992,11 +1020,11 @@ static void ipf_fill(netif_t* nf) {
 
 static void draw_network(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Network", C_HEAD);
+    label(x, y, _("Network"), C_HEAD);
     netif_t* nf = net_if();
     char a[16], line[96];
     if (!nf || !nf->dev) {
-        label(x, y + 24, "No network card was found.", C_DIM);
+        label(x, y + 24, _("No network card was found."), C_DIM);
         return;
     }
     if (g_net_manual < 0) { g_net_manual = !nf->dhcp; ipf_fill(nf); }
@@ -1005,9 +1033,9 @@ static void draw_network(void) {
     ksnprintf(line, sizeof(line), "Status: %s", nf->configured ? "connected" : "not connected");
     label(x, y + 42, line, nf->configured ? TC(0x80E080) : TC(0xE0A060));
     /* the address: automatic or manual */
-    label(x, y + 70, "Get an address:", C_TEXT);
-    button(x + NET_FX, y + 66, 150, "Automatic (DHCP)", g_net_manual == 0);
-    button(x + NET_FX + 156, y + 66, 90, "Manual", g_net_manual == 1);
+    label(x, y + 70, _("Get an address:"), C_TEXT);
+    button(x + NET_FX, y + 66, 150, _("Automatic (DHCP)"), g_net_manual == 0);
+    button(x + NET_FX + 156, y + 66, 90, _("Manual"), g_net_manual == 1);
     if (g_net_manual == 0) {
         ip4_to_str(nf->ip, a);     ksnprintf(line, sizeof(line), "IP address:   %s", nf->configured ? a : "-"); label(x, y + 100, line, C_TEXT);
         ip4_to_str(nf->netmask, a); ksnprintf(line, sizeof(line), "Subnet mask:  %s", nf->configured ? a : "-"); label(x, y + 116, line, C_TEXT);
@@ -1017,23 +1045,23 @@ static void draw_network(void) {
     } else {
         for (int f = 0; f < 4; f++) {
             int fy = y + 98 + f * 26;
-            label(x, fy + 4, IPF_NAME[f], C_TEXT);
+            label(x, fy + 4, _(IPF_NAME[f]), C_TEXT);
             kbnav_add(&g_nav, x + NET_FX, fy, 160, 20);
             bevel(x + NET_FX, fy, 160, 20, TC(0x141920), TC(0x10141C), g_ipf_focus == f ? C_ACCENT : TC(0x404B5C));
             gfx_draw_text(x + NET_FX + 6, fy + 6, g_ipf[f], C_TEXT, TC(0x141920));
             if (g_ipf_focus == f && (timer_ms() / 500) % 2 == 0)
                 gfx_fill_rect(x + NET_FX + 6 + (int)strlen(g_ipf[f]) * 8, fy + 4, 2, 12, C_TEXT);
         }
-        label(x + NET_FX + 170, y + 128, "(gateway and DNS", C_DIM);
-        label(x + NET_FX + 170, y + 144, " may stay empty)", C_DIM);
-        button(x + NET_FX, y + 204, 100, "Apply", 1);
+        label(x + NET_FX + 170, y + 128, _("(gateway and DNS"), C_DIM);
+        label(x + NET_FX + 170, y + 144, _(" may stay empty)"), C_DIM);
+        button(x + NET_FX, y + 204, 100, _("Apply"), 1);
     }
     /* the firewall and IPv6: both off unless turned on here */
     int ly = y + NET_LOW;
-    label(x, ly + 4, "Firewall: refuses connections from outside", C_TEXT);
+    label(x, ly + 4, _("Firewall: refuses connections from outside"), C_TEXT);
     button(x + 360, ly, 64, fw_enabled() ? "On" : "Off", fw_enabled());
-    label(x, ly + 26, "(ports to open: `firewall allow tcp PORT`)", C_DIM);
-    label(x, ly + 54, "IPv6", C_TEXT);
+    label(x, ly + 26, _("(ports to open: `firewall allow tcp PORT`)"), C_DIM);
+    label(x, ly + 54, _("IPv6"), C_TEXT);
     button(x + 360, ly + 50, 64, ipv6_enabled() ? "On" : "Off", ipv6_enabled());
 }
 
@@ -1086,7 +1114,7 @@ static int  tz_rows(void) { int n = (g_win.y + g_win.h - 34 - tz_list_y()) / TZ_
 
 static void draw_time(void) {
     int x = cx0(), y = cy0();
-    label(x, y, "Date & time", C_HEAD);
+    label(x, y, _("Date & time"), C_HEAD);
     rtc_datetime_t t;
     char line[128];
     uint32_t utc = rtc_now_utc();
@@ -1095,10 +1123,10 @@ static void draw_time(void) {
         static const char* const WD[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
         ksnprintf(line, sizeof(line), "%02u:%02u:%02u", t.hour, t.minute, t.second);
         gfx_draw_text_scaled(x, y + 22, 3, line, C_HEAD, C_PANEL);
-        ksnprintf(line, sizeof(line), "%s %u %s %u", WD[(rtc_now() / 86400u + 4u) % 7u], t.day, MON[t.month - 1], t.year);
+        ksnprintf(line, sizeof(line), "%s %u %s %u", _(WD[(rtc_now() / 86400u + 4u) % 7u]), t.day, _(MON[t.month - 1]), t.year);
         label(x, y + 52, line, C_TEXT);
     } else {
-        label(x, y + 28, "The clock could not be read.", C_DIM);
+        label(x, y + 28, _("The clock could not be read."), C_DIM);
     }
     const tz_zone_t* z = tz_get(tz_current());
     char off[16];
@@ -1110,12 +1138,12 @@ static void draw_time(void) {
     if (ok) {
         char v[5][8];
         ksnprintf(v[0], 8, "%u", t.day);
-        kstrlcpy(v[1], MON[t.month - 1], 4);
+        kstrlcpy(v[1], _(MON[t.month - 1]), 4);
         ksnprintf(v[2], 8, "%u", t.year);
         ksnprintf(v[3], 8, "%02u h", t.hour);
         ksnprintf(v[4], 8, "%02u min", t.minute);
-        label(x, y + 102, "Date", C_TEXT);
-        label(x, y + 128, "Time", C_TEXT);
+        label(x, y + 102, _("Date"), C_TEXT);
+        label(x, y + 128, _("Time"), C_TEXT);
         for (int k = 0; k < 5; k++) {
             int bx, by;
             step_rect(k / 3, k % 3, &bx, &by);
@@ -1124,12 +1152,12 @@ static void draw_time(void) {
             button(bx + 92, by, 22, "+", 0);
         }
     }
-    label(x, y + 158, "The computer's clock keeps", C_TEXT);
-    button(x + 224, y + 154, 100, "Local time", !rtc_keeps_utc());
-    button(x + 330, y + 154, 60, "UTC", rtc_keeps_utc());
+    label(x, y + 158, _("The computer's clock keeps"), C_TEXT);
+    button(x + 224, y + 154, 100, _("Local time"), !rtc_keeps_utc());
+    button(x + 330, y + 154, 60, _("UTC"), rtc_keeps_utc());
 
     /* the time zone */
-    label(x, y + 182, "Time zone", C_HEAD);
+    label(x, y + 182, _("Time zone"), C_HEAD);
     int rows = tz_rows(), n = tz_count();
     if (g_tz_top < 0) g_tz_top = tz_current() - rows / 2;
     if (g_tz_top > n - rows) g_tz_top = n - rows;
@@ -1206,15 +1234,15 @@ static void click_time(int mx, int my) {
 
 static void draw_about(void) {
     int x = cx0(), y = cy0();
-    gfx_draw_text_scaled(x, y, 2, "Banana OS 0.6", C_HEAD, C_PANEL);
-    if(g_sleep_available)button(x+cw()-90,y+28,90,"Sleep",0);
+    gfx_draw_text_scaled(x, y, 2, _("Banana OS 0.6"), C_HEAD, C_PANEL);
+    if(g_sleep_available)button(x+cw()-90,y+28,90,_("Sleep"),0);
     const sysinfo_t* si = sysinfo_get();
     char line[112];
     int ly = y + 32;
 #ifdef __x86_64__
-    label(x, ly, "64-bit (x86_64)", C_TEXT);
+    label(x, ly, _("64-bit (x86_64)"), C_TEXT);
 #else
-    label(x, ly, "32-bit (i686)", C_TEXT);
+    label(x, ly, _("32-bit (i686)"), C_TEXT);
 #endif
     ly += 18;
     if (si) {
@@ -1246,7 +1274,7 @@ static void draw_about(void) {
               ? "Running: the live CD (Banana OS is also installed here: 'update' updates it)"
               : "Running: the live CD - changes are lost at shutdown ('install' to keep them)", TC(0xFFB060));
     else if (fsdisk_is_installed()) {
-        label(x, ly, "Running: the installed system (changes are saved automatically)", TC(0x80E080));
+        label(x, ly, _("Running: the installed system (changes are saved automatically)"), TC(0x80E080));
         uint64_t used, cap;
         fsdisk_space(&used, &cap);
         char d[96];
@@ -1254,7 +1282,7 @@ static void draw_about(void) {
         label(x, ly + 18, d, C_TEXT);
     }
     else
-        label(x, ly, "Running: not installed - changes are lost at shutdown", TC(0xFFB060));
+        label(x, ly, _("Running: not installed - changes are lost at shutdown"), TC(0xFFB060));
 }
 
 /* ── Apps: the installed apps, with Open, Stop, Update and Uninstall ─ */
@@ -1359,7 +1387,7 @@ static void draw_apps(void) {
     int x = cx0(), y = cy0(), w = cw();
     if (!g_al_scanned) apps_scan();
     al_clamp();
-    label(x, y, "Apps", C_HEAD);
+    label(x, y, _("Apps"), C_HEAD);
     uint32_t total = 0;
     int updates = 0;
     for (int i = 0; i < g_nal; i++) { total += g_al[i].bytes; if (g_al_newer[i][0]) updates++; }
@@ -1368,7 +1396,7 @@ static void draw_apps(void) {
     if (updates) ksnprintf(line, sizeof(line), "%d installed, %s - %d update%s", g_nal, sz, updates, updates == 1 ? "" : "s");
     else ksnprintf(line, sizeof(line), "%d installed, %s", g_nal, sz);
     label(x, y + 18, g_nal ? line : "No apps are installed: get some in the App Store.", C_DIM);
-    button(x + w - 110, y + 10, 110, "App Store", 0);
+    button(x + w - 110, y + 10, 110, _("App Store"), 0);
 
     int ly = al_list_y(), rows = al_rows(), sel = apps_sel();
     bevel(x, ly - 2, w, rows * APP_ROW_H + 4, TC(0x141920), TC(0x10141C), TC(0x404B5C));
@@ -1399,7 +1427,7 @@ static void draw_apps(void) {
 
     /* the selected app */
     int iy = al_info_y();
-    if (sel < 0) { if (g_nal) label(x, iy + 8, "Select an app to open, update or uninstall it.", C_DIM); return; }
+    if (sel < 0) { if (g_nal) label(x, iy + 8, _("Select an app to open, update or uninstall it."), C_DIM); return; }
     const pkg_info_t* p = &g_al[sel];
     ksnprintf(line, sizeof(line), "%s %s", p->title[0] ? p->title : p->name, p->version);
     label(x, iy, line, C_HEAD);
@@ -1412,8 +1440,8 @@ static void draw_apps(void) {
     if ((int)strlen(line) * 8 > w) line[w / 8] = 0;
     label(x, iy + 34, line, C_DIM);
     int by = iy + 58, bx = x, running = apps_running(p->name, NULL, 0);
-    button(bx, by, 80, "Open", 0); bx += 90;
-    if (running) { button(bx, by, 80, "Stop", 0); bx += 90; }
+    button(bx, by, 80, _("Open"), 0); bx += 90;
+    if (running) { button(bx, by, 80, _("Stop"), 0); bx += 90; }
     if (g_al_newer[sel][0] && !g_al_busy) {
         ksnprintf(line, sizeof(line), "Update to %s", g_al_newer[sel]);
         int bw = (int)strlen(line) * 8 + 20;
@@ -1504,7 +1532,7 @@ void settings_draw(const fb_info_t* fi) {
     kbnav_begin(&g_nav);
     bevel(x, y, W, H, C_PANEL, TC(0x505D72), TC(0x10141C));
     bevel(x + 3, y + 3, W - 6, TITLE_H - 1, C_TITLE, TC(0x647692), TC(0x111923));
-    gfx_draw_text(x + 10, y + 7, "Settings", TC(0xFFFFFF), C_TITLE);
+    gfx_draw_text(x + 10, y + 7, _("Settings"), TC(0xFFFFFF), C_TITLE);
     win_draw_buttons(&g_win, 4, 12);
 
     /* the pages, on the left */
@@ -1515,7 +1543,7 @@ void settings_draw(const fb_info_t* fi) {
         gfx_fill_rect(x + 8, iy, SIDE_W - 4, ITEM_H - 4, bg);
         kbnav_add(&g_nav, x + 8, iy, SIDE_W - 4, ITEM_H - 4);
         if (i == g_page) gfx_fill_rect(x + 8, iy, 3, ITEM_H - 4, C_ACCENT);
-        gfx_draw_text(x + 18, iy + 7, PAGE_NAMES[i], i == g_page ? C_HEAD : C_DIM, bg);
+        gfx_draw_text(x + 18, iy + 7, _(PAGE_NAMES[i]), i == g_page ? C_HEAD : C_DIM, bg);
     }
 
     if (fc_active()) {
@@ -1532,6 +1560,7 @@ void settings_draw(const fb_info_t* fi) {
     case PG_TASKBAR:  draw_taskbar_page(); break;
     case PG_SOUND:    draw_sound(); break;
     case PG_KEYBOARD: draw_keyboard(); break;
+    case PG_LANGUAGE: draw_language(); break;
     case PG_MOUSE:    draw_mouse(); break;
     case PG_NETWORK:  draw_network(); break;
     case PG_TIME:     draw_time(); break;
@@ -1602,14 +1631,14 @@ void settings_click(int mx, int my) {
         }
         int by = wp_buttons_y();
         if (inside(mx, my, x, by, 96, 20)) {
-            fc_open("Choose a picture for the wallpaper", WALLPAPER_DIR, is_picture, picture_chosen);
+            fc_open(_("Choose a picture for the wallpaper"), WALLPAPER_DIR, is_picture, picture_chosen);
             return;
         }
         for (int m = 0; m < 4; m++)
             if (inside(mx, my, x + 192 + m * 68, by, 64, 20)) {
                 char err[80];
                 if (wallpaper_set_mode(MODES[m], err, sizeof(err)) == 0)
-                    ksnprintf(g_status, sizeof(g_status), "Position: %s", MODE_NAMES[m]);
+                    ksnprintf(g_status, sizeof(g_status), "Position: %s", _(MODE_NAMES[m]));
                 else ksnprintf(g_status, sizeof(g_status), "Choose a picture first (Browse...)");
                 return;
             }
@@ -1659,7 +1688,7 @@ void settings_click(int mx, int my) {
         for (int i = 0; i < 3; i++)
             if (inside(mx, my, x, y + 44 + i * ITEM_H - 4, 280, ITEM_H - 2)) {
                 gui_set_taskbar_style(i);
-                ksnprintf(g_status, sizeof(g_status), "Taskbar: %s", TB_STYLES[i]);
+                ksnprintf(g_status, sizeof(g_status), "Taskbar: %s", _(TB_STYLES[i]));
                 return;
             }
         if (inside(mx, my, x, y + 44 + 3 * ITEM_H + 12, 320, ITEM_H)) {
@@ -1667,6 +1696,8 @@ void settings_click(int mx, int my) {
             ksnprintf(g_status, sizeof(g_status), "Desktop buttons: %s", gui_taskbar_desks() ? "shown" : "hidden");
             return;
         }
+    } else if (g_page == PG_LANGUAGE) {
+        click_language(mx, my);
     } else if (g_page == PG_KEYBOARD) {
         int per = kb_per_col(), colw = cw() / 2;
         for (int i = 0; i < keyboard_layout_count(); i++) {
@@ -1808,6 +1839,7 @@ uint32_t settings_signature(void) {
 
 void settings_boot(void) {
     char v[32];
+    i18n_boot();                        /* the language (English unless chosen) */
     if (cfg_get(CFG_SETTINGS, "volume", v, sizeof(v))) {
         uint32_t n = 0;
         if (k_parse_u32(v, &n) && n <= 100) audio_set_volume((int)n);

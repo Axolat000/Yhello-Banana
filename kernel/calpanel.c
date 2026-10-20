@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "calpanel.h"
+#include "i18n.h"
 #include "theme.h"
 #include "gfx.h"
 #include "kbnav.h"
@@ -12,8 +13,8 @@ static const char* const MONTHS[12] = {
 };
 static const char* const DAYS[7] = { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
 
-const char* cal_month_name(int month) { return month >= 1 && month <= 12 ? MONTHS[month - 1] : ""; }
-const char* cal_day_name(int wd) { return wd >= 0 && wd < 7 ? DAYS[wd] : ""; }
+const char* cal_month_name(int month) { return month >= 1 && month <= 12 ? _(MONTHS[month - 1]) : ""; }
+const char* cal_day_name(int wd) { return wd >= 0 && wd < 7 ? _(DAYS[wd]) : ""; }
 
 static int leap(int y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
 
@@ -144,7 +145,7 @@ void cal_draw(void) {
     /* the days of the week */
     int wy = y + TIME_H + MHEAD_H;
     static const char* const WD[7] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-    for (int i = 0; i < 7; i++) gfx_draw_text(x + 12 + i * CELL_W + (CELL_W - 16) / 2, wy + 6, WD[i], C_DIM, C_BG);
+    for (int i = 0; i < 7; i++) gfx_draw_text(x + 12 + i * CELL_W + (CELL_W - 16) / 2, wy + 6, _(WD[i]), C_DIM, C_BG);
 
     /* six weeks */
     int cy, cm, cd;
@@ -168,8 +169,8 @@ void cal_draw(void) {
     /* the footer: back to today */
     int fy = y + PH - 26;
     gfx_fill_rect(x + 8, fy - 4, PW - 16, 1, TC(0x384252));
-    gfx_draw_text(x + 14, fy + 6, "Today", TC(0x68A8F0), C_BG);
-    gfx_draw_text(x + PW - 14 - 18 * 8, fy + 6, "PgUp/PgDn: months", C_DIM, C_BG);
+    gfx_draw_text(x + 14, fy + 6, _("Today"), TC(0x68A8F0), C_BG);
+    gfx_draw_text(x + PW - 14 - 18 * 8, fy + 6, _("PgUp/PgDn: months"), C_DIM, C_BG);
 }
 
 void cal_click(int mx, int my) {

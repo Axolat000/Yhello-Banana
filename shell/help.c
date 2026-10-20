@@ -223,6 +223,11 @@ static const page_t PAGES[] = {
       "changes which, keeping the time. Settings > Date & time does the same with the mouse.",
       "-u|the time in UTC\n-a|local time, UTC, and what the clock chip keeps",
       "date set 2026-10-17 18:30\ndate set 9:05\ndate utc on", "timezone" },
+    { "language", "desktop", "language [en | fr | de | it | rm]", "the desktop's language",
+      "English (the default), French (fr), German (de), Italian (it) or Romansh (rm): menus, windows, Settings, the installer. A text not "
+      "translated yet shows in English; commands stay in English. Settings > Language does the same; apps built "
+      "with the SDK read it with banana_language().",
+      NULL, "language fr\nlanguage en", "keyboardctl" },
     { "theme", "desktop", "theme [list | set NAME | show [NAME] | install FILE | new NAME [FILE] | check FILE | taskmgr STYLE]",
       "the desktop's colours",
       "A theme colours windows, the taskbar, the Start menu, menus and the built-in apps, and may bring a wallpaper. "

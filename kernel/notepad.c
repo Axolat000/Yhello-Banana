@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "notepad.h"
+#include "i18n.h"
 #include "theme.h"
 #include "keyboard.h"
 #include "utf8.h"
@@ -237,7 +238,7 @@ static void open_dialog(void) {
     start_dir(dir, sizeof(dir));
     g_after_save = 0;
     g_fc = 1;
-    fc_open("Open", dir, NULL, np_open_done);
+    fc_open(_("Open"), dir, NULL, np_open_done);
     g_gen++;
 }
 
@@ -360,7 +361,7 @@ static void draw_close_box(void) {
     gfx_fill_rect(bx + 4, by + 4, bw, CB_H, TC(0x080A0E));
     gfx_fill_rect(bx, by, bw, CB_H, TC(0x262C36));
     gfx_fill_rect(bx, by, bw, 20, TC(0x304868));
-    gfx_draw_text(bx + 8, by + 6, "Notepad", TC(0xFFFFFF), TC(0x304868));
+    gfx_draw_text(bx + 8, by + 6, _("Notepad"), TC(0xFFFFFF), TC(0x304868));
     char line[96];
     const char* name = g_path[0] && strrchr(g_path, '/') ? strrchr(g_path, '/') + 1 : "Untitled";
     ksnprintf(line, sizeof(line), "Do you want to save changes to %s?", name);
@@ -705,8 +706,8 @@ void notepad_draw(const fb_info_t* fi) {
     for (int i = 0; i < TOOL_COUNT; i++) {
         if (TOOLS[i].x + TOOLS[i].w > w - 6) break;
         bevel(x + TOOLS[i].x, y + TOOL_Y, TOOLS[i].w, TOOL_H - 2, TC(0x303740), TC(0x535D6E), TC(0x15191F));
-        gfx_draw_text(x + TOOLS[i].x + (TOOLS[i].w - (int)strlen(TOOLS[i].label) * 8) / 2, y + TOOL_Y + 5,
-                      TOOLS[i].label, C_TEXT, TC(0x303740));
+        gfx_draw_text(x + TOOLS[i].x + (TOOLS[i].w - (int)strlen(_(TOOLS[i].label)) * 8) / 2, y + TOOL_Y + 5,
+                      _(TOOLS[i].label), C_TEXT, TC(0x303740));
     }
 
     /* the page */
