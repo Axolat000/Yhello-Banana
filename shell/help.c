@@ -350,7 +350,8 @@ static const page_t PAGES[] = {
       "top, move to another desktop); Alt+drag moves a window from anywhere. Four virtual desktops: the switcher on "
       "the taskbar, Win+Ctrl+Left / Right, Win+Ctrl+Shift+Left / Right takes the front window along. Alt+Tab, Win+Tab "
       "(task view), Win+D (the desktop), Win+V (the clipboard history: the last 25 texts copied - Enter pastes one, "
-      "Delete removes it, P pins it to keep it), Alt+F4.",
+      "Delete removes it, P pins it to keep it), Win+. or Win+; (emoji: type to search, Tab changes the group, "
+      "Enter or a click types the emoji into the window in front), Alt+F4.",
       NULL, NULL, "stopx" },
     { "stopx", "desktop", "stopx", "leave the desktop (stop is the same)", NULL, NULL, NULL, "startx" },
     { "start", "desktop", "start", "the same as startx", NULL, NULL, NULL, "startx" },

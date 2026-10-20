@@ -47,6 +47,7 @@
 #include "../net/net.h"
 #include "../shell/shell.h"
 #include "startmenu.h"
+#include "emojipick.h"
 #include "fileicons.h"
 
 #define VGA_WIDTH  80
@@ -2849,6 +2850,7 @@ static void gui_poll_body(void) {
                     else if (c == '\t') code = (keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB;
                     else if (c == ' ') code = KB_SPACE;
                     else if (g_cb_open && c > ' ' && c < 127) code = c;
+                    else if (ep_is_open() && ((c > ' ' && c < 127) || c == '\b' || c == 127)) code = c;   /* (its search) */
                     if (code) kb_modal_key(code);
                     g_force_redraw = 1;
                     continue;
@@ -2908,7 +2910,7 @@ static void gui_poll_body(void) {
         }
         gui_fkeys(fi);
         { static uint32_t cbg; if (g_cb_open && clipboard_hist_generation() != cbg) { cbg = clipboard_hist_generation(); g_force_redraw = 1; } }
-        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !g_tv_open && !g_sw_open && !g_bar_kb);
+        appwin_focus(g_front_app==APP_APPWIN && !g_menu_open && !ctxmenu_is_open() && !g_cb_open && !ep_is_open() && !g_tv_open && !g_sw_open && !g_bar_kb);
 
         if (!g_backbuf_active) {
             if (size_desktop(fi) < 0) {
@@ -2951,6 +2953,8 @@ static void gui_poll_body(void) {
         if (fl & 0x200) __asm__ volatile("sti" ::: "memory");
         if (ms.dz && g_cb_open && cb_wheel(fi, mx, my, ms.dz)) {
             g_force_redraw = 1;
+        } else if (ms.dz && ep_is_open() && ep_wheel(fi, BAR_H, mx, my, ms.dz)) {
+            g_force_redraw = 1;
         } else if (ms.dz && g_menu_open && startmenu_contains(fi, mx, my)) {
             startmenu_wheel(ms.dz);
         } else if (ms.dz) {
@@ -2976,6 +2980,7 @@ static void gui_poll_body(void) {
         prev_right = right;
         if(captured) { click=rclick=0;left=0; }
         if ((click || rclick) && g_cb_open) { if (click) cb_click(fi, mx, my); else g_cb_open = 0; g_force_redraw = 1; click = rclick = 0; }
+        if ((click || rclick) && ep_is_open()) { if (click) ep_click(fi, BAR_H, mx, my); else ep_close(); g_force_redraw = 1; click = rclick = 0; }
         /* task view / switcher / taskbar focus: a click picks a window or leaves */
         if ((click || rclick) && (g_tv_open || g_sw_open || g_bar_kb)) {
             if (click && g_tv_open) { int i = tv_card_at(fi, mx, my); if (i >= 0) tv_activate(i); }
@@ -3580,6 +3585,7 @@ int gui_handle_key(char c) {
     if (gfx_available() && kb_modal() && !g_menu_open && c != 20) {
         int code = c == '\n' ? KB_ENTER : c == 27 ? KB_ESC : c == '\t' ? ((keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB) : c == ' ' ? KB_SPACE : 0;
         if (!code && g_cb_open && c > ' ' && c < 127) code = c;
+        if (!code && ep_is_open() && ((c > ' ' && c < 127) || c == '\b' || c == 127)) code = c;
         if (code) kb_modal_key(code);
         g_force_redraw = 1;
         return 1;
@@ -3639,7 +3645,8 @@ int gui_handle_key(char c) {
  * arrows go through its icons, Enter opens); Win+T - the taskbar (arrows,
  * Enter); Win+E Files, Win+I Settings, Win+L lock, Win+R a terminal,
  * Win+M everything down, Win+1..9 the taskbar's windows, Win+Down / Up
- * minimize / bring back; Win+V the clipboard history; the Menu key
+ * minimize / bring back; Win+V the clipboard history; Win+. (or Win+;)
+ * the emoji panel (kernel/emojipick.c); the Menu key
  * (Shift+F10) - a right-click menu. */
 
 /* the windows in the order they were used, the front one first */
@@ -3664,7 +3671,7 @@ static void tv_card(const fb_info_t* fi, int i, int* x, int* y, int* w, int* h);
 static int tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
-static int kb_modal(void) { return g_cb_open || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
+static int kb_modal(void) { return g_cb_open || ep_is_open() || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
 
 static void list_windows(void) {
     sync_taskbar();
@@ -3716,6 +3723,7 @@ static void tv_activate(int sel) {
 static int kb_modal_key(int code) {
     if (ctxmenu_is_open()) return ctxmenu_key(code);
     if (g_cb_open) return cb_key(code);
+    if (ep_is_open()) return ep_key(code);
     if (g_sw_open) {
         if (code == KB_ESC) g_sw_open = 0;
         else if (code == KB_ENTER) { tv_activate(g_sw_sel); g_sw_open = 0; }
@@ -3812,7 +3820,12 @@ static int kb_global(int k) {
         else if (g_desk_sel < 0 && g_ndesk) g_desk_sel = 0;
         break;
     }
-    case 'v': cb_toggle(); break;
+    case 'v': ep_close(); cb_toggle(); break;
+    case '.':
+    case ';':
+        g_cb_open = g_tv_open = g_sw_open = g_bar_kb = 0;
+        ep_toggle();
+        break;
     case 'm': for (int j = 0; j < g_ntb; j++) win_minimize(g_tb[j]); g_front_app = -1; break;
     case 'e': do_action(ACT_FILES); break;
     case 'i': do_action(ACT_SETTINGS); break;
@@ -4089,6 +4102,7 @@ static void kb_draw_overlays(const fb_info_t* fi) {
         }
     }
     if (g_cb_open) cb_draw(fi);
+    if (ep_is_open()) ep_draw(fi, BAR_H);
     if (g_bar_kb && g_bar_sel >= 0 && g_bar_sel < g_ntb) {
         int bw = tb_btn_w(fi), x = TB_X + g_bar_sel * bw, y = H - BAR_H + 1;
         gfx_fill_rect(x - 1, y, bw - 2, 2, 0x00FFD34Eu);

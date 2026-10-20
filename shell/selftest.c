@@ -15,6 +15,7 @@
 #include "../kernel/boottime.h"
 #include "../kernel/font.h"
 #include "../kernel/utf8.h"
+#include "../kernel/emojipick.h"
 #include "../kernel/pci.h"
 #include "../kernel/uspace.h"
 #include "../kernel/mouse_capture.h"
@@ -431,6 +432,16 @@ static void t_utf8(void) {
                  u8_width(line, len) == 8 && u8_byte_at_col(line, len, 1) == 1 && u8_byte_at_col(line, len, 2) == 1 &&
                  u8_byte_at_col(line, len, 3) == 5 && u8_byte_at_col(line, len, 5) == 8 && u8_byte_at_col(line, len, 6) == 11;
         report("wide characters take two columns (emoji, CJK, Hangul, fullwidth), combining marks none", ok, "");
+    }
+    /* the emoji panel (Win+.): its search */
+    {
+        const char* first = NULL;
+        int banana = ep_search_count("banana", &first), hearts = ep_search_count("heart", NULL);
+        int ok = banana == 1 && first && !strcmp(first, "\xF0\x9F\x8D\x8C") && hearts >= 10 &&
+                 ep_search_count("thumbs up", NULL) == 1 && ep_search_count("qqqq", NULL) == 0;
+        char note[64];
+        ksnprintf(note, sizeof(note), "banana: %d, heart: %d", banana, hearts);
+        report("the emoji panel finds emoji by name (Win+.)", ok, note);
     }
     /* VGA text mode: code page 437 has some of it */
     int vga = terminal_cp437(0xE9) == (char)0x82 && terminal_cp437(0x2500) == (char)0xC4 &&
