@@ -223,6 +223,14 @@ static const page_t PAGES[] = {
       "changes which, keeping the time. Settings > Date & time does the same with the mouse.",
       "-u|the time in UTC\n-a|local time, UTC, and what the clock chip keeps",
       "date set 2026-10-17 18:30\ndate set 9:05\ndate utc on", "timezone" },
+    { "theme", "desktop", "theme [list | set NAME | show [NAME] | install FILE | new NAME [FILE] | check FILE]",
+      "the desktop's colours",
+      "A theme colours windows, the taskbar, the Start menu, menus and the built-in apps, and may bring a wallpaper. "
+      "Built in: Banana Dark, Light, Midnight, Ocean, Forest, Banana, Sakura, High Contrast. theme new writes a copy "
+      "of the theme in use to change in Notepad; theme check finds mistakes and hard-to-read colours; theme install "
+      "takes a .theme or a .btheme (a ZIP with its picture). Settings > Themes does the same with the mouse. On Linux, "
+      "sdk/tools/bananatheme makes, checks, previews and packs themes (sdk/themes/README.md).",
+      NULL, "theme set Ocean\ntheme new Mine\ntheme install Mine.theme", "settings" },
     { "cal", "system", "cal [month [year]] | cal year", "a month as a calendar",
       "A month as a calendar, weeks from Monday, today marked: this month with nothing, another with its "
       "number (and year), a whole year with only the year. On the desktop, a click on the taskbar's clock "

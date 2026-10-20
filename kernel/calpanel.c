@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "calpanel.h"
+#include "theme.h"
 #include "gfx.h"
 #include "kbnav.h"
 #include "kstring.h"
@@ -38,13 +39,13 @@ int cal_weekday(int year, int month, int day) {
 #define MHEAD_H 30
 #define WHEAD_H 22
 #define PH      (TIME_H + MHEAD_H + WHEAD_H + 6 * CELL_H + 34)
-#define C_BG    0x001B212Bu
-#define C_LINE  0x00505E74u
-#define C_TEXT  0x00E8EEF6u
-#define C_DIM   0x009AA6B6u
-#define C_FAINT 0x00566275u
-#define C_TODAY 0x003A78D8u
-#define C_SEL   0x0090B8F0u
+#define C_BG    TC(0x1B212B)
+#define C_LINE  TC(0x505E74)
+#define C_TEXT  TC(0xE8EEF6)
+#define C_DIM   TC(0x9AA6B6)
+#define C_FAINT TC(0x566275)
+#define C_TODAY TC(0x3A78D8)
+#define C_SEL   TC(0x90B8F0)
 
 static int g_open, g_px, g_py;
 static int g_year, g_month;            /* the month shown */
@@ -126,19 +127,19 @@ void cal_draw(void) {
     char line[64];
     if (rtc_read_datetime(&dt) == 0) ksnprintf(line, sizeof(line), "%02u:%02u:%02u", dt.hour, dt.minute, dt.second);
     else kstrlcpy(line, "--:--:--", sizeof(line));
-    gfx_draw_text_scaled(x + 14, y + 12, 3, line, 0x00FFFFFFu, C_BG);
+    gfx_draw_text_scaled(x + 14, y + 12, 3, line, TC(0xFFFFFF), C_BG);
     ksnprintf(line, sizeof(line), "%s %d %s %d", cal_day_name(cal_weekday(ty, tm, td)), td, cal_month_name(tm), ty);
-    gfx_draw_text(x + 14, y + 44, line, 0x0068A8F0u, C_BG);
-    gfx_fill_rect(x + 8, y + TIME_H - 4, PW - 16, 1, 0x00384252u);
+    gfx_draw_text(x + 14, y + 44, line, TC(0x68A8F0), C_BG);
+    gfx_fill_rect(x + 8, y + TIME_H - 4, PW - 16, 1, TC(0x384252));
 
     /* the month, and its arrows */
     int my = y + TIME_H;
     ksnprintf(line, sizeof(line), "%s %d", cal_month_name(g_month), g_year);
     gfx_draw_text(x + 14, my + 9, line, C_TEXT, C_BG);
-    frame(x + PW - 66, my + 3, 24, 22, 0x00262D38u, 0x00384252u);
-    frame(x + PW - 38, my + 3, 24, 22, 0x00262D38u, 0x00384252u);
-    gfx_draw_text(x + PW - 58, my + 10, "^", C_TEXT, 0x00262D38u);
-    gfx_draw_text(x + PW - 30, my + 10, "v", C_TEXT, 0x00262D38u);
+    frame(x + PW - 66, my + 3, 24, 22, TC(0x262D38), TC(0x384252));
+    frame(x + PW - 38, my + 3, 24, 22, TC(0x262D38), TC(0x384252));
+    gfx_draw_text(x + PW - 58, my + 10, "^", C_TEXT, TC(0x262D38));
+    gfx_draw_text(x + PW - 30, my + 10, "v", C_TEXT, TC(0x262D38));
 
     /* the days of the week */
     int wy = y + TIME_H + MHEAD_H;
@@ -156,18 +157,18 @@ void cal_draw(void) {
             uint32_t bg = C_BG;
             if (is_today) { bg = C_TODAY; gfx_fill_rect(bx + 2, by + 2, CELL_W - 4, CELL_H - 4, bg); }
             if (sel && !is_today) frame(bx + 2, by + 2, CELL_W - 4, CELL_H - 4, C_BG, C_SEL);
-            else if (sel) frame(bx + 2, by + 2, CELL_W - 4, CELL_H - 4, bg, 0x00FFFFFFu);
+            else if (sel) frame(bx + 2, by + 2, CELL_W - 4, CELL_H - 4, bg, TC(0xFFFFFF));
             char n[4];
             ksnprintf(n, sizeof(n), "%d", cd);
-            uint32_t fg = is_today ? 0x00FFFFFFu : cm == g_month ? C_TEXT : C_FAINT;
+            uint32_t fg = is_today ? TC(0xFFFFFF) : cm == g_month ? C_TEXT : C_FAINT;
             gfx_draw_text(bx + (CELL_W - (int)strlen(n) * 8) / 2, by + 10, n, fg, bg);
             next_day(&cy, &cm, &cd);
         }
 
     /* the footer: back to today */
     int fy = y + PH - 26;
-    gfx_fill_rect(x + 8, fy - 4, PW - 16, 1, 0x00384252u);
-    gfx_draw_text(x + 14, fy + 6, "Today", 0x0068A8F0u, C_BG);
+    gfx_fill_rect(x + 8, fy - 4, PW - 16, 1, TC(0x384252));
+    gfx_draw_text(x + 14, fy + 6, "Today", TC(0x68A8F0), C_BG);
     gfx_draw_text(x + PW - 14 - 18 * 8, fy + 6, "PgUp/PgDn: months", C_DIM, C_BG);
 }
 

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "emojipick.h"
+#include "theme.h"
 #include "font.h"
 #include "gfx.h"
 #include "kbnav.h"
@@ -293,12 +294,12 @@ static const char* const TAB_NAME[NTABS] = {
 #define FOOT_H      24
 #define PW          (COLS * CELL + 16)
 #define PH          (HEAD_H + TABS_H + ROWS * CELL + 8 + FOOT_H)
-#define C_BG        0x001B212Bu
-#define C_LINE      0x00505E74u
-#define C_CELL_SEL  0x00405478u
-#define C_TEXT      0x00E8EEF6u
-#define C_DIM       0x009AA6B6u
-#define C_ACCENT    0x00FFD34Eu
+#define C_BG        TC(0x1B212B)
+#define C_LINE      TC(0x505E74)
+#define C_CELL_SEL  TC(0x405478)
+#define C_TEXT      TC(0xE8EEF6)
+#define C_DIM       TC(0x9AA6B6)
+#define C_ACCENT    TC(0xFFD34E)
 
 static int  g_open, g_tab = 1, g_sel, g_top;
 static char g_query[32];
@@ -462,22 +463,22 @@ void ep_draw(const fb_info_t* fi, int bar_h) {
 
     /* the search box */
     int sx = px + 8, sy = py + 8, sw = PW - 16, sh = 22;
-    frame(sx, sy, sw, sh, 0x00262D38u, g_query[0] ? 0x0090B8F0u : 0x00384252u);
+    frame(sx, sy, sw, sh, TC(0x262D38), g_query[0] ? TC(0x90B8F0) : TC(0x384252));
     if (g_query[0]) {
-        gfx_draw_text(sx + 8, sy + 7, g_query, C_TEXT, 0x00262D38u);
+        gfx_draw_text(sx + 8, sy + 7, g_query, C_TEXT, TC(0x262D38));
         gfx_fill_rect(sx + 8 + (int)strlen(g_query) * 8, sy + 4, 1, 14, C_TEXT);
     } else {
-        gfx_draw_text(sx + 8, sy + 7, "Type to search emoji", C_DIM, 0x00262D38u);
+        gfx_draw_text(sx + 8, sy + 7, "Type to search emoji", C_DIM, TC(0x262D38));
     }
 
     /* the tabs */
     int ty = py + HEAD_H, tabw = (PW - 16) / NTABS;
     for (int i = 0; i < NTABS; i++) {
         int tx = px + 8 + i * tabw, on = !g_query[0] && i == g_tab;
-        draw_emoji(tx, ty, tabw, TABS_H - 4, 18, TAB_ICON[i], on ? 0x00FFFFFFu : 0x008090A4u);
+        draw_emoji(tx, ty, tabw, TABS_H - 4, 18, TAB_ICON[i], on ? TC(0xFFFFFF) : TC(0x8090A4));
         if (on) gfx_fill_rect(tx + 6, ty + TABS_H - 4, tabw - 12, 2, C_ACCENT);
     }
-    gfx_fill_rect(px + 8, ty + TABS_H - 1, PW - 16, 1, 0x00384252u);
+    gfx_fill_rect(px + 8, ty + TABS_H - 1, PW - 16, 1, TC(0x384252));
 
     /* the grid */
     int gx = px + 8, gy = py + HEAD_H + TABS_H + 4;
@@ -486,8 +487,8 @@ void ep_draw(const fb_info_t* fi, int bar_h) {
             int item = (g_top + r) * COLS + c;
             if (item >= g_nitems) break;
             int cx = gx + c * CELL, cy = gy + r * CELL;
-            if (item == g_sel) frame(cx + 1, cy + 1, CELL - 2, CELL - 2, C_CELL_SEL, 0x0090B8F0u);
-            draw_emoji(cx, cy, CELL, CELL, 26, EMOJI[g_items[item]].e, 0x00F2F5FAu);
+            if (item == g_sel) frame(cx + 1, cy + 1, CELL - 2, CELL - 2, C_CELL_SEL, TC(0x90B8F0));
+            draw_emoji(cx, cy, CELL, CELL, 26, EMOJI[g_items[item]].e, TC(0xF2F5FA));
         }
     if (!g_nitems)
         gfx_draw_text(gx + 8, gy + 16, g_query[0] ? "No emoji found." :
@@ -495,7 +496,7 @@ void ep_draw(const fb_info_t* fi, int bar_h) {
 
     /* the footer: the chosen emoji's name, or the group's */
     int fy = py + PH - FOOT_H;
-    gfx_fill_rect(px + 8, fy - 2, PW - 16, 1, 0x00384252u);
+    gfx_fill_rect(px + 8, fy - 2, PW - 16, 1, TC(0x384252));
     char line[48];
     if (g_nitems) {
         const char* nm = EMOJI[g_items[g_sel]].name;

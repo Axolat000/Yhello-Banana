@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "crash.h"
+#include "theme.h"
 #include "boottime.h"
 #include "acpi_sleep.h"
 #include "gui.h"
@@ -360,19 +361,19 @@ static void draw_icon_install(int x, int y, uint32_t bg) {
 
 static __attribute__((unused)) void draw_icon_power(int x, int y, uint32_t bg) {
     (void)bg;
-    icon_bevel(x, y, 12, 12, 0x00412A2Au, 0x00764A4Au, 0x00170D0Du);
-    gfx_draw_text_scaled(x + 3 * g_is, y + 2 * g_is, g_is, "o", 0x00FFFFFFu, 0x00412A2Au);
+    icon_bevel(x, y, 12, 12, TC(0x412A2A), TC(0x764A4A), TC(0x170D0D));
+    gfx_draw_text_scaled(x + 3 * g_is, y + 2 * g_is, g_is, "o", TC(0xFFFFFF), TC(0x412A2A));
 }
 
 /* Programs: a folder with app tiles in it */
 static __attribute__((unused)) void draw_icon_programs(int x, int y, uint32_t bg) {
     (void)bg;
-    IR(0, 1, 6, 2, 0x00D9B44Au);
-    IR(0, 3, 14, 10, 0x00D9B44Au);
-    IR(2, 5, 4, 3, 0x003A7BD5u);
-    IR(8, 5, 4, 3, 0x0057B65Au);
-    IR(2, 9, 4, 3, 0x00E07040u);
-    IR(8, 9, 4, 3, 0x00F4F8FFu);
+    IR(0, 1, 6, 2, TC(0xD9B44A));
+    IR(0, 3, 14, 10, TC(0xD9B44A));
+    IR(2, 5, 4, 3, TC(0x3A7BD5));
+    IR(8, 5, 4, 3, TC(0x57B65A));
+    IR(2, 9, 4, 3, TC(0xE07040));
+    IR(8, 9, 4, 3, TC(0xF4F8FF));
 }
 
 /* an installed app's own picture (/apps/<name>/icon.png), decoded once at
@@ -623,17 +624,17 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
     int pad = 6;
 
     int active = (g_term_order[TERM_WIN_MAX - 1] >= 0) && (&g_terms[g_term_order[TERM_WIN_MAX - 1]] == win);
-    uint32_t frame = active ? 0x001A1E24u : 0x0013151Au;
-    uint32_t body = active ? 0x00262A31u : 0x00202429u;
-    uint32_t title = active ? 0x003C4B66u : 0x00273140u;
-    uint32_t title_hi = active ? 0x006B7892u : 0x004B5568u;
-    uint32_t title_lo = active ? 0x00111824u : 0x0010151Fu;
+    uint32_t frame = active ? TC(0x1A1E24) : TC(0x13151A);
+    uint32_t body = active ? TC(0x262A31) : TC(0x202429);
+    uint32_t title = active ? TC(0x3C4B66) : TC(0x273140);
+    uint32_t title_hi = active ? TC(0x6B7892) : TC(0x4B5568);
+    uint32_t title_lo = active ? TC(0x111824) : TC(0x10151F);
 
     /* frame + title (stronger Fluxbox-like bevel) */
-    draw_bevel_box(w.x, w.y, w.w, w.h, frame, 0x004A5466u, 0x000E1116u);
+    draw_bevel_box(w.x, w.y, w.w, w.h, frame, TC(0x4A5466), TC(0x0E1116));
     gfx_fill_rect(w.x + 2, w.y + 2, w.w - 4, w.h - 4, body);
     draw_bevel_box(w.x + 3, w.y + 3, w.w - 6, title_h - 1, title, title_hi, title_lo);
-    gfx_draw_text(w.x + 10, w.y + 7, "Terminal", active ? 0x00F2F7FFu : 0x00CED8E6u, title);
+    gfx_draw_text(w.x + 10, w.y + 7, "Terminal", active ? TC(0xF2F7FF) : TC(0xCED8E6), title);
 
     /* minimize, maximize / restore, close */
     win_draw_button_row(w.x + w.w, w.y + 4, 12, 1, w.maxed);
@@ -676,7 +677,7 @@ static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
             uint32_t c = chars[idx];
             if (c == TERMINAL_WIDE_CONT) continue;              /* (drawn across both cells by the first) */
             if (term_cell_selected(win, y + row_off, x)) {     /* selection: inverted */
-                gfx_draw_cell_cp(cx + x * CW, cy + y * CH, c ? c : ' ', 0x00101010u, 0x00C8D8F0u);
+                gfx_draw_cell_cp(cx + x * CW, cy + y * CH, c ? c : ' ', TC(0x101010), TC(0xC8D8F0));
                 continue;
             }
             /* the client area is already black: skip blank black cells */
@@ -914,8 +915,8 @@ static void cursor_bits(int x, int y, const char* const* rows, int n) {
     for (int r = 0; r < n; r++)
         for (int c = 0; rows[r][c]; c++) {
             char ch = rows[r][c];
-            if (ch == 'B') fb_putpixel_direct(x + c, y + r, 0x00000000u);
-            else if (ch == 'W') fb_putpixel_direct(x + c, y + r, 0x00FFFFFFu);
+            if (ch == 'B') fb_putpixel_direct(x + c, y + r, TC(0x000000));
+            else if (ch == 'W') fb_putpixel_direct(x + c, y + r, TC(0xFFFFFF));
         }
 }
 
@@ -930,11 +931,11 @@ static void draw_cursor_shape(int mx, int my, int shape) {
     if (shape == CUR_RESIZE) {
         for (int y = -1; y <= 15; y++)
             for (int x = -1; x <= 15; x++) {
-                if (resize_white(x, y)) { fb_putpixel_direct(mx - 7 + x, my - 7 + y, 0x00FFFFFFu); continue; }
+                if (resize_white(x, y)) { fb_putpixel_direct(mx - 7 + x, my - 7 + y, TC(0xFFFFFF)); continue; }
                 int edge = 0;
                 for (int dy = -1; dy <= 1 && !edge; dy++)
                     for (int dx = -1; dx <= 1; dx++) if (resize_white(x + dx, y + dy)) { edge = 1; break; }
-                if (edge) fb_putpixel_direct(mx - 7 + x, my - 7 + y, 0x00000000u);
+                if (edge) fb_putpixel_direct(mx - 7 + x, my - 7 + y, TC(0x000000));
             }
         return;
     }
@@ -1592,11 +1593,11 @@ static void draw_desk_switcher(const fb_info_t* fi) {
     int bar_y = (int)fi->height - BAR_H, x0 = dsw_x(fi);
     for (int d = 0; d < NDESK; d++) {
         int x = x0 + d * (DSW_BOX + 2), y = bar_y + 5, cur = d == g_cur_desk;
-        uint32_t base = cur ? 0x00405478u : 0x00262D38u;
-        draw_bevel_box(x, y, DSW_BOX, BAR_H - 10, base, cur ? 0x00222A36u : 0x00434D5Eu, cur ? 0x006B7892u : 0x0015191Fu);
+        uint32_t base = cur ? TC(0x405478) : TC(0x262D38);
+        draw_bevel_box(x, y, DSW_BOX, BAR_H - 10, base, cur ? TC(0x222A36) : TC(0x434D5E), cur ? TC(0x6B7892) : TC(0x15191F));
         char t[2] = { (char)('1' + d), 0 };
-        gfx_draw_text(x + 5, y + 5, t, cur ? 0x00FFFFFFu : 0x009AA6B6u, base);
-        if (desk_count(d)) gfx_fill_rect(x + DSW_BOX / 2 - 2, y + BAR_H - 13, 4, 2, cur ? 0x0068A8F0u : 0x00808C9Cu);
+        gfx_draw_text(x + 5, y + 5, t, cur ? TC(0xFFFFFF) : TC(0x9AA6B6), base);
+        if (desk_count(d)) gfx_fill_rect(x + DSW_BOX / 2 - 2, y + BAR_H - 13, 4, 2, cur ? TC(0x68A8F0) : TC(0x808C9C));
     }
 }
 
@@ -1636,7 +1637,7 @@ static void draw_win_glyph(int h, int x, int y, uint32_t bg) {
 
 static void draw_taskbar_fb(const fb_info_t* fi) {
     int bar_y = (int)fi->height - BAR_H;
-    draw_bevel_box(0, bar_y, (int)fi->width, BAR_H, 0x00192026u, 0x004F5A6Eu, 0x0010141Bu);
+    draw_bevel_box(0, bar_y, (int)fi->width, BAR_H, TC(0x192026), TC(0x4F5A6E), TC(0x10141B));
     /* Start: the orb */
     startmenu_draw_orb(START_X, bar_y, BAR_H, g_menu_open, g_start_hover);
     /* the pinned apps */
@@ -1647,8 +1648,8 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
         int h = g_tb[j];
         int x = TB_X + j * bw;
         int active = h == front, min = win_minimized(h);
-        uint32_t base = active ? 0x00405478u : min ? 0x00222831u : 0x00303740u;
-        uint32_t hi = active ? 0x00222A36u : 0x00535D6Eu, lo = active ? 0x006B7892u : 0x0015191Fu;
+        uint32_t base = active ? TC(0x405478) : min ? TC(0x222831) : TC(0x303740);
+        uint32_t hi = active ? TC(0x222A36) : TC(0x535D6E), lo = active ? TC(0x6B7892) : TC(0x15191F);
         draw_bevel_box(x, bar_y + 3, bw - 4, BAR_H - 6, base, hi, lo);
         if (g_tb_style == 1) {                         /* icons only */
             draw_win_glyph(h, x + (bw - 4 - 14) / 2, bar_y + 8, base);
@@ -1662,39 +1663,39 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
         int maxc = (x + bw - 8 - tx) / 8;
         if (maxc < 1) continue;
         if ((int)strlen(t) > maxc) { t[maxc] = 0; if (maxc > 1) t[maxc - 1] = '.'; }
-        gfx_draw_text(tx, bar_y + 10, t, min ? 0x009AA6B6u : 0x00E8EEF6u, base);
+        gfx_draw_text(tx, bar_y + 10, t, min ? TC(0x9AA6B6) : TC(0xE8EEF6), base);
     }
     draw_desk_switcher(fi);
     /* tray: network, clock */
     char clk[9];
     format_clock(clk);
     int clk_x = (int)fi->width - 8 - CLK_W;
-    uint32_t cbg = cal_is_open() ? 0x00303A48u : 0x00192026u;
-    gfx_fill_rect(clk_x - 10, bar_y + 6, 1, BAR_H - 12, 0x004F5A6Eu);
+    uint32_t cbg = cal_is_open() ? TC(0x303A48) : TC(0x192026);
+    gfx_fill_rect(clk_x - 10, bar_y + 6, 1, BAR_H - 12, TC(0x4F5A6E));
     if (cal_is_open()) gfx_fill_rect(clk_x - 6, bar_y + 2, CLK_W + 10, BAR_H - 4, cbg);
-    gfx_draw_text(clk_x + (CLK_W - 64) / 2, bar_y + 3, clk, 0x00E8EEF6u, cbg);
+    gfx_draw_text(clk_x + (CLK_W - 64) / 2, bar_y + 3, clk, TC(0xE8EEF6), cbg);
     {   /* the date under it: a click opens the calendar */
         rtc_datetime_t dt;
         char d[16];
         if (rtc_read_datetime(&dt) == 0) ksnprintf(d, sizeof(d), "%02u/%02u/%04u", dt.day, dt.month, dt.year);
         else d[0] = 0;
-        gfx_draw_text(clk_x, bar_y + 14, d, 0x00B8C2D0u, cbg);
+        gfx_draw_text(clk_x, bar_y + 14, d, TC(0xB8C2D0), cbg);
     }
     int net_x = net_icon_x(fi);
-    nettray_draw_icon(net_x, bar_y + (BAR_H - 16) / 2, 0x00192026u, g_net_hover || nettray_is_open());
+    nettray_draw_icon(net_x, bar_y + (BAR_H - 16) / 2, TC(0x192026), g_net_hover || nettray_is_open());
     if (g_net_hover && !nettray_is_open()) {          /* its tooltip: the state in words */
         char tip[64];
         nettray_summary(tip, sizeof(tip));
         int tw = (int)strlen(tip) * 8 + 12, tx = net_x + NETTRAY_ICON_W - tw;
         if (tx < 4) tx = 4;
-        draw_bevel_box(tx, bar_y - 26, tw, 22, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
-        gfx_draw_text(tx + 6, bar_y - 22, tip, 0x00E8EEF6u, 0x001D232Cu);
+        draw_bevel_box(tx, bar_y - 26, tw, 22, TC(0x1D232C), TC(0x505E74), TC(0x10151D));
+        gfx_draw_text(tx + 6, bar_y - 22, tip, TC(0xE8EEF6), TC(0x1D232C));
     }
     /* started from the CD: say so (nothing is kept unless installed) */
     if (sysinfo_live_boot()) {
         int bx = net_x - 14 - 7 * 8 - 8;
-        gfx_fill_rect(bx, bar_y + 5, 7 * 8 + 8, BAR_H - 10, 0x00D9822Bu);
-        gfx_draw_text(bx + 4, bar_y + 10, "LIVE CD", 0x00FFFFFFu, 0x00D9822Bu);
+        gfx_fill_rect(bx, bar_y + 5, 7 * 8 + 8, BAR_H - 10, TC(0xD9822B));
+        gfx_draw_text(bx + 4, bar_y + 10, "LIVE CD", TC(0xFFFFFF), TC(0xD9822B));
     }
 }
 
@@ -1732,7 +1733,7 @@ static void capture_view(gui_view_t* v, uint32_t sec) {
     }
     v->sec = sec;
     v->term_gen = terminal_generation();
-    v->wp_gen = wallpaper_generation();
+    v->wp_gen = wallpaper_generation() ^ theme_generation() * 2654435761u;   /* (a new theme: everything again) */
     v->net_state = (net_if()->configured ? net_if()->ip : 1) ^ nettray_sig();
     v->front_app = g_front_app;
     for (int a = 0; a < APP_COUNT; a++) {
@@ -2052,12 +2053,12 @@ static void desk_link_icon(const desk_item_t* d, int x, int y) {
         fileicon_draw(d->link == SC_DIR ? FI_FOLDER : fileicon_for_name(b ? b + 1 : d->target), ix, iy, 32);
     }
     int ax = ix, ay = iy + 20;                       /* the arrow: white box, a blue arrow up and right */
-    gfx_fill_rect(ax, ay, 12, 12, 0x00FFFFFFu);
-    gfx_fill_rect(ax, ay, 12, 1, 0x00808080u); gfx_fill_rect(ax, ay + 11, 12, 1, 0x00808080u);
-    gfx_fill_rect(ax, ay, 1, 12, 0x00808080u); gfx_fill_rect(ax + 11, ay, 1, 12, 0x00808080u);
-    for (int i = 0; i < 6; i++) gfx_fill_rect(ax + 3 + i, ay + 8 - i, 2, 2, 0x001A5FC8u);   /* the shaft */
-    gfx_fill_rect(ax + 5, ay + 2, 5, 2, 0x001A5FC8u);                                    /* the head */
-    gfx_fill_rect(ax + 8, ay + 2, 2, 5, 0x001A5FC8u);
+    gfx_fill_rect(ax, ay, 12, 12, TC(0xFFFFFF));
+    gfx_fill_rect(ax, ay, 12, 1, TC(0x808080)); gfx_fill_rect(ax, ay + 11, 12, 1, TC(0x808080));
+    gfx_fill_rect(ax, ay, 1, 12, TC(0x808080)); gfx_fill_rect(ax + 11, ay, 1, 12, TC(0x808080));
+    for (int i = 0; i < 6; i++) gfx_fill_rect(ax + 3 + i, ay + 8 - i, 2, 2, TC(0x1A5FC8));   /* the shaft */
+    gfx_fill_rect(ax + 5, ay + 2, 5, 2, TC(0x1A5FC8));                                    /* the head */
+    gfx_fill_rect(ax + 8, ay + 2, 2, 5, TC(0x1A5FC8));
 }
 
 static void draw_desktop_icons(const fb_info_t* fi) {
@@ -2067,7 +2068,7 @@ static void draw_desktop_icons(const fb_info_t* fi) {
         desk_cell(fi, i, &x, &y);
         if (x + CELL_W > (int)fi->width) continue;
         int sel = desk_marked(i) || i == g_desk_drop;
-        if (sel) gfx_fill_rect(x + (CELL_W - 36) / 2, y + 2, 36, 34, 0x00315A9Cu);   /* selected: tinted */
+        if (sel) gfx_fill_rect(x + (CELL_W - 36) / 2, y + 2, 36, 34, TC(0x315A9C));   /* selected: tinted */
         if (g_desk[i].link) desk_link_icon(&g_desk[i], x, y);
         else if (g_desk[i].kind == DK_APP) desk_icon(g_desk[i].act, x + (CELL_W - 28) / 2, y + 5, g_desk[i].app);
         else {
@@ -2075,7 +2076,7 @@ static void draw_desktop_icons(const fb_info_t* fi) {
                            g_desk[i].kind == DK_DIR ? FI_FOLDER : fileicon_for_name(g_desk[i].label);
             fileicon_draw(k, x + (CELL_W - 32) / 2, y + 3, 32);
         }
-        gfx_draw_label(x + CELL_W / 2, y + 40, CELL_W - 6, g_desk[i].label, 0x00FFFFFFu, sel ? 0x00315A9Cu : 0);
+        gfx_draw_label(x + CELL_W / 2, y + 40, CELL_W - 6, g_desk[i].label, TC(0xFFFFFF), sel ? TC(0x315A9C) : 0);   /* (white on the wallpaper, whatever the theme) */
     }
     g_is = 1;
 }
@@ -2333,13 +2334,13 @@ static void draw_volume_osd(const fb_info_t* fi) {
     if (!g_osd_shown) return;
     int w = 220, h = 54, x = ((int)fi->width - w) / 2, y = (int)fi->height - BAR_H - h - 40;
     int v = audio_get_volume();
-    draw_bevel_box(x, y, w, h, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
+    draw_bevel_box(x, y, w, h, TC(0x1D232C), TC(0x505E74), TC(0x10151D));
     char t[32];
     if (v == 0) kstrlcpy(t, "Sound off", sizeof(t));
     else ksnprintf(t, sizeof(t), "Volume %d%%", v);
-    gfx_draw_text(x + 14, y + 10, t, 0x00E8EEF6u, 0x001D232Cu);
-    gfx_fill_rect(x + 14, y + 30, w - 28, 10, 0x00303A4Au);
-    gfx_fill_rect(x + 14, y + 30, (w - 28) * v / 100, 10, 0x0068A8F0u);
+    gfx_draw_text(x + 14, y + 10, t, TC(0xE8EEF6), TC(0x1D232C));
+    gfx_fill_rect(x + 14, y + 30, w - 28, 10, TC(0x303A4A));
+    gfx_fill_rect(x + 14, y + 30, (w - 28) * v / 100, 10, TC(0x68A8F0));
 }
 
 static void render_desktop(const fb_info_t* fi, int mx, int my) {
@@ -2379,11 +2380,11 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     {
         win_rect_t r;
         if (winframe_preview(&r)) {
-            winframe_tint(r.x + 4, r.y + 4, r.w - 8, r.h - 8, 0x003A7BD5u, 70);
-            gfx_fill_rect(r.x + 4, r.y + 4, r.w - 8, 2, 0x0068A8F0u);
-            gfx_fill_rect(r.x + 4, r.y + r.h - 6, r.w - 8, 2, 0x0068A8F0u);
-            gfx_fill_rect(r.x + 4, r.y + 4, 2, r.h - 8, 0x0068A8F0u);
-            gfx_fill_rect(r.x + r.w - 6, r.y + 4, 2, r.h - 8, 0x0068A8F0u);
+            winframe_tint(r.x + 4, r.y + 4, r.w - 8, r.h - 8, TC(0x3A7BD5), 70);
+            gfx_fill_rect(r.x + 4, r.y + 4, r.w - 8, 2, TC(0x68A8F0));
+            gfx_fill_rect(r.x + 4, r.y + r.h - 6, r.w - 8, 2, TC(0x68A8F0));
+            gfx_fill_rect(r.x + 4, r.y + 4, 2, r.h - 8, TC(0x68A8F0));
+            gfx_fill_rect(r.x + r.w - 6, r.y + 4, 2, r.h - 8, TC(0x68A8F0));
         }
     }
 
@@ -2394,8 +2395,8 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
         char t[24];
         ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
         int w = 180, h = 44, x = ((int)fi->width - w) / 2, y = ((int)fi->height - BAR_H) / 2 - h / 2;
-        draw_bevel_box(x, y, w, h, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
-        gfx_draw_text_scaled(x + (w - (int)strlen(t) * 16) / 2, y + 14, 2, t, 0x00E8EEF6u, 0x001D232Cu);
+        draw_bevel_box(x, y, w, h, TC(0x1D232C), TC(0x505E74), TC(0x10151D));
+        gfx_draw_text_scaled(x + (w - (int)strlen(t) * 16) / 2, y + 14, 2, t, TC(0xE8EEF6), TC(0x1D232C));
     }
 
     /* the Start menu */
@@ -2469,23 +2470,23 @@ static void ask_draw(const fb_info_t* fi) {
     if (!g_ask.open) return;
     int w = 460, h = 178, x = ((int)fi->width - w) / 2, y = ((int)fi->height - BAR_H - h) / 2;
     g_ask.x = x; g_ask.y = y; g_ask.w = w; g_ask.h = h;
-    gfx_fill_rect(x + 5, y + 5, w, h, 0x00080A0Eu);
-    draw_bevel_box(x, y, w, h, 0x001D232Cu, 0x00505E74u, 0x0010151Du);
-    gfx_fill_rect(x + 1, y + 1, w - 2, 24, 0x00304868u);
-    gfx_draw_text(x + 10, y + 5, g_ask.title, 0x00FFFFFFu, 0x00304868u);
-    gfx_draw_text(x + 14, y + 36, g_ask.prompt, 0x00E8EEF6u, 0x001D232Cu);
-    gfx_fill_rect(x + 14, y + 58, w - 28, 24, 0x00FFFFFFu);             /* the field */
-    gfx_fill_rect(x + 14, y + 81, w - 28, 1, 0x001A73E8u);
+    gfx_fill_rect(x + 5, y + 5, w, h, TC(0x080A0E));
+    draw_bevel_box(x, y, w, h, TC(0x1D232C), TC(0x505E74), TC(0x10151D));
+    gfx_fill_rect(x + 1, y + 1, w - 2, 24, TC(0x304868));
+    gfx_draw_text(x + 10, y + 5, g_ask.title, TC(0xFFFFFF), TC(0x304868));
+    gfx_draw_text(x + 14, y + 36, g_ask.prompt, TC(0xE8EEF6), TC(0x1D232C));
+    gfx_fill_rect(x + 14, y + 58, w - 28, 24, TC(0xFFFFFF));             /* the field */
+    gfx_fill_rect(x + 14, y + 81, w - 28, 1, TC(0x1A73E8));
     int maxc = (w - 40) / 8, n = (int)strlen(g_ask.text);
     const char* shown = g_ask.text + (n > maxc - 1 ? n - (maxc - 1) : 0);  /* (its end, while typing) */
-    gfx_draw_text(x + 20, y + 63, shown, 0x00101010u, 0x00FFFFFFu);
-    gfx_fill_rect(x + 20 + (int)strlen(shown) * 8, y + 62, 1, 14, 0x00202020u);
-    gfx_draw_text(x + 14, y + 90, g_ask.hint, 0x009AA6B6u, 0x001D232Cu);
-    if (g_ask.err[0]) gfx_draw_text(x + 14, y + 112, g_ask.err, 0x00F08070u, 0x001D232Cu);
-    draw_bevel_box(x + w - 186, y + h - 36, 80, 24, 0x00405478u, 0x006B7892u, 0x00222A36u);
-    gfx_draw_text(x + w - 186 + 32, y + h - 31, "OK", 0x00FFFFFFu, 0x00405478u);
-    draw_bevel_box(x + w - 96, y + h - 36, 80, 24, 0x00303740u, 0x00535D6Eu, 0x0015191Fu);
-    gfx_draw_text(x + w - 96 + 16, y + h - 31, "Cancel", 0x00E8EEF6u, 0x00303740u);
+    gfx_draw_text(x + 20, y + 63, shown, TC(0x101010), TC(0xFFFFFF));
+    gfx_fill_rect(x + 20 + (int)strlen(shown) * 8, y + 62, 1, 14, TC(0x202020));
+    gfx_draw_text(x + 14, y + 90, g_ask.hint, TC(0x9AA6B6), TC(0x1D232C));
+    if (g_ask.err[0]) gfx_draw_text(x + 14, y + 112, g_ask.err, TC(0xF08070), TC(0x1D232C));
+    draw_bevel_box(x + w - 186, y + h - 36, 80, 24, TC(0x405478), TC(0x6B7892), TC(0x222A36));
+    gfx_draw_text(x + w - 186 + 32, y + h - 31, "OK", TC(0xFFFFFF), TC(0x405478));
+    draw_bevel_box(x + w - 96, y + h - 36, 80, 24, TC(0x303740), TC(0x535D6E), TC(0x15191F));
+    gfx_draw_text(x + w - 96 + 16, y + h - 31, "Cancel", TC(0xE8EEF6), TC(0x303740));
 }
 
 /* a click while it is open (it takes every click) */
@@ -2944,6 +2945,7 @@ static void gui_poll_body(void) {
             g_force_redraw = 1;
             /* the saved wallpaper (/etc/wallpaper) is applied on first use */
             wallpaper_load_config();
+            theme_init();                   /* the built-in and installed themes, the one chosen */
         }
 
         /* (the timer interrupt moves the pointer too: interrupts off while it changes here) */
@@ -3899,11 +3901,11 @@ static int kb_global(int k) {
 }
 
 static void kb_card(int x, int y, int w, int h, int handle, int sel, int big) {
-    uint32_t bg = sel ? 0x00405478u : 0x00262D38u;
-    draw_bevel_box(x, y, w, h, bg, sel ? 0x0090B8F0u : 0x00505E74u, 0x0010151Du);
+    uint32_t bg = sel ? TC(0x405478) : TC(0x262D38);
+    draw_bevel_box(x, y, w, h, bg, sel ? TC(0x90B8F0) : TC(0x505E74), TC(0x10151D));
     if (sel) {
-        gfx_fill_rect(x - 3, y - 3, w + 6, 3, 0x00FFD34Eu); gfx_fill_rect(x - 3, y + h, w + 6, 3, 0x00FFD34Eu);
-        gfx_fill_rect(x - 3, y - 3, 3, h + 6, 0x00FFD34Eu); gfx_fill_rect(x + w, y - 3, 3, h + 6, 0x00FFD34Eu);
+        gfx_fill_rect(x - 3, y - 3, w + 6, 3, TC(0xFFD34E)); gfx_fill_rect(x - 3, y + h, w + 6, 3, TC(0xFFD34E));
+        gfx_fill_rect(x - 3, y - 3, 3, h + 6, TC(0xFFD34E)); gfx_fill_rect(x + w, y - 3, 3, h + 6, TC(0xFFD34E));
     }
     int saved = g_is;
     g_is = big ? 2 : 1;
@@ -3913,8 +3915,8 @@ static void kb_card(int x, int y, int w, int h, int handle, int sel, int big) {
     win_title(handle, t, sizeof(t));
     int maxc = (w - 12) / 8;
     if (maxc > 0 && (int)strlen(t) > maxc) { t[maxc] = 0; if (maxc > 1) t[maxc - 1] = '.'; }
-    gfx_draw_text(x + (w - (int)strlen(t) * 8) / 2, y + h - (big ? 22 : 16), t, 0x00E8EEF6u, bg);
-    if (win_minimized(handle)) gfx_draw_text(x + (w - 9 * 8) / 2, y + h - 10, "minimized", 0x009AA6B6u, bg);
+    gfx_draw_text(x + (w - (int)strlen(t) * 8) / 2, y + h - (big ? 22 : 16), t, TC(0xE8EEF6), bg);
+    if (win_minimized(handle)) gfx_draw_text(x + (w - 9 * 8) / 2, y + h - 10, "minimized", TC(0x9AA6B6), bg);
 }
 
 /* ══ Win+V: the clipboard history ════════════════════════════════════
@@ -3926,9 +3928,9 @@ static void kb_card(int x, int y, int w, int h, int handle, int sel, int big) {
 #define CB_ROW_H   40
 #define CB_HEAD_H  34
 #define CB_FOOT_H  22
-#define CB_BG      0x001B212Bu
-#define CB_ROW     0x00262D38u
-#define CB_ROW_SEL 0x00405478u
+#define CB_BG      TC(0x1B212B)
+#define CB_ROW     TC(0x262D38)
+#define CB_ROW_SEL TC(0x405478)
 
 static void cb_geom(const fb_info_t* fi, int* px, int* py, int* pw, int* ph, int* rows) {
     int W = (int)fi->width, H = (int)fi->height;
@@ -4001,7 +4003,7 @@ static void cb_preview(const char* s, int cols, char lines[2][96]) {
 
 /* a push pin, filled when pinned */
 static void cb_draw_pin(int x, int y, int on, uint32_t bg) {
-    uint32_t c = on ? 0x00FFD34Eu : 0x007A8699u;
+    uint32_t c = on ? TC(0xFFD34E) : TC(0x7A8699);
     gfx_fill_rect(x + 2, y, 8, 2, c);
     gfx_fill_rect(x + 3, y + 2, 6, 5, on ? c : bg);
     gfx_fill_rect(x + 3, y + 2, 1, 5, c);
@@ -4014,16 +4016,16 @@ static void cb_draw(const fb_info_t* fi) {
     int px, py, pw, ph, rows;
     cb_geom(fi, &px, &py, &pw, &ph, &rows);
     cb_clamp(rows);
-    draw_bevel_box(px, py, pw, ph, CB_BG, 0x00505E74u, 0x000C0F14u);
-    gfx_draw_text(px + 14, py + 13, "Clipboard", 0x00FFFFFFu, CB_BG);
+    draw_bevel_box(px, py, pw, ph, CB_BG, TC(0x505E74), TC(0x0C0F14));
+    gfx_draw_text(px + 14, py + 13, "Clipboard", TC(0xFFFFFF), CB_BG);
     int n = clipboard_hist_count();
     int bw = 10 * 8, bx = px + pw - bw - 12;
-    draw_bevel_box(bx, py + 7, bw, 20, n ? 0x00303740u : 0x00262B33u, 0x00535D6Eu, 0x0015191Fu);
-    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, "Clear all", n ? 0x00E8EEF6u : 0x00687384u, n ? 0x00303740u : 0x00262B33u);
+    draw_bevel_box(bx, py + 7, bw, 20, n ? TC(0x303740) : TC(0x262B33), TC(0x535D6E), TC(0x15191F));
+    gfx_draw_text(bx + (bw - 9 * 8) / 2, py + 13, "Clear all", n ? TC(0xE8EEF6) : TC(0x687384), n ? TC(0x303740) : TC(0x262B33));
     int y = py + CB_HEAD_H;
     if (!n) {
-        gfx_draw_text(px + 14, y + 10, "Nothing copied yet.", 0x00E8EEF6u, CB_BG);
-        gfx_draw_text(px + 14, y + 28, "Copy text (Ctrl+C) to see it here.", 0x009AA6B6u, CB_BG);
+        gfx_draw_text(px + 14, y + 10, "Nothing copied yet.", TC(0xE8EEF6), CB_BG);
+        gfx_draw_text(px + 14, y + 28, "Copy text (Ctrl+C) to see it here.", TC(0x9AA6B6), CB_BG);
     }
     char* buf = (char*)kmalloc(400);
     for (int r = 0; r < rows && buf; r++, y += CB_ROW_H) {
@@ -4032,22 +4034,22 @@ static void cb_draw(const fb_info_t* fi) {
         if (clipboard_hist_peek(i, buf, 400, &len, &pinned) < 0) break;
         int sel = i == g_cb_sel;
         uint32_t bg = sel ? CB_ROW_SEL : CB_ROW;
-        draw_bevel_box(px + 8, y + 2, pw - 16, CB_ROW_H - 4, bg, sel ? 0x0090B8F0u : 0x00384252u, 0x0010151Du);
+        draw_bevel_box(px + 8, y + 2, pw - 16, CB_ROW_H - 4, bg, sel ? TC(0x90B8F0) : TC(0x384252), TC(0x10151D));
         char lines[2][96];
         cb_preview(buf, (pw - 16 - 52) / 8, lines);
         if (!lines[0][0]) kstrlcpy(lines[0], "(spaces only)", sizeof(lines[0]));
-        gfx_draw_text(px + 16, y + 9, lines[0], 0x00E8EEF6u, bg);
-        if (lines[1][0]) gfx_draw_text(px + 16, y + 23, lines[1], 0x00C2CCD8u, bg);
+        gfx_draw_text(px + 16, y + 9, lines[0], TC(0xE8EEF6), bg);
+        if (lines[1][0]) gfx_draw_text(px + 16, y + 23, lines[1], TC(0xC2CCD8), bg);
         cb_draw_pin(px + pw - 46, y + 12, pinned, bg);
-        gfx_draw_text(px + pw - 24, y + 15, "x", 0x00C2CCD8u, bg);
+        gfx_draw_text(px + pw - 24, y + 15, "x", TC(0xC2CCD8), bg);
     }
     kfree(buf);
     if (n > rows) {
         char m[32];
         ksnprintf(m, sizeof(m), "%d-%d of %d", g_cb_top + 1, g_cb_top + rows, n);
-        gfx_draw_text(px + pw - 12 - (int)strlen(m) * 8, py + ph - 15, m, 0x009AA6B6u, CB_BG);
+        gfx_draw_text(px + pw - 12 - (int)strlen(m) * 8, py + ph - 15, m, TC(0x9AA6B6), CB_BG);
     }
-    gfx_draw_text(px + 14, py + ph - 15, "Enter: paste  Del: delete  P: pin", 0x009AA6B6u, CB_BG);
+    gfx_draw_text(px + 14, py + ph - 15, "Enter: paste  Del: delete  P: pin", TC(0x9AA6B6), CB_BG);
 }
 
 static int cb_key(int code) {
@@ -4113,10 +4115,10 @@ static void kb_draw_overlays(const fb_info_t* fi) {
         int first = g_sw_sel >= n ? g_sw_sel - n + 1 : 0;
         int pw = n * (cw + gap) + gap + 20, ph = ch + 56;
         int px = (W - pw) / 2, py = (H - ph) / 2;
-        draw_bevel_box(px, py, pw, ph, 0x001B212Bu, 0x00505E74u, 0x000C0F14u);
+        draw_bevel_box(px, py, pw, ph, TC(0x1B212B), TC(0x505E74), TC(0x0C0F14));
         char t[64];
         win_title(g_list[g_sw_sel], t, sizeof(t));
-        gfx_draw_text(px + (pw - (int)strlen(t) * 8) / 2, py + 12, t, 0x00FFFFFFu, 0x001B212Bu);
+        gfx_draw_text(px + (pw - (int)strlen(t) * 8) / 2, py + 12, t, TC(0xFFFFFF), TC(0x1B212B));
         for (int i = 0; i < n; i++)
             kb_card(px + 20 + i * (cw + gap), py + 36, cw, ch, g_list[first + i], first + i == g_sw_sel, 1);
     }
@@ -4126,9 +4128,9 @@ static void kb_draw_overlays(const fb_info_t* fi) {
         int stride, tw, th;
         t = fb_target(&stride, &tw, &th);
         if (t) for (int y = 0; y < th - BAR_H; y++) for (int x = 0; x < tw; x++) { uint32_t p = t[y * stride + x]; t[y * stride + x] = (p >> 2) & 0x003F3F3Fu; }
-        gfx_draw_text_scaled(40, 30, 2, "Task view", 0x00FFFFFFu, 0x00000000u);
-        gfx_draw_text(40, 66, "Arrows choose, Enter switches, Delete closes, Esc goes back", 0x009AA6B6u, 0x00000000u);
-        if (!g_nlist) gfx_draw_text(40, 110, "No windows are open.", 0x00E8EEF6u, 0);
+        gfx_draw_text_scaled(40, 30, 2, "Task view", TC(0xFFFFFF), 0x00000000u);
+        gfx_draw_text(40, 66, "Arrows choose, Enter switches, Delete closes, Esc goes back", TC(0x9AA6B6), 0x00000000u);
+        if (!g_nlist) gfx_draw_text(40, 110, "No windows are open.", TC(0xE8EEF6), 0);
         for (int i = 0; i < g_nlist; i++) {
             int x, y, cw, ch;
             tv_card(fi, i, &x, &y, &cw, &ch);
@@ -4140,10 +4142,10 @@ static void kb_draw_overlays(const fb_info_t* fi) {
     if (ep_is_open()) ep_draw(fi, BAR_H);
     if (g_bar_kb && g_bar_sel >= 0 && g_bar_sel < g_ntb) {
         int bw = tb_btn_w(fi), x = TB_X + g_bar_sel * bw, y = H - BAR_H + 1;
-        gfx_fill_rect(x - 1, y, bw - 2, 2, 0x00FFD34Eu);
-        gfx_fill_rect(x - 1, y + BAR_H - 4, bw - 2, 2, 0x00FFD34Eu);
-        gfx_fill_rect(x - 1, y, 2, BAR_H - 2, 0x00FFD34Eu);
-        gfx_fill_rect(x + bw - 5, y, 2, BAR_H - 2, 0x00FFD34Eu);
+        gfx_fill_rect(x - 1, y, bw - 2, 2, TC(0xFFD34E));
+        gfx_fill_rect(x - 1, y + BAR_H - 4, bw - 2, 2, TC(0xFFD34E));
+        gfx_fill_rect(x - 1, y, 2, BAR_H - 2, TC(0xFFD34E));
+        gfx_fill_rect(x + bw - 5, y, 2, BAR_H - 2, TC(0xFFD34E));
     }
 }
 
@@ -4489,8 +4491,8 @@ static void dband_draw(const fb_info_t* fi) {
             uint32_t p = t[y * stride + x];
             t[y * stride + x] = ((p & 0x00FEFEFEu) >> 1) + ((0x006FA8E8u & 0x00FEFEFEu) >> 1);
         }
-    gfx_fill_rect(x0, y0, x1 - x0, 1, 0x0099CCFFu); gfx_fill_rect(x0, y1 - 1, x1 - x0, 1, 0x0099CCFFu);
-    gfx_fill_rect(x0, y0, 1, y1 - y0, 0x0099CCFFu); gfx_fill_rect(x1 - 1, y0, 1, y1 - y0, 0x0099CCFFu);
+    gfx_fill_rect(x0, y0, x1 - x0, 1, TC(0x99CCFF)); gfx_fill_rect(x0, y1 - 1, x1 - x0, 1, TC(0x99CCFF));
+    gfx_fill_rect(x0, y0, 1, y1 - y0, TC(0x99CCFF)); gfx_fill_rect(x1 - 1, y0, 1, y1 - y0, TC(0x99CCFF));
 }
 
 static void dnd_draw(const fb_info_t* fi, int mx, int my) {
@@ -4509,12 +4511,12 @@ static void dnd_draw(const fb_info_t* fi, int mx, int my) {
     else ksnprintf(t, sizeof(t), "%s%d items", copy ? "+ " : "", n);
     if (strlen(t) > 22) { t[20] = '.'; t[21] = '.'; t[22] = 0; }
     int w = 44 + (int)strlen(t) * 8;
-    gfx_fill_rect(x, y, w, 38, 0x002A3A52u);
-    gfx_fill_rect(x, y, w, 1, 0x006B8AB8u);
-    gfx_fill_rect(x, y + 37, w, 1, 0x00101820u);
+    gfx_fill_rect(x, y, w, 38, TC(0x2A3A52));
+    gfx_fill_rect(x, y, w, 1, TC(0x6B8AB8));
+    gfx_fill_rect(x, y + 37, w, 1, TC(0x101820));
     fileicon_t k = g_ndnd ? (fileops_is_dir(g_dnd[0]) ? FI_FOLDER : fileicon_for_name(fileops_base(g_dnd[0]))) : FI_PROGRAM;
     fileicon_draw(k, x + 4, y + 3, 32);
-    gfx_draw_text(x + 40, y + 15, t, 0x00FFFFFFu, 0x002A3A52u);
+    gfx_draw_text(x + 40, y + 15, t, TC(0xFFFFFF), TC(0x2A3A52));
 }
 
 /* ══ apps pinned to the taskbar ═══════════════════════════════════════ */
@@ -4646,15 +4648,15 @@ static void pins_draw(const fb_info_t* fi) {
     for (int i = 0; i < g_npins; i++) {
         int x = PINS_X + i * PIN_W;
         int run = pin_running(i);
-        uint32_t bg = 0x00192026u;
-        if (run) gfx_fill_rect(x + 4, bar_y + BAR_H - 4, PIN_W - 8, 2, 0x0068A8F0u);
+        uint32_t bg = TC(0x192026);
+        if (run) gfx_fill_rect(x + 4, bar_y + BAR_H - 4, PIN_W - 8, 2, TC(0x68A8F0));
         int saved = g_is;
         g_is = 1;
         desk_icon(g_pins[i].act, x + (PIN_W - 14) / 2 - 2, bar_y + 7, g_pins[i].app);
         g_is = saved;
         (void)bg;
     }
-    if (g_npins) gfx_fill_rect(PINS_X + g_npins * PIN_W + 1, bar_y + 6, 1, BAR_H - 12, 0x004F5A6Eu);
+    if (g_npins) gfx_fill_rect(PINS_X + g_npins * PIN_W + 1, bar_y + 6, 1, BAR_H - 12, TC(0x4F5A6E));
 }
 
 void gui_set_taskbar_style(int style) {

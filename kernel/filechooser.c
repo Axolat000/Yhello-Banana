@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* "Choose a file" (filechooser.h): a panel inside another window. */
 #include "filechooser.h"
+#include "theme.h"
 #include "fs.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -8,15 +9,15 @@
 #include "fileicons.h"
 #include "kbnav.h"
 
-#define C_BG     0x001D232Cu
-#define C_LIST   0x00141920u
-#define C_SIDE   0x00161B22u
-#define C_TEXT   0x00E8EEF6u
-#define C_DIM    0x00AAB6C6u
-#define C_HEAD   0x00FFFFFFu
-#define C_ACCENT 0x003A7BD5u
-#define C_SEL    0x002C3E5Cu
-#define C_BTN    0x00303740u
+#define C_BG     TC(0x1D232C)
+#define C_LIST   TC(0x141920)
+#define C_SIDE   TC(0x161B22)
+#define C_TEXT   TC(0xE8EEF6)
+#define C_DIM    TC(0xAAB6C6)
+#define C_HEAD   TC(0xFFFFFF)
+#define C_ACCENT TC(0x3A7BD5)
+#define C_SEL    TC(0x2C3E5C)
+#define C_BTN    TC(0x303740)
 
 #define ROW_H    20
 #define SIDE_W   104
@@ -57,8 +58,8 @@ static int inside(int mx, int my, int x, int y, int w, int h) { return mx >= x &
 static void button(int x, int y, int w, const char* label, int on) {
     uint32_t base = on ? C_ACCENT : C_BTN;
     gfx_fill_rect(x, y, w, 20, base);
-    gfx_fill_rect(x, y, w, 1, 0x00535D6Eu);
-    gfx_fill_rect(x, y + 19, w, 1, 0x0015191Fu);
+    gfx_fill_rect(x, y, w, 1, TC(0x535D6E));
+    gfx_fill_rect(x, y + 19, w, 1, TC(0x15191F));
     gfx_draw_text(x + (w - (int)strlen(label) * 8) / 2, y + 6, label, C_TEXT, base);
 }
 
@@ -255,7 +256,7 @@ void fc_draw(int x, int y, int w, int h) {
         int th = lh * r / g_n;
         if (th < 12) th = 12;
         int ty = ly + (lh - th) * g_top / (g_n - r);
-        gfx_fill_rect(lx + lw - 5, ty, 4, th, 0x00596678u);
+        gfx_fill_rect(lx + lw - 5, ty, 4, th, TC(0x596678));
     }
 
     int by = y + h - 24;
@@ -263,12 +264,12 @@ void fc_draw(int x, int y, int w, int h) {
         /* File name: [...........]   Save as type: [Text Documents (*.txt) v] */
         int fy = field_y(), fx = x + 112;
         gfx_draw_text(x + 4, fy + 6, "File name:", C_TEXT, C_BG);
-        gfx_fill_rect(fx, fy, x + w - fx, 22, 0x00FFFFFFu);
+        gfx_fill_rect(fx, fy, x + w - fx, 22, TC(0xFFFFFF));
         gfx_fill_rect(fx, fy + 21, x + w - fx, 1, C_ACCENT);
         int fmax = (x + w - fx - 12) / 8, fl = (int)strlen(g_fname);
         const char* fs = g_fname + (fl > fmax - 1 ? fl - (fmax - 1) : 0);
-        gfx_draw_text(fx + 4, fy + 7, fs, 0x00101010u, 0x00FFFFFFu);
-        if (!g_confirm) gfx_fill_rect(fx + 4 + (int)strlen(fs) * 8, fy + 5, 1, 13, 0x00202020u);
+        gfx_draw_text(fx + 4, fy + 7, fs, TC(0x101010), TC(0xFFFFFF));
+        if (!g_confirm) gfx_fill_rect(fx + 4 + (int)strlen(fs) * 8, fy + 5, 1, 13, TC(0x202020));
         gfx_draw_text(x + 4, fy + 34, "Save as type:", C_TEXT, C_BG);
         gfx_fill_rect(fx, fy + 28, TYPE_W, 22, C_LIST);
         gfx_draw_text(fx + 6, fy + 35, type_name(), C_TEXT, C_LIST);
@@ -291,17 +292,17 @@ void fc_draw(int x, int y, int w, int h) {
     /* "... already exists. Do you want to replace it?" */
     if (g_confirm) {
         int cw = w - 40 < 420 ? w - 40 : 420, ch = 96, cx = x + (w - cw) / 2, cy = y + (h - ch) / 2;
-        gfx_fill_rect(cx + 4, cy + 4, cw, ch, 0x00080A0Eu);
-        gfx_fill_rect(cx, cy, cw, ch, 0x00262C36u);
-        gfx_fill_rect(cx, cy, cw, 1, 0x00707C90u);
-        gfx_fill_rect(cx, cy + ch - 1, cw, 1, 0x000C0F14u);
+        gfx_fill_rect(cx + 4, cy + 4, cw, ch, TC(0x080A0E));
+        gfx_fill_rect(cx, cy, cw, ch, TC(0x262C36));
+        gfx_fill_rect(cx, cy, cw, 1, TC(0x707C90));
+        gfx_fill_rect(cx, cy + ch - 1, cw, 1, TC(0x0C0F14));
         char line[96];
         const char* b = strrchr(g_cpath, '/');
         ksnprintf(line, sizeof(line), "%s already exists.", b ? b + 1 : g_cpath);
         int ml = (cw - 24) / 8;
         if (ml > 0 && ml < (int)sizeof(line)) line[ml] = 0;
-        gfx_draw_text(cx + 12, cy + 14, line, C_HEAD, 0x00262C36u);
-        gfx_draw_text(cx + 12, cy + 32, "Do you want to replace it?", C_TEXT, 0x00262C36u);
+        gfx_draw_text(cx + 12, cy + 14, line, C_HEAD, TC(0x262C36));
+        gfx_draw_text(cx + 12, cy + 32, "Do you want to replace it?", C_TEXT, TC(0x262C36));
         button(cx + cw - 184, cy + ch - 32, 80, "Yes", 1);
         button(cx + cw - 96, cy + ch - 32, 80, "No", 0);
     }

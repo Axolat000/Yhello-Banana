@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "taskmgr.h"
+#include "theme.h"
 #include "gfx.h"
 #include "kstring.h"
 #include "kheap.h"
@@ -42,20 +43,20 @@
 #define MAX_CORE 16
 
 /* Windows 11's dark look */
-#define C_BG     0x00202020u
-#define C_RAIL   0x001A1A1Au
-#define C_PANEL  0x00272727u
-#define C_LINE   0x00383838u
-#define C_HOVER  0x002D2D2Du
-#define C_TEXT   0x00F2F2F2u
-#define C_DIM    0x00A8A8A8u
-#define C_ACCENT 0x0060CDFFu
-#define C_SEL    0x00334E66u
-#define C_CPU    0x0017A2E8u
-#define C_MEM    0x00A066D0u
-#define C_DISK   0x004DB858u
-#define C_NET    0x00D88A3Cu
-#define C_GPU    0x00D0506Au
+#define C_BG     TC(0x202020)
+#define C_RAIL   TC(0x1A1A1A)
+#define C_PANEL  TC(0x272727)
+#define C_LINE   TC(0x383838)
+#define C_HOVER  TC(0x2D2D2D)
+#define C_TEXT   TC(0xF2F2F2)
+#define C_DIM    TC(0xA8A8A8)
+#define C_ACCENT TC(0x60CDFF)
+#define C_SEL    TC(0x334E66)
+#define C_CPU    TC(0x17A2E8)
+#define C_MEM    TC(0xA066D0)
+#define C_DISK   TC(0x4DB858)
+#define C_NET    TC(0xD88A3C)
+#define C_GPU    TC(0xD0506A)
 
 enum { P_PROCS = 0, P_PERF, P_DETAILS, P_USERS, P_COUNT };
 static const char* const PAGE_NAMES[P_COUNT] = { "Processes", "Performance", "Details", "Users" };
@@ -116,14 +117,14 @@ static uint32_t mix(uint32_t a, uint32_t b, int t) {        /* t: 0..256 from a 
 
 /* the heat of a column's cell: darker to amber as it gets busier */
 static uint32_t heat(int pct) {
-    if (pct <= 0) return 0x002A2716u;
-    return mix(0x00332E19u, 0x00866A12u, pct * 256 / 100);
+    if (pct <= 0) return TC(0x2A2716);
+    return mix(TC(0x332E19), TC(0x866A12), pct * 256 / 100);
 }
 
 static void button(int x, int y, int w, const char* label, int enabled) {
     kbnav_add(&g_nav, x, y, w, 24);
-    frame(x, y, w, 24, enabled ? 0x002D2D2Du : 0x00252525u, enabled ? 0x00464646u : 0x00303030u);
-    gfx_draw_text(x + (w - (int)strlen(label) * 8) / 2, y + 8, label, enabled ? C_TEXT : 0x00686868u, enabled ? 0x002D2D2Du : 0x00252525u);
+    frame(x, y, w, 24, enabled ? TC(0x2D2D2D) : TC(0x252525), enabled ? TC(0x464646) : TC(0x303030));
+    gfx_draw_text(x + (w - (int)strlen(label) * 8) / 2, y + 8, label, enabled ? C_TEXT : TC(0x686868), enabled ? TC(0x2D2D2D) : TC(0x252525));
 }
 
 static int inside(int mx, int my, int x, int y, int w, int h) {
@@ -625,8 +626,8 @@ static void draw_processes(void) {
         kbnav_add(&g_nav, cx, ry, cw, ROW_H);
         if (sel) gfx_fill_rect(cx, ry, cw, ROW_H, bg);
         /* its icon: blue a window, amber an app, grey a kernel task */
-        uint32_t ic = r->kind == R_WINDOW ? 0x003A7BD5u : r->kind == R_APP ? 0x00D0A030u : 0x00707A88u;
-        frame(cx + 10, ry + 5, 10, 10, ic, mix(ic, 0x00FFFFFFu, 80));
+        uint32_t ic = r->kind == R_WINDOW ? TC(0x3A7BD5) : r->kind == R_APP ? TC(0xD0A030) : TC(0x707A88);
+        frame(cx + 10, ry + 5, 10, 10, ic, mix(ic, TC(0xFFFFFF), 80));
         char nm[48];
         kstrlcpy(nm, r->text, sizeof(nm));
         int maxc = (col_x(0) - (cx + 30) - 6) / 8;
@@ -718,7 +719,7 @@ static void dev_value(int d, char* out, int cap) {
 }
 
 static uint32_t dev_color(int d) {
-    static const uint32_t C[D_COUNT] = { C_CPU, C_MEM, C_DISK, C_NET, C_GPU };
+    const uint32_t C[D_COUNT] = { C_CPU, C_MEM, C_DISK, C_NET, C_GPU };
     return C[d];
 }
 
@@ -817,7 +818,7 @@ static void draw_performance(void) {
             gfx_draw_text(px + pw - 32, gy - 14, "100%", C_DIM, C_BG);
             big_graph(px, gy, pw, gh, g_cpu_hist, NULL, 100, col);
         }
-        if (cores > 1) gfx_draw_text(px, gy + gh + 2, g_cores_view ? "Click the graph: overall" : "Click the graph: each core", 0x00707070u, C_BG);
+        if (cores > 1) gfx_draw_text(px, gy + gh + 2, g_cores_view ? "Click the graph: overall" : "Click the graph: each core", TC(0x707070), C_BG);
         int threads = 0;
         snap_tasks();
         for (int i = 0; i < g_ntasks; i++) if (g_tasks[i].state != TASK_UNUSED) threads++;
@@ -977,7 +978,7 @@ static void draw_details(void) {
                   g_tasks[i].cpu_pct, s / 3600, s / 60 % 60, s % 60, g_tasks[i].nice);
         int ry = rows_y() + row * ROW_H;
         if (g_tasks[i].cpu_pct) gfx_fill_rect(cx, ry, cw, ROW_H - 1, heat((int)g_tasks[i].cpu_pct));
-        gfx_draw_text(cx + 8, ry + 6, line, g_tasks[i].cpu_pct >= 50 ? 0x00FFD080u : C_TEXT, g_tasks[i].cpu_pct ? heat((int)g_tasks[i].cpu_pct) : C_BG);
+        gfx_draw_text(cx + 8, ry + 6, line, g_tasks[i].cpu_pct >= 50 ? TC(0xFFD080) : C_TEXT, g_tasks[i].cpu_pct ? heat((int)g_tasks[i].cpu_pct) : C_BG);
         row++;
     }
 }
@@ -991,8 +992,8 @@ static void draw_users(void) {
     gfx_draw_text(cx + cw - 180, table_y() + 18, "CPU", C_DIM, C_PANEL);
     gfx_draw_text(cx + cw - 100, table_y() + 18, "Memory", C_DIM, C_PANEL);
     int ry = rows_y();
-    frame(cx + 10, ry + 2, 16, 16, 0x00405478u, 0x0090B8F0u);
-    gfx_draw_text(cx + 14, ry + 6, "b", C_TEXT, 0x00405478u);
+    frame(cx + 10, ry + 2, 16, 16, TC(0x405478), TC(0x90B8F0));
+    gfx_draw_text(cx + 14, ry + 6, "b", C_TEXT, TC(0x405478));
     gfx_draw_text(cx + 34, ry + 6, "banana (you)", C_TEXT, C_BG);
     char a[24];
     ksnprintf(a, sizeof(a), "%d app%s", g_napps, g_napps == 1 ? "" : "s");
@@ -1013,7 +1014,7 @@ void taskmgr_draw(const fb_info_t* fi) {
     if (!g_open) return;
     int x = g_win.x, y = g_win.y, W = g_win.w, H = g_win.h;
     kbnav_begin(&g_nav);
-    frame(x, y, W, H, C_BG, 0x00454545u);
+    frame(x, y, W, H, C_BG, TC(0x454545));
     gfx_fill_rect(x + 1, y + 1, W - 2, TITLE_H + 1, C_RAIL);
     /* the title: a small chart icon, the name */
     gfx_fill_rect(x + 10, y + 13, 3, 4, C_ACCENT);

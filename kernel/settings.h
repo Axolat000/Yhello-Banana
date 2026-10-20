@@ -21,14 +21,15 @@
 
 void settings_open(void);
 #define SETTINGS_PAGE_DISPLAY 0
-#define SETTINGS_PAGE_FONTS   1
-#define SETTINGS_PAGE_KEYBOARD 5
-#define SETTINGS_PAGE_NETWORK 7
-#define SETTINGS_PAGE_TIME    8
-#define SETTINGS_PAGE_TASKBAR 3
-#define SETTINGS_PAGE_STARTUP 9
-#define SETTINGS_PAGE_APPS    10
-#define SETTINGS_PAGE_ABOUT   11
+#define SETTINGS_PAGE_THEMES  1
+#define SETTINGS_PAGE_FONTS   2
+#define SETTINGS_PAGE_KEYBOARD 6
+#define SETTINGS_PAGE_NETWORK 8
+#define SETTINGS_PAGE_TIME    9
+#define SETTINGS_PAGE_TASKBAR 4
+#define SETTINGS_PAGE_STARTUP 10
+#define SETTINGS_PAGE_APPS    11
+#define SETTINGS_PAGE_ABOUT   12
 /* the Apps page, with this installed app selected (the launcher's Details) */
 void settings_show_app(const char* name);
 void settings_show_status(const char* msg);

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../net/firewall.h"
+#include "theme.h"
 #include "../net/ipv6.h"
 #include "settings.h"
 #include "gfx.h"
@@ -49,17 +50,17 @@ void shell_power(int reboot);
 #define BODY_Y   (TITLE_H + 8)
 #define ITEM_H   26
 
-#define C_PANEL  0x001D232Cu
-#define C_TITLE  0x00384562u
-#define C_SIDE   0x00161B22u
-#define C_TEXT   0x00E8EEF6u
-#define C_DIM    0x00AAB6C6u
-#define C_HEAD   0x00FFFFFFu
-#define C_ACCENT 0x003A7BD5u
-#define C_SEL    0x002C3E5Cu
+#define C_PANEL  TC(0x1D232C)
+#define C_TITLE  TC(0x384562)
+#define C_SIDE   TC(0x161B22)
+#define C_TEXT   TC(0xE8EEF6)
+#define C_DIM    TC(0xAAB6C6)
+#define C_HEAD   TC(0xFFFFFF)
+#define C_ACCENT TC(0x3A7BD5)
+#define C_SEL    TC(0x2C3E5C)
 
-enum { PG_DISPLAY = 0, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
-static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
+enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
+static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
 
 #define KB_ROW 22                           /* Keyboard: a row of the layout list */
 
@@ -86,8 +87,8 @@ static void bevel(int x, int y, int w, int h, uint32_t base, uint32_t hi, uint32
 
 static void button(int x, int y, int w, const char* label, int on) {
     kbnav_add(&g_nav, x, y, w, 20);
-    uint32_t base = on ? C_ACCENT : 0x00303740u;
-    bevel(x, y, w, 20, base, 0x00535D6Eu, 0x0015191Fu);
+    uint32_t base = on ? C_ACCENT : TC(0x303740);
+    bevel(x, y, w, 20, base, TC(0x535D6E), TC(0x15191F));
     int tw = (int)strlen(label) * 8;
     gfx_draw_text(x + (w - tw) / 2, y + 6, label, C_TEXT, base);
 }
@@ -186,7 +187,7 @@ static void draw_display(void) {
         thumb_rect(i, &tx, &ty);
         if (ty + THUMB_H + 20 > g_win.y + g_win.h - 28) break;
         const wallpaper_preset_t* p = wallpaper_preset(i);
-        gfx_fill_rect(tx - 2, ty - 2, THUMB_W + 4, THUMB_H + 4, i == cur ? C_ACCENT : 0x0010141Cu);
+        gfx_fill_rect(tx - 2, ty - 2, THUMB_W + 4, THUMB_H + 4, i == cur ? C_ACCENT : TC(0x10141C));
         kbnav_add(&g_nav, tx, ty, THUMB_W, THUMB_H);
         if (p && p->pixels) {
             /* a scaled-down copy of the picture */
@@ -214,14 +215,14 @@ static void draw_display(void) {
         pic_rect(i, &tx, &ty);
         if (tx + THUMB_W > x + cw()) break;
         int on = file && !strcmp(file, wallpaper_recent(i));
-        gfx_fill_rect(tx - 2, ty - 2, THUMB_W + 4, THUMB_H + 4, on ? C_ACCENT : 0x0010141Cu);
+        gfx_fill_rect(tx - 2, ty - 2, THUMB_W + 4, THUMB_H + 4, on ? C_ACCENT : TC(0x10141C));
         kbnav_add(&g_nav, tx, ty + 14, THUMB_W, THUMB_H - 14);
         const uint32_t* th = wallpaper_recent_thumb(i, THUMB_W, THUMB_H);
         if (th) blit(tx, ty, THUMB_W, THUMB_H, th);
-        else { gfx_fill_rect(tx, ty, THUMB_W, THUMB_H, 0x00303740u); label(tx + 4, ty + 20, "(missing)", C_DIM); }
+        else { gfx_fill_rect(tx, ty, THUMB_W, THUMB_H, TC(0x303740)); label(tx + 4, ty + 20, "(missing)", C_DIM); }
         /* remove it from the list: x in its corner */
-        gfx_fill_rect(tx + THUMB_W - 12, ty, 12, 12, 0x00202630u);
-        gfx_draw_text(tx + THUMB_W - 10, ty + 2, "x", C_TEXT, 0x00202630u);
+        gfx_fill_rect(tx + THUMB_W - 12, ty, 12, 12, TC(0x202630));
+        gfx_draw_text(tx + THUMB_W - 10, ty + 2, "x", C_TEXT, TC(0x202630));
         const char* b = strrchr(wallpaper_recent(i), '/');
         char nm[11];
         kstrlcpy(nm, b ? b + 1 : wallpaper_recent(i), sizeof(nm));
@@ -252,7 +253,7 @@ static int row_face(int r) { return r == 0 ? -2 : r == 1 ? FONT_MONO : r == 2 ? 
 
 static void radio(int x, int y, int on) {
     kbnav_add(&g_nav, x, y, 14, 14);
-    bevel(x, y, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    bevel(x, y, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     if (on) gfx_fill_rect(x + 4, y + 4, 6, 6, C_ACCENT);
 }
 
@@ -273,16 +274,16 @@ static void draw_fonts(void) {
     for (int i = 0; i < rows && g_font_top + i < n; i++) {
         int r = g_font_top + i, face = row_face(r);
         int ry = ly + i * FROW_H;
-        gfx_fill_rect(x, ry, cw(), FROW_H - 2, (i & 1) ? 0x00222932u : 0x001F252Eu);
+        gfx_fill_rect(x, ry, cw(), FROW_H - 2, (i & 1) ? TC(0x222932) : TC(0x1F252E));
         const char* name = r == 0 ? "Classic (8x8 pixels)" : r == 1 ? "DejaVu Sans Mono" : r == 2 ? "DejaVu Sans" : font_user_name(face);
         char nm[40];
         kstrlcpy(nm, name, sizeof(nm));
         if ((int)strlen(nm) > (ui_col() - x - 30) / 8) nm[(ui_col() - x - 30) / 8] = 0;
-        gfx_draw_text(x + 6, ry + 4, nm, C_TEXT, (i & 1) ? 0x00222932u : 0x001F252Eu);
+        gfx_draw_text(x + 6, ry + 4, nm, C_TEXT, (i & 1) ? TC(0x222932) : TC(0x1F252E));
         /* a sample in the font itself */
         if (face >= 0 && t) font_draw(t, stride, x, ry, ui_col() - 30, ry + FROW_H - 2, face, 15, x + 6, ry + 28,
-                                      "The quick brown fox 0123", 24, 0x00C8D4E4u, 0);
-        else if (face == -2) gfx_draw_text(x + 6, ry + 18, "The quick brown fox 0123", 0x00C8D4E4u, (i & 1) ? 0x00222932u : 0x001F252Eu);
+                                      "The quick brown fox 0123", 24, TC(0xC8D4E4), 0);
+        else if (face == -2) gfx_draw_text(x + 6, ry + 18, "The quick brown fox 0123", TC(0xC8D4E4), (i & 1) ? TC(0x222932) : TC(0x1F252E));
         int ui_on = face == -2 ? !gfx_smooth_text() : gfx_smooth_text() && font_ui() == face;
         if (face != FONT_SANS) radio(ui_col(), ry + 9, ui_on);
         if (face != -2 && face != FONT_MONO) radio(doc_col() + 20, ry + 9, face == FONT_SANS ? font_doc() < 0 : font_doc() == face);
@@ -426,10 +427,10 @@ static void draw_sound(void) {
     label(x, y + 44, line, C_TEXT);
     int sx, sy, sw;
     slider_rect(&sx, &sy, &sw);
-    bevel(sx, sy + 6, sw, 8, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
-    gfx_fill_rect(sx + 1, sy + 7, (sw - 2) * vol / 100, 6, g_muted ? 0x00606A78u : C_ACCENT);
+    bevel(sx, sy + 6, sw, 8, TC(0x141920), TC(0x10141C), TC(0x404B5C));
+    gfx_fill_rect(sx + 1, sy + 7, (sw - 2) * vol / 100, 6, g_muted ? TC(0x606A78) : C_ACCENT);
     int kx = sx + (sw - 10) * vol / 100;
-    bevel(kx, sy, 10, 20, 0x00C8D2E0u, 0x00FFFFFFu, 0x00606A78u);
+    bevel(kx, sy, 10, 20, TC(0xC8D2E0), TC(0xFFFFFF), TC(0x606A78));
     button(sx + sw + 12, sy, 40, "Max", 0);
     button(x, sy + 36, 100, g_muted ? "Unmute" : "Mute", g_muted);
     button(x + 112, sy + 36, 120, "Test sound", 0);
@@ -463,11 +464,11 @@ static void draw_mouse(void) {
     label(x, y + 44, line, C_TEXT);
     int sx, sy, sw;
     speed_rect(&sx, &sy, &sw);
-    bevel(sx, sy + 6, sw, 8, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    bevel(sx, sy + 6, sw, 8, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     gfx_fill_rect(sx + 1, sy + 7, (sw - 2) * (sp - 1) / 9, 6, C_ACCENT);
     for (int i = 0; i < 10; i++) gfx_fill_rect(sx + 4 + (sw - 10) * i / 9, sy + 22, 2, 4, C_DIM);
     int kx = sx + (sw - 10) * (sp - 1) / 9;
-    bevel(kx, sy, 10, 20, 0x00C8D2E0u, 0x00FFFFFFu, 0x00606A78u);
+    bevel(kx, sy, 10, 20, TC(0xC8D2E0), TC(0xFFFFFF), TC(0x606A78));
     label(sx, sy + 32, "Slow", C_DIM);
     label(sx + sw - 32, sy + 32, "Fast", C_DIM);
     button(x, sy + 56, 70, "Slower", 0);
@@ -495,7 +496,7 @@ static void draw_keyboard(void) {
         const char* name = keyboard_layout_at(i, &what);
         int on = cur && strcmp(cur, name) == 0;
         kbnav_add(&g_nav, x, ry - 2, 280, 18);
-        bevel(x, ry, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+        bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
         if (on) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
         label(x + 24, ry + 3, what, on ? C_HEAD : C_TEXT);
     }
@@ -576,6 +577,98 @@ static void click_screen_boot(int mx, int my) {
     }
 }
 
+/* ── Themes: the desktop's colours (kernel/theme.c) ── */
+#define TCARD_W 132
+#define TCARD_H 96
+static int tcards_per_row(void) { int n = (cw() + 10) / (TCARD_W + 10); return n < 1 ? 1 : n; }
+static void tcard_rect(int i, int* x, int* y) {
+    int per = tcards_per_row();
+    *x = cx0() + (i % per) * (TCARD_W + 10);
+    *y = cy0() + 36 + (i / per) * (TCARD_H + 10);
+}
+
+/* a small window in the theme's own colours (not through TC: what it will look like) */
+static void theme_preview(int x, int y, int w, int h, const theme_t* t) {
+    const uint32_t* s = t->shade;
+    gfx_fill_rect(x, y, w, h, s[TH_SHADOW]);
+    gfx_fill_rect(x + 1, y + 1, w - 2, h - 2, s[TH_SURFACE]);
+    gfx_fill_rect(x + 1, y + 1, w - 2, 12, s[TH_RAISED]);                 /* the title bar */
+    gfx_fill_rect(x + 5, y + 5, 30, 3, s[TH_TEXT]);
+    gfx_fill_rect(x + w - 10, y + 4, 6, 6, TC(0xC04040));
+    gfx_fill_rect(x + 5, y + 17, w / 3, h - 30, s[TH_BASE]);             /* a list */
+    for (int k = 0; k < 3; k++) gfx_fill_rect(x + 8, y + 21 + k * 7, w / 3 - 10, 2, k ? s[TH_DIM] : s[TH_TEXT]);
+    gfx_fill_rect(x + w / 3 + 10, y + 19, w - w / 3 - 16, 2, s[TH_TEXT]);
+    gfx_fill_rect(x + w / 3 + 10, y + 26, w - w / 3 - 30, 2, s[TH_DIM]);
+    gfx_fill_rect(x + w / 3 + 10, y + h - 24, 34, 10, t->accent);         /* a button */
+    gfx_fill_rect(x + 1, y + h - 9, w - 2, 8, s[TH_BASE]);                /* the taskbar */
+    gfx_fill_rect(x + 4, y + h - 7, 4, 4, t->accent);
+    gfx_fill_rect(x + 1, y + h - 10, w - 2, 1, s[TH_LINE]);
+}
+
+static void draw_themes(void) {
+    int x = cx0(), y = cy0();
+    label(x, y, "Themes", C_HEAD);
+    label(x + 64, y, "(the colours of windows, the taskbar and menus)", C_DIM);
+    int n = theme_count(), cur = theme_current();
+    for (int i = 0; i < n; i++) {
+        int tx, ty;
+        tcard_rect(i, &tx, &ty);
+        if (ty + TCARD_H > g_win.y + g_win.h - 60) break;
+        const theme_t* t = theme_get(i);
+        kbnav_add(&g_nav, tx, ty, TCARD_W, TCARD_H);
+        if (i == cur) gfx_fill_rect(tx - 2, ty - 2, TCARD_W + 4, TCARD_H - 14, C_ACCENT);
+        theme_preview(tx, ty, TCARD_W, TCARD_H - 18, t);
+        char nm[20];
+        kstrlcpy(nm, t->name, sizeof(nm));
+        label(tx + (TCARD_W - (int)strlen(nm) * 8) / 2, ty + TCARD_H - 12, nm, i == cur ? C_HEAD : C_TEXT);
+    }
+    int by = g_win.y + g_win.h - 50;
+    button(x, by, 128, "Install theme...", 0);
+    button(x + 136, by, 128, "Save a copy", 0);
+    label(x + 272, by + 6, "make your own: sdk/themes", C_DIM);
+}
+
+static int is_theme_file(const char* n) {
+    int l = (int)strlen(n);
+    return (l > 6 && !strcasecmp(n + l - 6, ".theme")) || (l > 7 && !strcasecmp(n + l - 7, ".btheme"));
+}
+
+static void theme_chosen(const char* path) {
+    char err[96];
+    int i = theme_install(path, err, sizeof(err));
+    if (i < 0) { ksnprintf(g_status, sizeof(g_status), "Theme: %s", err); g_gen++; return; }
+    theme_apply(i);
+    ksnprintf(g_status, sizeof(g_status), "Installed and applied: %s", theme_get(i)->name);
+    g_gen++;
+}
+
+static void click_themes(int mx, int my) {
+    int n = theme_count();
+    for (int i = 0; i < n; i++) {
+        int tx, ty;
+        tcard_rect(i, &tx, &ty);
+        if (inside(mx, my, tx, ty, TCARD_W, TCARD_H)) {
+            theme_apply(i);
+            ksnprintf(g_status, sizeof(g_status), "Theme: %s", theme_get(i)->name);
+            return;
+        }
+    }
+    int x = cx0(), by = g_win.y + g_win.h - 50;
+    if (inside(mx, my, x, by, 128, 20)) {
+        fc_open("Choose a theme to install (.theme, .btheme)", "/home/banana/Downloads", is_theme_file, theme_chosen);
+        return;
+    }
+    if (inside(mx, my, x + 136, by, 128, 20)) {
+        char path[96];
+        const theme_t* t = theme_get(theme_current());
+        ksnprintf(path, sizeof(path), "/home/banana/Documents/%s.theme", t ? t->name : "my");
+        for (char* p = path + 23; *p; p++) if (*p == ' ') *p = '-';
+        fs_mkdir_p("/home/banana/Documents");
+        if (theme_export(theme_current(), NULL, path) == 0) ksnprintf(g_status, sizeof(g_status), "Saved %s - edit it, then Install", path);
+        else ksnprintf(g_status, sizeof(g_status), "Could not write %s", path);
+    }
+}
+
 /* Taskbar: how the windows' buttons look */
 static const char* const TB_STYLES[3] = { "Icons and titles", "Icons only", "Titles only" };
 static void draw_taskbar_page(void) {
@@ -586,19 +679,19 @@ static void draw_taskbar_page(void) {
     for (int i = 0; i < 3; i++) {
         int ry = y + 44 + i * ITEM_H;
         kbnav_add(&g_nav, x, ry - 2, 260, 18);
-        bevel(x, ry, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+        bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
         if (i == cur) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
         label(x + 24, ry + 3, TB_STYLES[i], i == cur ? C_HEAD : C_TEXT);
         /* a small preview */
         int px = x + 200, py = ry - 2;
-        gfx_fill_rect(px, py, 110, 18, 0x00192026u);
-        if (i != 2) gfx_fill_rect(px + (i == 1 ? 10 : 4), py + 4, 10, 10, 0x00D0A030u);
-        if (i != 1) gfx_fill_rect(px + (i == 2 ? 6 : 18), py + 8, 70, 2, 0x00E8EEF6u);
+        gfx_fill_rect(px, py, 110, 18, TC(0x192026));
+        if (i != 2) gfx_fill_rect(px + (i == 1 ? 10 : 4), py + 4, 10, 10, TC(0xD0A030));
+        if (i != 1) gfx_fill_rect(px + (i == 2 ? 6 : 18), py + 8, 70, 2, TC(0xE8EEF6));
     }
     /* the virtual desktops' buttons */
     int dy = y + 44 + 3 * ITEM_H + 16, on = gui_taskbar_desks();
     kbnav_add(&g_nav, x, dy - 2, 300, 18);
-    bevel(x, dy, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    bevel(x, dy, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     if (on) { gfx_fill_rect(x + 3, dy + 6, 3, 3, C_ACCENT); gfx_fill_rect(x + 5, dy + 8, 3, 3, C_ACCENT); gfx_fill_rect(x + 7, dy + 6, 2, 2, C_ACCENT); gfx_fill_rect(x + 9, dy + 4, 2, 2, C_ACCENT); }
     label(x + 24, dy + 3, "Show the virtual desktop buttons (1 2 3 4)", on ? C_HEAD : C_TEXT);
     label(x + 24, dy + 19, "Hidden, Win+Ctrl+Left / Right still switch desktops", C_DIM);
@@ -626,7 +719,7 @@ static void draw_screen(void) {
         kbnav_add(&g_nav, x, ry - 2, 200, 18);
         char nm[32];
         ksnprintf(nm, sizeof(nm), "%d x %d", modes[i].w, modes[i].h);
-        bevel(x, ry, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+        bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
         if (on) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
         label(x + 24, ry + 3, nm, on ? C_HEAD : C_TEXT);
     }
@@ -662,7 +755,7 @@ static void rc_set(const char* name, int on, uint16_t port) {
 
 static void checkbox(int x, int y, int on) {
     kbnav_add(&g_nav, x, y, 14, 14);
-    bevel(x, y, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    bevel(x, y, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     if (on) { gfx_fill_rect(x + 3, y + 3, 8, 8, C_ACCENT); }
 }
 
@@ -689,19 +782,19 @@ static void draw_startup(void) {
     checkbox(x, ry[1], rc_on("httpd"));
     ksnprintf(line, sizeof(line), "Web server (httpd), port %u", rc_port("httpd", 80));
     label(x + 24, ry[1] + 3, line, C_TEXT);
-    label(x + w - 170, ry[1] + 3, httpd_running() ? "running" : "stopped", httpd_running() ? 0x0080E080u : C_DIM);
+    label(x + w - 170, ry[1] + 3, httpd_running() ? "running" : "stopped", httpd_running() ? TC(0x80E080) : C_DIM);
     button(x + w - 90, ry[1] - 3, 86, httpd_running() ? "Stop" : "Start now", 0);
 
     checkbox(x, ry[2], rc_on("sshd"));
     ksnprintf(line, sizeof(line), "SSH server (sshd), port %u", rc_port("sshd", 22));
     label(x + 24, ry[2] + 3, line, C_TEXT);
-    label(x + w - 170, ry[2] + 3, sshd_running() ? "running" : "stopped", sshd_running() ? 0x0080E080u : C_DIM);
+    label(x + w - 170, ry[2] + 3, sshd_running() ? "running" : "stopped", sshd_running() ? TC(0x80E080) : C_DIM);
     button(x + w - 90, ry[2] - 3, 86, sshd_running() ? "Stop" : "Start now", 0);
 
     checkbox(x, ry[3], rc_on("rdpd"));
     ksnprintf(line, sizeof(line), "Remote Desktop (rdpd), port %u", rc_port("rdpd", 3389));
     label(x + 24, ry[3] + 3, line, C_TEXT);
-    label(x + w - 170, ry[3] + 3, rdpd_running() ? "running" : "stopped", rdpd_running() ? 0x0080E080u : C_DIM);
+    label(x + w - 170, ry[3] + 3, rdpd_running() ? "running" : "stopped", rdpd_running() ? TC(0x80E080) : C_DIM);
     button(x + w - 90, ry[3] - 3, 86, rdpd_running() ? "Stop" : "Start now", 0);
 
     /* the password */
@@ -709,18 +802,18 @@ static void draw_startup(void) {
     label(x, py, "Password (for SSH and RDP logins)", C_HEAD);
     int set = passwd_is_set(PASSWD_USER);
     label(x, py + 18, set ? "A password is set." : "No password yet: the SSH server will not start without one.",
-          set ? C_DIM : 0x00FFC060u);
+          set ? C_DIM : TC(0xFFC060));
     static const char* const NAMES[2] = { "New:", "Again:" };
     for (int f = 0; f < 2; f++) {
         int fy = py + 42 + f * 26;
         label(x, fy + 4, NAMES[f], C_TEXT);
-        bevel(x + 60, fy, 200, 20, 0x00141920u, 0x0010141Cu, g_pw_focus == f ? C_ACCENT : 0x00404B5Cu);
+        bevel(x + 60, fy, 200, 20, TC(0x141920), TC(0x10141C), g_pw_focus == f ? C_ACCENT : TC(0x404B5C));
         int n = u8_cols(g_pw[f], (int)strlen(g_pw[f]));
         char stars[40];
         int k = 0;
         for (; k < n && k < 24; k++) stars[k] = '*';
         stars[k] = 0;
-        gfx_draw_text(x + 66, fy + 6, stars, C_TEXT, 0x00141920u);
+        gfx_draw_text(x + 66, fy + 6, stars, C_TEXT, TC(0x141920));
         if (g_pw_focus == f && (timer_ms() / 500) % 2 == 0) gfx_fill_rect(x + 66 + k * 8, fy + 4, 2, 12, C_TEXT);
     }
     button(x + 272, py + 42, 120, set ? "Change" : "Set password", 0);
@@ -872,7 +965,7 @@ static void draw_network(void) {
     ksnprintf(line, sizeof(line), "Card: %s (%s)", nf->dev->ifname, nf->dev->model ? nf->dev->model : nf->dev->name);
     label(x, y + 24, line, C_TEXT);
     ksnprintf(line, sizeof(line), "Status: %s", nf->configured ? "connected" : "not connected");
-    label(x, y + 42, line, nf->configured ? 0x0080E080u : 0x00E0A060u);
+    label(x, y + 42, line, nf->configured ? TC(0x80E080) : TC(0xE0A060));
     /* the address: automatic or manual */
     label(x, y + 70, "Get an address:", C_TEXT);
     button(x + NET_FX, y + 66, 150, "Automatic (DHCP)", g_net_manual == 0);
@@ -888,8 +981,8 @@ static void draw_network(void) {
             int fy = y + 98 + f * 26;
             label(x, fy + 4, IPF_NAME[f], C_TEXT);
             kbnav_add(&g_nav, x + NET_FX, fy, 160, 20);
-            bevel(x + NET_FX, fy, 160, 20, 0x00141920u, 0x0010141Cu, g_ipf_focus == f ? C_ACCENT : 0x00404B5Cu);
-            gfx_draw_text(x + NET_FX + 6, fy + 6, g_ipf[f], C_TEXT, 0x00141920u);
+            bevel(x + NET_FX, fy, 160, 20, TC(0x141920), TC(0x10141C), g_ipf_focus == f ? C_ACCENT : TC(0x404B5C));
+            gfx_draw_text(x + NET_FX + 6, fy + 6, g_ipf[f], C_TEXT, TC(0x141920));
             if (g_ipf_focus == f && (timer_ms() / 500) % 2 == 0)
                 gfx_fill_rect(x + NET_FX + 6 + (int)strlen(g_ipf[f]) * 8, fy + 4, 2, 12, C_TEXT);
         }
@@ -1113,9 +1206,9 @@ static void draw_about(void) {
     if (sysinfo_live_boot())
         label(x, ly, fsdisk_find_install(NULL)
               ? "Running: the live CD (Banana OS is also installed here: 'update' updates it)"
-              : "Running: the live CD - changes are lost at shutdown ('install' to keep them)", 0x00FFB060u);
+              : "Running: the live CD - changes are lost at shutdown ('install' to keep them)", TC(0xFFB060));
     else if (fsdisk_is_installed()) {
-        label(x, ly, "Running: the installed system (changes are saved automatically)", 0x0080E080u);
+        label(x, ly, "Running: the installed system (changes are saved automatically)", TC(0x80E080));
         uint64_t used, cap;
         fsdisk_space(&used, &cap);
         char d[96];
@@ -1123,7 +1216,7 @@ static void draw_about(void) {
         label(x, ly + 18, d, C_TEXT);
     }
     else
-        label(x, ly, "Running: not installed - changes are lost at shutdown", 0x00FFB060u);
+        label(x, ly, "Running: not installed - changes are lost at shutdown", TC(0xFFB060));
 }
 
 /* ── Apps: the installed apps, with Open, Stop, Update and Uninstall ─ */
@@ -1240,11 +1333,11 @@ static void draw_apps(void) {
     button(x + w - 110, y + 10, 110, "App Store", 0);
 
     int ly = al_list_y(), rows = al_rows(), sel = apps_sel();
-    bevel(x, ly - 2, w, rows * APP_ROW_H + 4, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    bevel(x, ly - 2, w, rows * APP_ROW_H + 4, TC(0x141920), TC(0x10141C), TC(0x404B5C));
     for (int r = 0; r < rows && g_al_top + r < g_nal; r++) {
         int i = g_al_top + r, ry = ly + r * APP_ROW_H;
         const pkg_info_t* p = &g_al[i];
-        uint32_t bg = i == sel ? C_SEL : 0x00141920u;
+        uint32_t bg = i == sel ? C_SEL : TC(0x141920);
         gfx_fill_rect(x + 1, ry, w - 2, APP_ROW_H - 1, bg);
         kbnav_add(&g_nav, x + 1, ry, w - 2, APP_ROW_H - 1);
         if (i == sel) gfx_fill_rect(x + 1, ry, 3, APP_ROW_H - 1, C_ACCENT);
@@ -1258,12 +1351,12 @@ static void draw_apps(void) {
         gfx_draw_text(x + w - 10 - (int)strlen(sz) * 8, ry + 5, sz, C_DIM, bg);
         const char* tag = g_al_busy && !strcmp(g_al_job, p->name) ? "updating..."
                         : apps_running(p->name, NULL, 0) ? "running" : g_al_newer[i][0] ? "update" : "";
-        uint32_t tc = !strcmp(tag, "running") ? 0x0080E080u : 0x00FFC060u;
+        uint32_t tc = !strcmp(tag, "running") ? TC(0x80E080) : TC(0xFFC060);
         if (tag[0]) gfx_draw_text(x + w - 10 - (int)strlen(tag) * 8, ry + 19, tag, tc, bg);
     }
     if (g_nal > rows) {                          /* where the list is scrolled to */
         int th = rows * APP_ROW_H, kh = th * rows / g_nal, ky = ly + (th - kh) * g_al_top / (g_nal - rows);
-        gfx_fill_rect(x + w - 4, ky, 3, kh < 8 ? 8 : kh, 0x00505D72u);
+        gfx_fill_rect(x + w - 4, ky, 3, kh < 8 ? 8 : kh, TC(0x505D72));
     }
 
     /* the selected app */
@@ -1371,9 +1464,9 @@ void settings_draw(const fb_info_t* fi) {
     if (!g_open) return;
     int x = g_win.x, y = g_win.y, W = g_win.w, H = g_win.h;
     kbnav_begin(&g_nav);
-    bevel(x, y, W, H, C_PANEL, 0x00505D72u, 0x0010141Cu);
-    bevel(x + 3, y + 3, W - 6, TITLE_H - 1, C_TITLE, 0x00647692u, 0x00111923u);
-    gfx_draw_text(x + 10, y + 7, "Settings", 0x00FFFFFFu, C_TITLE);
+    bevel(x, y, W, H, C_PANEL, TC(0x505D72), TC(0x10141C));
+    bevel(x + 3, y + 3, W - 6, TITLE_H - 1, C_TITLE, TC(0x647692), TC(0x111923));
+    gfx_draw_text(x + 10, y + 7, "Settings", TC(0xFFFFFF), C_TITLE);
     win_draw_buttons(&g_win, 4, 12);
 
     /* the pages, on the left */
@@ -1395,6 +1488,7 @@ void settings_draw(const fb_info_t* fi) {
     }
     switch (g_page) {
     case PG_DISPLAY:  draw_display(); break;
+    case PG_THEMES:   draw_themes(); break;
     case PG_FONTS:    draw_fonts(); break;
     case PG_SCREEN:   draw_screen(); break;
     case PG_TASKBAR:  draw_taskbar_page(); break;
@@ -1409,7 +1503,7 @@ void settings_draw(const fb_info_t* fi) {
     }
     if (g_status[0]) gfx_draw_text(x + 10, y + H - 18, g_status, C_DIM, C_PANEL);
     gfx_draw_grip(x + W, y + H);
-    kbnav_draw(&g_nav, 0x00FFD34Eu);
+    kbnav_draw(&g_nav, TC(0xFFD34E));
 }
 
 /* the keyboard (kbnav.h codes): Tab / arrows move between the controls,
@@ -1458,6 +1552,7 @@ void settings_click(int mx, int my) {
     if(g_page==PG_ABOUT && g_sleep_available && inside(mx,my,x+cw()-90,y+28,90,20)) {
         acpi_s3_suspend(0,g_status,sizeof(g_status));g_gen++;return;
     }
+    if (g_page == PG_THEMES) { click_themes(mx, my); g_gen++; return; }
     if (g_page == PG_FONTS) { click_fonts(mx, my); return; }
     if (g_page == PG_DISPLAY) {
         for (int i = 0; i < wallpaper_recent_count(); i++) {

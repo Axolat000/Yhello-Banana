@@ -16,6 +16,7 @@
  *   +---------------------------------------------------+
  */
 #include "kheap.h"
+#include "theme.h"
 #include "startmenu.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -38,19 +39,19 @@
 #define R_ROW    26
 #define BAR_H    28                 /* (kernel/gui.c's taskbar) */
 
-#define C_GLASS1  0x00284F80u
-#define C_GLASS2  0x00163659u
-#define C_EDGE    0x000B2340u
-#define C_EDGE_HI 0x006E9FD3u
-#define C_WHITE   0x00FFFFFFu
-#define C_TEXT    0x001E1E1Eu
-#define C_DIM     0x006D6D6Du
-#define C_HEAD    0x001E395Bu
-#define C_HL      0x00DCEBFCu
-#define C_HL_B    0x007DA2CEu
-#define C_SEPL    0x00D5DFE9u
-#define C_RHL     0x003C6EA7u
-#define C_RHL_B   0x008DB8E8u
+#define C_GLASS1  TCL(0x284F80)
+#define C_GLASS2  TCL(0x163659)
+#define C_EDGE    TCL(0x0B2340)
+#define C_EDGE_HI TCL(0x6E9FD3)
+#define C_WHITE   TCL(0xFFFFFF)
+#define C_TEXT    TCL(0x1E1E1E)
+#define C_DIM     TCL(0x6D6D6D)
+#define C_HEAD    TCL(0x1E395B)
+#define C_HL      TCL(0xDCEBFC)
+#define C_HL_B    TCL(0x7DA2CE)
+#define C_SEPL    TCL(0xD5DFE9)
+#define C_RHL     TCL(0x3C6EA7)
+#define C_RHL_B   TCL(0x8DB8E8)
 
 static startmenu_host_t g_host;
 static uint32_t g_gen;
@@ -412,7 +413,7 @@ void startmenu_draw_orb(int x, int y, int h, int pressed, int hover) {
 
 static void draw_left(const fb_info_t* fi) {
     int x = menu_x() + 8, y = menu_y(fi) + 6, ph = pane_h(fi);
-    frame(x, y, LW, ph, C_WHITE, 0x00A9BFD6u);
+    frame(x, y, LW, ph, C_WHITE, TCL(0xA9BFD6));
     int lh = list_h(fi);
     for (int i = g_scroll; i < g_ne; i++) {
         int ey = entry_y(fi, i);
@@ -442,7 +443,7 @@ static void draw_left(const fb_info_t* fi) {
         if (th < 12) th = 12;
         int span = g_ne - (last_visible(fi) - g_scroll + 1);
         int ty = y + 6 + (span > 0 ? (track - th) * g_scroll / span : 0);
-        gfx_fill_rect(x + LW - 7, ty, 4, th, 0x00B8C7D8u);
+        gfx_fill_rect(x + LW - 7, ty, 4, th, TCL(0xB8C7D8));
     }
     if (g_mode == 2) return;
     /* All Programs / Back */
@@ -451,7 +452,7 @@ static void draw_left(const fb_info_t* fi) {
     gfx_fill_rect(x + 10, by - 5, LW - 20, 1, C_SEPL);
     uint32_t bg = C_WHITE;
     if (g_hbtn == B_ALL) { frame(bx, by, bw, bh, C_HL, C_HL_B); bg = C_HL; }
-    tri(bx + 12, by + 10, g_mode == 1 ? -1 : 1, 0x00346A2Bu);
+    tri(bx + 12, by + 10, g_mode == 1 ? -1 : 1, TCL(0x346A2B));
     gfx_draw_text(bx + 26, by + 10, g_mode == 1 ? "Back" : "All Programs", C_TEXT, bg);
 }
 
@@ -459,21 +460,21 @@ static void draw_right(const fb_info_t* fi) {
     int x = menu_x() + LW + 14, y = menu_y(fi);
     /* the picture: the user's, or the hovered place's icon (like Windows 7) */
     int px = x + (RW - 60) / 2, py = y + 10;
-    frame(px, py, 60, 60, 0x00F4F7FBu, 0x00A9C7EAu);
-    gfx_fill_rect(px + 3, py + 3, 54, 54, 0x00E9C35Au);
+    frame(px, py, 60, 60, TCL(0xF4F7FB), TCL(0xA9C7EA));
+    gfx_fill_rect(px + 3, py + 3, 54, 54, TCL(0xE9C35A));
     if (g_hr >= 0 && PLACES[g_hr].label) {
-        gfx_fill_rect(px + 3, py + 3, 54, 54, 0x00EEF4FBu);
-        if (PLACES[g_hr].sm && g_host.program_icon) g_host.program_icon(PLACES[g_hr].sm, NULL, px + 16, py + 16, 1, 0x00EEF4FBu);
+        gfx_fill_rect(px + 3, py + 3, 54, 54, TCL(0xEEF4FB));
+        if (PLACES[g_hr].sm && g_host.program_icon) g_host.program_icon(PLACES[g_hr].sm, NULL, px + 16, py + 16, 1, TCL(0xEEF4FB));
         else fileicon_draw(PLACES[g_hr].icon, px + 6, py + 6, 48);
     } else {
         /* a user: head and shoulders */
-        for (int dy = -9; dy <= 9; dy++) { int w = isqrt(81 - dy * dy); gfx_fill_rect(px + 30 - w, py + 24 + dy, 2 * w, 1, 0x00F8F1E0u); }
-        for (int dy = 0; dy < 16; dy++) { int w = 12 + dy / 2; gfx_fill_rect(px + 30 - w, py + 40 + dy, 2 * w, 1, 0x003C6FB5u); }
+        for (int dy = -9; dy <= 9; dy++) { int w = isqrt(81 - dy * dy); gfx_fill_rect(px + 30 - w, py + 24 + dy, 2 * w, 1, TCL(0xF8F1E0)); }
+        for (int dy = 0; dy < 16; dy++) { int w = 12 + dy / 2; gfx_fill_rect(px + 30 - w, py + 40 + dy, 2 * w, 1, TCL(0x3C6FB5)); }
     }
     for (int i = 0; i < NPLACES; i++) {
         if (!place_shown(i)) continue;
         int ry = y + place_y(i);
-        if (!PLACES[i].label) { gfx_fill_rect(x + 8, ry + 4, RW - 16, 1, 0x003F6A99u); continue; }
+        if (!PLACES[i].label) { gfx_fill_rect(x + 8, ry + 4, RW - 16, 1, TCL(0x3F6A99)); continue; }
         uint32_t bg = 0;
         int hl = i == g_hr;
         /* (the glass behind is a gradient: text on it without a box) */
@@ -498,7 +499,7 @@ static void draw_bottom(const fb_info_t* fi) {
     int bx, by, bw, bh;
     /* the search box */
     button_rect(fi, B_SEARCH, &bx, &by, &bw, &bh);
-    frame(bx, by, bw, bh, C_WHITE, g_query[0] ? 0x003C7FB1u : 0x008FA9C6u);
+    frame(bx, by, bw, bh, C_WHITE, g_query[0] ? TCL(0x3C7FB1) : TCL(0x8FA9C6));
     fileicon_draw(FI_SEARCH, bx + bw - 22, by + 5, 16);
     if (g_query[0]) {
         clip_text(bx + 8, by + 9, g_query, (bw - 36) / 8, C_TEXT, C_WHITE);
@@ -508,16 +509,16 @@ static void draw_bottom(const fb_info_t* fi) {
             gfx_fill_rect(bx + 8 + n * 8, by + 5, 1, 16, C_TEXT);
         }
     } else {
-        gfx_draw_text(bx + 8, by + 9, "Search programs and files", 0x008C99A8u, C_WHITE);
+        gfx_draw_text(bx + 8, by + 9, "Search programs and files", TCL(0x8C99A8), C_WHITE);
     }
     /* Shut down and its arrow */
     button_rect(fi, B_SHUTDOWN, &bx, &by, &bw, &bh);
-    uint32_t f1 = g_hbtn == B_SHUTDOWN ? 0x004F86C4u : 0x00315F95u;
-    frame(bx, by, bw, bh, f1, 0x0091B6DEu);
+    uint32_t f1 = g_hbtn == B_SHUTDOWN ? TCL(0x4F86C4) : TCL(0x315F95);
+    frame(bx, by, bw, bh, f1, TCL(0x91B6DE));
     gfx_draw_text(bx + (bw - 9 * 8) / 2, by + 9, "Shut down", C_WHITE, f1);
     button_rect(fi, B_ARROW, &bx, &by, &bw, &bh);
-    uint32_t f2 = g_hbtn == B_ARROW ? 0x004F86C4u : 0x00315F95u;
-    frame(bx - 1, by, bw + 1, bh, f2, 0x0091B6DEu);
+    uint32_t f2 = g_hbtn == B_ARROW ? TCL(0x4F86C4) : TCL(0x315F95);
+    frame(bx - 1, by, bw + 1, bh, f2, TCL(0x91B6DE));
     tri(bx + 10, by + 9, 1, C_WHITE);
 }
 
@@ -528,7 +529,7 @@ void startmenu_draw(const fb_info_t* fi) {
     gfx_fill_rect(x, y, W, h, C_EDGE);
     gradient(x + 1, y + 1, W - 2, h - 2, C_GLASS1, C_GLASS2);
     gfx_fill_rect(x + 1, y + 1, W - 2, 1, C_EDGE_HI);
-    gfx_fill_rect(x + 1, y + 1, 1, h - 2, 0x00406C9Eu);
+    gfx_fill_rect(x + 1, y + 1, 1, h - 2, TCL(0x406C9E));
     draw_left(fi);
     draw_right(fi);
     draw_bottom(fi);
