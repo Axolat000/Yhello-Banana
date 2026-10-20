@@ -1271,7 +1271,8 @@
       "kernel/browser.c",
       "tools/test_browser.py",
       "docs/web-engine-strategy-journeys.md",
-      "docs/web-engine-qualification-step2.md"
+      "docs/web-engine-qualification-step2.md",
+      "docs/web-engine-strategy-decision.md"
     ],
     "steps": [
       "Fixer cinq parcours précis : par exemple login messagerie, lire/répondre, dépôt GitHub, modifier un document et upload ; utiliser des comptes de test.",
@@ -1292,10 +1293,11 @@
       "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
       "web/css.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/css.c",
       "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
-      "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py"
+      "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py",
+      "docs/web-engine-strategy-decision.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/web-engine-strategy-decision.md"
     },
     "rank": 26,
-    "planningReason": "Step 1 established the five precise evaluation journeys in docs/web-engine-strategy-journeys.md. Step 2 delivered the detailed qualification report in docs/web-engine-qualification-step2.md, establishing the exact blocking APIs, runtime errors, and failure modes across JavaScript, DOM, rendering, network, and security subsystems for the in-house engine. Step 3 compares a QuickJS test-page integration against candidate full maintained engines."
+    "planningReason": "Step 1 established the five precise evaluation journeys in docs/web-engine-strategy-journeys.md. Step 2 delivered the detailed qualification report in docs/web-engine-qualification-step2.md, establishing the exact blocking APIs, runtime errors, and failure modes across JavaScript, DOM, rendering, network, and security subsystems for the in-house engine. Step 3 delivered the comprehensive decision and comparative analysis in docs/web-engine-strategy-decision.md, adopting the Dual-Track strategy: retain in-house engine for system/offline browsing (isolated to user space under base-04), cancel the quickjs task as an architectural dead end for full browsing, and port NetSurf as the primary embedded maintained engine for daily-use web applications under base-14."
   },
   {
     "id": "quickjs",
@@ -1337,9 +1339,10 @@
       "Hôte Linux : python3 tools/test_browser.py --help"
     ],
     "deliverable": "Port QuickJS et adaptateur DOM avec tests de cycle de vie.",
-    "decision": "N’exécuter ce chantier que si la stratégie moteur maison est retenue ; il ne fournit ni HTML/CSS, ni WebRTC, ni Node.js.",
+    "decision": "Non retenu suite à l'évaluation base-13 : QuickJS ne résout ni les API DOM/HTML5, ni CSS/layout, ni les WebSockets. Remplacé par le port d'un moteur complet maintenu (NetSurf).",
     "evidenceLevel": "périmètre / port proposé ; qualification à faire",
-    "priorityReason": "Intégration conditionnelle : pertinente seulement si l’évaluation retient le moteur maison.",
+    "priorityReason": "Intégration conditionnelle : devenue obsolète par la décision base-13 step 3 d'adopter un moteur complet maintenu (NetSurf).",
+    "planningReason": "Superceded by base-13 step 3 evaluation (docs/web-engine-strategy-decision.md). Analysis proved QuickJS provides 0 lines of DOM, CSS, or network stack, requiring thousands of hours of manual C binding maintenance. The roadmap replaces in-house engine expansion with a user-space NetSurf port.",
     "fileLinks": {
       "web/script.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.c",
       "web/script.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/script.h",
@@ -1391,6 +1394,7 @@
     "decision": "WebRTC est bloquant si la visioconférence web est un usage cible ; il ne doit pas être promis à partir du seul support vidéo.",
     "evidenceLevel": "périmètre / port proposé ; qualification à faire",
     "priorityReason": "Un OS principal doit terminer les opérations des services retenus ; afficher leur page ne suffit pas.",
+    "planningReason": "Following base-13 step 3 decision (docs/web-engine-strategy-decision.md), implementation focuses on porting NetSurf (Phase 1) for lightweight daily-use webmail, repository browsing, and file transfers in user space, with long-term evaluation of WPE WebKit/Ladybird for heavy collaborative web applications.",
     "fileLinks": {
       "web/jsdom.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/jsdom.c",
       "web/page.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/web/page.c",
