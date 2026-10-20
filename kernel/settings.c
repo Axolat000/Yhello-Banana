@@ -62,7 +62,7 @@ void shell_power(int reboot);
 enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
 static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
 
-#define KB_ROW 22                           /* Keyboard: a row of the layout list */
+#define KB_ROW 20                           /* Keyboard: a row of the layout list (two columns) */
 
 static int        g_open;
 static kbnav_t    g_nav;              /* keyboard focus: what the page drew */
@@ -485,22 +485,30 @@ static void draw_mouse(void) {
     label(x, sy + 182, tdesc + 3, C_DIM);       /* (without the " | ") */
 }
 
+static int kb_per_col(void) { return (keyboard_layout_count() + 1) / 2; }
+
 static void draw_keyboard(void) {
     int x = cx0(), y = cy0();
     label(x, y, "Keyboard layout", C_HEAD);
     label(x, y + 18, "Choose how the keys of your keyboard are read:", C_DIM);
     const char* cur = keyboard_layout_name();
+    int per = kb_per_col(), colw = cw() / 2;
     for (int i = 0; i < keyboard_layout_count(); i++) {
-        int ry = y + 44 + i * KB_ROW;
+        int rx = x + (i / per) * colw, ry = y + 44 + (i % per) * KB_ROW;
         const char* what = NULL;
         const char* name = keyboard_layout_at(i, &what);
         int on = cur && strcmp(cur, name) == 0;
-        kbnav_add(&g_nav, x, ry - 2, 280, 18);
-        bevel(x, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
-        if (on) gfx_fill_rect(x + 4, ry + 4, 6, 6, C_ACCENT);
-        label(x + 24, ry + 3, what, on ? C_HEAD : C_TEXT);
+        kbnav_add(&g_nav, rx, ry - 2, colw - 8, 18);
+        bevel(rx, ry, 14, 14, TC(0x141920), TC(0x10141C), TC(0x404B5C));
+        if (on) gfx_fill_rect(rx + 4, ry + 4, 6, 6, C_ACCENT);
+        char lb[34];
+        kstrlcpy(lb, what, sizeof(lb));
+        int maxc = (colw - 34) / 8;
+        if (maxc > 0 && maxc < (int)sizeof(lb)) lb[maxc] = 0;
+        label(rx + 22, ry + 3, lb, on ? C_HEAD : C_TEXT);
     }
-    label(x, y + 52 + keyboard_layout_count() * KB_ROW, "AltGr: the right Alt key (or Ctrl+Alt).", C_DIM);
+    label(x, y + 50 + per * KB_ROW, "AltGr: the right Alt key (or Ctrl+Alt).", C_DIM);
+    label(x, y + 66 + per * KB_ROW, "Win+Space: English (US) and back to this layout.", C_DIM);
 }
 
 /* Screen, on any PC: the sizes the firmware offers, set by the boot loader
@@ -1660,9 +1668,10 @@ void settings_click(int mx, int my) {
             return;
         }
     } else if (g_page == PG_KEYBOARD) {
+        int per = kb_per_col(), colw = cw() / 2;
         for (int i = 0; i < keyboard_layout_count(); i++) {
-            int ry = y + 44 + i * KB_ROW;
-            if (inside(mx, my, x, ry - 3, cw(), KB_ROW)) {
+            int rx = x + (i / per) * colw, ry = y + 44 + (i % per) * KB_ROW;
+            if (inside(mx, my, rx, ry - 3, colw, KB_ROW)) {
                 const char* what = NULL;
                 const char* name = keyboard_layout_at(i, &what);
                 if (keyboard_set_layout(name) == 0) {

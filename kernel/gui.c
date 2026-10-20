@@ -50,6 +50,7 @@
 #include "startmenu.h"
 #include "emojipick.h"
 #include "calpanel.h"
+#include "font.h"
 #include "fileicons.h"
 
 #define VGA_WIDTH  80
@@ -1175,6 +1176,7 @@ static uint8_t  g_app_was_open[APP_COUNT];
 static uint8_t  g_awin_desk[APPWIN_MAX], g_awin_seen[APPWIN_MAX];
 static uint32_t g_desk_osd_until;                /* "Desktop 2" shows until then */
 static int      g_desk_osd;
+static char     g_osd_text[40];                   /* (another note than "Desktop 2": the keyboard layout) */
 
 static int z_open(int h) {
     int k = h >> 8, i = h & 0xFF;
@@ -1673,13 +1675,28 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
     uint32_t cbg = cal_is_open() ? TC(0x303A48) : TC(0x192026);
     gfx_fill_rect(clk_x - 10, bar_y + 6, 1, BAR_H - 12, TC(0x4F5A6E));
     if (cal_is_open()) gfx_fill_rect(clk_x - 6, bar_y + 2, CLK_W + 10, BAR_H - 4, cbg);
-    gfx_draw_text(clk_x + (CLK_W - 64) / 2, bar_y + 3, clk, TC(0xE8EEF6), cbg);
-    {   /* the date under it: a click opens the calendar */
+    {   /* the time over the date (a click opens the calendar): both placed by
+         * the font's own height and kept inside the taskbar, whatever the font */
         rtc_datetime_t dt;
         char d[16];
         if (rtc_read_datetime(&dt) == 0) ksnprintf(d, sizeof(d), "%02u/%02u/%04u", dt.day, dt.month, dt.year);
         else d[0] = 0;
-        gfx_draw_text(clk_x, bar_y + 14, d, TC(0xB8C2D0), cbg);
+        int stride, tw, th;
+        uint32_t* t = fb_target(&stride, &tw, &th);
+        int face = font_available(FONT_SANS) ? FONT_SANS : -1;
+        if (t && face >= 0) {
+            int px = 12, a, dd, lh;
+            font_metrics(face, px, &a, &dd, &lh);
+            while (px > 8 && 2 * (a + dd) > BAR_H - 2) { px--; font_metrics(face, px, &a, &dd, &lh); }
+            int top = bar_y + (BAR_H - 2 * (a + dd)) / 2;
+            int w1 = font_text_width(face, px, clk, (uint32_t)strlen(clk)), w2 = font_text_width(face, px, d, (uint32_t)strlen(d));
+            int cx = clk_x + CLK_W / 2;
+            font_draw(t, stride, clk_x - 6, bar_y + 1, clk_x + CLK_W + 4, bar_y + BAR_H - 1, face, px, cx - w1 / 2, top + a, clk, (uint32_t)strlen(clk), TC(0xE8EEF6), 0);
+            font_draw(t, stride, clk_x - 6, bar_y + 1, clk_x + CLK_W + 4, bar_y + BAR_H - 1, face, px, cx - w2 / 2, top + 2 * a + dd, d, (uint32_t)strlen(d), TC(0xB8C2D0), 0);
+        } else {
+            gfx_draw_text(clk_x + (CLK_W - 64) / 2, bar_y + 5, clk, TC(0xE8EEF6), cbg);
+            gfx_draw_text(clk_x, bar_y + 16, d, TC(0xB8C2D0), cbg);
+        }
     }
     int net_x = net_icon_x(fi);
     nettray_draw_icon(net_x, bar_y + (BAR_H - 16) / 2, TC(0x192026), g_net_hover || nettray_is_open());
@@ -2392,9 +2409,12 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
     nettray_draw();                                 /* the network panel, over the windows */
     cal_draw();                                     /* the calendar (a click on the clock) */
     if (g_desk_osd) {                               /* "Desktop 2", after switching */
-        char t[24];
-        ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
-        int w = 180, h = 44, x = ((int)fi->width - w) / 2, y = ((int)fi->height - BAR_H) / 2 - h / 2;
+        char t[40];
+        if (g_osd_text[0]) kstrlcpy(t, g_osd_text, sizeof(t));
+        else ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
+        int w = (int)strlen(t) * 16 + 40, h = 44;
+        if (w < 180) w = 180;
+        int x = ((int)fi->width - w) / 2, y = ((int)fi->height - BAR_H) / 2 - h / 2;
         draw_bevel_box(x, y, w, h, TC(0x1D232C), TC(0x505E74), TC(0x10151D));
         gfx_draw_text_scaled(x + (w - (int)strlen(t) * 16) / 2, y + 14, 2, t, TC(0xE8EEF6), TC(0x1D232C));
     }
@@ -2836,7 +2856,7 @@ static void gui_poll_body(void) {
         sync_taskbar();
         z_focus();                                      /* the keyboard: the top window shown */
         appwin_focus(g_front_app == APP_APPWIN);
-        if (g_desk_osd && (int32_t)(timer_ms() - g_desk_osd_until) >= 0) { g_desk_osd = 0; g_force_redraw = 1; }
+        if (g_desk_osd && (int32_t)(timer_ms() - g_desk_osd_until) >= 0) { g_desk_osd = 0; g_osd_text[0] = 0; g_force_redraw = 1; }
 
         /* Notepad and app windows have no keyboard task of their own:
          * while one is in front, keys are handed to it from here (Ctrl+T
@@ -3858,6 +3878,12 @@ static int kb_global(int k) {
         break;
     }
     case 'v': ep_close(); cb_toggle(); break;
+    case ' ': {                                      /* Win+Space: English (US) and back */
+        kstrlcpy(g_osd_text, keyboard_toggle_layout(), sizeof(g_osd_text));
+        g_desk_osd = 1;
+        g_desk_osd_until = timer_ms() + 1200;
+        break;
+    }
     case '.':
     case ';':
         g_cb_open = g_tv_open = g_sw_open = g_bar_kb = 0;

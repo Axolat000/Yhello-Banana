@@ -849,6 +849,15 @@ static void t_keyboard(void) {
         { "de_CH", { 0x1A, 0x27, 0x28, KEND }, "\xC3\xBC\xC3\xB6\xC3\xA4" },
         { "BEPO", { 0x10, 0x11, 0x12, 0x13, 0x1E, 0x1F, 0x20, 0x21, KG, 0x1E, KGU, KEND }, "b\xC3\xA9poauie\xC3\xA6" },
         { "FR", { 0x1D, 0x10, 0x9D, KEND }, "\x01" },                    /* Ctrl+A: by the letter on the key */
+        { "RU", { 0x10, 0x11, 0x12, KS, 0x21, KSU, KEND }, "\xD0\xB9\xD1\x86\xD1\x83\xD0\x90" },   /* йцуА */
+        { "RU", { 0x1D, 0x2E, 0x9D, KEND }, "\x03" },                    /* Ctrl+C: by its place */
+        { "GR", { 0x1E, 0x27, 0x1E, 0x11, KEND }, "\xCE\xB1\xCE\xAC\xCF\x82" },       /* α ά ς */
+        { "CZ", { 0x03, 0x04, KS, 0x0D, KSU, 0x2E, KEND }, "\xC4\x9B\xC5\xA1\xC4\x8D" },   /* ě š ˇc = č */
+        { "Dvorak", { 0x10, 0x13, 0x1F, 0x35, KEND }, "'poz" },
+        { "Colemak", { 0x12, 0x1F, 0x20, 0x24, KEND }, "frsn" },
+        { "SE", { 0x1A, 0x27, 0x28, KEND }, "\xC3\xA5\xC3\xB6\xC3\xA4" },
+        { "PL", { KG, 0x1E, 0x26, KGU, KEND }, "\xC4\x85\xC5\x82" },
+        { "TR", { 0x17, 0x28, 0x1A, KEND }, "\xC4\xB1i\xC4\x9F" },
     };
     int n = (int)(sizeof(C) / sizeof(C[0])), bad = 0;
     char note[160] = "";
@@ -862,7 +871,7 @@ static void t_keyboard(void) {
     }
     if (!bad) ksnprintf(note, sizeof(note), "%d sequences on %d layouts", n, keyboard_layout_count());
     report("every layout types what its keys show", bad == 0, note);
-    int all = keyboard_layout_count() >= 12;
+    int all = keyboard_layout_count() >= 31;
     for (int i = 0; i < keyboard_layout_count(); i++) {
         const char* name = keyboard_layout_at(i, NULL);
         char got[8];
