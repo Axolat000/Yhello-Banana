@@ -63,7 +63,10 @@ void gui_drag_begin(const char (*paths)[FS_PATH_LEN], int n, int source);
 int  gui_drag_has(const char* dir, const char* name);   /* dir/name is being dragged */
 /* the taskbar: 0 icons and titles, 1 icons only, 2 titles only */
 void gui_set_taskbar_style(int style);
-int  gui_taskbar_style(void);         /* the text size / interface font (Settings > Fonts) */
+int  gui_taskbar_style(void);
+/* the virtual desktops' buttons on the taskbar: shown (1, the default) or not */
+void gui_set_taskbar_desks(int on);
+int  gui_taskbar_desks(void);         /* the text size / interface font (Settings > Fonts) */
 void gui_screen_changed(void);       /* a new resolution (kernel/display.c) */
 
 /* the open windows (taskbar order), for the Task Manager */

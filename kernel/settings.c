@@ -595,10 +595,18 @@ static void draw_taskbar_page(void) {
         if (i != 2) gfx_fill_rect(px + (i == 1 ? 10 : 4), py + 4, 10, 10, 0x00D0A030u);
         if (i != 1) gfx_fill_rect(px + (i == 2 ? 6 : 18), py + 8, 70, 2, 0x00E8EEF6u);
     }
-    label(x, y + 44 + 3 * ITEM_H + 20, "Pinned apps", C_HEAD);
-    label(x, y + 44 + 3 * ITEM_H + 40, "Right-click a window's taskbar button or an", C_DIM);
-    label(x, y + 44 + 3 * ITEM_H + 56, "app's desktop icon: Pin to taskbar.", C_DIM);
-    label(x, y + 44 + 3 * ITEM_H + 72, "Right-click a pinned app to unpin it.", C_DIM);
+    /* the virtual desktops' buttons */
+    int dy = y + 44 + 3 * ITEM_H + 16, on = gui_taskbar_desks();
+    kbnav_add(&g_nav, x, dy - 2, 300, 18);
+    bevel(x, dy, 14, 14, 0x00141920u, 0x0010141Cu, 0x00404B5Cu);
+    if (on) { gfx_fill_rect(x + 3, dy + 6, 3, 3, C_ACCENT); gfx_fill_rect(x + 5, dy + 8, 3, 3, C_ACCENT); gfx_fill_rect(x + 7, dy + 6, 2, 2, C_ACCENT); gfx_fill_rect(x + 9, dy + 4, 2, 2, C_ACCENT); }
+    label(x + 24, dy + 3, "Show the virtual desktop buttons (1 2 3 4)", on ? C_HEAD : C_TEXT);
+    label(x + 24, dy + 19, "Hidden, Win+Ctrl+Left / Right still switch desktops", C_DIM);
+    int py = dy + 46;
+    label(x, py, "Pinned apps", C_HEAD);
+    label(x, py + 20, "Right-click a window's taskbar button or an", C_DIM);
+    label(x, py + 36, "app's desktop icon: Pin to taskbar.", C_DIM);
+    label(x, py + 52, "Right-click a pinned app to unpin it.", C_DIM);
 }
 
 /* Screen: the resolution */
@@ -1521,6 +1529,11 @@ void settings_click(int mx, int my) {
                 ksnprintf(g_status, sizeof(g_status), "Taskbar: %s", TB_STYLES[i]);
                 return;
             }
+        if (inside(mx, my, x, y + 44 + 3 * ITEM_H + 12, 320, ITEM_H)) {
+            gui_set_taskbar_desks(!gui_taskbar_desks());
+            ksnprintf(g_status, sizeof(g_status), "Desktop buttons: %s", gui_taskbar_desks() ? "shown" : "hidden");
+            return;
+        }
     } else if (g_page == PG_KEYBOARD) {
         for (int i = 0; i < keyboard_layout_count(); i++) {
             int ry = y + 44 + i * KB_ROW;

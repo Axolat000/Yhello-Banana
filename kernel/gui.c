@@ -48,6 +48,7 @@
 #include "../shell/shell.h"
 #include "startmenu.h"
 #include "emojipick.h"
+#include "calpanel.h"
 #include "fileicons.h"
 
 #define VGA_WIDTH  80
@@ -1546,6 +1547,7 @@ typedef struct { int act; char app[PKG_NAME_MAX]; } pin_t;
 static pin_t g_pins[PIN_MAX];
 static int   g_npins = -1;                /* -1: not read yet */
 static int   g_tb_style;                  /* 0 icons and titles, 1 icons, 2 titles */
+static int   g_tb_desks = 1;              /* the virtual desktops' buttons shown */
 static void  pins_load(void);
 #define PINS_X    (START_X + START_W + 6)
 static void pins_draw(const fb_info_t* fi);
@@ -1554,7 +1556,11 @@ static int tb_x(void) { if (g_npins < 0) pins_load(); return PINS_X + g_npins * 
 #define TB_BTN_W  (g_tb_style == 1 ? 44 : 150)
 
 /* the network icon (kernel/nettray.c), left of the clock */
-static int net_icon_x(const fb_info_t* fi) { return (int)fi->width - 8 - 64 - 14 - NETTRAY_ICON_W; }
+#define CLK_W 80                          /* the clock: the time over the date */
+static int net_icon_x(const fb_info_t* fi) { return (int)fi->width - 8 - CLK_W - 14 - NETTRAY_ICON_W; }
+static int clock_at(const fb_info_t* fi, int mx, int my) {
+    return my >= (int)fi->height - BAR_H && mx >= (int)fi->width - 8 - CLK_W - 6;
+}
 static int net_icon_at(const fb_info_t* fi, int mx, int my) {
     int x = net_icon_x(fi), bar_y = (int)fi->height - BAR_H;
     return my >= bar_y && mx >= x - 4 && mx < x + NETTRAY_ICON_W + 2;
@@ -1568,11 +1574,12 @@ static int tray_x(const fb_info_t* fi) {
 
 /* the virtual desktops' switcher, left of the tray: a box a desktop */
 #define DSW_BOX 18
-#define DSW_W   (NDESK * (DSW_BOX + 2) + 10)
+#define DSW_W   (g_tb_desks ? NDESK * (DSW_BOX + 2) + 10 : 0)
 static int dsw_x(const fb_info_t* fi) { return tray_x(fi) - DSW_W; }
 
 static int desk_switch_at(const fb_info_t* fi, int mx, int my) {
     int bar_y = (int)fi->height - BAR_H, x0 = dsw_x(fi);
+    if (!g_tb_desks) return -1;
     if (my < bar_y + 4 || my >= bar_y + BAR_H - 4 || mx < x0) return -1;
     int d = (mx - x0) / (DSW_BOX + 2);
     return d < NDESK && (mx - x0) % (DSW_BOX + 2) < DSW_BOX ? d : -1;
@@ -1581,6 +1588,7 @@ static int desk_switch_at(const fb_info_t* fi, int mx, int my) {
 static int desk_count(int d);
 
 static void draw_desk_switcher(const fb_info_t* fi) {
+    if (!g_tb_desks) return;                   /* (hidden: Settings > Taskbar) */
     int bar_y = (int)fi->height - BAR_H, x0 = dsw_x(fi);
     for (int d = 0; d < NDESK; d++) {
         int x = x0 + d * (DSW_BOX + 2), y = bar_y + 5, cur = d == g_cur_desk;
@@ -1660,9 +1668,18 @@ static void draw_taskbar_fb(const fb_info_t* fi) {
     /* tray: network, clock */
     char clk[9];
     format_clock(clk);
-    int clk_x = (int)fi->width - 8 - 64;
+    int clk_x = (int)fi->width - 8 - CLK_W;
+    uint32_t cbg = cal_is_open() ? 0x00303A48u : 0x00192026u;
     gfx_fill_rect(clk_x - 10, bar_y + 6, 1, BAR_H - 12, 0x004F5A6Eu);
-    gfx_draw_text(clk_x, bar_y + 10, clk, 0x00E8EEF6u, 0x00192026u);
+    if (cal_is_open()) gfx_fill_rect(clk_x - 6, bar_y + 2, CLK_W + 10, BAR_H - 4, cbg);
+    gfx_draw_text(clk_x + (CLK_W - 64) / 2, bar_y + 3, clk, 0x00E8EEF6u, cbg);
+    {   /* the date under it: a click opens the calendar */
+        rtc_datetime_t dt;
+        char d[16];
+        if (rtc_read_datetime(&dt) == 0) ksnprintf(d, sizeof(d), "%02u/%02u/%04u", dt.day, dt.month, dt.year);
+        else d[0] = 0;
+        gfx_draw_text(clk_x, bar_y + 14, d, 0x00B8C2D0u, cbg);
+    }
     int net_x = net_icon_x(fi);
     nettray_draw_icon(net_x, bar_y + (BAR_H - 16) / 2, 0x00192026u, g_net_hover || nettray_is_open());
     if (g_net_hover && !nettray_is_open()) {          /* its tooltip: the state in words */
@@ -2372,6 +2389,7 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
 
     draw_taskbar_fb(fi);
     nettray_draw();                                 /* the network panel, over the windows */
+    cal_draw();                                     /* the calendar (a click on the clock) */
     if (g_desk_osd) {                               /* "Desktop 2", after switching */
         char t[24];
         ksnprintf(t, sizeof(t), "Desktop %d", g_cur_desk + 1);
@@ -2611,7 +2629,7 @@ static void open_icon_menu(int i, int mx, int my) {
 
 /* taskbar: Task Manager & co, or one window's button */
 enum { TBM_TASKMGR = 1, TBM_SHOW_DESKTOP, TBM_RESTORE_ALL, TBM_RESTORE, TBM_MINIMIZE, TBM_CLOSE, TBM_QUIT, TBM_TERMINAL, TBM_LOCK,
-       TBM_PIN, TBM_UNPIN, TBM_PIN_OPEN, TBM_SETTINGS };
+       TBM_PIN, TBM_UNPIN, TBM_PIN_OPEN, TBM_SETTINGS, TBM_DESKS };
 static int g_tbmenu_win, g_tbmenu_pin = -1;
 static int  win_pin_target(int h, int* act, char* app, int cap);
 static int  pin_at(int mx, int my);
@@ -2637,6 +2655,7 @@ static void taskbar_menu_cb(int id, void* arg) {
     }
     case TBM_UNPIN: if (g_tbmenu_pin >= 0) pin_remove(g_tbmenu_pin); break;
     case TBM_PIN_OPEN: if (g_tbmenu_pin >= 0) pin_open(g_tbmenu_pin); break;
+    case TBM_DESKS: gui_set_taskbar_desks(!g_tb_desks); break;
     case TBM_SETTINGS: settings_open_page(SETTINGS_PAGE_TASKBAR); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
     }
 }
@@ -2682,6 +2701,7 @@ static void open_taskbar_menu(const fb_info_t* fi, int mx, int my) {
         { "Restore all windows", TBM_RESTORE_ALL, g_ntb == 0 },
         { CTX_SEP, 0, 0 },
         { "New terminal", TBM_TERMINAL, 0 },
+        { g_tb_desks ? "Hide desktop buttons" : "Show desktop buttons", TBM_DESKS, 0 },
         { "Taskbar settings", TBM_SETTINGS, 0 },
         { "Lock screen", TBM_LOCK, 0 },
         { "Exit to shell", TBM_QUIT, 0 },
@@ -2844,7 +2864,8 @@ static void gui_poll_body(void) {
                             char c3 = keyboard_try_getchar();
                             if (c3 >= '0' && c3 <= '9') keyboard_try_getchar();
                             code = c3 == 'A' ? KB_UP : c3 == 'B' ? KB_DOWN : c3 == 'C' ? KB_RIGHT : c3 == 'D' ? KB_LEFT :
-                                   c3 == 'H' ? KB_HOME : c3 == 'F' ? KB_END : c3 == 'P' ? KB_DEL : 0;
+                                   c3 == 'H' ? KB_HOME : c3 == 'F' ? KB_END : c3 == 'P' ? KB_DEL :
+                                   c3 == 'I' ? KB_PGUP : c3 == 'G' ? KB_PGDN : 0;
                         } else code = KB_ESC;
                     } else if (c == '\n') code = KB_ENTER;
                     else if (c == '\t') code = (keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB;
@@ -3057,10 +3078,23 @@ static void gui_poll_body(void) {
             g_force_redraw = 1;
         }
 
+        /* the calendar: a click in it, or a click elsewhere closes it */
+        if ((click || rclick) && cal_is_open() && !clock_at(fi, mx, my)) {
+            if (click && cal_contains(mx, my)) { cal_click(mx, my); click = 0; }
+            else cal_close();
+            g_force_redraw = 1;
+        }
+
         if (click) {
             /* the taskbar: Start, a window's button */
             if (click && my >= bar_y) {
-                if (net_icon_at(fi, mx, my)) {
+                if (clock_at(fi, mx, my)) {
+                    cal_toggle((int)fi->width - 4, bar_y);
+                    nettray_close();
+                    g_menu_open = 0;
+                    g_force_redraw = 1;
+                } else if (net_icon_at(fi, mx, my)) {
+                    cal_close();
                     nettray_toggle(net_icon_x(fi) + NETTRAY_ICON_W + 4, bar_y);
                     g_menu_open = 0;
                     g_force_redraw = 1;
@@ -3557,7 +3591,7 @@ int gui_handle_arrow(char esc_code) {
     if (gfx_available() && g_gui_enabled && !g_menu_open) {
         if (kb_modal()) {
             int code = esc_code == 'A' ? KB_UP : esc_code == 'B' ? KB_DOWN : esc_code == 'C' ? KB_RIGHT : esc_code == 'D' ? KB_LEFT :
-                       esc_code == 'H' ? KB_HOME : esc_code == 'F' ? KB_END : esc_code == 'P' ? KB_DEL : 0;
+                       esc_code == 'H' ? KB_HOME : esc_code == 'F' ? KB_END : esc_code == 'P' ? KB_DEL : esc_code == 'I' ? KB_PGUP : esc_code == 'G' ? KB_PGDN : 0;
             if (code) kb_modal_key(code);
             g_force_redraw = 1;
             return 1;
@@ -3671,7 +3705,7 @@ static void tv_card(const fb_info_t* fi, int i, int* x, int* y, int* w, int* h);
 static int tv_card_at(const fb_info_t* fi, int mx, int my);
 static void tv_activate(int sel);
 
-static int kb_modal(void) { return g_cb_open || ep_is_open() || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
+static int kb_modal(void) { return g_cb_open || ep_is_open() || cal_is_open() || g_sw_open || g_tv_open || g_bar_kb || ctxmenu_is_open(); }
 
 static void list_windows(void) {
     sync_taskbar();
@@ -3724,6 +3758,7 @@ static int kb_modal_key(int code) {
     if (ctxmenu_is_open()) return ctxmenu_key(code);
     if (g_cb_open) return cb_key(code);
     if (ep_is_open()) return ep_key(code);
+    if (cal_is_open()) return cal_key(code);
     if (g_sw_open) {
         if (code == KB_ESC) g_sw_open = 0;
         else if (code == KB_ENTER) { tv_activate(g_sw_sel); g_sw_open = 0; }
@@ -4511,6 +4546,7 @@ static void pins_load(void) {
         }
         char s[16];
         if (settings_get("taskbar_style", s, sizeof(s))) { uint32_t n = 0; if (k_parse_u32(s, &n) && n <= 2) g_tb_style = (int)n; }
+        if (settings_get("taskbar_desks", s, sizeof(s))) g_tb_desks = strcmp(s, "0") != 0;
         return;
     }
     char* p = v;
@@ -4524,6 +4560,7 @@ static void pins_load(void) {
     }
     char s[16];
     if (settings_get("taskbar_style", s, sizeof(s))) { uint32_t n = 0; if (k_parse_u32(s, &n) && n <= 2) g_tb_style = (int)n; }
+    if (settings_get("taskbar_desks", s, sizeof(s))) g_tb_desks = strcmp(s, "0") != 0;
 }
 
 static int pin_find(int act, const char* app) {
@@ -4630,3 +4667,12 @@ void gui_set_taskbar_style(int style) {
     g_force_redraw = 1;
 }
 int gui_taskbar_style(void) { if (g_npins < 0) pins_load(); return g_tb_style; }
+
+/* the virtual desktops' buttons on the taskbar (Win+Ctrl+arrows still switch) */
+void gui_set_taskbar_desks(int on) {
+    g_tb_desks = on ? 1 : 0;
+    settings_set("taskbar_desks", on ? "1" : "0");
+    g_tb_gen++;
+    g_force_redraw = 1;
+}
+int gui_taskbar_desks(void) { if (g_npins < 0) pins_load(); return g_tb_desks; }

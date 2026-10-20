@@ -223,6 +223,11 @@ static const page_t PAGES[] = {
       "changes which, keeping the time. Settings > Date & time does the same with the mouse.",
       "-u|the time in UTC\n-a|local time, UTC, and what the clock chip keeps",
       "date set 2026-10-17 18:30\ndate set 9:05\ndate utc on", "timezone" },
+    { "cal", "system", "cal [month [year]] | cal year", "a month as a calendar",
+      "A month as a calendar, weeks from Monday, today marked: this month with nothing, another with its "
+      "number (and year), a whole year with only the year. On the desktop, a click on the taskbar's clock "
+      "opens the same calendar in a panel.",
+      NULL, "cal\ncal 2 2028\ncal 2027", "date" },
     { "timezone", "system", "timezone [list [words] | <zone or place>]", "the time zone",
       "With nothing, the zone in use and its offset from UTC. timezone list shows every zone (words: only "
       "those naming them); timezone Europe/Paris, or a place - timezone tokyo - sets it: the time does not "
