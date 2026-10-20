@@ -51,4 +51,7 @@ void web_init(void);
 /* its window's geometry, for the window manager (kernel/gui.c) */
 win_geom_t* browser_geom(void);
 
+/* session restore: current tab URL */
+const char* browser_get_url(char* out, int cap);
+
 #endif

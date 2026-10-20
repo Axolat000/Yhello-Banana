@@ -33,4 +33,8 @@ void notepad_wheel(int mx, int my, int dz);   /* scrolls the text (+ = down) */
 /* its window's geometry, for the window manager (kernel/gui.c) */
 win_geom_t* notepad_geom(void);
 
+/* session restore: document path and dirty state */
+const char* notepad_get_path(char* out, int cap);
+int         notepad_is_dirty(void);
+
 #endif

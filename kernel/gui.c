@@ -45,6 +45,7 @@
 #include "fileicons.h"
 #include "notification.h"
 #include "screenshot.h"
+#include "session.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
@@ -2691,6 +2692,8 @@ static void gui_poll_body(void) {
             g_force_redraw = 1;
             /* the saved wallpaper (/etc/wallpaper) is applied on first use */
             wallpaper_load_config();
+            /* restore saved session windows, apps and documents */
+            session_restore_startup();
         }
 
         /* (the timer interrupt moves the pointer too: interrupts off while it changes here) */
@@ -3043,7 +3046,10 @@ void gui_set_enabled(int enabled) {
     g_menu_open = 0;
     g_force_redraw = 1;
     ctxmenu_close();
-    if (!enabled) for (int a = 0; a < APP_COUNT; a++) { g_apps[a].close(); g_app_min[a] = 0; }
+    if (!enabled) {
+        session_save();
+        for (int a = 0; a < APP_COUNT; a++) { g_apps[a].close(); g_app_min[a] = 0; }
+    }
     g_front_app = -1;
     /* Hide (don't tear down) any open windows: their vts and shell tasks
      * are permanent for the OS's lifetime (see term_win_t.vt), so a later
@@ -4454,3 +4460,24 @@ void gui_set_taskbar_style(int style) {
     g_force_redraw = 1;
 }
 int gui_taskbar_style(void) { if (g_npins < 0) pins_load(); return g_tb_style; }
+
+int gui_terminal_open_count(void) {
+    int cnt = 0;
+    for (int i = 0; i < TERM_WIN_MAX; i++) {
+        if (g_terms[i].open) cnt++;
+    }
+    return cnt;
+}
+
+int gui_open_terminal(void) {
+    if (!g_gui_enabled) return -1;
+    return open_new_terminal();
+}
+
+int gui_settings_is_open(void) {
+    return g_gui_enabled && g_apps[APP_SETTINGS].is_open();
+}
+
+int gui_taskmgr_is_open(void) {
+    return g_gui_enabled && g_apps[APP_TASKMGR].is_open();
+}

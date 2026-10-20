@@ -44,4 +44,7 @@ void explorer_wheel(int mx, int my, int dz);  /* scrolls the file list (+ = down
 /* its window's geometry, for the window manager (kernel/gui.c) */
 win_geom_t* explorer_geom(void);
 
+/* session restore: current folder path */
+const char* explorer_get_path(char* out, int cap);
+
 #endif
