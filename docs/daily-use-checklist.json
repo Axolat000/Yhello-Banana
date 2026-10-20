@@ -2314,5 +2314,34 @@
       "tools/test_clock_monotonic_utc.py",
       "docs/CLOCK-MONOTONIC-UTC.md"
     ]
+  },
+  {
+    "id": "base-17-tcp-throughput",
+    "priority": "P2",
+    "domain": "Network",
+    "title": "Extend TCP stack with SACK, NewReno and throughput qualification",
+    "goal": "Improve TCP recovery over lossy links via RFC 2018 SACK and RFC 6582 NewReno after adversarial qualification and validation.",
+    "evidence": "Adaptation of upstream commit 15f027d7ad45 established RFC 7323 window scaling (512 KiB receive window, shift 4) and lazy send buffer compaction with an aggregate memory budget (8 MiB). SACK and NewReno recovery were intentionally separated per the approved alternative design to require adversarial ACK qualification, scoreboard security verification and QEMU interoperability testing against independent peers before deployment.",
+    "planningReason": "Following adaptation of upstream 15f027d7ad45, window scaling and send buffer compaction are established. A distinct P2 follow-up isolates SACK block generation, scoreboard tracking, and NewReno recovery with explicit adversarial testing and independent peer benchmarking without rewriting started steps.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "SACK permitted negotiation and scoreboard hole retransmission pass independent peer qualification, reneging handling and adversarial ACK testing under varied loss rates in QEMU without compromising memory budgets.",
+    "deliverable": "RFC 2018 SACK and RFC 6582 NewReno recovery implementation in net/tcp.c, scoreboard regression tests, and QEMU benchmark reports.",
+    "steps": [
+      "Implement SACK option parsing and generation in net/tcp.c with strict cumulative ACK validation before mutating scoreboard state.",
+      "Implement NewReno partial ACK and SACK hole retransmission logic with bounded memory allocations.",
+      "Benchmark TCP throughput and retransmissions under loss (0.5% - 2%) in QEMU with an independent peer."
+    ],
+    "tests": [
+      "Host simulator loss tests with simulated packet drop and reordering.",
+      "QEMU download benchmarks against independent Linux TCP peer under packet loss."
+    ],
+    "files": [
+      "net/tcp.c",
+      "net/tcp.h",
+      "tools/test_tcp.py",
+      "tools/tests/tcp_sim.c"
+    ]
   }
 ]
