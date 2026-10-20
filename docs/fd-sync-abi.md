@@ -114,3 +114,20 @@ while handling distinct volume types and backup freeze states:
    - `a_fd_sync` returns `-38` (`ENOSYS`) until filesystem-specific sync handlers are wired for those volumes.
 
 Host tests in `tools/tests/fd_sync.c` verify this volume distinction, mock freeze timeouts, error propagation, and descriptor safety under ASan and UBSan.
+
+## Step 3 SDK Wiring and Directory Synchronization
+
+In step 3, the SDK POSIX wrappers and directory synchronization semantics are completed:
+
+1. **POSIX `fsync` and `fdatasync` in `sdk/lib/unix.c`**:
+   - `fsync(int fd)` checks `BANANA_HAS(__banana, fd_sync)` and invokes `__banana->fd_sync(fd)`.
+   - On error (return value `< 0`), the negative error code is converted directly to `errno = -rc` and returns `-1`. This propagates `EBADF` (9), `EINVAL` (22), `ENOSYS` (38), and `EIO` (5) to callers.
+   - On success (return value `0`), `fsync` returns `0`.
+   - If invoked against an older kernel where `fd_sync` is unavailable (`!BANANA_HAS`), it fails fail-closed with `errno = ENOSYS` and returns `-1`.
+   - `fdatasync(int fd)` delegates directly to `fsync(fd)`.
+
+2. **Directory Synchronization Semantics**:
+   - POSIX allows opening directory descriptors using `open(dir, O_RDONLY)` and calling `fsync(dirfd)` to ensure directory entry modifications (e.g. `mkdir`, `rename`, `unlink`) are committed to durable media.
+   - In Banana OS kernel architecture (`kernel/app.c`), `a_open` rejects opening directory paths with `-1` (`fs_find_dir(path) >= 0`), and `DIR*` handles returned by `opendir()` use internal heap tracking (`struct __dir`), with `dirfd(DIR* d)` returning `-1` (`ENOTSUP`).
+   - For installed ext4 filesystems, directory mutations (`fs_mkdir`, `fs_move`, `fs_delete`) are written through the ext4 journal (JBD2). Synchronizing any file descriptor via `a_fd_sync()` or `fsync()` commits pending transactions via `ext4_flush()`.
+   - In accordance with POSIX, any attempt to call `fsync()` or `fdatasync()` on an invalid or directory descriptor that cannot be opened returns `EBADF`. When full directory descriptors are introduced in future ABI extensions, directory `fd_sync` will route through the same journal commit path.
