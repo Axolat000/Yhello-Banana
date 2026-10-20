@@ -11,9 +11,16 @@
 #define TCP_BACKLOG   8                 /* handshaking + not yet accepted, per listener */
 #define TCP6_MSS      1220              /* 1280-byte minimum IPv6 MTU - 40 - 20 */
 #define TCP_MSS       1460              /* what we accept: 1500 - IP - TCP headers */
-#define RBUF_SIZE     65536u            /* receive ring (window capped at 65535) */
-#define SBUF_SIZE     32768u
+#define RBUF_SIZE     524288u           /* receive ring: the window, with window scaling (RFC 7323) */
+#define RBUF_SMALL    65536u            /* ... if memory budget / heap is constrained */
+#define RCV_WSCALE    4                 /* our window in 16-byte units: up to 1 MiB (shift 4) */
+#ifndef SBUF_SIZE
+#define SBUF_SIZE     262144u           /* send buffer: what may be in flight */
+#endif
+#define SBUF_SMALL    32768u            /* ... if memory budget / heap is constrained */
+#define TCP_MEM_MAX   (8u * 1024u * 1024u) /* aggregate TCP buffer budget across all connections (8 MiB) */
 #define OOO_MAX       32                /* out-of-order segments held per conn */
+#define MAX_OPT       40                /* TCP options: at most 40 bytes */
 #define RTO_INIT      1000u
 #define RTO_MIN       200u
 #define RTO_MAX       60000u
@@ -42,24 +49,31 @@ typedef struct ooo_seg {
 struct tcp_conn {
     int         used;
     tcp_state_t state;
-    ip4_t       rip;
     int         ipv6;
+    ip4_t       rip;
     ip6_t       lip6, rip6;
     uint16_t    lport, rport;
 
-    /* send side. sbuf[0] is the byte at sequence snd_una (SYN/FIN are
-     * sequence numbers only, never in the buffer) */
+    /* send side. SB(c)[0] is the byte at sequence snd_una (SYN/FIN are
+     * sequence numbers only, never in the buffer); what was acknowledged
+     * stays in front of it (sb_off) until room is needed at the end */
     uint32_t iss, snd_una, snd_nxt, snd_max, snd_wnd, snd_wl1, snd_wl2;
     uint32_t peer_mss, cwnd, ssthresh;
+    /* options (RFC 7323): what the peer offered in its SYN, and
+     * whether both sides use window scale. Windows are shifted by snd_ws (the
+     * peer's) and rcv_ws (ours) */
+    int      peer_ws;                   /* (-1: no window scale offered) */
+    int      ws_ok;
+    uint8_t  snd_ws, rcv_ws;
     uint8_t* sbuf;
-    uint32_t sb_len;
+    uint32_t sb_size, sb_off, sb_len;
     int      fin_pending, fin_sent;
     uint32_t fin_seq;
 
     /* receive side: ring buffer + out-of-order list sorted by seq */
     uint32_t irs, rcv_nxt;
     uint8_t* rbuf;
-    uint32_t rb_head, rb_len;
+    uint32_t rb_size, rb_head, rb_len;
     ooo_seg_t* ooo;
     int      ooo_count;
     int      fin_rcvd;
@@ -89,7 +103,11 @@ struct tcp_listener {
     uint16_t port;
 };
 
+#define SB(c) ((c)->sbuf + (c)->sb_off)
+
 static tcp_conn_t g_conns[TCP_MAX_CONN];
+static tcp_stats_t g_stats;
+static uint32_t g_tcp_mem_used = 0;     /* aggregate allocated buffer bytes */
 static tcp_listener_t g_listeners[TCP_MAX_LISTEN];
 
 const char* tcp_state_str(tcp_state_t s) {
@@ -105,8 +123,16 @@ tcp_state_t tcp_state(const tcp_conn_t* c) { return c->state; }
 static uint32_t min_u32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
 static void conn_free(tcp_conn_t* c) {
-    kfree(c->sbuf);
-    kfree(c->rbuf);
+    if (c->sbuf) {
+        g_tcp_mem_used -= c->sb_size;
+        kfree(c->sbuf);
+        c->sbuf = NULL;
+    }
+    if (c->rbuf) {
+        g_tcp_mem_used -= c->rb_size;
+        kfree(c->rbuf);
+        c->rbuf = NULL;
+    }
     while (c->ooo) {
         ooo_seg_t* n = c->ooo->next;
         kfree(c->ooo);
@@ -115,17 +141,20 @@ static void conn_free(tcp_conn_t* c) {
     memset(c, 0, sizeof(*c));
 }
 
+/* the window we offer: the room in the ring, as far as the window field
+ * (scaled: in units of 2^rcv_ws, rounded down) can express it */
 static uint32_t adv_window(const tcp_conn_t* c) {
-    return min_u32(RBUF_SIZE - c->rb_len, 65535u);
+    uint32_t w = min_u32(c->rb_size - c->rb_len, 65535u << c->rcv_ws);
+    return w & ~((1u << c->rcv_ws) - 1);
 }
 
 /* ── segment output ─────────────────────────────────────────────── */
 
 static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
-                     uint8_t flags, uint16_t wnd, const uint8_t* data, uint32_t len, int mss_opt) {
-    static uint8_t seg[24 + TCP_MSS];   /* not reentrant; see net.h */
+                     uint8_t flags, uint16_t wnd, const uint8_t* data, uint32_t len, const uint8_t* opt, uint32_t olen) {
+    static uint8_t seg[20 + MAX_OPT + TCP_MSS];   /* not reentrant; see net.h */
     netif_t* nif = net_if();
-    uint32_t hl = mss_opt ? 24 : 20;
+    uint32_t hl = 20 + olen;            /* (olen: a multiple of 4) */
     wr16(seg, sport);
     wr16(seg + 2, dport);
     wr32(seg + 4, seq);
@@ -135,10 +164,7 @@ static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t s
     wr16(seg + 14, wnd);
     wr16(seg + 16, 0);
     wr16(seg + 18, 0);
-    if (mss_opt) {
-        seg[20] = 2; seg[21] = 4;
-        wr16(seg + 22, dst6 ? TCP6_MSS : TCP_MSS);
-    }
+    if (olen) memcpy(seg + 20, opt, olen);
     if (len) memcpy(seg + hl, data, len);
 
     if (dst6) {
@@ -159,9 +185,25 @@ static void send_raw(ip4_t dst, const ip6_t* src6, const ip6_t* dst6, uint16_t s
 }
 
 static void send_seg(tcp_conn_t* c, uint32_t seq, uint8_t flags, const uint8_t* data, uint32_t len) {
-    uint32_t wnd = adv_window(c);
+    uint32_t wnd = adv_window(c), field = wnd >> c->rcv_ws;
+    uint8_t opt[MAX_OPT];
+    uint32_t olen = 0;
+    if (flags & F_SYN) {
+        /* RFC 7323 Section 2.2: the window field in a SYN segment itself is NEVER scaled */
+        wnd = min_u32(c->rb_size - c->rb_len, 65535u);
+        field = wnd;
+        opt[0] = 2; opt[1] = 4;
+        wr16(opt + 2, c->ipv6 ? TCP6_MSS : TCP_MSS);
+        olen = 4;
+        /* offer window scale in active open SYN, or in SYN-ACK only if peer offered it */
+        int active = (c->state == TCP_SYN_SENT);
+        if (active || c->peer_ws >= 0) {
+            opt[olen] = 1; opt[olen + 1] = 3; opt[olen + 2] = 3; opt[olen + 3] = RCV_WSCALE;
+            olen += 4;
+        }
+    }
     send_raw(c->rip, c->ipv6 ? &c->lip6 : NULL, c->ipv6 ? &c->rip6 : NULL, c->lport, c->rport, seq, (flags & F_ACK) ? c->rcv_nxt : 0,
-             flags, (uint16_t)wnd, data, len, (flags & F_SYN) != 0);
+             flags, (uint16_t)field, data, len, opt, olen);
     if (flags & F_ACK) {
         c->ack_pending = 0;
         c->unacked_segs = 0;
@@ -194,7 +236,7 @@ static void tcp_output(tcp_conn_t* c) {
         }
         uint8_t flags = F_ACK;
         if (off + n == c->sb_len) flags |= F_PSH;
-        send_seg(c, c->snd_nxt, flags, c->sbuf + off, n);
+        send_seg(c, c->snd_nxt, flags, SB(c) + off, n);
         if (!c->rtt_timing) {
             c->rtt_timing = 1;
             c->rtt_seq = c->snd_nxt;
@@ -202,27 +244,25 @@ static void tcp_output(tcp_conn_t* c) {
         }
         c->snd_nxt += n;
         if (SEQ_GT(c->snd_nxt, c->snd_max)) c->snd_max = c->snd_nxt;
-        if (!c->timer_on) arm_timer(c);
+        arm_timer(c);
     }
-    if (c->fin_pending && !c->fin_sent && c->snd_nxt - c->snd_una == c->sb_len) {
+    if (c->fin_pending && !c->fin_sent && c->snd_una == c->snd_max) {
+        c->fin_sent = 1;
         c->fin_seq = c->snd_nxt;
         send_seg(c, c->snd_nxt, F_FIN | F_ACK, NULL, 0);
-        c->fin_sent = 1;
         c->snd_nxt++;
-        if (SEQ_GT(c->snd_nxt, c->snd_max)) c->snd_max = c->snd_nxt;
-        if (c->state == TCP_ESTABLISHED) c->state = TCP_FIN_WAIT1;
-        else if (c->state == TCP_CLOSE_WAIT) c->state = TCP_LAST_ACK;
-        if (!c->timer_on) arm_timer(c);
+        c->snd_max = c->snd_nxt;
+        arm_timer(c);
     }
 }
 
 /* ── input ──────────────────────────────────────────────────────── */
 
 static uint32_t rbuf_put(tcp_conn_t* c, const uint8_t* data, uint32_t len) {
-    uint32_t space = RBUF_SIZE - c->rb_len;
+    uint32_t space = c->rb_size - c->rb_len;
     if (len > space) len = space;
-    uint32_t tail = (c->rb_head + c->rb_len) % RBUF_SIZE;
-    uint32_t first = min_u32(len, RBUF_SIZE - tail);
+    uint32_t tail = (c->rb_head + c->rb_len) % c->rb_size;
+    uint32_t first = min_u32(len, c->rb_size - tail);
     memcpy(c->rbuf + tail, data, first);
     if (len > first) memcpy(c->rbuf, data + first, len - first);
     c->rb_len += len;
@@ -230,30 +270,21 @@ static uint32_t rbuf_put(tcp_conn_t* c, const uint8_t* data, uint32_t len) {
 }
 
 static void fin_received(tcp_conn_t* c) {
-    c->rcv_nxt++;
+    if (c->fin_rcvd) return;
     c->fin_rcvd = 1;
-    c->ack_pending = 1;
-    c->unacked_segs = 2;     /* ack a FIN right away */
-    switch (c->state) {
-    case TCP_ESTABLISHED: c->state = TCP_CLOSE_WAIT; break;
-    case TCP_FIN_WAIT1:
-        /* our FIN not acked yet (otherwise we'd be in FIN_WAIT2) */
-        c->state = TCP_CLOSING;
-        break;
-    case TCP_FIN_WAIT2:
+    c->rcv_nxt++;
+    if (c->state == TCP_ESTABLISHED) c->state = TCP_CLOSE_WAIT;
+    else if (c->state == TCP_FIN_WAIT1) c->state = TCP_CLOSING;
+    else if (c->state == TCP_FIN_WAIT2) {
         c->state = TCP_TIME_WAIT;
         c->tw_deadline = timer_ms() + TIME_WAIT_MS;
-        c->timer_on = 0;
-        break;
-    default: break;
     }
 }
 
-/* in-order data at rcv_nxt; returns bytes accepted */
 static uint32_t deliver(tcp_conn_t* c, const uint8_t* data, uint32_t len) {
-    uint32_t n = c->user_closed ? len : rbuf_put(c, data, len);   /* closed: discard, still ack */
-    c->rcv_nxt += n;
-    return n;
+    uint32_t put = rbuf_put(c, data, len);
+    c->rcv_nxt += put;
+    return put;
 }
 
 static void ooo_store(tcp_conn_t* c, uint32_t seq, const uint8_t* data, uint32_t len, int fin) {
@@ -262,7 +293,8 @@ static void ooo_store(tcp_conn_t* c, uint32_t seq, const uint8_t* data, uint32_t
     if (SEQ_GT(seq + len, c->rcv_nxt + adv_window(c))) return;
     ooo_seg_t** pp = &c->ooo;
     while (*pp && SEQ_LT((*pp)->seq, seq)) pp = &(*pp)->next;
-    if (*pp && (*pp)->seq == seq && (*pp)->len >= len) return;   /* duplicate */
+    /* exact duplicate or contained in existing block? */
+    if (*pp && (*pp)->seq == seq && (*pp)->len >= len) return;
     ooo_seg_t* s = (ooo_seg_t*)kmalloc(sizeof(ooo_seg_t) + len);
     if (!s) return;
     s->seq = seq;
@@ -305,28 +337,40 @@ static void update_rtt(tcp_conn_t* c, uint32_t sample) {
     c->rto = rto;
 }
 
-static void parse_mss(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
+/* parse options on incoming SYN: MSS and Window Scale (RFC 7323) */
+static void parse_syn_opts(tcp_conn_t* c, const uint8_t* opt, uint32_t len) {
     uint32_t i = 0;
+    c->peer_ws = -1;
     while (i < len) {
         if (opt[i] == 0) break;
         if (opt[i] == 1) { i++; continue; }
-        if (i + 1 >= len || opt[i + 1] < 2) break;
-        if (opt[i] == 2 && opt[i + 1] == 4 && i + 4 <= len) {
+        if (i + 1 >= len || opt[i + 1] < 2 || i + opt[i + 1] > len) break;
+        if (opt[i] == 2 && opt[i + 1] == 4) {
             uint32_t mss = rd16(opt + i + 2);
             if (mss >= 64) c->peer_mss = min_u32(mss, c->ipv6 ? TCP6_MSS : TCP_MSS);
+        } else if (opt[i] == 3 && opt[i + 1] == 3) {
+            /* RFC 7323 Section 2.3: window scale shift count up to 14 */
+            c->peer_ws = opt[i + 2] > 14 ? 14 : opt[i + 2];
         }
         i += opt[i + 1];
     }
+}
+
+/* establish agreed window scale parameters once SYN exchange completes */
+static void opts_agreed(tcp_conn_t* c) {
+    c->ws_ok = (c->peer_ws >= 0);
+    c->snd_ws = c->ws_ok ? (uint8_t)c->peer_ws : 0;
+    c->rcv_ws = c->ws_ok ? RCV_WSCALE : 0;
 }
 
 static void send_reset_for(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint16_t sport, uint16_t dport, uint32_t seq, uint32_t ack,
                            uint8_t flags, uint32_t seg_len) {
     if (flags & F_RST) return;
     if (flags & F_ACK) {
-        send_raw(src, dst6, src6, dport, sport, ack, 0, F_RST, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, ack, 0, F_RST, 0, NULL, 0, NULL, 0);
     } else {
         uint32_t n = seg_len + ((flags & F_SYN) ? 1 : 0) + ((flags & F_FIN) ? 1 : 0);
-        send_raw(src, dst6, src6, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, 0);
+        send_raw(src, dst6, src6, dport, sport, 0, seq + n, F_RST | F_ACK, 0, NULL, 0, NULL, 0);
     }
 }
 
@@ -336,8 +380,9 @@ static void ack_processing(tcp_conn_t* c, uint32_t seq, uint32_t ack, uint32_t w
         uint32_t acked = ack - c->snd_una;
         uint32_t data_acked = min_u32(acked, c->sb_len);
         if (data_acked) {
-            memmove(c->sbuf, c->sbuf + data_acked, c->sb_len - data_acked);
+            c->sb_off += data_acked;
             c->sb_len -= data_acked;
+            if (!c->sb_len) c->sb_off = 0;
         }
         c->snd_una = ack;
         if (SEQ_LT(c->snd_nxt, c->snd_una)) c->snd_nxt = c->snd_una;
@@ -349,7 +394,7 @@ static void ack_processing(tcp_conn_t* c, uint32_t seq, uint32_t ack, uint32_t w
         /* congestion window: slow start, then additive increase */
         if (c->cwnd < c->ssthresh) c->cwnd += min_u32(acked, c->peer_mss);
         else c->cwnd += (c->peer_mss * c->peer_mss) / (c->cwnd ? c->cwnd : 1);
-        if (c->cwnd > 4u * 65535u) c->cwnd = 4u * 65535u;
+        if (c->cwnd > (4u << 20)) c->cwnd = 4u << 20;
 
         c->retries = 0;
         c->dupacks = 0;
@@ -374,8 +419,9 @@ static void ack_processing(tcp_conn_t* c, uint32_t seq, uint32_t ack, uint32_t w
             c->ssthresh = flight / 2 > 2 * c->peer_mss ? flight / 2 : 2 * c->peer_mss;
             c->cwnd = c->ssthresh;
             uint32_t n = min_u32(c->sb_len, c->peer_mss);
-            if (n) send_seg(c, c->snd_una, F_ACK, c->sbuf, n);
+            if (n) send_seg(c, c->snd_una, F_ACK, SB(c), n);
             c->rtt_timing = 0;
+            g_stats.fast_rexmit++;
         }
     }
     /* window update, taking only the newest segment's view (RFC 793) */
@@ -392,22 +438,52 @@ static tcp_conn_t* conn_alloc(void) {
         if (!g_conns[i].used) { c = &g_conns[i]; break; }
     if (!c) return NULL;
     memset(c, 0, sizeof(*c));
-    c->sbuf = (uint8_t*)kmalloc(SBUF_SIZE);
-    c->rbuf = (uint8_t*)kmalloc(RBUF_SIZE);
+
+    /* check aggregate TCP memory budget */
+    uint32_t want_sb = SBUF_SIZE, want_rb = RBUF_SIZE;
+    if (g_tcp_mem_used + want_sb + want_rb > TCP_MEM_MAX) {
+        want_sb = SBUF_SMALL;
+        want_rb = RBUF_SMALL;
+        g_stats.buf_fallback++;
+    }
+    if (g_tcp_mem_used + want_sb + want_rb > TCP_MEM_MAX) {
+        /* exceeded even with small buffers */
+        return NULL;
+    }
+
+    c->sb_size = want_sb;
+    c->sbuf = (uint8_t*)kmalloc(c->sb_size);
+    if (!c->sbuf && c->sb_size > SBUF_SMALL) {
+        c->sb_size = SBUF_SMALL;
+        c->sbuf = (uint8_t*)kmalloc(c->sb_size);
+        g_stats.buf_fallback++;
+    }
+
+    c->rb_size = want_rb;
+    c->rbuf = (uint8_t*)kmalloc(c->rb_size);
+    if (!c->rbuf && c->rb_size > RBUF_SMALL) {
+        c->rb_size = RBUF_SMALL;
+        c->rbuf = (uint8_t*)kmalloc(c->rb_size);
+        g_stats.buf_fallback++;
+    }
+
     if (!c->sbuf || !c->rbuf) {
-        kfree(c->sbuf);
-        kfree(c->rbuf);
+        if (c->sbuf) kfree(c->sbuf);
+        if (c->rbuf) kfree(c->rbuf);
         c->sbuf = c->rbuf = NULL;
         return NULL;
     }
+
+    g_tcp_mem_used += c->sb_size + c->rb_size;
     c->used = 1;
     c->iss = random_u32();
     c->snd_una = c->iss;
     c->snd_nxt = c->iss + 1;
     c->snd_max = c->snd_nxt;
     c->peer_mss = 536;                   /* RFC 1122 default until told */
+    c->peer_ws = -1;
     c->cwnd = 4 * TCP_MSS;
-    c->ssthresh = 65535;
+    c->ssthresh = 4u << 20;              /* ("arbitrarily high", RFC 5681) */
     c->rto = RTO_INIT;
     return c;
 }
@@ -438,7 +514,8 @@ static int passive_open(ip4_t src, const ip6_t* src6, const ip6_t* dst6, uint16_
     c->rcv_nxt = seq + 1;
     c->snd_wnd = wnd;
     c->snd_wl1 = seq;
-    parse_mss(c, seg + 20, hl - 20);
+    parse_syn_opts(c, seg + 20, hl - 20);
+    opts_agreed(c);
     c->state = TCP_SYN_RCVD;
     send_seg(c, c->iss, F_SYN | F_ACK, NULL, 0);
     c->rtt_timing = 1;
@@ -481,42 +558,28 @@ static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6
         send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
         return;
     }
+    /* SYN segments never have their window scaled (RFC 7323 Section 2.2) */
+    if (!(flags & F_SYN)) wnd <<= c->snd_ws;
 
     if (c->state == TCP_SYN_RCVD) {
         if (flags & F_RST) { c->state = TCP_CLOSED; c->timer_on = 0; return; }
-        if (flags & F_SYN) {                     /* our SYN-ACK got lost */
-            send_seg(c, c->iss, F_SYN | F_ACK, NULL, 0);
-            return;
+        if (flags & F_ACK) {
+            if (SEQ_LEQ(c->snd_una, ack) && SEQ_LEQ(ack, c->snd_max)) {
+                c->snd_una = ack;
+                c->snd_wnd = wnd;
+                c->snd_wl1 = seq;
+                c->snd_wl2 = ack;
+                c->state = TCP_ESTABLISHED;
+                c->timer_on = 0;
+            }
         }
-        if (!(flags & F_ACK)) return;
-        if (ack != c->iss + 1) {
-            send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
-            return;
-        }
-        c->snd_una = ack;
-        c->snd_wnd = wnd;
-        c->snd_wl1 = seq;
-        c->snd_wl2 = ack;
-        if (c->rtt_timing) {
-            update_rtt(c, timer_ms() - c->rtt_start);
-            c->rtt_timing = 0;
-        }
-        c->retries = 0;
-        c->timer_on = 0;
-        c->cwnd = 4 * c->peer_mss;
-        c->state = TCP_ESTABLISHED;
-        /* the ACK may already carry data (or a FIN): handled below */
+        return;
     }
 
     if (c->state == TCP_SYN_SENT) {
-        if ((flags & F_ACK) && ack != c->iss + 1) {
-            send_reset_for(src, src6, dst6, sport, dport, seq, ack, flags, dlen);
-            return;
-        }
         if (flags & F_RST) {
             if (flags & F_ACK) {
-                c->err = NET_ERR_REFUSED;
-                c->state = TCP_CLOSED;
+                if (ack == c->snd_nxt) { c->err = NET_ERR_REFUSED; c->state = TCP_CLOSED; c->timer_on = 0; }
             }
             return;
         }
@@ -527,7 +590,8 @@ static void tcp_input(ip4_t src, ip4_t dst, const ip6_t* src6, const ip6_t* dst6
             c->snd_wnd = wnd;
             c->snd_wl1 = seq;
             c->snd_wl2 = ack;
-            parse_mss(c, seg + 20, hl - 20);
+            parse_syn_opts(c, seg + 20, hl - 20);
+            opts_agreed(c);
             if (c->rtt_timing) {
                 update_rtt(c, timer_ms() - c->rtt_start);
                 c->rtt_timing = 0;
@@ -639,20 +703,20 @@ static void on_timeout(tcp_conn_t* c) {
     if (c->snd_wnd == 0 && c->sb_len > c->snd_nxt - c->snd_una) {
         /* persist: probe the zero window with one byte */
         uint32_t off = c->snd_nxt - c->snd_una;
-        send_seg(c, c->snd_nxt, F_ACK, c->sbuf + off, 1);
+        send_seg(c, c->snd_nxt, F_ACK, SB(c) + off, 1);
         arm_timer(c);
         return;
     }
-    /* retransmission timeout: back to slow start from the first
-     * unacknowledged byte (go-back-N, paced by cwnd) */
+    /* normal RTO: drop congestion window, rewind snd_nxt */
     uint32_t flight = c->snd_max - c->snd_una;
     c->ssthresh = flight / 2 > 2 * c->peer_mss ? flight / 2 : 2 * c->peer_mss;
     c->cwnd = c->peer_mss;
     c->snd_nxt = c->snd_una;
+    c->dupacks = 0;
+    g_stats.rto_rexmit++;
     if (c->fin_sent && SEQ_LEQ(c->snd_una, c->fin_seq)) c->fin_sent = 0;
     c->timer_on = 0;
     tcp_output(c);
-    if (!c->timer_on && c->snd_una != c->snd_max) arm_timer(c);
 }
 
 void tcp_timer(void) {
@@ -660,58 +724,75 @@ void tcp_timer(void) {
     for (int i = 0; i < TCP_MAX_CONN; i++) {
         tcp_conn_t* c = &g_conns[i];
         if (!c->used) continue;
-        if (c->state == TCP_TIME_WAIT && (int32_t)(now - c->tw_deadline) >= 0)
+        if (c->state == TCP_TIME_WAIT && (int32_t)(now - c->tw_deadline) >= 0) {
             c->state = TCP_CLOSED;
-        if (c->timer_on && c->state != TCP_CLOSED && (int32_t)(now - c->rto_deadline) >= 0)
-            on_timeout(c);
-        /* closed and nobody will look at it again: the user closed it, or
-         * it died before tcp_accept() handed it out */
-        if (c->state == TCP_CLOSED && (c->user_closed || c->listener)) conn_free(c);
+            conn_free(c);
+            continue;
+        }
+        if (c->timer_on && (int32_t)(now - c->rto_deadline) >= 0) on_timeout(c);
+        if (c->state == TCP_CLOSED && !c->listener) conn_free(c);
     }
 }
 
-/* ── user API ───────────────────────────────────────────────────── */
-
-static uint16_t pick_port(void) {
-    for (;;) {
-        uint16_t p = (uint16_t)(49152u + random_u32() % 16384u);
-        int used = 0;
-        for (int i = 0; i < TCP_MAX_CONN; i++)
-            if (g_conns[i].used && g_conns[i].lport == p) used = 1;
-        if (!used) return p;
-    }
-}
+/* ── public API ─────────────────────────────────────────────────── */
 
 void tcp_rx(ip4_t src, ip4_t dst, const uint8_t* seg, uint32_t len) {
     tcp_input(src, dst, NULL, NULL, seg, len);
 }
+
 void tcp_rx6(const ip6_t* src, const ip6_t* dst, const uint8_t* seg, uint32_t len) {
     tcp_input(0, 0, src, dst, seg, len);
 }
 
-static tcp_conn_t* connect_to(ip4_t ip, const ip6_t* ip6, uint16_t port, uint32_t timeout_ms, int* err) {
-    int e = NET_OK;
-    if (!err) err = &e;
-    netif_t* nif = net_if();
-    *err = NET_OK;
-    ip6_t src6;
-    if (ip6) {
-        *err = ipv6_source(ip6, &src6);
-        if (*err != NET_OK) return NULL;
-    } else {
-        if (!nif->dev) { *err = NET_ERR_NODEV; return NULL; }
-        if (!net_wait_configured(timeout_ms)) { *err = NET_ERR_NOTREADY; return NULL; }
+void tcp6_disable(void) {
+    for (int i = 0; i < TCP_MAX_CONN; i++) {
+        if (!g_conns[i].used || !g_conns[i].ipv6) continue;
+        g_conns[i].err = NET_ERR_NODEV;
+        g_conns[i].state = TCP_CLOSED;
+        g_conns[i].timer_on = 0;
     }
+    for (int i = 0; i < TCP_MAX_LISTEN; i++) {
+        if (!g_listeners[i].used || !g_listeners[i].ipv6) continue;
+        g_listeners[i].used = 0;
+    }
+}
 
+static uint16_t alloc_port(void) {
+    static uint16_t next = 49152;
+    for (int tries = 0; tries < 1000; tries++) {
+        uint16_t p = next++;
+        if (next < 49152) next = 49152;
+        int busy = 0;
+        for (int i = 0; i < TCP_MAX_CONN; i++)
+            if (g_conns[i].used && g_conns[i].lport == p) { busy = 1; break; }
+        for (int i = 0; i < TCP_MAX_LISTEN; i++)
+            if (g_listeners[i].used && g_listeners[i].port == p) { busy = 1; break; }
+        if (!busy) return p;
+    }
+    return 0;
+}
+
+static tcp_conn_t* connect_to(ip4_t ip, const ip6_t* ip6, uint16_t port, uint32_t timeout_ms, int* err) {
+    int e;
+    if (!err) err = &e;
+    *err = NET_OK;
+    if (ip6 && !ipv6_enabled()) { *err = NET_ERR_NOTREADY; return NULL; }
+    if (!net_wait_configured(timeout_ms)) { *err = NET_ERR_NOTREADY; return NULL; }
     tcp_conn_t* c = conn_alloc();
     if (!c) { *err = NET_ERR_NOMEM; return NULL; }
-    c->rip = ip;
     c->ipv6 = ip6 != NULL;
-    if (ip6) { c->rip6 = *ip6; c->lip6 = src6; c->peer_mss = TCP6_MSS; }
+    if (c->ipv6) {
+        c->rip6 = *ip6;
+        if (ipv6_source(ip6, &c->lip6) != 0) { conn_free(c); *err = NET_ERR_NOROUTE; return NULL; }
+        c->peer_mss = TCP6_MSS;
+    } else {
+        c->rip = ip;
+    }
     c->rport = port;
-    c->lport = pick_port();
-    c->state = TCP_SYN_SENT;
+    c->lport = alloc_port();
+    if (!c->lport) { conn_free(c); *err = NET_ERR_NOMEM; return NULL; }
 
+    c->state = TCP_SYN_SENT;
     send_seg(c, c->iss, F_SYN, NULL, 0);
     c->rtt_timing = 1;
     c->rtt_seq = c->iss;
@@ -720,15 +801,21 @@ static tcp_conn_t* connect_to(ip4_t ip, const ip6_t* ip6, uint16_t port, uint32_
 
     uint32_t start = timer_ms();
     while (c->state == TCP_SYN_SENT) {
-        if (timer_ms() - start >= timeout_ms) { *err = NET_ERR_TIMEOUT; break; }
-        if (net_interrupted()) { *err = NET_ERR_INTR; break; }
+        if (timer_ms() - start >= timeout_ms) {
+            *err = NET_ERR_TIMEOUT;
+            conn_free(c);
+            return NULL;
+        }
+        if (net_interrupted()) {
+            *err = NET_ERR_INTR;
+            conn_free(c);
+            return NULL;
+        }
         net_wait(20);
     }
-    if (c->state == TCP_ESTABLISHED) {
-        c->cwnd = 4 * c->peer_mss;
-        return c;
-    }
-    if (*err == NET_OK) *err = c->err ? c->err : NET_ERR_REFUSED;
+    if (c->state == TCP_ESTABLISHED) return c;
+    if (c->err) *err = c->err;
+    else if (c->state == TCP_CLOSED) *err = NET_ERR_REFUSED;
     conn_free(c);
     return NULL;
 }
@@ -736,6 +823,7 @@ static tcp_conn_t* connect_to(ip4_t ip, const ip6_t* ip6, uint16_t port, uint32_
 tcp_conn_t* tcp_connect(ip4_t ip, uint16_t port, uint32_t timeout_ms, int* err) {
     return connect_to(ip, NULL, port, timeout_ms, err);
 }
+
 tcp_conn_t* tcp_connect6(const ip6_t* ip, uint16_t port, uint32_t timeout_ms, int* err) {
     if (!ip) { if (err) *err = NET_ERR_PROTO; return NULL; }
     return connect_to(0, ip, port, timeout_ms, err);
@@ -747,10 +835,14 @@ int tcp_send(tcp_conn_t* c, const void* data, uint32_t len, uint32_t timeout_ms)
     while (done < len) {
         if (c->err) return c->err;
         if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return NET_ERR_CLOSED;
-        uint32_t space = SBUF_SIZE - c->sb_len;
+        uint32_t space = c->sb_size - c->sb_len;
         if (space) {
+            if (c->sb_off + c->sb_len + min_u32(space, len - done) > c->sb_size) {
+                memmove(c->sbuf, SB(c), c->sb_len);        /* lazy compaction: room at buffer end */
+                c->sb_off = 0;
+            }
             uint32_t n = min_u32(space, len - done);
-            memcpy(c->sbuf + c->sb_len, p + done, n);
+            memcpy(SB(c) + c->sb_len, p + done, n);
             c->sb_len += n;
             done += n;
             tcp_output(c);
@@ -768,10 +860,10 @@ int tcp_recv(tcp_conn_t* c, void* buf, uint32_t max, uint32_t timeout_ms) {
     for (;;) {
         if (c->rb_len) {
             uint32_t n = min_u32(max, c->rb_len);
-            uint32_t first = min_u32(n, RBUF_SIZE - c->rb_head);
+            uint32_t first = min_u32(n, c->rb_size - c->rb_head);
             memcpy(buf, c->rbuf + c->rb_head, first);
             if (n > first) memcpy((uint8_t*)buf + first, c->rbuf, n - first);
-            c->rb_head = (c->rb_head + n) % RBUF_SIZE;
+            c->rb_head = (c->rb_head + n) % c->rb_size;
             c->rb_len -= n;
             /* the window reopened noticeably: tell the sender now rather
              * than letting it sit idle until its persist timer fires */
@@ -783,7 +875,8 @@ int tcp_recv(tcp_conn_t* c, void* buf, uint32_t max, uint32_t timeout_ms) {
         }
         if (c->fin_rcvd) return 0;
         if (c->err) return c->err;
-        if (c->state == TCP_CLOSED) return NET_ERR_CLOSED;
+        if (c->state != TCP_ESTABLISHED && c->state != TCP_FIN_WAIT1 &&
+            c->state != TCP_FIN_WAIT2) return NET_ERR_CLOSED;
         if (timer_ms() - start >= timeout_ms) return NET_ERR_TIMEOUT;
         if (net_interrupted()) return NET_ERR_INTR;
         net_wait(20);
@@ -791,38 +884,48 @@ int tcp_recv(tcp_conn_t* c, void* buf, uint32_t max, uint32_t timeout_ms) {
 }
 
 void tcp_close(tcp_conn_t* c) {
-    if (!c || !c->used) return;
+    if (!c || c->state == TCP_CLOSED) return;
     c->user_closed = 1;
-    if (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT) {
+    if (c->state == TCP_ESTABLISHED) {
         c->fin_pending = 1;
+        c->state = TCP_FIN_WAIT1;
         tcp_output(c);
-    } else if (c->state == TCP_SYN_SENT) {
-        c->state = TCP_CLOSED;
+    } else if (c->state == TCP_CLOSE_WAIT) {
+        c->fin_pending = 1;
+        c->state = TCP_LAST_ACK;
+        tcp_output(c);
+    } else {
+        conn_free(c);
     }
-    if (c->state == TCP_CLOSED) conn_free(c);
 }
 
 void tcp_abort(tcp_conn_t* c) {
-    if (!c || !c->used) return;
-    if (c->state != TCP_CLOSED && c->state != TCP_SYN_SENT && c->state != TCP_TIME_WAIT)
-        send_seg(c, c->snd_nxt, F_RST | F_ACK, NULL, 0);
+    if (!c || c->state == TCP_CLOSED) return;
+    send_seg(c, c->snd_nxt, F_RST | F_ACK, NULL, 0);
+    c->state = TCP_CLOSED;
     conn_free(c);
 }
 
 void tcp_dump(void) {
-    terminal_writeln("Proto Local                 Foreign               State        Recv-Q Send-Q");
     int any = 0;
-    netif_t* nif = net_if();
     for (int i = 0; i < TCP_MAX_CONN; i++) {
         tcp_conn_t* c = &g_conns[i];
-        if (!c->used) continue;
-        char lip[48], rip[48], l[56], r[56], line[180];
-        if (c->ipv6) { ip6_format(&c->lip6, lip, sizeof(lip)); ip6_format(&c->rip6, rip, sizeof(rip)); }
-        else { ip4_to_str(nif->ip, lip); ip4_to_str(c->rip, rip); }
-        ksnprintf(l, sizeof(l), c->ipv6 ? "[%s]:%u" : "%s:%u", lip, c->lport);
-        ksnprintf(r, sizeof(r), c->ipv6 ? "[%s]:%u" : "%s:%u", rip, c->rport);
-        ksnprintf(line, sizeof(line), c->ipv6 ? "tcp6  %-21s %-21s %-12s %6u %6u" : "tcp   %-21s %-21s %-12s %6u %6u",
-                  l, r, tcp_state_str(c->state), c->rb_len, c->sb_len);
+        if (!c->used || c->state == TCP_CLOSED) continue;
+        char l[48], r[48], line[128];
+        if (c->ipv6) {
+            char lip[40], rip[40];
+            ip6_format(&c->lip6, lip, sizeof(lip));
+            ip6_format(&c->rip6, rip, sizeof(rip));
+            ksnprintf(l, sizeof(l), "[%s]:%u", lip, c->lport);
+            ksnprintf(r, sizeof(r), "[%s]:%u", rip, c->rport);
+        } else {
+            char lip[16], rip[16];
+            ip4_to_str(net_if()->ip, lip);
+            ip4_to_str(c->rip, rip);
+            ksnprintf(l, sizeof(l), "%s:%u", lip, c->lport);
+            ksnprintf(r, sizeof(r), "%s:%u", rip, c->rport);
+        }
+        ksnprintf(line, sizeof(line), c->ipv6 ? "tcp6  %-21s %-21s %-12s" : "tcp   %-21s %-21s %-12s", l, r, tcp_state_str(c->state));
         terminal_writeln(line);
         any = 1;
     }
@@ -902,46 +1005,47 @@ int tcp_peer6(const tcp_conn_t* c, ip6_t* ip, uint16_t* port) {
     return 1;
 }
 
-void tcp6_disable(void) {
-    for (int i = 0; i < TCP_MAX_CONN; i++) {
-        tcp_conn_t* c = &g_conns[i];
-        if (!c->used || !c->ipv6) continue;
-        if (c->listener || c->user_closed) { conn_free(c); continue; }
-        c->err = NET_ERR_NOTREADY; c->state = TCP_CLOSED; c->timer_on = 0;
-    }
-}
-
 int tcp_readable(const tcp_conn_t* c) {
     if (c->rb_len) return (int)c->rb_len;
-    if (c->fin_rcvd || c->err || c->state == TCP_CLOSED) return -1;
-    return 0;
+    return (c->fin_rcvd || c->state == TCP_CLOSED) ? -1 : 0;
 }
 
 uint32_t tcp_send_space(const tcp_conn_t* c) {
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return 0;
-    return SBUF_SIZE - c->sb_len;
+    return c->sb_size - c->sb_len;
 }
 
 /* ── for sockets (kernel/usock.c) ─────────────────────────────────── */
 
-/* up to max received bytes copied without taking them: how many */
 int tcp_peek(const tcp_conn_t* c, void* buf, uint32_t max) {
     uint32_t n = min_u32(max, c->rb_len);
-    uint32_t first = min_u32(n, RBUF_SIZE - c->rb_head);
+    uint32_t first = min_u32(n, c->rb_size - c->rb_head);
     memcpy(buf, c->rbuf + c->rb_head, first);
     if (n > first) memcpy((uint8_t*)buf + first, c->rbuf, n - first);
     return (int)n;
 }
 
-/* connections that completed the handshake and wait for tcp_accept() */
 int tcp_pending(const tcp_listener_t* l) {
-    int n = 0;
     if (!l || !l->used) return 0;
-    for (int i = 0; i < TCP_MAX_CONN; i++) {
-        const tcp_conn_t* c = &g_conns[i];
-        if (c->used && c->listener == l && (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT)) n++;
-    }
-    return n;
+    int count = 0;
+    for (int i = 0; i < TCP_MAX_CONN; i++)
+        if (g_conns[i].used && g_conns[i].listener == l &&
+            (g_conns[i].state == TCP_ESTABLISHED || g_conns[i].state == TCP_CLOSE_WAIT))
+            count++;
+    return count;
 }
 
 uint16_t tcp_local_port(const tcp_conn_t* c) { return c->lport; }
+
+void tcp_info(const tcp_conn_t* c, tcp_info_t* i) {
+    if (!c || !i) return;
+    i->wscale = c->ws_ok;
+    i->snd_ws = c->snd_ws;
+    i->rcv_ws = c->rcv_ws;
+    i->rcv_window = adv_window(c);
+    i->snd_window = c->snd_wnd;
+}
+
+void tcp_stats(tcp_stats_t* s) {
+    if (s) *s = g_stats;
+}
