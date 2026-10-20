@@ -8,3 +8,5 @@ line=#CFC3E2
 text_dim=#655A78
 text=#231C2E
 accent=#7B4FD0
+# Task Manager's look: banana, classic, windows10 or windows11
+taskmgr=windows10

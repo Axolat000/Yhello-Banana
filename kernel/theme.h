@@ -28,6 +28,11 @@
 #define THEME_DIR "/usr/share/themes"
 #define THEME_MAX 32
 
+/* the look of Task Manager a theme comes with (taskmgr= in its file) */
+enum { TM_STYLE_BANANA = 0, TM_STYLE_CLASSIC, TM_STYLE_WIN10, TM_STYLE_WIN11, TM_STYLES };
+extern const char* const TM_STYLE_KEYS[TM_STYLES];   /* "banana", "classic", "windows10", "windows11" */
+extern const char* const TM_STYLE_NAMES[TM_STYLES];  /* "Banana OS", "Windows classic", "Windows 10", "Windows 11" */
+
 enum { TH_SHADOW = 0, TH_BASE, TH_SURFACE, TH_RAISED, TH_LINE, TH_DIM, TH_TEXT, TH_BRIGHT, TH_SHADES };
 
 typedef struct {
@@ -37,6 +42,7 @@ typedef struct {
     uint32_t shade[TH_SHADES];
     uint32_t accent;
     int      light;                  /* light (1) or dark (0): for the picker */
+    int      taskmgr;                /* TM_STYLE_*: Task Manager's look */
     char     path[96];               /* its file ("" built in) */
 } theme_t;
 
@@ -56,6 +62,11 @@ int  theme_find(const char* name);              /* by name (any case), -1 */
 /* uses theme i (and its wallpaper), saves the choice: 0 / -1 */
 int  theme_apply(int i);
 uint32_t theme_generation(void);                /* bumped when the theme changes: redraw */
+/* Task Manager's look: the one chosen in Settings > Themes, else the theme's */
+int  theme_taskmgr_style(void);
+int  theme_taskmgr_override(void);              /* -1: the theme's */
+void theme_set_taskmgr_override(int style);     /* -1: the theme's; saved */
+int  theme_taskmgr_style_find(const char* key); /* "windows10" (or "10", "win10"...), -1 */
 
 /* reads a .theme file into t: 0, or -1 with the reason in err */
 int  theme_parse(const char* text, uint32_t len, theme_t* t, char* err, int cap);

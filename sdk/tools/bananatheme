@@ -54,6 +54,11 @@ def parse(text):
             continue
         if kl in ("mode", "description"):
             continue
+        if kl == "taskmgr":
+            if v.lower() not in ("banana", "classic", "windows10", "windows11", "win10", "win11", "windows", "10", "11"):
+                raise ThemeError("line %d: taskmgr= is banana, classic, windows10 or windows11" % n)
+            t["taskmgr"] = v.lower()
+            continue
         if kl not in SHADES and kl != "accent":
             raise ThemeError("line %d: unknown key '%s'" % (n, k))
         h = v.lstrip("#")

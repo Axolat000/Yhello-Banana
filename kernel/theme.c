@@ -7,22 +7,26 @@
 #include "settings.h"
 #include "wallpaper.h"
 
+const char* const TM_STYLE_KEYS[TM_STYLES] = { "banana", "classic", "windows10", "windows11" };
+const char* const TM_STYLE_NAMES[TM_STYLES] = { "Banana OS", "Windows classic", "Windows 10", "Windows 11" };
+
 /* ── the built-in themes ── */
 static const theme_t BUILTIN[] = {
     /* Banana Dark: the desktop's own palette (TC() changes nothing) */
-    { "Banana Dark", "Banana OS", "", { 0x000000, 0x10141C, 0x1B212B, 0x303740, 0x505E74, 0x9AA6B6, 0xE8EEF6, 0xFFFFFF }, 0x3A78D8, 0, "" },
-    { "Light", "Banana OS", "", { 0xA8A8A8, 0xFFFFFF, 0xF3F3F3, 0xE3E3E3, 0xC4C4C4, 0x5C5C5C, 0x1B1B1B, 0x000000 }, 0x005FB8, 1, "" },
-    { "Midnight", "Banana OS", "", { 0x000000, 0x0A0A0A, 0x161616, 0x262626, 0x434343, 0x9C9C9C, 0xEDEDED, 0xFFFFFF }, 0x4CC2FF, 0, "" },
-    { "Ocean", "Banana OS", "Ocean Wave", { 0x000000, 0x0B1A20, 0x10262E, 0x1C3A44, 0x2F5A66, 0x8FB3BD, 0xE3F4F7, 0xFFFFFF }, 0x2EC4B6, 0, "" },
-    { "Forest", "Banana OS", "Forest Night", { 0x000000, 0x0E1610, 0x16221A, 0x24362A, 0x3E5A46, 0x9DB5A3, 0xE6F2E8, 0xFFFFFF }, 0x5CC25C, 0, "" },
-    { "Banana", "Banana OS", "", { 0x000000, 0x17140C, 0x221E12, 0x36301E, 0x5C5232, 0xB8AE8E, 0xF6F0DA, 0xFFFFFF }, 0xE8B820, 0, "" },
-    { "Sakura", "Banana OS", "", { 0xB89AA4, 0xFFFFFF, 0xFDF2F5, 0xF5DCE4, 0xE0B8C6, 0x7A5562, 0x2E1A22, 0x000000 }, 0xD94A7A, 1, "" },
-    { "High Contrast", "Banana OS", "Plain Black", { 0x000000, 0x000000, 0x000000, 0x1A1A1A, 0xFFFFFF, 0xFFFF00, 0xFFFFFF, 0xFFFFFF }, 0x00FFFF, 0, "" },
+    { "Banana Dark", "Banana OS", "", { 0x000000, 0x10141C, 0x1B212B, 0x303740, 0x505E74, 0x9AA6B6, 0xE8EEF6, 0xFFFFFF }, 0x3A78D8, 0, TM_STYLE_WIN10, "" },
+    { "Light", "Banana OS", "", { 0xA8A8A8, 0xFFFFFF, 0xF3F3F3, 0xE3E3E3, 0xC4C4C4, 0x5C5C5C, 0x1B1B1B, 0x000000 }, 0x005FB8, 1, TM_STYLE_WIN10, "" },
+    { "Midnight", "Banana OS", "", { 0x000000, 0x0A0A0A, 0x161616, 0x262626, 0x434343, 0x9C9C9C, 0xEDEDED, 0xFFFFFF }, 0x4CC2FF, 0, TM_STYLE_WIN11, "" },
+    { "Ocean", "Banana OS", "Ocean Wave", { 0x000000, 0x0B1A20, 0x10262E, 0x1C3A44, 0x2F5A66, 0x8FB3BD, 0xE3F4F7, 0xFFFFFF }, 0x2EC4B6, 0, TM_STYLE_WIN11, "" },
+    { "Forest", "Banana OS", "Forest Night", { 0x000000, 0x0E1610, 0x16221A, 0x24362A, 0x3E5A46, 0x9DB5A3, 0xE6F2E8, 0xFFFFFF }, 0x5CC25C, 0, TM_STYLE_BANANA, "" },
+    { "Banana", "Banana OS", "", { 0x000000, 0x17140C, 0x221E12, 0x36301E, 0x5C5232, 0xB8AE8E, 0xF6F0DA, 0xFFFFFF }, 0xE8B820, 0, TM_STYLE_BANANA, "" },
+    { "Sakura", "Banana OS", "", { 0xB89AA4, 0xFFFFFF, 0xFDF2F5, 0xF5DCE4, 0xE0B8C6, 0x7A5562, 0x2E1A22, 0x000000 }, 0xD94A7A, 1, TM_STYLE_WIN11, "" },
+    { "High Contrast", "Banana OS", "Plain Black", { 0x000000, 0x000000, 0x000000, 0x1A1A1A, 0xFFFFFF, 0xFFFF00, 0xFFFFFF, 0xFFFFFF }, 0x00FFFF, 0, TM_STYLE_CLASSIC, "" },
 };
 #define NBUILTIN ((int)(sizeof(BUILTIN) / sizeof(BUILTIN[0])))
 
 static theme_t  g_themes[THEME_MAX];
 static int      g_n, g_cur, g_on;
+static int      g_tm_override = -1;           /* Task Manager's look chosen by hand, -1 the theme's */
 static uint32_t g_gen = 1;
 
 /* the default palette's shades, by their lightness (0..255): the anchors a
@@ -125,6 +129,7 @@ static const char* const SHADE_KEYS[TH_SHADES] = { "shadow", "base", "surface", 
 
 int theme_parse(const char* text, uint32_t len, theme_t* t, char* err, int cap) {
     memset(t, 0, sizeof(*t));
+    t->taskmgr = TM_STYLE_WIN10;                  /* (the default look) */
     int have[TH_SHADES] = { 0 }, have_acc = 0;
     uint32_t p = 0;
     int lineno = 0;
@@ -155,6 +160,12 @@ int theme_parse(const char* text, uint32_t len, theme_t* t, char* err, int cap) 
         if (!strcasecmp(k, "wallpaper")) { kstrlcpy(t->wallpaper, v, sizeof(t->wallpaper)); continue; }
         if (!strcasecmp(k, "mode")) { t->light = !strcasecmp(v, "light"); continue; }
         if (!strcasecmp(k, "description")) continue;
+        if (!strcasecmp(k, "taskmgr")) {
+            int st = theme_taskmgr_style_find(v);
+            if (st < 0) { ksnprintf(err, (size_t)cap, "line %d: taskmgr= is banana, classic, windows10 or windows11", lineno); return -1; }
+            t->taskmgr = st;
+            continue;
+        }
         uint32_t col;
         int which = -1;
         for (int i = 0; i < TH_SHADES; i++) if (!strcasecmp(k, SHADE_KEYS[i])) which = i;
@@ -201,6 +212,7 @@ void theme_init(void) {
     for (int i = 0; i < NBUILTIN; i++) g_themes[g_n++] = BUILTIN[i];
     scan_dir();
     char v[40];
+    g_tm_override = settings_get("taskmgr_style", v, sizeof(v)) ? theme_taskmgr_style_find(v) : -1;
     int i = settings_get("theme", v, sizeof(v)) ? theme_find(v) : -1;
     g_cur = i >= 0 ? i : 0;
     g_on = g_cur != 0;
@@ -212,6 +224,30 @@ int theme_count(void) { return g_n; }
 const theme_t* theme_get(int i) { return i >= 0 && i < g_n ? &g_themes[i] : NULL; }
 int theme_current(void) { return g_cur; }
 uint32_t theme_generation(void) { return g_gen; }
+
+int theme_taskmgr_style_find(const char* key) {
+    static const char* const ALT[TM_STYLES][3] = {
+        { "banana", "bananaos", "banana os" }, { "classic", "windows", "windows classic" },
+        { "windows10", "win10", "10" }, { "windows11", "win11", "11" },
+    };
+    for (int s = 0; s < TM_STYLES; s++)
+        for (int k = 0; k < 3; k++) if (!strcasecmp(key, ALT[s][k])) return s;
+    return -1;
+}
+
+int theme_taskmgr_override(void) { return g_tm_override; }
+
+int theme_taskmgr_style(void) {
+    if (g_tm_override >= 0) return g_tm_override;
+    const theme_t* t = theme_get(g_cur);
+    return t ? t->taskmgr : TM_STYLE_WIN10;
+}
+
+void theme_set_taskmgr_override(int style) {
+    g_tm_override = style >= 0 && style < TM_STYLES ? style : -1;
+    settings_set("taskmgr_style", g_tm_override >= 0 ? TM_STYLE_KEYS[g_tm_override] : "theme");
+    g_gen++;
+}
 
 int theme_find(const char* name) {
     for (int i = 0; i < g_n; i++) if (!strcasecmp(g_themes[i].name, name)) return i;
@@ -308,5 +344,6 @@ int theme_export(int i, const char* name, const char* path) {
     for (int k = 0; k < TH_SHADES && n < (int)sizeof(buf) - 40; k++)
         n += ksnprintf(buf + n, sizeof(buf) - (size_t)n, "%s=#%06X\n", SHADE_KEYS[k], t->shade[k]);
     n += ksnprintf(buf + n, sizeof(buf) - (size_t)n, "accent=#%06X\n", t->accent);
+    n += ksnprintf(buf + n, sizeof(buf) - (size_t)n, "# Task Manager: banana, classic, windows10 or windows11\ntaskmgr=%s\n", TM_STYLE_KEYS[t->taskmgr]);
     return fs_write_path(path, buf, (uint32_t)n) < 0 ? -1 : 0;
 }

@@ -605,6 +605,8 @@ static void theme_preview(int x, int y, int w, int h, const theme_t* t) {
     gfx_fill_rect(x + 1, y + h - 10, w - 2, 1, s[TH_LINE]);
 }
 
+static const char* const TM_SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", "Win 11" };
+
 static void draw_themes(void) {
     int x = cx0(), y = cy0();
     label(x, y, "Themes", C_HEAD);
@@ -621,6 +623,19 @@ static void draw_themes(void) {
         char nm[20];
         kstrlcpy(nm, t->name, sizeof(nm));
         label(tx + (TCARD_W - (int)strlen(nm) * 8) / 2, ty + TCARD_H - 12, nm, i == cur ? C_HEAD : C_TEXT);
+    }
+    /* Task Manager's look: the theme's, or one chosen */
+    int ty = g_win.y + g_win.h - 80, ov = theme_taskmgr_override();
+    label(x, ty + 6, "Task Manager:", C_TEXT);
+    char auto_lbl[32];
+    ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", TM_SHORT[theme_get(cur) ? theme_get(cur)->taskmgr : 0]);
+    button(x + 112, ty, 8 + (int)strlen(auto_lbl) * 8, auto_lbl, ov < 0);
+    int bx2 = x + 112 + 16 + (int)strlen(auto_lbl) * 8;
+    for (int s = 0; s < TM_STYLES; s++) {
+        static const char* const SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", "Win 11" };
+        int bw = (int)strlen(SHORT[s]) * 8 + 12;
+        button(bx2, ty, bw, SHORT[s], ov == s);
+        bx2 += bw + 6;
     }
     int by = g_win.y + g_win.h - 50;
     button(x, by, 128, "Install theme...", 0);
@@ -653,7 +668,22 @@ static void click_themes(int mx, int my) {
             return;
         }
     }
-    int x = cx0(), by = g_win.y + g_win.h - 50;
+    int x = cx0(), by = g_win.y + g_win.h - 50, ty = g_win.y + g_win.h - 80;
+    if (my >= ty && my < ty + 20) {
+        char auto_lbl[32];
+        const theme_t* ct = theme_get(theme_current());
+        ksnprintf(auto_lbl, sizeof(auto_lbl), "Theme's: %s", TM_SHORT[ct ? ct->taskmgr : 0]);
+        int ax = x + 112, aw = 8 + (int)strlen(auto_lbl) * 8;
+        if (mx >= ax && mx < ax + aw) { theme_set_taskmgr_override(-1); ksnprintf(g_status, sizeof(g_status), "Task Manager: the theme's look"); return; }
+        int bx2 = ax + aw + 8;
+        for (int s = 0; s < TM_STYLES; s++) {
+            static const char* const SHORT[TM_STYLES] = { "Banana", "Classic", "Win 10", "Win 11" };
+            int bw = (int)strlen(SHORT[s]) * 8 + 12;
+            if (mx >= bx2 && mx < bx2 + bw) { theme_set_taskmgr_override(s); ksnprintf(g_status, sizeof(g_status), "Task Manager: %s", TM_STYLE_NAMES[s]); return; }
+            bx2 += bw + 6;
+        }
+        return;
+    }
     if (inside(mx, my, x, by, 128, 20)) {
         fc_open("Choose a theme to install (.theme, .btheme)", "/home/banana/Downloads", is_theme_file, theme_chosen);
         return;

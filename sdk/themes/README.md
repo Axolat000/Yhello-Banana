@@ -28,6 +28,23 @@ bright=#FFFFFF
 accent=#2EC4B6
 ```
 
+A theme also picks **Task Manager's look**:
+
+```ini
+# banana, classic, windows10 or windows11 (default: windows10)
+taskmgr=windows11
+```
+
+| `taskmgr=` | Task Manager |
+|---|---|
+| `banana` | Banana OS's own first one: tabs, a list, CPU and memory bars |
+| `classic` | Windows XP / 7: grey, Applications, Processes, Performance with green meters, Networking, Users |
+| `windows10` | Windows 10: a menu bar and tabs, light, the busy columns tinted yellow |
+| `windows11` | Windows 11: a rail of pages at the left, dark |
+
+Settings > Themes and
+`theme taskmgr STYLE` can choose another look whatever the theme says.
+
 Colours are `#RRGGBB` (or `RRGGBB`, `0xRRGGBB`). `name`, the six shades
 `base` to `text`, and `accent` are required; `shadow`, `bright`, `author`
 and `wallpaper` may be left out.

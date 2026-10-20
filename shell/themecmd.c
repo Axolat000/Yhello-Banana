@@ -32,6 +32,8 @@ static void show(const theme_t* t) {
     }
     ksnprintf(line, sizeof(line), "  %-9s #%06X", "accent", t->accent);
     say(line);
+    ksnprintf(line, sizeof(line), "  %-9s %s", "taskmgr", TM_STYLE_KEYS[t->taskmgr]);
+    say(line);
     if (t->wallpaper[0]) { ksnprintf(line, sizeof(line), "  wallpaper %s", t->wallpaper); say(line); }
 }
 
@@ -71,6 +73,22 @@ int themecmd_dispatch(int argc, char** argv) {
         if (i < 0) { ksnprintf(line, sizeof(line), "theme: no theme '%s' (theme list)", name); say(line); return 1; }
         theme_apply(i);
         ksnprintf(line, sizeof(line), "Theme: %s", theme_get(i)->name);
+        say(line);
+        return 1;
+    }
+    if (!strcmp(sub, "taskmgr")) {
+        if (argc < 3) {
+            int ov = theme_taskmgr_override();
+            ksnprintf(line, sizeof(line), "Task Manager: %s (%s)", TM_STYLE_NAMES[theme_taskmgr_style()], ov < 0 ? "the theme's" : "chosen");
+            say(line);
+            say("theme taskmgr banana | classic | windows10 | windows11 | theme");
+            return 1;
+        }
+        if (!strcmp(argv[2], "theme") || !strcmp(argv[2], "auto")) { theme_set_taskmgr_override(-1); say("Task Manager: the theme's look"); return 1; }
+        int st = theme_taskmgr_style_find(argv[2]);
+        if (st < 0) { say("theme taskmgr banana | classic | windows10 | windows11 | theme"); return 1; }
+        theme_set_taskmgr_override(st);
+        ksnprintf(line, sizeof(line), "Task Manager: %s", TM_STYLE_NAMES[st]);
         say(line);
         return 1;
     }
@@ -123,6 +141,6 @@ int themecmd_dispatch(int argc, char** argv) {
         contrast("raised and surface", t.shade[TH_RAISED], t.shade[TH_SURFACE], 6);
         return 1;
     }
-    say("usage: theme [list | set NAME | show [NAME] | install FILE | new NAME [FILE] | check FILE]");
+    say("usage: theme [list | set NAME | show [NAME] | install FILE | new NAME [FILE] | check FILE | taskmgr STYLE]");
     return 1;
 }
