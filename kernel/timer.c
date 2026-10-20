@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "latency.h"
 #include "types.h"
 #include "idt.h"
 #include "io.h"
@@ -95,6 +96,7 @@ uint64_t timer_tsc_per_ms(void) { return g_tsc_per_ms; }
 uint32_t timer_irq_count(void) { return g_ms; }
 
 static void timer_irq(void) {
+    if (latency_enabled) latency_timer();
     g_ms++;
     serial_kick();      /* drain the serial console's output queue */
     task_smp_tick();    /* app code on the other cores takes turns (kernel/task.c) */

@@ -9,6 +9,35 @@ console. Most of them came with pull request #30 (builds 141-150); `fsck` and
 Every test prints one line per check - `ok`, `FAIL` (with the reason) or
 `skip` (with why it cannot run here) - and a summary with the number failed.
 
+## DHCP state inventory
+
+See [DHCP state and failure matrix](DHCP-STATE.md) for the current timers,
+Settings/ifconfig diagnostics, known lease/carrier gaps, host characterization
+commands and the controlled-network qualification procedure. Execution evidence
+for base-17 step 1 is in [DHCP validation](DHCP-STATE-VALIDATION.md).
+
+## DNS and socket state characterization
+
+See [DNS and SDK socket mapping state matrix](DNS-SOCKET-STATE.md) for the
+characterization of RFC 1035 A/AAAA DNS queries, error and timeout handling,
+caching, NXDOMAIN, truncated responses (TC bit), and SDK POSIX getaddrinfo /
+socket family mappings. Host characterization tests run via:
+```bash
+python3 tools/test_dns_socket_state.py --sanitize
+```
+
+## Monotonic Clock and UTC Time Synchronization
+
+See [Monotonic Clock and UTC Time Synchronization](CLOCK-MONOTONIC-UTC.md) for
+the architectural separation of monotonic time (`timer_ms()`) and real time
+(`rtc_now_utc()`), time correction models (step vs slew), proof of TCP delay and
+deadline invariance under wall-clock jumps, and NTP/SNTP protocol specifications.
+Host characterization tests run via:
+```bash
+python3 tools/test_clock_monotonic_utc.py --sanitize
+```
+
+
 ## Inside Banana OS
 
 ### `selftest [part]`
@@ -158,6 +187,45 @@ installs and runs `threads 4 200000` and `cltest`, then `free`. In a commands
 file: one command a line, `#wait N` waits N seconds, other `#` lines are
 comments. `--window` shows QEMU's screen, `--keep` leaves it running afterwards.
 Exit code 0 when every command passed.
+
+### CI firmware smoke jobs
+
+The Build ISO workflow runs separate `boot` matrix jobs for BIOS and x86_64
+UEFI on Ubuntu 24.04. Both download the same `boot-iso-<SHA>` artifact from
+the build job rather than rebuilding it. Reproduce them from the repository root:
+
+```
+make
+bash tools/ci-boot.sh bios
+bash tools/ci-boot.sh uefi
+```
+
+The boot-only dependencies are `python3`, `qemu-system-x86` and `ovmf` (plus
+Git and `sha256sum` for provenance). The build dependencies are listed above.
+UEFI uses `/usr/share/OVMF/OVMF_CODE_4M.fd` and a private copy of
+`/usr/share/OVMF/OVMF_VARS_4M.fd`; override `OVMF_CODE` and `OVMF_VARS` together
+for another matching firmware pair. Secure Boot is disabled in this test.
+QEMU uses software emulation, four cores, 512 MiB RAM and no network device.
+The firmware selects the default 64-bit kernel from the ISO.
+
+Each job must reach a serial shell prompt, then run `selftest boot` and
+`selftest ram` with a `0 failed` result, within 180 seconds for boot and
+180 seconds per command. A timeout, missing expected result, crash or panic
+reported during a command fails the job. The job itself has a 15-minute limit.
+These are offline boot smoke checks, not the full app/POSIX, filesystem,
+installation, reboot, update or hardware test suites.
+
+`build/logs/boot-<firmware>/` contains `serial.log`, `results.log` and
+`provenance.txt` (commit SHA, ISO SHA-256, QEMU version and arguments).
+CI attempts to upload these even on failure as
+`boot-<firmware>-<SHA>-<attempt>` with 14-day retention; failures before QEMU
+starts can have no serial log. The ISO artifact is retained for three days.
+Firmware variable copies are disposable and are not uploaded.
+
+This implements base-07 step 1 only. Existing pre-release publication is
+unchanged and does not wait for the boot jobs. The current workflow has no
+stable channel; stable gating and its intentional-failure demonstration remain
+base-07 step 3. Do not treat successful smoke jobs as full release validation.
 
 ### `tools/test-exfat.sh [bios|uefi]`
 

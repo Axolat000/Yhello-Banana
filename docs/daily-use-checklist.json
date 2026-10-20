@@ -349,7 +349,8 @@
     "priority": "P0",
     "domain": "Validation",
     "title": "Bloquer les releases stables sur les tests",
-    "evidence": "Le workflow consulté construit et publie ; pas de démarrage QEMU de validation.",
+    "evidence": "The inspected workflow publishes ISO and Java pre-releases (prerelease: true); it has no stable publication job. Step 1 proposes BIOS/UEFI64 offline boot smoke jobs using the built ISO, not release gating.",
+    "planningReason": "Inspection of .github/workflows/build-iso.yml distinguishes existing pre-release publication from the planned stable channel. Preserve all started steps; step 3 must define or identify stable publication and demonstrate that a failed or skipped required validation prevents it. Step 1 smoke checks alone are not evidence of full release validation.",
     "action": "Ajouter boot QEMU BIOS/UEFI, selftest et POSIX, fichiers, réseau, installation, redémarrage et mise à jour avant publication stable. Étendre la matrice avec les corrections. Ce travail peut commencer immédiatement en parallèle.",
     "acceptance": "Une régression de boot, de sauvegarde ou de reprise du journal bloque la release.",
     "sources": [
@@ -1265,7 +1266,9 @@
       "web/jsdom.c",
       "web/css.c",
       "kernel/browser.c",
-      "tools/test_browser.py"
+      "tools/test_browser.py",
+      "docs/web-engine-strategy-journeys.md",
+      "docs/web-engine-qualification-step2.md"
     ],
     "steps": [
       "Fixer cinq parcours précis : par exemple login messagerie, lire/répondre, dépôt GitHub, modifier un document et upload ; utiliser des comptes de test.",
@@ -1288,7 +1291,8 @@
       "kernel/browser.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/browser.c",
       "tools/test_browser.py": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/tools/test_browser.py"
     },
-    "rank": 26
+    "rank": 26,
+    "planningReason": "Step 1 established the five precise evaluation journeys in docs/web-engine-strategy-journeys.md. Step 2 delivered the detailed qualification report in docs/web-engine-qualification-step2.md, establishing the exact blocking APIs, runtime errors, and failure modes across JavaScript, DOM, rendering, network, and security subsystems for the in-house engine. Step 3 compares a QuickJS test-page integration against candidate full maintained engines."
   },
   {
     "id": "quickjs",
@@ -1667,9 +1671,10 @@
       "Programme cible : 30 minutes avec son et entrées, pas de répétition de touches bloquée ni audio continu après fermeture."
     ],
     "deliverable": "Backend SDL Banana, exemples et premier programme porté.",
-    "decision": "Le programme et la version SDL restent à choisir ; aucune promesse de compatibilité de tous les jeux SDL.",
-    "evidenceLevel": "périmètre / port proposé ; qualification à faire",
+    "decision": "Version retenue : SDL2 (branche stable 2.30.x) pour assurer la compatibilité avec l'écosystème de jeux et outils existants. Premier programme cible sélectionné : Chocolate Doom (Doom classic engine) avec application intermédiaire de démonstration et qualification 100-cycles (ports/sdl2/test/sdl2_demo).",
+    "evidenceLevel": "décision documentée (docs/sdl2-porting-strategy.md), backend SDL2 complet (fenêtre, surface logicielle, événements, horloge, threads, audio mixer, manettes, accélération OpenGL bgl3/OSMesa, gestion perte de focus et libération propre) et tests de qualification automatisés (ports/sdl2/test/sdl2_demo)",
     "priorityReason": "Rend un parcours quotidien concret utilisable après les prérequis.",
+    "planningReason": "Step 3 resolved: Linked OpenGL 3.3 hardware/Mesa acceleration to SDL2 on Banana OS via bgl3 (SDL_GL_CreateContext, SDL_GL_MakeCurrent, SDL_GL_SwapWindow, SDL_GL_DeleteContext, attributes, proc address resolution), handled focus loss with full key state reset to avoid sticky keys, and verified clean window/context destruction and qualification in ports/sdl2/test/sdl2_demo.",
     "fileLinks": {
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/audio.h": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/audio.h",
@@ -2084,7 +2089,19 @@
       "kernel/gui.c",
       "kernel/clipboard.c",
       "kernel/appwin.c",
-      "kernel/settings.c"
+      "kernel/settings.c",
+      "kernel/notification.h",
+      "kernel/notification.c",
+      "tools/tests/notification.c",
+      "tools/test_notification.py",
+      "kernel/screenshot.h",
+      "kernel/screenshot.c",
+      "kernel/clipboard.h",
+      "shell/fscmds.c",
+      "shell/help.c",
+      "shell/selftest.c",
+      "tools/tests/screenshot_clipboard.c",
+      "tools/test_screenshot_clipboard.py"
     ],
     "steps": [
       "Créer un service de notification avec titre, texte, application et action ; limiter la fréquence et conserver un historique borné.",
@@ -2104,7 +2121,8 @@
       "kernel/appwin.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/appwin.c",
       "kernel/settings.c": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/kernel/settings.c"
     },
-    "rank": 43
+    "rank": 43,
+    "planningReason": "Implement PNG screenshot capture with configurable directory, collision-free naming, and visual toast feedback, alongside multi-format clipboard support (text, image up to 2 MiB, file lists) with history integration."
   },
   {
     "id": "base-31",
@@ -2196,5 +2214,105 @@
       "docs/TESTING.md": "https://github.com/qcom-toolbox/Banana-OS/blob/6d8dc7f9abbf1aa062138a6384aedb4153cb589e/docs/TESTING.md"
     },
     "rank": 45
+  },
+  {
+    "id": "base-17-dhcp-lifecycle",
+    "priority": "P1",
+    "domain": "Network",
+    "title": "Enforce DHCP lease expiry and recover across carrier changes",
+    "goal": "Keep IPv4 configuration valid and recover without reboot after DHCP lease loss or a temporary link outage.",
+    "evidence": "Step 1 inventory and tools/test_dhcp_state.py characterize net/dhcp.c: renewal has a 30-second minimum, no lease-expiry invalidation or T2 rebinding, and renewal exhaustion starts discovery with configured still true. DHCP does not consume carrier transitions from netdev.link_up.",
+    "planningReason": "The started base-17 steps cover DHCP state documentation/UI, DNS/sockets and clocks, but do not assign implementation of the observed lease-expiry and carrier-recovery gaps. A distinct follow-up preserves those started steps while making the original short-lease/outage acceptance executable. See docs/DHCP-STATE.md; this proposal needs independent review and controller validation before scheduling.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "On a controlled short lease, renew before expiry, stop using an expired or NAK-rejected address, and reacquire after a 30-second carrier outage without reboot. Interrupted downloads report an explicit error within a documented bound. Static configuration remains unchanged by DHCP timers.",
+    "deliverable": "Reviewed DHCP lease/carrier state machine, updated Settings/ifconfig diagnostics, deterministic tests and packet/serial evidence for the original base-17 outage matrix.",
+    "steps": [
+      "Implement validated lease/T1/T2 deadlines, expiry invalidation, renewal/rebinding and retry behavior, including short and infinite leases and timer wrap; replace characterization assertions for known gaps with required behavior tests.",
+      "Connect active-interface carrier loss/restoration and adapter changes to DHCP recovery and necessary socket invalidation; preserve static mode and distinguish unsupported driver carrier reporting.",
+      "Qualify the short-lease, server-silence, NAK and 30-second outage matrix in controlled QEMU networking; document call/recovery bounds and separately record physical NIC validation when available."
+    ],
+    "tests": [
+      "Use deterministic host tests of real DHCP code for short lease expiry, supplied T1/T2, absent server, ACK/NAK, timer wrap, infinite lease and static mode.",
+      "Capture DHCP traffic and serial logs on an isolated server: shorten lease, suppress replies past T2 and expiry, restore server, cut carrier for 30 seconds and restore it; require no stale-address use and no reboot.",
+      "Run a download through the outage, assert explicit bounded failure, then retry successfully after reacquisition; verify carrier reporting on the actual NIC before claiming hardware support."
+    ],
+    "files": [
+      "net/dhcp.c",
+      "net/net.c",
+      "net/net.h",
+      "net/netdev.h",
+      "net/tcp.c",
+      "kernel/settings.c",
+      "shell/netcmds.c",
+      "tools/test_dhcp_state.py",
+      "docs/DHCP-STATE.md"
+    ]
+  },
+  {
+    "id": "base-17-dns-sockets",
+    "priority": "P2",
+    "domain": "Network",
+    "title": "Add DNS TCP fallback and IPv6 socket support in SDK",
+    "goal": "Support large DNS responses requiring TCP fallback and enable IPv6 socket communication across the SDK and kernel.",
+    "evidence": "Characterization in base-17 step 2 (docs/DNS-SOCKET-STATE.md and tools/test_dns_socket_state.py) shows that net/dns.c drops truncated UDP replies (TC bit set) causing timeouts without TCP fallback, and sdk/lib/socket.c / kernel/usock.c only support AF_INET sockets, returning EAFNOSUPPORT for AF_INET6.",
+    "planningReason": "Step 2 characterized existing DNS A/AAAA resolution and SDK socket mapping. RFC 1035 DNS TCP fallback and kernel usock AF_INET6 support require distinct ABI and kernel socket subsystem extensions that should be scheduled and reviewed independently without expanding step 2 scope. See docs/DNS-SOCKET-STATE.md.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "Queries receiving TC=1 fall back to DNS over TCP and return answers; SDK socket(AF_INET6, SOCK_STREAM/DGRAM, 0) succeeds and communicates over IPv6 transport.",
+    "deliverable": "DNS TCP client fallback, kernel usock IPv6 implementation, SDK getaddrinfo AF_INET6 support, and host/QEMU regression tests.",
+    "steps": [
+      "Implement DNS TCP client query fallback when UDP response has TC bit set in net/dns.c.",
+      "Extend kernel/usock.c to support AF_INET6 addresses and connect to net/ipv6.c tcp_connect6 / udp6_send.",
+      "Update sdk/lib/socket.c getaddrinfo() and banana_api to resolve and map AF_INET6 addresses."
+    ],
+    "tests": [
+      "Host test injecting TC=1 responses and asserting successful TCP fallback resolution.",
+      "selftest ipv6 and SDK socket tests verifying IPv6 TCP and UDP loopback connections."
+    ],
+    "files": [
+      "net/dns.c",
+      "kernel/usock.c",
+      "kernel/usock.h",
+      "kernel/app.c",
+      "sdk/include/banana_api.h",
+      "sdk/lib/socket.c",
+      "tools/test_dns_socket_state.py",
+      "docs/DNS-SOCKET-STATE.md"
+    ]
+  },
+  {
+    "id": "base-17-ntp",
+    "priority": "P2",
+    "domain": "Network",
+    "title": "Implement NTP / SNTP network time client and slewing",
+    "goal": "Provide automatic network time synchronization over UDP port 123 without disturbing monotonic timers or TCP delays.",
+    "evidence": "Inventory in base-17 step 3 (docs/CLOCK-MONOTONIC-UTC.md) shows that while timer_ms() and rtc_now_utc() are cleanly separated so wall-clock jumps do not affect TCP delays, no RFC 4330/5905 NTP client exists in Banana OS. Setting time currently requires manual date set or VM guest tools.",
+    "planningReason": "Step 3 established and verified monotonic clock isolation and proved TCP deadline invariance under UTC steps, specifying the protocol format and discipline for NTP. A distinct follow-up implements the NTP UDP client, Settings integration, and slew/step discipline without expanding step 3 scope. See docs/CLOCK-MONOTONIC-UTC.md.",
+    "depends": [
+      "base-17"
+    ],
+    "acceptance": "Running ntp <server> or enabling network time in Settings contacts an NTP server, verifies stratum and sanity, and adjusts system UTC time via step or slew without breaking active TCP connections or downloads.",
+    "deliverable": "NTP client utility and kernel/net service, Settings network time toggle, and automated synchronization tests.",
+    "steps": [
+      "Implement RFC 4330 / 5905 SNTP client in net/ntp.c query via UDP port 123.",
+      "Integrate NTP synchronization into Settings Date & Time and date shell command.",
+      "Implement gradual clock slewing (±500 PPM) for small clock offsets (<128 ms)."
+    ],
+    "tests": [
+      "Host test validating SNTP client query/reply against local mock NTP server.",
+      "In Banana OS: ntp pool.ntp.org while maintaining an active TCP download to verify zero connection reset or timeout."
+    ],
+    "files": [
+      "net/ntp.c",
+      "net/ntp.h",
+      "kernel/rtc.c",
+      "kernel/settings.c",
+      "shell/datecmd.c",
+      "tools/test_clock_monotonic_utc.py",
+      "docs/CLOCK-MONOTONIC-UTC.md"
+    ]
   }
 ]

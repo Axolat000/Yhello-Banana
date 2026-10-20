@@ -48,6 +48,10 @@ int fsdisk_find_installed(ata_disk_t* out);
  * FSDISK_ERR_NO_TARGET if this session isn't associated with an
  * installed disk yet (call fsdisk_install() first). */
 int fsdisk_sync(void);
+/* Like fsdisk_sync(), but if frozen for backup, waits for thaw (up to 10 min)
+ * rather than returning success immediately with deferred writes. Returns
+ * FSDISK_OK, FSDISK_ERR_NO_TARGET, or FSDISK_ERR_IO. */
+int fsdisk_sync_wait(void);
 
 /* Called once at boot, before fs_init() would otherwise seed the default
  * hierarchy: if exactly one ATA disk is present and holds a valid Banana
