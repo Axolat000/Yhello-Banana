@@ -232,10 +232,12 @@ It tests:
 3. Booting the live CD with the installed disk attached, executing `update 1`, and verifying comparison/update succeeds without corrupting existing data.
 The temporary disk image is removed upon exit. Evidence logs (`serial-install.log`, `results-install.log`, `serial-diskboot.log`, `results-diskboot.log`, `serial-update.log`, `results-update.log`, `provenance.txt`) are stored under `build/logs/install-<firmware>/` and archived in CI with 14-day retention.
 
-This implements base-07 steps 1 and 2. Existing pre-release publication is
-unchanged and does not wait for the boot jobs. The current workflow has no
-stable channel; stable gating and its intentional-failure demonstration remain
-base-07 step 3. Do not treat successful smoke and install validation jobs as full release validation.
+This implements base-07 steps 1, 2, and 3. Existing pre-release publication remains
+available immediately for rapid developer builds, while the dedicated stable publication channel
+(`publish-stable` job) is gated strictly on full success of the `boot` matrix across both BIOS and UEFI
+targets. If any offline boot smoke test, host ext4 journal replay check, disposable image installation,
+standalone disk boot, or ISO update test fails, times out, encounters a panic/crash, or reports unexpected
+skipped tests, the `boot` matrix fails with non-zero exit and `publish-stable` is blocked from publishing.
 
 ### `tools/test-exfat.sh [bios|uefi]`
 
