@@ -1669,8 +1669,20 @@ static void cmd_halt(void) {
  * automatically (see sync_if_installed() above). Booting itself is
  * unaffected - this makes the filesystem *contents* persistent, it does
  * not make the disk bootable on its own. */
+/* The keys typed before a question was shown are not its answer: the
+ * Enter that ran the command (a second one from a keyboard that repeats
+ * it, or a carriage return after it), keys pressed while `update` compared
+ * the disk with the CD... Those are thrown away, and an Enter in the first
+ * half second after the question is not taken either - it answered "no"
+ * before anyone could press y. */
+static void drop_typed_ahead(void) {
+    for (int i = 0; i < 256 && keyboard_try_getchar(); i++) { }
+}
+
 static int prompt_yes_no(void) {
     int my_vt = terminal_vt_get_active();
+    drop_typed_ahead();
+    uint32_t shown = timer_ms();
     while (1) {
         gui_poll();
         terminal_vt_set_active(my_vt);
@@ -1678,7 +1690,8 @@ static int prompt_yes_no(void) {
         char c = keyboard_try_getchar();
         if (!c) { task_sleep_ms(10); continue; }
         if (c == 'y' || c == 'Y') { terminal_writeln("y"); return 1; }
-        if (c == 'n' || c == 'N' || c == '\n' || c == 3) { terminal_writeln("n"); return 0; }
+        if ((c == '\n' || c == '\r') && timer_ms() - shown < 500) continue;   /* (typed before the question) */
+        if (c == 'n' || c == 'N' || c == '\n' || c == '\r' || c == 3 || c == 27) { terminal_writeln("n"); return 0; }
     }
 }
 
@@ -1688,6 +1701,8 @@ static int prompt_number(int max) {
     int my_vt = terminal_vt_get_active();
     char buf[8];
     int n = 0;
+    drop_typed_ahead();
+    uint32_t shown = timer_ms();
     for (;;) {
         gui_poll();
         terminal_vt_set_active(my_vt);
@@ -1699,6 +1714,7 @@ static int prompt_number(int max) {
             if (n) { n--; terminal_cursor_left(); terminal_putchar(' '); terminal_cursor_left(); }
             continue;
         }
+        if ((c == '\n' || c == '\r') && !n && timer_ms() - shown < 500) continue;   /* (typed before the question) */
         if (c == '\n' || c == '\r') {
             terminal_putchar('\n');
             if (!n) return 0;
