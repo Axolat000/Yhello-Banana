@@ -206,3 +206,37 @@ jobs:
           prerelease: true
           target_commitish: ${{ github.sha }}
           files: java.bpk
+
+  # Stable release channel: gated strictly on full boot smoke checks, host ext4
+  # tests, and disposable disk install/boot/update checks passing across both
+  # BIOS and UEFI firmware targets. Any failure, crash, panic, or unexpected
+  # test skip prevents stable publication.
+  publish-stable:
+    name: Publish Stable Release
+    needs: [ build, boot ]
+    if: github.ref == 'refs/heads/main' && success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the validated ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-iso-${{ github.sha }}
+
+      - name: Publish stable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}-stable
+          name: Banana OS Stable build ${{ github.run_number }}
+          prerelease: false
+          draft: false
+          target_commitish: ${{ github.sha }}
+          files: Banana_OS.iso
+          body: |
+            Banana OS Stable Release (build ${{ github.run_number }})
+
+            Gated and verified by automated CI validation:
+            - BIOS & UEFI QEMU boot and offline selftests (boot, ram)
+            - Host ext4 filesystem and JBD2 journal replay tests
+            - Disposable disk installation, standalone disk boot, and ISO update checks

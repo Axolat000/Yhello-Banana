@@ -368,7 +368,8 @@
       "tools/serialtest.py",
       "docs/TESTING.md",
       "tools/ext4test/run.sh",
-      "tools/ci-install-test.sh"
+      "tools/ci-install-test.sh",
+      "docs/validation/base-07-step-3.md"
     ],
     "steps": [
       "Créer un job QEMU BIOS et un job UEFI 64 bits ; installer les dépendances documentées et archiver les logs série.",
