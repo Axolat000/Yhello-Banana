@@ -158,7 +158,7 @@ static uint8_t* g_vram;
 
 static void radeon_case(const rcase_t* c) {
     memset(g_mm, 0, 1u << 20);
-    memset(g_vram, 0, 32u << 20);
+    memset(g_vram, 0xA5, 32u << 20);                 /* (old pixels: the cursor must cover them all) */
     g_dev = (pci_dev_t){ 1, 0, 0, 0x1002, c->id, 3, 0, 0, 11 };
     for (int i = 0; i < 6; i++) g_bar[i] = 0;
     g_bar[0] = (uintptr_t)g_vram;
@@ -190,7 +190,10 @@ static void radeon_case(const rcase_t* c) {
     EQ("CUR_SIZE", R(0x69A0 + o), 63u << 16 | 63u);
     EQ("cursor image", g->cursor_image(g, g_img, 32, 32, 1, 1), 0);
     EQ("the image in video memory", *(uint32_t*)(g_vram + off), g_img[0]);
-    EQ("its second row", *(uint32_t*)(g_vram + off + 256), g_img[32]);
+    uint32_t row = c->crtc_off == 0x9800 && c->reg_bar == 5 ? 512 : 256;    /* (Polaris: 128-pixel rows) */
+    EQ("its second row", *(uint32_t*)(g_vram + off + row), g_img[32]);
+    EQ("transparent right of the image", *(uint32_t*)(g_vram + off + 32 * 4), 0);
+    EQ("transparent under the image", *(uint32_t*)(g_vram + off + 40 * row), 0);
     g->cursor_move(g, 11, 21, 1);
     EQ("CUR_CONTROL", R(0x6998 + o), 1u | 3u << 8 | 4u << 24);
     EQ("CUR_POSITION", R(0x69A8 + o), 10u << 16 | 20u);

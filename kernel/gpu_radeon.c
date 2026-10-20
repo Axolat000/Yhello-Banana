@@ -70,6 +70,10 @@ static volatile uint32_t* g_cur;           /* the cursor image, in video memory 
 static uint64_t g_cur_mc;                  /* ... as the display engine sees it */
 static uint32_t g_crtc;                    /* the CRTC's register offset */
 static int g_crtc_n, g_dce, g_on, g_hot_x, g_hot_y, g_active;
+/* the cursor surface's rows: 64 pixels on DCE 4/5; DCE 8 and later (Polaris) read
+ * 128-pixel rows whatever the size shown (as amdgpu's 128x128 cursors) */
+static int g_pitch = 64;
+#define CUR_BYTES ((uint32_t)g_pitch * 64u * 4u)
 static char g_why[96] = "not tried (gpu experimental on)";
 
 static uint32_t rd(uint32_t r) { return r + 4 <= g_reg_size ? *(volatile uint32_t*)(g_reg + r) : 0; }
@@ -92,7 +96,7 @@ static int rad_cursor_image(gpu_t* g, const uint32_t* argb, int w, int h, int hx
     (void)g;
     if (w > 64 || h > 64) return -1;
     for (int y = 0; y < 64; y++)
-        for (int x = 0; x < 64; x++) g_cur[y * 64 + x] = x < w && y < h ? argb[y * w + x] : 0;
+        for (int x = 0; x < g_pitch; x++) g_cur[y * g_pitch + x] = x < w && y < h ? argb[y * w + x] : 0;
     g_hot_x = hx;
     g_hot_y = hy;
     return 0;
@@ -171,13 +175,14 @@ static int try_card(const pci_dev_t* d) {
     }
     g_crtc_n = found;
     g_crtc = offs[found];
-    /* the cursor's 16 KiB, 64 KiB past the end of the framebuffer, in the same BAR */
+    /* the cursor's 16 KiB (64 KiB on DCE 8+), 64 KiB past the end of the framebuffer, in the same BAR */
     uint64_t off = ((uint64_t)(fi->addr - vb) + (uint64_t)fi->pitch * fi->height + 0x10000 + 0xFFF) & ~0xFFFull;
-    if (off + 16384 > (256ull << 20)) { kstrlcpy(g_why, "no room for the cursor in the visible video memory", sizeof(g_why)); return -1; }
-    if (!mmio_map(vb + (uintptr_t)off, 16384)) { kstrlcpy(g_why, "the cursor's memory could not be mapped", sizeof(g_why)); return -1; }
+    g_pitch = f->dce >= 8 ? 128 : 64;
+    if (off + CUR_BYTES > (256ull << 20)) { kstrlcpy(g_why, "no room for the cursor in the visible video memory", sizeof(g_why)); return -1; }
+    if (!mmio_map(vb + (uintptr_t)off, CUR_BYTES)) { kstrlcpy(g_why, "the cursor's memory could not be mapped", sizeof(g_why)); return -1; }
     g_cur = (volatile uint32_t*)(vb + (uintptr_t)off);
     g_cur_mc = vram_mc + off;
-    for (int i = 0; i < 64 * 64; i++) g_cur[i] = 0;
+    for (uint32_t i = 0; i < CUR_BYTES / 4; i++) g_cur[i] = 0;
     /* set it up, hidden */
     wr(CUR_UPDATE + g_crtc, rd(CUR_UPDATE + g_crtc) | CUR_UPDATE_LOCK);
     wr(CUR_CONTROL + g_crtc, 0);
