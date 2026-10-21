@@ -9,6 +9,9 @@ def write(path, text):
 p = root/'src/gallium/targets/osmesa/meson.build'; s=p.read_text()
 if "'banana_virgl.c'" not in s:
  s=s.replace("'osmesa_target.c',", "'osmesa_target.c', 'banana_virgl.c',")
+if "'banana_crocus.c'" not in s:
+ s=s.replace("'banana_virgl.c',", "'banana_virgl.c', 'banana_crocus.c', 'banana_drm.c',")
+ s=s.replace('driver_virgl, dep_ws2_32,', 'driver_virgl, driver_crocus, dep_ws2_32,')
  s=s.replace('inc_gallium_drivers,', 'inc_gallium_drivers, inc_virtio,')
  s=s.replace('dep_ws2_32, dep_thread,', 'driver_virgl, dep_ws2_32, dep_thread,')
 if 'libgalliumvl_stub' not in s: s=s.replace('libmesa, libgallium,', 'libmesa, libgallium, libgalliumvl_stub,')
@@ -16,6 +19,9 @@ if 'inc_virtio' not in s: s=s.replace('inc_gallium_drivers,', 'inc_gallium_drive
 write(p, s)
 dst=p.parent/'banana_virgl.c'; source=(here/'banana/virgl_winsys.c').read_text()
 if not dst.exists() or dst.read_text() != source: dst.write_text(source)
+for name, src in (('banana_crocus.c', 'crocus_screen.c'), ('banana_drm.c', 'drm_shim.c')):
+ dst=p.parent/name; source=(here/'banana'/src).read_text()
+ if not dst.exists() or dst.read_text() != source: dst.write_text(source)
 p=root/'src/gallium/targets/osmesa/osmesa_target.c';s=p.read_text()
 if 'banana_virgl_create_screen' not in s:
  s=s.replace('struct pipe_screen *\nosmesa_create_screen(void);', 'struct pipe_screen *banana_virgl_create_screen(void);\n\nstruct pipe_screen *\nosmesa_create_screen(void);')
@@ -27,6 +33,33 @@ if 'banana_virgl_create_screen' not in s:
    }
 
    /* We use a null software winsys''')
+write(p, s)
+# the GPU first (an Intel one, once gpu3d on), then VirGL, then the processor
+if 'banana_crocus_create_screen' not in s:
+ s=s.replace('struct pipe_screen *banana_virgl_create_screen(void);', 'struct pipe_screen *banana_virgl_create_screen(void);\nstruct pipe_screen *banana_crocus_create_screen(int asked);')
+ s=s.replace('''   const char *driver = getenv("GALLIUM_DRIVER");
+   if (!driver || !strcmp(driver, "virgl")) {''', '''   const char *driver = getenv("GALLIUM_DRIVER");
+   if (!driver || !strcmp(driver, "crocus")) {
+      screen = banana_crocus_create_screen(driver != NULL);
+      if (screen) return debug_screen_wrap(screen);
+      if (driver) return NULL;
+   }
+   if (!driver || !strcmp(driver, "virgl")) {''')
+write(root/'src/gallium/targets/osmesa/osmesa_target.c', s)
+p=root/'src/gallium/drivers/crocus/crocus_batch.c';s=p.read_text()
+if 'Banana OS keeps no hardware context' not in s:
+ s=s.replace('''   /* Start a new batch buffer. */
+   crocus_batch_reset(batch);
+''', '''   /* Start a new batch buffer. */
+   crocus_batch_reset(batch);
+
+#ifdef __BANANA_OS__
+   /* Banana OS keeps no hardware context between batches (no MI_SET_CONTEXT):
+    * every batch sets the whole GPU state again */
+   if (ret != -EIO)
+      crocus_lost_context_state(batch);
+#endif
+''')
 write(p, s)
 p=root/'src/gallium/drivers/virgl/meson.build';s=p.read_text().replace('if not with_platform_windows\n', "if not with_platform_windows and not get_option('osmesa')\n");write(p, s)
 p=root/'src/gallium/auxiliary/target-helpers/inline_sw_helper.h';s=p.read_text().replace('#if defined(GALLIUM_VIRGL)', '#if defined(GALLIUM_VIRGL) && !defined(BANANA_MESA_OSMESA)');write(p, s)
@@ -60,3 +93,25 @@ p=root/'src/gallium/drivers/llvmpipe/lp_scene.c';s=p.read_text()
 if '#undef HAVE_REALLOCARRAY' not in s:
  s=s.replace('#include "util/reallocarray.h"', '#ifdef __BANANA_OS__\n#undef HAVE_REALLOCARRAY\n#endif\n#include "util/reallocarray.h"')
 write(p,s)
+
+# crocus's Intel code: what the SDK's C library has not (INTEL_MEASURE's
+# control fifo: a debugging aid; memmem in the shader validator)
+p=root/'src/intel/common/intel_measure.c';s=p.read_text()
+if 'Banana: no fifos' not in s:
+ s=s.replace('#include "intel_measure.h"\n', '#include "intel_measure.h"\n#ifdef __BANANA_OS__ /* Banana: no fifos */\n#define mkfifoat(dir, path, mode) (errno = ENOSYS, -1)\n#define openat(dir, path, flags) open((path), (flags))\n#endif\n', 1)
+write(p, s)
+p=root/'src/intel/compiler/elk/elk_eu_validate.c';s=p.read_text()
+if 'Banana: memmem' not in s:
+ s=s.replace('#include "elk_eu.h"\n', """#include "elk_eu.h"
+#ifdef __BANANA_OS__ /* Banana: memmem */
+static void *banana_memmem(const void *h, size_t hl, const void *n, size_t nl)
+{
+   if (!nl) return (void *)h;
+   for (size_t i = 0; i + nl <= hl; i++)
+      if (!memcmp((const char *)h + i, n, nl)) return (char *)h + i;
+   return NULL;
+}
+#define memmem banana_memmem
+#endif
+""", 1)
+write(p, s)

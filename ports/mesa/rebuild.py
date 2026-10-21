@@ -101,7 +101,8 @@ def rewrite(cmd, out):
     res, i = [a[0]] + pre, 1
     while i < len(a):
         x = a[i]
-        if x in ("-MD", "-pipe", "-pthread") or x.startswith("-fstack-protector") or x.startswith("-fstack-clash"):
+        if x in ("-MD", "-pipe", "-pthread") or x.startswith("-fstack-protector") or x.startswith("-fstack-clash") \
+                or x.startswith("-I/usr/include/libdrm"):        # (the host's libdrm: ours is ports/mesa/include)
             i += 1
             continue
         if x in ("-MQ", "-MF"):

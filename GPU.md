@@ -155,3 +155,20 @@ after starting the desktop passed; the LLVM-enabled library also passed
 VirGL rendering and returned all host resources. The complete system suite
 passed 247 checks with zero failures. Hosted surface and exhaustive UTF-8
 checks passed under address/undefined-behavior sanitizers.
+
+## 7. Intel 3D (gen 5 - 7.5): crocus
+
+`kernel/gpu_i915.c` drives the render engine of Intel HD Graphics of the 1st
+to 4th generation Core (GTT, aliasing PPGTT, legacy ring, forcewake, Linux's
+workarounds, hang reset); `kernel/gpu_gem.c` implements the part of Linux's
+i915 interface Mesa's crocus uses. Apps get it after `gpu3d on`; `gpu3d test`
+checks the engine on the real GPU. Mesa with crocus:
+
+```sh
+CROCUS=1 ports/mesa/build.sh                 # or LLVMPIPE=1 CROCUS=1
+tools/tests/crocus_host/run.sh               # crocus on the GPU model
+cc -O1 -no-pie -w -I kernel -I tools/tests tools/tests/test_i915.c kernel/gpu_i915.c kernel/gpu_gem.c -o /tmp/i915 && /tmp/i915
+```
+
+No hardware contexts: every batch re-emits the whole state (the Banana patch
+in `crocus_batch.c`). No aperture (GTT) maps, no PRIME or flink, no BLT ring.

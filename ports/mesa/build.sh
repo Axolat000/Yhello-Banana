@@ -13,12 +13,14 @@
 # build's compile_commands.json with the SDK's headers (rebuild.py) and
 # the library is linked without the system's C library.
 # Needs: gcc, meson, ninja, flex, bison, python3-mako, python3-yaml, mtools,
-# sfdisk.
+# sfdisk (in /sbin); with CROCUS=1 also libdrm's headers (libdrm-dev).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 LLVMPIPE=${LLVMPIPE:-0}
+CROCUS=${CROCUS:-0}                      # 1: Mesa's crocus too, for Intel GPUs (gen 4 - 7.5: gpu3d)
 DEFAULT_OUT=$HERE/build
 [ "$LLVMPIPE" = 0 ] || DEFAULT_OUT=$HERE/build-llvmpipe
+[ "$CROCUS" = 0 ] || DEFAULT_OUT=$DEFAULT_OUT-crocus
 OUT=$(realpath -m "${1:-$DEFAULT_OUT}")
 VER=24.3.4
 SHA=e641ae27191d387599219694560d221b7feaa91c900bcec46bf444218ed66025
@@ -37,6 +39,7 @@ fi
 python3 "$HERE/patch.py" "$SRC"
 
 DRIVERS=softpipe,virgl
+[ "$CROCUS" = 0 ] || DRIVERS=$DRIVERS,crocus      # (needs libdrm's headers on the build machine)
 LLVM_MODE=disabled
 DRAW_LLVM=false
 if [ "$LLVMPIPE" != 0 ]; then
@@ -44,6 +47,7 @@ if [ "$LLVMPIPE" != 0 ]; then
     LLVM_CONFIG="${LLVM_REF:-${LLVM_BUILD:-$HERE/../llvm/build}/ref}/bin/llvm-config"
     export LLVM_CONFIG
     DRIVERS=softpipe,llvmpipe,virgl
+    [ "$CROCUS" = 0 ] || DRIVERS=$DRIVERS,crocus
     LLVM_MODE=enabled
     DRAW_LLVM=true
 fi
