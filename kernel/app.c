@@ -44,12 +44,13 @@ _Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must b
 #include "hmem.h"
 #include "upage.h"
 #include "usock.h"
+#include "kfile.h"
 #include "../net/net.h"
 
-/* files and sockets an app has open at once: descriptors 3..255 (the SDK's
- * own - pipes, eventfd, epoll - come after them, from 256: sdk/lib/ufd.c).
+/* file descriptors: 0..255 - files, sockets, pipes, the terminal (the SDK's
+ * own - eventfd, epoll - come after them, from 256: sdk/lib/ufd.c).
  * Java keeps every jar of its class path open: Minecraft ran out at 64 */
-#define APP_FD_MAX  253
+#define APP_FDS     256
 #define APP_STACK   (1u << 20)        /* 1 MiB */
 #define APP_GUARD   (16u << 10)       /* unmapped pages under it (64-bit): an overflow faults */
 #define STACK_CANARY 0xB4A4A5C0u      /* at the bottom of the stack: checked on every system call */
@@ -69,14 +70,6 @@ typedef struct {
     uint64_t  alt_size;
     int       alt_flags;
 } sigstate_t;
-
-typedef struct {
-    int      used;
-    int      fidx;
-    uint32_t pos;
-    int      flags;
-    usock_t* sock;            /* a socket (kernel/usock.c), not a file */
-} afd_t;
 
 /* a thread an app started: a task of its own running app code on its own stack */
 typedef struct {
@@ -113,7 +106,10 @@ typedef struct {
     banana_api_t* uapi;        /* 64-bit: the call table in its memory (system call stubs) */
     uintptr_t ret_stub;        /* ... and where its entry (or a thread) returns to */
     char*     clip;            /* clipboard_get()'s copy, in its memory */
-    afd_t     fds[APP_FD_MAX];
+    /* its file descriptors: open file descriptions (kernel/kfile.c),
+     * shared with the other descriptors dup made for them */
+    kfile_t*  fdt[APP_FDS];
+    uint8_t   cloexec[APP_FDS];
     uintptr_t saved_sp;        /* the kernel stack app_enter() left: exit() returns there */
     int       exit_code;
     int       vt;              /* the terminal it was started from */
@@ -184,6 +180,7 @@ static athread_t* cur_thread(app_proc_t* p) {
 /* ends the calling app right away (exit(), Ctrl+C, closed twice) */
 int  app_enter(int (*fn)(void*), void* arg, void* stack_top, uintptr_t* saved_sp);
 void app_leave(uintptr_t saved_sp, int code) __attribute__((noreturn));
+static void held_drop(void);           /* (the descriptions the calling task holds: kfile references) */
 
 static void __attribute__((noreturn)) leave(app_proc_t* p, int code) {
     athread_t* t = cur_thread(p);
@@ -192,18 +189,18 @@ static void __attribute__((noreturn)) leave(app_proc_t* p, int code) {
          * ends - its main thread and the other threads notice exit_req */
         if (!p->exit_req) { p->exit_req = 1; p->exit_req_code = code; }
         t->running = 0;
-        app_leave(t->saved_sp, code);
+        held_drop(); app_leave(t->saved_sp, code);
     }
     p->exit_code = code;
     p->running = 0;
-    app_leave(p->saved_sp, code);
+    held_drop(); app_leave(p->saved_sp, code);
 }
 
 /* a thread's return value (thread_join), or the end of the whole app */
 static void __attribute__((noreturn)) leave_thread(app_proc_t* p, athread_t* t, int ret) {
     (void)p;
     t->running = 0;
-    app_leave(t->saved_sp, ret);
+    held_drop(); app_leave(t->saved_sp, ret);
 }
 
 static void key_push(app_proc_t* p, int c) {
@@ -424,28 +421,30 @@ static int ustr(const char* s) {
 
 /* ── console ───────────────────────────────────────────────────────── */
 
-static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len);
+static long fd_write(app_proc_t* p, int fd, const void* buf, unsigned long len);
+
+/* writing to the terminal (a KF_CONS descriptor) */
+static long cons_write(app_proc_t* p, const void* buf, unsigned long len) {
+    const char* s = (const char*)buf;
+    char chunk[257];
+    unsigned long i = 0;
+    while (i < len) {
+        int n = 0;
+        while (i < len && n < 256) {
+            char c = s[i++];
+            if (c) chunk[n++] = c;
+        }
+        chunk[n] = 0;
+        terminal_write(chunk);
+    }
+    breathe(p, 0);
+    return (long)len;
+}
 
 static long a_write(int fd, const void* buf, unsigned long len) {
     app_proc_t* p = cur();
     if (!p) return -1;
-    if (fd == 1 || fd == 2) {
-        const char* s = (const char*)buf;
-        char chunk[257];
-        unsigned long i = 0;
-        while (i < len) {
-            int n = 0;
-            while (i < len && n < 256) {
-                char c = s[i++];
-                if (c) chunk[n++] = c;
-            }
-            chunk[n] = 0;
-            terminal_write(chunk);
-        }
-        breathe(p, 0);
-        return (long)len;
-    }
-    return file_write(p, fd, buf, len);
+    return fd_write(p, fd, buf, len);
 }
 
 /* the next key for the app (ESC sequences become BANANA_KEY_*), 0 if none */
@@ -560,14 +559,86 @@ static int a_interrupted(void) {
 
 /* ── files ─────────────────────────────────────────────────────────── */
 
-static afd_t* get_fd(app_proc_t* p, int fd) {
-    if (!p || fd < 3 || fd >= APP_FD_MAX + 3) return NULL;
-    afd_t* f = &p->fds[fd - 3];
-    if (!f->used) return NULL;
-    if (f->sock) return f;
-    fs_file_t* ff = fs_file_info(f->fidx);
-    if (!ff || !ff->used) return NULL;         /* deleted meanwhile */
+/* the description behind descriptor fd, NULL if none (a file deleted
+ * meanwhile: none) */
+static kfile_t* get_fd(app_proc_t* p, int fd) {
+    if (!p || fd < 0 || fd >= APP_FDS) return NULL;
+    kfile_t* f = p->fdt[fd];
+    if (!f) return NULL;
+    if (f->type == KF_FILE) {
+        fs_file_t* ff = fs_file_info(f->fidx);
+        if (!ff || !ff->used) return NULL;
+    }
     return f;
+}
+
+
+/* A system call working on a descriptor holds a reference to its
+ * description while it runs (HOLD), so a close / dup2 by another thread
+ * meanwhile cannot free it under it. If the call never returns - the app
+ * stopped, or crashed in it - held_drop lets go of what it held. */
+#define HELD_MAX 4
+static kfile_t* g_held[TASK_MAX][HELD_MAX];
+static uint8_t  g_nheld[TASK_MAX];
+
+static kfile_t* hold(int fd) {
+    kfile_t* f = kfile_ref(get_fd(cur(), fd));
+    int pid = task_current_pid();
+    if (f && pid >= 0 && pid < TASK_MAX && g_nheld[pid] < HELD_MAX) g_held[pid][g_nheld[pid]++] = f;
+    return f;
+}
+
+static void unhold(kfile_t** pf) {
+    kfile_t* f = *pf;
+    if (!f) return;
+    int pid = task_current_pid();
+    if (pid >= 0 && pid < TASK_MAX)
+        for (int i = g_nheld[pid] - 1; i >= 0; i--)
+            if (g_held[pid][i] == f) {
+                g_held[pid][i] = g_held[pid][--g_nheld[pid]];
+                break;
+            }
+    kfile_put(f);
+}
+
+static void held_drop(void) {
+    int pid = task_current_pid();
+    if (pid < 0 || pid >= TASK_MAX) return;
+    while (g_nheld[pid]) kfile_put(g_held[pid][--g_nheld[pid]]);
+}
+
+#define HOLD(var, fd) __attribute__((cleanup(unhold))) kfile_t* var = hold(fd)
+/* f (a reference the caller gives) at the lowest free descriptor >= min:
+ * its number, or -24 (EMFILE: f let go) */
+static int fd_install(app_proc_t* p, kfile_t* f, int min, int cloexec) {
+    for (int i = min < 0 ? 0 : min; i < APP_FDS; i++) {
+        if (p->fdt[i]) continue;
+        p->fdt[i] = f;
+        p->cloexec[i] = (uint8_t)(cloexec != 0);
+        return i;
+    }
+    kfile_put(f);
+    return -24;
+}
+
+/* descriptor fd goes (its description when it was the last one): 0, -9 */
+static int fd_close(app_proc_t* p, int fd) {
+    if (!p || fd < 0 || fd >= APP_FDS || !p->fdt[fd]) return -9;
+    kfile_t* f = p->fdt[fd];
+    p->fdt[fd] = NULL;
+    p->cloexec[fd] = 0;
+    kfile_put(f);
+    return 0;
+}
+
+/* a new app's 0, 1 and 2: the terminal it runs on */
+static int fd_std(app_proc_t* p) {
+    kfile_t* c = kfile_new(KF_CONS, KF_READ | KF_WRITE);
+    if (!c) return -1;
+    p->fdt[0] = c;
+    p->fdt[1] = kfile_ref(c);
+    p->fdt[2] = kfile_ref(c);
+    return 0;
 }
 
 static int a_open(const char* path, int flags) {
@@ -582,48 +653,82 @@ static int a_open(const char* path, int flags) {
     } else if ((flags & BANANA_O_TRUNC) && (flags & BANANA_O_WRITE)) {
         if (fs_write(idx, "", 0) != 0) return -1;
     }
-    for (int i = 0; i < APP_FD_MAX; i++) {
-        if (p->fds[i].used) continue;
-        p->fds[i].used = 1;
-        p->fds[i].fidx = idx;
-        p->fds[i].sock = NULL;
-        p->fds[i].flags = flags ? flags : BANANA_O_READ;
-        p->fds[i].pos = (flags & BANANA_O_APPEND) ? fs_file_info(idx)->size : 0;
-        fs_pin(idx);                       /* (open: its entry stays, kernel/fs.c gives back no folder holding it) */
-        return i + 3;
+    kfile_t* f = kfile_new(KF_FILE, (flags ? flags : BANANA_O_READ) & (KF_READ | KF_WRITE | KF_APPEND));
+    if (!f) return -1;
+    f->fidx = idx;
+    f->pos = (flags & BANANA_O_APPEND) ? fs_file_info(idx)->size : 0;
+    fs_pin(idx);                       /* (open: its entry stays, kernel/fs.c gives back no folder holding it) */
+    int fd = fd_install(p, f, 0, 0);
+    return fd < 0 ? -1 : fd;
+}
+
+/* the terminal: a line, with its newline */
+static long cons_read(app_proc_t* p, void* buf, unsigned long len) {
+    if (!p || !len) return 0;
+    char* b = (char*)buf;
+    int n = a_readline(b, (int)(len > 1024 ? 1024 : len));
+    if (n < 0) return 0;
+    if ((unsigned long)n < len) b[n++] = '\n';
+    return n;
+}
+
+/* a pipe, waiting as a blocking descriptor does: a read until there is
+ * something (or the end), a write until all of it went in */
+static long pipe_io(app_proc_t* p, kfile_t* f, void* buf, unsigned long len, int wr) {
+    unsigned long done = 0;
+    for (;;) {
+        long r = wr ? kpipe_write(f, (const uint8_t*)buf + done, len - done) : kpipe_read(f, buf, len);
+        if (r == -11 && !(f->flags & KF_NONBLOCK)) {
+            kpipe_wait(f, wr ? KF_POLLOUT : KF_POLLIN, 20);
+            breathe(p, 0);
+            continue;
+        }
+        if (r == -32) {                                  /* no reader: SIGPIPE (it ends the app by default) */
+#ifdef __x86_64__
+            p->sig_pending |= 1ull << 12;
+#endif
+            return done ? (long)done : -32;
+        }
+        if (r < 0) return done ? (long)done : r;
+        if (!wr) return r;
+        done += (unsigned long)r;
+        if (done >= len) return (long)done;
     }
-    return -1;
 }
 
 static long a_read(int fd, void* buf, unsigned long len) {
     app_proc_t* p = cur();
-    if (fd == 0) {                          /* stdin: a line from the terminal */
-        if (!p || !len) return 0;
-        char* b = (char*)buf;
-        int n = a_readline(b, (int)(len > 1024 ? 1024 : len));
-        if (n < 0) return 0;
-        if ((unsigned long)n < len) b[n++] = '\n';
-        return n;
+    HOLD(f, fd);
+    if (!f) return -9;
+    if (!(f->flags & KF_READ)) return -9;
+    uint32_t n32 = len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len;
+    switch (f->type) {
+    case KF_CONS: return cons_read(p, buf, len);
+    case KF_SOCK: return usock_recv(f->sock, buf, n32, 0, NULL, NULL);
+    case KF_PIPE: return pipe_io(p, f, buf, n32, 0);
     }
-    afd_t* f = get_fd(p, fd);
-    if (!f) return -1;
-    if (f->sock) return usock_recv(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, NULL);
     /* the part asked for only: a big file on the disk is not read whole */
-    int n = fs_read(f->fidx, f->pos, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len);
+    int n = fs_read(f->fidx, f->pos, buf, n32);
     if (n < 0) return -1;
     f->pos += (uint32_t)n;
     breathe(p, 0);
     return (long)n;
 }
 
-static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len) {
-    afd_t* f = get_fd(p, fd);
-    if (f && f->sock) return usock_send(f->sock, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0, NULL, 0);
-    if (!f || !(f->flags & (BANANA_O_WRITE | BANANA_O_APPEND))) return -1;
+static long fd_write(app_proc_t* p, int fd, const void* buf, unsigned long len) {
+    HOLD(f, fd);
+    if (!f) return -9;
+    uint32_t n32 = len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len;
+    switch (f->type) {
+    case KF_CONS: return cons_write(p, buf, len);
+    case KF_SOCK: return usock_send(f->sock, buf, n32, 0, NULL, 0);
+    case KF_PIPE: return (f->flags & KF_WRITE) ? pipe_io(p, f, (void*)buf, n32, 1) : -9;
+    }
+    if (!(f->flags & (KF_WRITE | KF_APPEND))) return -9;
     fs_file_t* ff = fs_file_info(f->fidx);             /* (its data is not read in for a write) */
     if (!ff || !ff->used) return -1;
-    if (f->flags & BANANA_O_APPEND) f->pos = ff->size;
-    if (len > 0xFFFFFFFFul - f->pos) return -1;
+    if (f->flags & KF_APPEND) f->pos = ff->size;
+    if (len > 0xFFFFFFFFul - f->pos) return -27;       /* EFBIG */
     if (fs_write_at(f->fidx, f->pos, buf, (uint32_t)len) != 0) return -1;
     f->pos += (uint32_t)len;
     breathe(p, 0);
@@ -631,8 +736,8 @@ static long file_write(app_proc_t* p, int fd, const void* buf, unsigned long len
 }
 
 static long a_seek(int fd, long off, int whence) {
-    afd_t* f = get_fd(cur(), fd);
-    if (!f || f->sock) return -1;
+    kfile_t* f = get_fd(cur(), fd);
+    if (!f || f->type != KF_FILE) return -1;
     long base = whence == BANANA_SEEK_CUR ? (long)f->pos : whence == BANANA_SEEK_END ? (long)fs_file_info(f->fidx)->size : 0;
     long np = base + off;
     if (np < 0) return -1;
@@ -641,15 +746,83 @@ static long a_seek(int fd, long off, int whence) {
 }
 
 static int a_close(int fd) {
-    afd_t* f = get_fd(cur(), fd);
+    return fd_close(cur(), fd) == 0 ? 0 : -1;
+}
+
+/* ── Unix descriptors (version 25) ─────────────────────────────────── */
+
+#define L_O_ACCMODE  3
+#define L_O_APPEND   0x400
+#define L_O_NONBLOCK 0x800
+#define L_O_CLOEXEC  0x80000
+
+static int pair_fds(int* fds, int flags, int sock) {
     app_proc_t* p = cur();
-    if (!f) {
-        if (p && fd >= 3 && fd < APP_FD_MAX + 3) p->fds[fd - 3].used = 0;
-        return -1;
+    if (!p || !uok(fds, 2 * sizeof(int))) return -14;
+    if (flags & ~(L_O_NONBLOCK | L_O_CLOEXEC)) return -22;
+    kfile_t* a, * b;
+    int rc = sock ? kfile_socketpair(&a, &b, flags & L_O_NONBLOCK ? KF_NONBLOCK : 0)
+                  : kfile_pipe(&a, &b, flags & L_O_NONBLOCK ? KF_NONBLOCK : 0);
+    if (rc) return rc;
+    int x = fd_install(p, a, 0, flags & L_O_CLOEXEC);
+    if (x < 0) { kfile_put(b); return x; }
+    int y = fd_install(p, b, 0, flags & L_O_CLOEXEC);
+    if (y < 0) { fd_close(p, x); return y; }
+    fds[0] = x;
+    fds[1] = y;
+    return 0;
+}
+static int a_fd_pipe(int* fds, int flags) { return pair_fds(fds, flags, 0); }
+static int a_fd_socketpair(int* fds, int flags) { return pair_fds(fds, flags, 1); }
+
+static int a_fd_dup(int fd, int to, int flags) {
+    app_proc_t* p = cur();
+    kfile_t* f = get_fd(p, fd);
+    if (!f) return -9;
+    if (to < 0 || to >= APP_FDS) return (flags & BANANA_DUP_TO) ? -9 : -22;
+    int cx = (flags & BANANA_DUP_CLOEXEC) != 0;
+    if (!(flags & BANANA_DUP_TO)) return fd_install(p, kfile_ref(f), to, cx);
+    if (to == fd) { p->cloexec[to] = (uint8_t)cx; return to; }
+    kfile_ref(f);
+    fd_close(p, to);
+    p->fdt[to] = f;
+    p->cloexec[to] = (uint8_t)cx;
+    return to;
+}
+
+static int a_fd_fcntl(int fd, int cmd, long arg) {
+    app_proc_t* p = cur();
+    kfile_t* f = get_fd(p, fd);
+    if (!f) return -9;
+    switch (cmd) {
+    case 1: return p->cloexec[fd] ? 1 : 0;                      /* F_GETFD */
+    case 2: p->cloexec[fd] = (uint8_t)(arg & 1); return 0;      /* F_SETFD */
+    case 3: {                                                   /* F_GETFL */
+        int rw = f->flags & KF_READ ? (f->flags & (KF_WRITE | KF_APPEND) ? 2 : 0) : 1;
+        int nb = f->type == KF_SOCK ? usock_nonblock(f->sock) > 0 : (f->flags & KF_NONBLOCK) != 0;
+        return rw | (f->flags & KF_APPEND ? L_O_APPEND : 0) | (nb ? L_O_NONBLOCK : 0);
     }
-    if (f->sock) { usock_close(f->sock); f->sock = NULL; }
-    else if (f->fidx >= 0) fs_unpin(f->fidx);
-    f->used = 0;
+    case 4:                                                     /* F_SETFL: O_APPEND, O_NONBLOCK */
+        if (f->type == KF_SOCK) usock_set_nonblock(f->sock, (arg & L_O_NONBLOCK) != 0);
+        f->flags = (f->flags & ~(KF_NONBLOCK | KF_APPEND)) | (arg & L_O_NONBLOCK ? KF_NONBLOCK : 0)
+                 | (f->type == KF_FILE && (arg & L_O_APPEND) ? KF_APPEND : 0);
+        return 0;
+    }
+    return -22;
+}
+
+static int a_fd_info(int fd, void* out) {
+    app_proc_t* p = cur();
+    kfile_t* f = get_fd(p, fd);
+    if (!f) return -9;
+    banana_fdinfo_t* o = (banana_fdinfo_t*)out;
+    memset(o, 0, sizeof(*o));
+    o->type = f->type;
+    o->flags = a_fd_fcntl(fd, 3, 0);
+    o->is_sock = f->type == KF_PIPE && f->is_sock;
+    o->cloexec = p->cloexec[fd];
+    o->size = f->type == KF_FILE ? fs_file_info(f->fidx)->size : f->type == KF_PIPE ? (unsigned)kpipe_nread(f) : 0;
+    o->id = (uintptr_t)f;
     return 0;
 }
 
@@ -663,24 +836,12 @@ static int a_close(int fd) {
 /* waiting in a socket call: the app can be stopped, the desktop paints */
 static void sock_breathe(void) { breathe(cur(), 1); }
 
-static usock_t* sock_of(int fd) {
-    afd_t* f = get_fd(cur(), fd);
-    return f ? f->sock : NULL;
-}
-
 /* a descriptor for socket s: its number, or -EMFILE (s closed) */
 static int sock_fd(app_proc_t* p, usock_t* s) {
-    for (int i = 0; i < APP_FD_MAX; i++) {
-        if (p->fds[i].used) continue;
-        memset(&p->fds[i], 0, sizeof(afd_t));
-        p->fds[i].used = 1;
-        p->fds[i].fidx = -1;
-        p->fds[i].flags = BANANA_O_READ | BANANA_O_WRITE;
-        p->fds[i].sock = s;
-        return i + 3;
-    }
-    usock_close(s);
-    return -24;                                         /* EMFILE */
+    kfile_t* f = kfile_new(KF_SOCK, KF_READ | KF_WRITE);
+    if (!f) { usock_close(s); return -12; }
+    f->sock = s;
+    return fd_install(p, f, 0, 0);
 }
 
 static int a_sock_open(int family, int type, int proto) {
@@ -696,18 +857,21 @@ static int a_sock_open(int family, int type, int proto) {
 }
 
 static int a_sock_bind(int fd, const void* sa, int len) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     return s ? usock_bind(s, sa, len) : -88;            /* ENOTSOCK */
 }
 
 static int a_sock_listen(int fd, int backlog) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     return s ? usock_listen(s, backlog) : -88;
 }
 
 static int a_sock_accept(int fd, void* sa, int* len) {
     app_proc_t* p = cur();
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     if (!p || !s) return -88;
     if (len && !uok(len, sizeof(int))) return -14;      /* EFAULT */
     if (sa && (!len || *len < 0 || !uok(sa, (size_t)*len))) return -14;
@@ -717,39 +881,57 @@ static int a_sock_accept(int fd, void* sa, int* len) {
 }
 
 static int a_sock_connect(int fd, const void* sa, int len) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     return s ? usock_connect(s, sa, len) : -88;
 }
 
 static long a_sock_send(int fd, const void* buf, unsigned long len, int flags, const void* sa, int salen) {
-    usock_t* s = sock_of(fd);
-    if (!s) return -88;
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
+    if (!s) {
+        kfile_t* k = h && h->type == KF_PIPE && h->is_sock ? h : NULL;
+        if (!k) return -88;
+        if (flags & 0x40) { long r = kpipe_write(k, buf, len); if (r == -32 && !(flags & 0x4000)) cur()->sig_pending |= 1ull << 12; return r; }   /* MSG_DONTWAIT; MSG_NOSIGNAL */
+        return pipe_io(cur(), k, (void*)buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 1);
+    }
     if (sa && (salen < 0 || !uok(sa, (size_t)salen))) return -14;
     return usock_send(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
 }
 
 static long a_sock_recv(int fd, void* buf, unsigned long len, int flags, void* sa, int* salen) {
-    usock_t* s = sock_of(fd);
-    if (!s) return -88;
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
+    if (!s) {
+        kfile_t* k = h && h->type == KF_PIPE && h->is_sock ? h : NULL;
+        if (!k) return -88;
+        if (salen && uok(salen, sizeof(int))) *salen = 0;
+        if (flags & 0x40) return kpipe_read(k, buf, len);                             /* MSG_DONTWAIT */
+        return pipe_io(cur(), k, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 0);
+    }
     if (salen && !uok(salen, sizeof(int))) return -14;
     if (sa && (!salen || *salen < 0 || !uok(sa, (size_t)*salen))) return -14;
     return usock_recv(s, buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, flags, sa, salen);
 }
 
 static int a_sock_shutdown(int fd, int how) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
+    if (!s && h && h->type == KF_PIPE) return kpipe_shutdown(h, how);
     return s ? usock_shutdown(s, how) : -88;
 }
 
 static int a_sock_opt(int fd, int set, int level, int name, void* val, int* len) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     if (!s) return -88;
     if (!len || !uok(len, sizeof(int)) || *len < 0 || (val && !uok(val, (size_t)*len))) return -14;
     return usock_opt(s, set, level, name, val, len);
 }
 
 static int a_sock_name(int fd, int peer, void* sa, int* len) {
-    usock_t* s = sock_of(fd);
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
     if (!s) return -88;
     if (!len || !uok(len, sizeof(int)) || *len < 0 || (sa && !uok(sa, (size_t)*len))) return -14;
     return usock_name(s, peer, sa, len);
@@ -757,8 +939,16 @@ static int a_sock_name(int fd, int peer, void* sa, int* len) {
 
 /* op 1: non-blocking on (arg 1) / off; 2: is it?; 3: bytes waiting (FIONREAD) */
 static int a_sock_ctl(int fd, int op, int arg) {
-    usock_t* s = sock_of(fd);
-    if (!s) return -88;
+    HOLD(h, fd);
+    usock_t* s = h && h->type == KF_SOCK ? h->sock : NULL;
+    if (!s) {                                           /* a pipe or socket pair: the same, on its description */
+        kfile_t* k = h;
+        if (!k || k->type != KF_PIPE) return -88;
+        if (op == 1) { if (arg) k->flags |= KF_NONBLOCK; else k->flags &= ~KF_NONBLOCK; return 0; }
+        if (op == 2) return (k->flags & KF_NONBLOCK) != 0;
+        if (op == 3) return kpipe_nread(k);
+        return -22;
+    }
     if (op == 1) { usock_set_nonblock(s, arg); return 0; }
     if (op == 2) return usock_nonblock(s);
     if (op == 3) return usock_nread(s);
@@ -778,24 +968,25 @@ static int a_poll(void* fds, int n, int timeout_ms) {
     apollfd_t* pf = (apollfd_t*)fds;
     uint32_t start = timer_ms();
     for (;;) {
-        int ready = 0;
+        int ready = 0, socks = 0;
+        uint32_t gen = kpipe_generation();
         for (int i = 0; i < n; i++) {
             int fd = pf[i].fd, ev = pf[i].events, r = 0;
             if (fd < 0) { pf[i].revents = 0; continue; }
-            if (fd == 0) r = p->kq_head != p->kq_tail ? APOLLIN : 0;
-            else if (fd <= 2) r = APOLLOUT;
-            else {
-                afd_t* f = get_fd(p, fd);
-                if (!f) r = APOLLNVAL;
-                else if (f->sock) r = usock_poll(f->sock, ev);
-                else r = (APOLLIN | APOLLOUT) & ev;     /* (a file is always ready) */
-            }
+            kfile_t* f = get_fd(p, fd);
+            if (!f) r = APOLLNVAL;
+            else if (f->type == KF_CONS) r = ((f->flags & KF_READ) && p->kq_head != p->kq_tail ? APOLLIN : 0) | APOLLOUT;
+            else if (f->type == KF_SOCK) { r = usock_poll(f->sock, ev); socks = 1; }
+            else if (f->type == KF_PIPE) r = kpipe_poll(f, ev);
+            else r = APOLLIN | APOLLOUT;                 /* (a file is always ready) */
+            r &= ev | KF_POLLERR | KF_POLLHUP | APOLLNVAL;
             pf[i].revents = (short)r;
             if (r) ready++;
         }
         if (ready || !timeout_ms) return ready;
         if (timeout_ms > 0 && timer_ms() - start >= (uint32_t)timeout_ms) return 0;
-        net_wait(10);
+        if (socks) net_wait(10);
+        else kpipe_sleep(gen, 10);                       /* (a pipe's other end wakes it) */
         breathe(p, 1);
     }
 }
@@ -1887,6 +2078,11 @@ static void spec_init(void) {
     SPEC(utc_offset, "i", 0);
     SPEC(language, "bi", 0);
     SPEC(drm_ioctl, "ii", 0);            /* (its structure: checked in kernel/gpu_gem.c, by its size) */
+    SPEC(fd_pipe, "i", 0);              /* fds: checked in it */
+    SPEC(fd_socketpair, "i", 0);
+    SPEC(fd_dup, "iii", 0);
+    SPEC(fd_fcntl, "iii", 0);
+    SPEC(fd_info, "io", sizeof(banana_fdinfo_t));
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2422,6 +2618,11 @@ static void api_init(void) {
     g_api.utc_offset = G(a_utc_offset);
     g_api.language = G(a_language);
     g_api.drm_ioctl = G(a_drm_ioctl);
+    g_api.fd_pipe = G(a_fd_pipe);
+    g_api.fd_socketpair = G(a_fd_socketpair);
+    g_api.fd_dup = G(a_fd_dup);
+    g_api.fd_fcntl = G(a_fd_fcntl);
+    g_api.fd_info = G(a_fd_info);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);
@@ -2690,6 +2891,7 @@ static void stop_threads(app_proc_t* p) {
 
 /* everything the app had goes back (no task runs on its tables any more) */
 static void discard(app_proc_t* p) {
+    for (int i = 0; i < APP_FDS; i++) fd_close(p, i);
 #ifdef __x86_64__
     kstack_free(p->kstack);
     p->kstack = NULL;
@@ -2702,9 +2904,7 @@ static void discard(app_proc_t* p) {
 
 static void release(app_proc_t* p) {
     stop_threads(p);
-    for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
-        if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
-        else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
+    for (int i = 0; i < APP_FDS; i++) fd_close(p, i);   /* its descriptors: sockets close (connections end), pipes too */
     gpu_virgl_release(p->id + 1);
     gem_release(p->id + 1);                 /* (its GPU buffers: once the GPU is done with them) */
     appwin_close_owner(p->id);              /* (their pictures are its memory: before it goes) */
@@ -2784,9 +2984,9 @@ void app_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) {
     if (t) {                                /* a crash in a thread ends the whole app */
         if (!p->exit_req) { p->exit_req = 1; p->exit_req_code = 139; }
         t->running = 0;
-        app_leave(t->saved_sp, 139);
+        held_drop(); app_leave(t->saved_sp, 139);
     }
-    app_leave(p->saved_sp, 139);
+    held_drop(); app_leave(p->saved_sp, 139);
 }
 
 /* reads, loads and prepares an app (slot claimed, not started) */
@@ -2810,6 +3010,7 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
 #endif
     p->mem = umem_create(p->us);
     if (!p->mem) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+    if (fd_std(p) != 0) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
     uint8_t* image;
     fs_pin(fi);
     int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, err, ecap) != 0;

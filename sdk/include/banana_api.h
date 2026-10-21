@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 24u
+#define BANANA_API_VERSION 25u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -496,6 +496,25 @@ typedef struct banana_api {
      * DRM / i915 requests - req its ioctl number, arg its structure - what
      * the SDK's ioctl() on a /dev/dri/card0 it opened sends. 0, or -errno */
     int (*drm_ioctl)(unsigned long req, void* arg);
+
+    /* ── version 25: Unix file descriptors ─────────────────────────
+     * Descriptors point at open file descriptions, shared by dup (and
+     * fork): the position, the status flags. 0, 1 and 2 start as the
+     * terminal; any of them may be closed or replaced. Errors: -errno. */
+    /* a pipe: fds[0] reads what fds[1] writes; flags Linux's O_NONBLOCK /
+     * O_CLOEXEC */
+    int (*fd_pipe)(int* fds, int flags);
+    /* a connected pair of AF_UNIX stream sockets, flags as fd_pipe */
+    int (*fd_socketpair)(int* fds, int flags);
+    /* another descriptor for fd's description: exactly to (BANANA_DUP_TO:
+     * what was there closes first) or the lowest free one >= to; with
+     * BANANA_DUP_CLOEXEC close-on-exec. The new number. */
+    int (*fd_dup)(int fd, int to, int flags);
+    /* Linux's F_GETFD / F_SETFD (FD_CLOEXEC) and F_GETFL / F_SETFL (O_ACCMODE,
+     * O_APPEND, O_NONBLOCK: Linux's values) */
+    int (*fd_fcntl)(int fd, int cmd, long arg);
+    /* what fd is: out a banana_fdinfo_t */
+    int (*fd_info)(int fd, void* out);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0
@@ -556,6 +575,20 @@ typedef struct banana_ucontext {
 #define BANANA_PROT_WRITE 2
 #define BANANA_PROT_EXEC  4
 #define BANANA_MAP_FIXED  1
+
+/* fd_dup flags; fd_info's answer */
+#define BANANA_DUP_TO      1
+#define BANANA_DUP_CLOEXEC 2
+#define BANANA_FD_FILE 1                /* type: kernel/kfile.h's KF_* */
+#define BANANA_FD_SOCK 2
+#define BANANA_FD_PIPE 3                /* a pipe's end, or a socket pair's (is_sock) */
+#define BANANA_FD_TERM 4
+typedef struct {
+    int type, flags;                    /* flags: as F_GETFL */
+    int is_sock, cloexec;
+    unsigned long long size;            /* a file's */
+    unsigned long long id;              /* the description (same id: the same one) */
+} banana_fdinfo_t;
 
 /* the app's entry point (the SDK's crt0 provides it) */
 typedef int (*banana_entry_t)(const banana_api_t* api, int argc, char** argv);

@@ -99,6 +99,10 @@ static void wait_change(int ms) {
 
 int __ufd_is(int fd) { return fd >= UFD_BASE && fd < UFD_BASE + UFD_MAX && g_fd[fd - UFD_BASE]; }
 
+/* the system's own descriptors (version 25): pipes, socket pairs, dup */
+#define KFD BANANA_HAS(__banana, fd_info)
+static int kret(int r) { if (r < 0) { errno = -r; return -1; } return r; }
+
 static uobj_t* get(int fd) { return fd >= UFD_BASE && fd < UFD_BASE + UFD_MAX ? g_fd[fd - UFD_BASE] : NULL; }
 
 static int slot_for(uobj_t* o, int from) {               /* (the lock held) the new fd, or -1 */
@@ -591,14 +595,16 @@ static int make_pair(int fds[2], int sock, int nonblock) {
 
 int pipe2(int fds[2], int flags) {
     if (flags & ~(O_NONBLOCK | O_CLOEXEC)) { errno = EINVAL; return -1; }
+    if (KFD) return kret(__banana->fd_pipe(fds, flags));
     return make_pair(fds, 0, (flags & O_NONBLOCK) != 0);
 }
-int pipe(int fds[2]) { return make_pair(fds, 0, 0); }
+int pipe(int fds[2]) { return pipe2(fds, 0); }
 
 int socketpair(int family, int type, int proto, int fds[2]) {
     int base = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (family != AF_UNIX) { errno = EAFNOSUPPORT; return -1; }
     if (base != SOCK_STREAM || proto != 0) { errno = EOPNOTSUPP; return -1; }
+    if (KFD) return kret(__banana->fd_socketpair(fds, type & (SOCK_NONBLOCK | SOCK_CLOEXEC)));
     return make_pair(fds, 1, (type & SOCK_NONBLOCK) != 0);
 }
 
@@ -630,6 +636,7 @@ static int dup_from(int fd, int from) {
 
 int dup(int fd) {
     if (__ufd_is(fd)) return dup_from(fd, 0);
+    if (KFD) return kret(__banana->fd_dup(fd, 0, 0));
     errno = EMFILE;                         /* (the system's descriptors are not shared) */
     return -1;
 }
@@ -641,6 +648,8 @@ int dup(int fd) {
  * dup2 of a dead socket pair end over it is for (Java closes sockets so,
  * waking threads blocked on them). Onto a file: nothing to do. */
 int dup2(int fd, int to) {
+    if (KFD && !__ufd_is(fd) && (to < UFD_BASE || to >= UFD_BASE + UFD_MAX))
+        return kret(__banana->fd_dup(fd, to, BANANA_DUP_TO));
     if (fd == to) {
         if (__ufd_is(fd)) return to;
         struct pollfd pf = { fd, 0, 0 };
@@ -673,6 +682,8 @@ int dup2(int fd, int to) {
 
 int dup3(int fd, int to, int flags) {
     if (fd == to || (flags & ~O_CLOEXEC)) { errno = EINVAL; return -1; }
+    if (KFD && !__ufd_is(fd) && (to < UFD_BASE || to >= UFD_BASE + UFD_MAX))
+        return kret(__banana->fd_dup(fd, to, BANANA_DUP_TO | (flags & O_CLOEXEC ? BANANA_DUP_CLOEXEC : 0)));
     return dup2(fd, to);
 }
 

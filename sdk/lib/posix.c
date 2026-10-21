@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 extern const banana_api_t* __banana;
+#define KFD BANANA_HAS(__banana, fd_info)        /* the system has Unix descriptors (version 25) */
 
 int __ufd_drm_open(void);
 
@@ -42,6 +43,7 @@ int open(const char* path, int flags, ...) {
         else errno = st.is_dir ? EISDIR : EMFILE;
         return -1;
     }
+    if ((flags & O_CLOEXEC) && KFD) __banana->fd_fcntl(fd, F_SETFD, FD_CLOEXEC);
     return fd;
 }
 
@@ -59,6 +61,13 @@ int fcntl(int fd, int cmd, ...) {
     long arg = va_arg(ap, long);
     va_end(ap);
     if (__ufd_is(fd)) return __ufd_fcntl(fd, cmd, arg);
+    if (KFD) {                                   /* the system's descriptors (version 25) */
+        int r = cmd == F_DUPFD ? __banana->fd_dup(fd, (int)arg, 0)
+              : cmd == F_DUPFD_CLOEXEC ? __banana->fd_dup(fd, (int)arg, BANANA_DUP_CLOEXEC)
+              : (cmd >= F_GETFD && cmd <= F_SETFL) ? __banana->fd_fcntl(fd, cmd, arg) : 0;
+        if (r < 0) { errno = -r; return -1; }
+        return r;
+    }
     if (cmd == F_GETFL) { int f = fd > 2 ? __sock_getfl(fd) : -1; return O_RDWR | (f > 0 ? f : 0); }
     if (cmd == F_SETFL) { if (fd > 2) __sock_setfl(fd, (int)arg); return 0; }
     return 0;
@@ -66,17 +75,40 @@ int fcntl(int fd, int cmd, ...) {
 
 off_t lseek(int fd, off_t off, int whence) {
     if (__ufd_is(fd)) { errno = ESPIPE; return -1; }
+    banana_fdinfo_t fi;
+    if (KFD && __banana->fd_info(fd, &fi) == 0 && fi.type != BANANA_FD_FILE) { errno = ESPIPE; return -1; }
     long r = __banana->seek(fd, off, whence);
     if (r < 0) { errno = fd <= 2 ? ESPIPE : EINVAL; return -1; }
     return r;
 }
 
-int isatty(int fd) { return fd >= 0 && fd <= 2; }
+int isatty(int fd) {
+    if (KFD) {
+        banana_fdinfo_t fi;
+        if (__banana->fd_info(fd, &fi) != 0) { errno = EBADF; return 0; }
+        if (fi.type != BANANA_FD_TERM) { errno = ENOTTY; return 0; }
+        return 1;
+    }
+    return fd >= 0 && fd <= 2;
+}
 
 int fstat(int fd, struct stat* st) {
     if (__ufd_is(fd)) return __ufd_fstat(fd, st);
     memset(st, 0, sizeof(*st));
     st->st_blksize = 4096;
+    banana_fdinfo_t fi;
+    if (KFD) {
+        if (__banana->fd_info(fd, &fi) != 0) { errno = EBADF; return -1; }
+        if (fi.type != BANANA_FD_FILE) {
+            st->st_mode = fi.type == BANANA_FD_TERM ? S_IFCHR | 0620 : fi.is_sock || fi.type == BANANA_FD_SOCK ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+            st->st_nlink = 1;
+            st->st_uid = st->st_gid = 1000;
+            st->st_ino = (ino_t)(fi.id >> 4);
+            st->st_dev = fi.type == BANANA_FD_TERM ? 0x8800 : 0xF;
+            if (fi.type == BANANA_FD_TERM) st->st_rdev = 0x8800;
+            return 0;
+        }
+    }
     if (fd <= 2) { st->st_mode = 0020000; return 0; }     /* a character device */
     long cur = __banana->seek(fd, 0, SEEK_CUR);
     if (cur < 0) { errno = EBADF; return -1; }

@@ -774,6 +774,26 @@ static void t_epoll(void) {
     ok = d >= 0 && d2 == c && recv(c, b, sizeof(b), 0) == 0 && close(c) == 0 && close(d) == 0;
     check("dup, and dup2 over a TCP socket: shut down, then closed", ok, "");
     close(sp[0]);
+
+    /* the system's descriptors (version 25): dup2 over stdout and back,
+     * close-on-exec, F_DUPFD, isatty, the access mode */
+    int saved = dup(1);
+    ok = pipe(pp) == 0 && saved > 2 && dup2(pp[1], 1) == 1;
+    printf("to the pipe");
+    fflush(stdout);
+    ok = dup2(saved, 1) == 1 && close(saved) == 0 && ok;
+    ok = ok && read(pp[0], b, sizeof(b)) == 11 && !memcmp(b, "to the pipe", 11);
+    check("dup2 over stdout: printf into a pipe, then stdout back", ok, "");
+    ok = isatty(1) && !isatty(pp[0]) && errno == ENOTTY;
+    ok = ok && fcntl(pp[0], F_GETFD) == 0 && fcntl(pp[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(pp[0], F_GETFD) == FD_CLOEXEC;
+    int hi = fcntl(pp[0], F_DUPFD, 100);
+    ok = ok && hi >= 100 && fcntl(hi, F_GETFD) == 0 && (fcntl(pp[1], F_GETFL) & O_ACCMODE) == O_WRONLY;
+    ok = ok && write(pp[1], "q", 1) == 1 && read(hi, b, 1) == 1 && b[0] == 'q';
+    close(hi);
+    close(pp[1]);
+    ok = ok && read(pp[0], b, 1) == 0;                       /* the dup closed too: no writer */
+    close(pp[0]);
+    check("isatty, FD_CLOEXEC, F_DUPFD, O_WRONLY, the end once every writer closed", ok, "");
     close(l);
     close(ep);
 }
