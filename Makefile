@@ -252,13 +252,24 @@ apps/$(1)/$(1)-i686.bpk.z apps/$(1)/$(1)-x86_64.bpk.z: $$(wildcard apps/$(1)/*.c
 endef
 $(foreach a,$(APPS),$(eval $(call APP_RULE,$(a))))
 kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z) build/builtin-meta-i686.bin
-kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin
+kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin $(BASH_BPKZ)
+
+# GNU bash (ports/bash), 64-bit only (it needs fork): /bin/bash and /bin/sh,
+# built with the SDK's cross compiler (sdk/tools/banana-cc)
+BASH_BPKZ = ports/bash/build/bash-x86_64.bpk.z
+CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site
+ports/bash/build/bash-x86_64.bpk: ports/bash/build.sh $(SDK_DEPS) $(CROSS_DEPS)
+	ports/bash/build.sh $@
+$(BASH_BPKZ): ports/bash/build/bash-x86_64.bpk
+	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $< $@
+build/builtin-meta-x86_64.bin: $(BASH_BPKZ)
 
 # the App Store's facts about those packages and the examples (size, SHA-256,
 # manifest): made here, so the boot does not unpack and hash them all again
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
+	    $(if $(filter x86_64,$*),bash.bpk=$(BASH_BPKZ)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel

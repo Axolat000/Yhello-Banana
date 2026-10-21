@@ -10,6 +10,9 @@ struct group* getgrgid(gid_t gid);
 struct group* getgrnam(const char* name);
 int getgrgid_r(gid_t gid, struct group* g, char* buf, size_t len, struct group** out);
 int getgrnam_r(const char* name, struct group* g, char* buf, size_t len, struct group** out);
+void setgrent(void);
+struct group* getgrent(void);
+void endgrent(void);
 #ifdef __cplusplus
 }
 #endif

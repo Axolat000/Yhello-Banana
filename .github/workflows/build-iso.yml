@@ -42,6 +42,17 @@ jobs:
             ports/ffmpeg/build
           key: ffmpeg-7.1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
 
+      # GNU bash for /bin/bash and /bin/sh (ports/bash/build.sh, 64-bit):
+      # the download kept, the build too while its script and the SDK stay
+      - name: bash build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ports/bash/src
+            ports/bash/build
+          key: bash-5.2.37-${{ hashFiles('ports/bash/build.sh', 'sdk/tools/banana-*', 'sdk/lib/*.c', 'sdk/include/**') }}
+          restore-keys: bash-5.2.37-
+
       - name: Build Banana_OS.iso
         run: |
           make clean

@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -192,6 +193,20 @@ int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
         if (ex && (rv & POLLPRI)) { FD_SET(fd, ex); count++; }
     }
     return count;
+}
+
+int pselect(int n, fd_set* rd, fd_set* wr, fd_set* ex, const struct timespec* ts, const sigset_t* mask) {
+    struct timeval tv, *tvp = NULL;
+    if (ts) { tv.tv_sec = ts->tv_sec; tv.tv_usec = ts->tv_nsec / 1000; tvp = &tv; }
+    sigset_t old;
+    if (mask) sigprocmask(SIG_SETMASK, mask, &old);
+    int r = select(n, rd, wr, ex, tvp);
+    if (mask) {
+        int e = errno;
+        sigprocmask(SIG_SETMASK, &old, NULL);
+        errno = e;
+    }
+    return r;
 }
 
 int ioctl(int fd, unsigned long req, ...) {

@@ -14,6 +14,7 @@
  *   posixtest memory   posix_memalign with malloc / free, from several threads
  *   posixtest proc     fork, execve, waitpid, pipes between processes, posix_spawn
  *   posixtest tty      pseudo-terminals, termios, ^C / ^Z, job control, hangup, /dev
+ *   posixtest bash     GNU bash (/bin/bash, 64-bit): scripts, pipelines, and interactive on a pty
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1494,6 +1495,144 @@ static void t_tty(void) {
     (void)nt;
     if (nt >= 0) close(nt);
 }
+#ifdef __x86_64__
+/* reads the master until want shows up (or ms pass): 1 if it did */
+static int pty_expect(int m, char* out, size_t cap, const char* want, int ms) {
+    size_t got = 0;
+    long until = ms_now() + ms;
+    out[0] = 0;
+    while (got < cap - 1 && ms_now() < until) {
+        struct pollfd pf = { m, POLLIN, 0 };
+        if (poll(&pf, 1, 20) <= 0) continue;
+        ssize_t n = read(m, out + got, cap - 1 - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+        out[got] = 0;
+        if (strstr(out, want)) return 1;
+    }
+    return 0;
+}
+
+/* runs bash with argv, stdout into a pipe: its output in out, the status */
+static int bash_run(char* const* argv, char* out, size_t cap) {
+    int pp[2];
+    if (pipe(pp) != 0) return -1;
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(pp[1], 1);
+        dup2(pp[1], 2);
+        close(pp[0]);
+        close(pp[1]);
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    close(pp[1]);
+    size_t got = 0;
+    ssize_t n;
+    while (got < cap - 1 && (n = read(pp[0], out + got, cap - 1 - got)) > 0) got += (size_t)n;
+    out[got] = 0;
+    close(pp[0]);
+    int st = -1;
+    waitpid(pid, &st, 0);
+    return st;
+}
+
+static void pty_type(int m, const char* s) { write(m, s, strlen(s)); }
+#endif
+
+static void t_bash(void) {
+    printf("GNU bash\n");
+#ifdef __x86_64__
+    if (access("/bin/bash", X_OK) != 0) {
+        printf("  (no /bin/bash: skipped)\n");
+        return;
+    }
+    char out[1024], note[160];
+    char* a1[] = { "/bin/bash", "-c", "echo $((6*7)) $(echo sub) | { read a b; echo $b-$a; }; x=( p q r ); echo ${#x[@]}", NULL };
+    int st = bash_run(a1, out, sizeof(out));
+    snprintf(note, sizeof(note), "\"%.80s\" %#x", out, st);
+    check("bash -c: a pipeline into a group, $((...)), $(...), an array", !strcmp(out, "sub-42\n3\n") && WIFEXITED(st) && !WEXITSTATUS(st), note);
+
+    char* a2[] = { "/bin/sh", "-c", "read l < <(printf 'ps\\n'); read h <<< here; trap 'echo trap-$l-$h' EXIT; (exit 3) & wait $!; echo w$?", NULL };
+    st = bash_run(a2, out, sizeof(out));
+    snprintf(note, sizeof(note), "\"%.80s\" %#x", out, st);
+    check("sh -c: <(...), a here-string, a background job's status, an EXIT trap", !strcmp(out, "w3\ntrap-ps-here\n") && WIFEXITED(st), note);
+
+    /* a #! script, run by execve */
+    const char* script = "#!/bin/sh\nf() { echo \"script $1 $#\"; }\nf \"$@\"\nexit 5\n";
+    int fd = open("/tmp/posixtest-bash.sh", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    int wrote = fd >= 0 && write(fd, script, strlen(script)) == (ssize_t)strlen(script);
+    if (fd >= 0) close(fd);
+    char* a3[] = { "/tmp/posixtest-bash.sh", "x y", "z", NULL };
+    st = wrote ? bash_run(a3, out, sizeof(out)) : -1;
+    unlink("/tmp/posixtest-bash.sh");
+    snprintf(note, sizeof(note), "\"%.80s\" %#x", out, st);
+    check("a #!/bin/sh script run by execve: its arguments, exit 5", !strcmp(out, "script x y 2\n") && WIFEXITED(st) && WEXITSTATUS(st) == 5, note);
+
+    /* interactive, on a terminal: line editing, history, ^C, job control */
+    int m = -1;
+    struct winsize ws = { 24, 80, 0, 0 };
+    pid_t pid = forkpty(&m, NULL, NULL, &ws);
+    if (pid == 0) {
+        char* env[] = { "PS1=PT> ", "TERM=xterm", "HOME=/home/banana", "PATH=/bin", NULL };
+        char* av[] = { "bash", "--norc", "--noprofile", "-i", NULL };
+        execve("/bin/bash", av, env);
+        _exit(127);
+    }
+    char b[4096];
+    int ok = pty_expect(m, b, sizeof(b), "PT> ", 5000);
+    snprintf(note, sizeof(note), "\"%.100s\"", b);
+    check("bash -i on a pty: its prompt (PS1 from the environment)", ok, note);
+    /* (the prompt comes with what a command wrote, often in the same read:
+     * each wait is for both) */
+    pty_type(m, "case $- in *m*) echo jc-on;; *) echo jc-off-$-;; esac\r");
+    ok = pty_expect(m, b, sizeof(b), "jc-on\r\nPT> ", 5000);
+    snprintf(note, sizeof(note), "\"%.100s\"", b);
+    check("bash -i: job control on ($- has m)", ok, note);
+
+    pty_type(m, "echo in-$((2+3))\r");
+    ok = pty_expect(m, b, sizeof(b), "in-5\r\nPT> ", 5000);
+    pty_type(m, "echo abX\x7f" "c\r");                      /* (a backspace) */
+    int edit = pty_expect(m, b, sizeof(b), "\r\nabc\r\nPT> ", 5000);
+    pty_type(m, "\x1b[A\r");                                /* up: the last line again */
+    int hist = pty_expect(m, b, sizeof(b), "\r\nabc\r\nPT> ", 5000);
+    snprintf(note, sizeof(note), "%d %d %d \"%.100s\"", ok, edit, hist, b);
+    check("bash -i: a command, a backspace, the up arrow (history)", ok && edit && hist, note);
+
+    pty_type(m, "echo before-^C\x03");                      /* ^C: the line dropped, a new prompt */
+    ok = pty_expect(m, b, sizeof(b), "PT> ", 5000);
+    pty_type(m, "read v &\r");                              /* a background job reading the terminal: stopped */
+    pty_expect(m, b, sizeof(b), "\r\nPT> ", 5000);
+    int stopped = 0;                                        /* (once it has tried to read) */
+    for (int i = 0; i < 10 && !stopped; i++) {
+        pty_type(m, "jobs\r");
+        stopped = pty_expect(m, b, sizeof(b), "read v\r\nPT> ", 5000) && strstr(b, "Stopped");
+    }
+    pty_type(m, "kill -9 %1\r");                            /* (it dies once woken: bash says so at a prompt) */
+    int killed = 0;
+    for (int i = 0; i < 10 && !killed; i++) {
+        killed = pty_expect(m, b, sizeof(b), "Killed", 1000);
+        if (!killed) pty_type(m, "\r");
+    }
+    snprintf(note, sizeof(note), "%d %d %d \"%.100s\"", ok, stopped, killed, b);
+    check("bash -i: ^C, a background job stopped by SIGTTIN (jobs), kill %1", ok && stopped && killed, note);
+
+    pty_type(m, "exit 7\r");
+    st = -1;
+    long until = ms_now() + 3000;
+    pid_t w = 0;
+    while ((w = waitpid(pid, &st, WNOHANG)) == 0 && ms_now() < until) {
+        master_drain(m, b, sizeof(b), 20);
+    }
+    if (w == 0) { kill(pid, SIGKILL); waitpid(pid, &st, 0); }
+    snprintf(note, sizeof(note), "status %#x", st);
+    check("bash -i: exit 7", w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7, note);
+    close(m);
+#else
+    printf("  (64-bit only: skipped)\n");
+#endif
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (only && !strncmp(only, "child-", 6)) return child_mode(argc, argv);
@@ -1508,6 +1647,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "memory")) t_memory();
     if (!only || !strcmp(only, "proc")) t_proc();
     if (!only || !strcmp(only, "tty")) t_tty();
+    if (!only || !strcmp(only, "bash")) t_bash();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

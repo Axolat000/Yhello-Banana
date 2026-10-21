@@ -14,6 +14,7 @@ sdk/
 ├── lib/            crt0.c, libc.c, stdio.c, banana.c (compiled into every app)
 ├── banana.mk       build rules: include it from your app's Makefile
 ├── tools/bpkg      the packager (pack, list, extract, check)
+├── tools/banana-cc a gcc for Unix software's own build systems (banana-configure: autoconf)
 ├── tools/bananatheme  themes for the desktop: new, check, preview (PNG), pack
 ├── themes/         the theme format (README.md) and examples
 └── examples/       hello, guess (console), paint, clock, mandel (desktop), tones (sound),
@@ -217,6 +218,34 @@ form, ...)` (with `banana_url_encode()` for the form's values) and
 `banana_http_request(method, url, body, len, content_type, ...)` - what
 `apps/amethyst` uses to talk to a web API.
 
+### Porting Unix software: banana-cc (autoconf, plain make)
+
+Programs with their own build system build with `tools/banana-cc`, a C
+compiler that takes gcc's options: it is gcc with this SDK's flags and
+headers, and its link makes a program Banana OS runs (crt0, your objects,
+the SDK's C library and libgcc, as a static PIE). It never looks at the
+build machine's headers or libraries: `-lc`, `-lm`, `-lpthread`, `-ldl`,
+`-lrt`, `-lutil`, `-lcrypt`, `-lresolv`, `-liconv` and `-lintl` are all
+the SDK's C library, and a function your program defines wins over the
+library's. The library is compiled once per CPU into `~/.cache/banana-cc`
+(`BANANA_CC_CACHE`).
+
+```bash
+banana-cc -O2 -c foo.c && banana-cc -o foo foo.o -lm      # 64-bit
+BANANA_ARCH=i686 banana-cc -o foo foo.c                   # or i686-banana-cc
+banana-configure ./configure --prefix=/usr && make        # autoconf
+```
+
+`tools/banana-configure` runs a configure script cross-compiling for Banana
+OS (CC=banana-cc, `--host` / `--build`), with `tools/banana-config.site`
+answering what configure cannot test without running a program; give a
+port's own answers in the environment (`ac_cv_...=yes`). No shared
+libraries (`-shared` fails, so configure falls back to static ones).
+`fork` and `exec` exist on the 64-bit kernel only (the 32-bit one runs
+apps without address spaces): Unix programs are usually 64-bit.
+`ports/bash/build.sh` is the example: GNU bash, packaged with `bin=bash,sh`
+(below).
+
 ### Drivers
 
 Hardware drivers are not apps: they run inside the kernel. The Driver Kit
@@ -263,6 +292,9 @@ examples in `driver/examples`) into `.bpk` packages of type `driver`.
 - `app-i686`, `app-x86_64` - the program, as a static position-independent ELF
   (only relative relocations: `bpkg check` verifies it)
 - your `DATA` files, installed next to the program in `/apps/<name>/`
+- `bin=name,...` in the manifest (optional): commands in `/bin` - each
+  `/bin/<name>` is a link to the program, made when the package is
+  installed and removed with it (bash: `bin=bash,sh`)
 - `icon.png` - from `ICON = picture.png` in the Makefile: the app's picture
   on the desktop, the taskbar, the Start menu and in the App Store (square;
   its four corners' colour, when they agree, is see-through)

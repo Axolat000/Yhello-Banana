@@ -1,9 +1,10 @@
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ; kernel/appbin.asm - the apps that come with Banana OS (Media Player,
-; Music, Amethyst, Photos, Banana Code, App Store): their packages for this kernel's CPU, zlib-compressed, built by
-; the Makefile (apps/*/). kernel/builtin_apps.c installs them at boot.
+; Music, Amethyst, Photos, Banana Code, App Store; GNU bash on x86_64): their packages for this kernel's CPU,
+; zlib-compressed, built by the Makefile (apps/*/, ports/bash). kernel/builtin_apps.c installs them at boot.
 
 global builtin_meta, builtin_meta_end
+global app_bash, app_bash_end
 global app_mediaplayer, app_mediaplayer_end, app_music, app_music_end, app_amethyst, app_amethyst_end, app_photos, app_photos_end, app_code, app_code_end, app_store, app_store_end
 
 section .payload progbits alloc noexec nowrite align=16
@@ -26,6 +27,9 @@ app_code_end:
 align 16
 app_store: incbin "apps/store/store-x86_64.bpk.z"
 app_store_end:
+align 16
+app_bash: incbin "ports/bash/build/bash-x86_64.bpk.z"
+app_bash_end:
 section .rodata                 ; (not .payload: that goes to the heap once released)
 align 16
 builtin_meta: incbin "build/builtin-meta-x86_64.bin"     ; (tools/mkbuiltinmeta.py)
@@ -49,6 +53,8 @@ app_code_end:
 align 16
 app_store: incbin "apps/store/store-i686.bpk.z"
 app_store_end:
+app_bash:                       ; (64-bit only: none here)
+app_bash_end:
 section .rodata                 ; (not .payload: that goes to the heap once released)
 align 16
 builtin_meta: incbin "build/builtin-meta-i686.bin"       ; (tools/mkbuiltinmeta.py)

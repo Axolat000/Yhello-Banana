@@ -8,6 +8,7 @@
 #include "kstring.h"
 #include "explorer.h"
 #include "zip.h"
+#include "serial.h"
 
 #define ENT_SIZE   64u
 #define ENT_NAME   56u
@@ -146,6 +147,64 @@ static int unpack_spec(const char* mf, uint32_t len, char* file, int fcap, char*
     return 1;
 }
 
+/* "bin=<name>[,<name>...]" in a manifest: the program is also a command of
+ * the system's - /bin/<name>, a symbolic link to /apps/<app>/app-<cpu>
+ * (bash: bin=bash,sh). A name already in /bin is replaced; the links go
+ * with the package. */
+static int bin_name_ok(const char* n, int l) {
+    if (l < 1 || l > 32 || (l <= 2 && n[0] == '.')) return 0;
+    for (int i = 0; i < l; i++) {
+        char c = n[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '_' || c == '.' || c == '+' || c == '[')) return 0;
+    }
+    return 1;
+}
+
+/* calls fn(name, path of /bin/name) for each valid name of bin= */
+static void each_bin(const char* mf, uint32_t len, const char* app,
+                     void (*fn)(const char* app, const char* link)) {
+    char v[256], link[FS_PATH_LEN];
+    mf_get(mf, len, "bin", v, sizeof(v));
+    for (char* p = v; *p;) {
+        char* e = p;
+        while (*e && *e != ',') e++;
+        int l = (int)(e - p);
+        while (l && p[l - 1] == ' ') l--;
+        if (bin_name_ok(p, l)) {
+            kstrlcpy(link, "/bin/", sizeof(link));
+            memcpy(link + 5, p, (size_t)l);
+            link[5 + l] = 0;
+            fn(app, link);
+        }
+        p = *e ? e + 1 : e;
+        while (*p == ' ') p++;
+    }
+}
+
+static void bin_target(const char* app, char* out, int cap) {
+    ksnprintf(out, (size_t)cap, "%s/%s/app-%s", PKG_DIR, app, BANANA_ARCH);
+}
+
+static void bin_add(const char* app, const char* link) {
+    char target[FS_PATH_LEN];
+    bin_target(app, target, sizeof(target));
+    fs_mkdir_p("/bin");
+    fs_stat_t st;
+    if (fs_stat(link, 0, &st) == 0) {
+        if (st.is_dir) { klog("pkg: %s: %s is a folder - not replaced\n", app, link); return; }
+        fs_delete(link, 0);
+    }
+    if (fs_symlink(target, link) < 0) klog("pkg: %s: cannot make %s\n", app, link);
+}
+
+/* only a link that is still this package's */
+static void bin_remove(const char* app, const char* link) {
+    char target[FS_PATH_LEN], have[FS_PATH_LEN];
+    bin_target(app, target, sizeof(target));
+    if (fs_readlink(link, have, sizeof(have)) >= 0 && !strcmp(have, target)) fs_delete(link, 0);
+}
+
 int pkg_install(const char* bpk_path, char* msg, int mcap) {
     int fi = fs_find_file(bpk_path);
     if (fi < 0) { kstrlcpy(msg, "no such file", (size_t)mcap); return -1; }
@@ -186,7 +245,14 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
     }
     app_dir(info.name, dir, sizeof(dir));
     int upgrade = fs_find_dir(dir) >= 0;
-    if (upgrade) fs_delete(dir, 1);
+    if (upgrade) {
+        /* (the old version's /bin links: made again below if still wanted) */
+        ksnprintf(path, sizeof(path), "%s/manifest", dir);
+        int ofi = fs_find_file(path);
+        fs_file_t* of = ofi >= 0 ? fs_get_file(ofi) : NULL;
+        if (of && of->content) each_bin(of->content, of->size, info.name, bin_remove);
+        fs_delete(dir, 1);
+    }
     if (fs_mkdir_p(dir) < 0) { kstrlcpy(msg, "cannot create the app folder in /apps", (size_t)mcap); kfree(d); return -1; }
     for (uint32_t i = 0; i < count; i++) {
         const uint8_t* e = d + 8 + i * ENT_SIZE;
@@ -223,6 +289,11 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
         fs_delete(path, 0);
         ksnprintf(unpacked, sizeof(unpacked), " - %d files in %s", st.files, udest);
     }
+    /* its commands in /bin (bin=) */
+    ksnprintf(path, sizeof(path), "%s/manifest", dir);
+    int mfi = fs_find_file(path);
+    fs_file_t* mff = mfi >= 0 ? fs_get_file(mfi) : NULL;
+    if (mff && mff->content) each_bin(mff->content, mff->size, info.name, bin_add);
     if (!strcmp(info.type, "driver")) {             /* a driver: loaded right away (and at every boot) */
         char err[96];
         if (driver_load_package(info.name, err, sizeof(err)) == 0)
@@ -293,6 +364,7 @@ int pkg_remove(const char* name, char* msg, int mcap) {
     fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
     if (f && unpack_spec(f->content, f->size, ufile, sizeof(ufile), udest, sizeof(udest)) > 0 && fs_find_dir(udest) >= 0)
         fs_delete(udest, 1);
+    if (f && f->content) each_bin(f->content, f->size, name, bin_remove);       /* and its /bin links */
     fs_delete(dir, 1);
     ksnprintf(msg, (size_t)mcap, "removed %s", info.title);
     return 0;

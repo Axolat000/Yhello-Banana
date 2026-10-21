@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+"""banana-cc - a C compiler for Banana OS programs that takes gcc's options,
+for building software with its own build system (autoconf, plain make):
+
+    banana-cc -O2 -c foo.c          compile (also -S, -E, -M...)
+    banana-cc -o foo foo.o -lm      link a program the kernel's loader runs
+
+It is gcc with the flags of sdk/banana.mk: freestanding position-independent
+code, the SDK's headers instead of the system's; and ld with banana.mk's
+link: crt0 + the objects + the SDK's C library + libgcc into a PIE with no
+dynamic linker. Only the libraries given with -L are searched, never the
+build machine's: -lc, -lm, -lpthread, -ldl, -lrt, -lutil, -lcrypt,
+-lresolv, -liconv, -lintl are all the SDK's C library. A program's own
+definition of a C library function wins over the library's (as with a
+static glibc).
+
+The CPU: x86_64 (default), or i686 when called as i686-banana-cc (the
+symlinks x86_64-banana-cc / i686-banana-cc) or with BANANA_ARCH=i686.
+The SDK's C library is compiled once per CPU and SDK version into
+$BANANA_CC_CACHE (default ~/.cache/banana-cc).
+
+Autoconf: sdk/tools/banana-configure runs a configure script with it.
+Shared libraries (-shared) are not made: programs are one static PIE.
+
+Environment: BANANA_ARCH, BANANA_CC_CACHE, BANANA_CC_GCC (default gcc),
+BANANA_CC_LD (default ld), BANANA_CC_VERBOSE=1 prints the commands.
+"""
+import fcntl
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+TOOLS = os.path.dirname(os.path.realpath(__file__))
+SDK = os.path.dirname(TOOLS)
+GCC = os.environ.get("BANANA_CC_GCC", "gcc")
+LD = os.environ.get("BANANA_CC_LD", "ld")
+VERBOSE = bool(os.environ.get("BANANA_CC_VERBOSE"))
+
+LIBC = ["crt0", "libc", "malloc", "stdio", "banana", "math", "posix", "setjmp", "mman",
+        "pthread", "socket", "signal", "dl", "cxxrt", "unix", "utf8", "ufd", "math99",
+        "proc", "tty"]
+# the other libraries a Unix program may ask for: all in libc.a
+EMPTY_LIBS = ["m", "pthread", "dl", "rt", "util", "crypt", "resolv", "iconv", "intl", "xnet"]
+
+# gcc options whose value is the next argument
+TAKES_ARG = {"-o", "-I", "-D", "-U", "-L", "-l", "-x", "-include", "-imacros", "-isystem",
+             "-iquote", "-idirafter", "-iprefix", "-iwithprefix", "-isysroot", "-MF", "-MT",
+             "-MQ", "-Xlinker", "-Xpreprocessor", "-Xassembler", "-T", "-u", "-e",
+             "--param", "-aux-info", "-z"}
+SOURCE = (".c", ".i", ".s", ".S", ".sx", ".cc", ".cpp", ".cxx", ".C", ".c++", ".ii", ".m")
+
+
+def die(msg, code=1):
+    sys.stderr.write("banana-cc: %s\n" % msg)
+    sys.exit(code)
+
+
+def run(cmd):
+    if VERBOSE:
+        sys.stderr.write("banana-cc: %s\n" % " ".join(cmd))
+    try:
+        return subprocess.call(cmd)
+    except OSError as e:
+        die("%s: %s" % (cmd[0], e.strerror))
+
+
+def arch():
+    a = os.environ.get("BANANA_ARCH", "")
+    if not a:
+        name = os.path.basename(sys.argv[0])
+        a = "i686" if name.split("-")[0] in ("i386", "i486", "i586", "i686") else "x86_64"
+    if a in ("i386", "i686"):
+        return "i686"
+    if a != "x86_64":
+        die("unknown BANANA_ARCH %s (x86_64 or i686)" % a, 2)
+    return a
+
+
+def gcc_out(args):
+    return subprocess.run([GCC] + args, capture_output=True, text=True).stdout.strip()
+
+
+def flags(cpu):
+    if cpu == "x86_64":
+        aflags = ["-m64", "-mno-red-zone", "-mcmodel=small"]
+    else:
+        aflags = ["-m32", "-march=i686", "-mstackrealign"]
+    # before the program's flags: what it may change (-O, -g, -W...);
+    # after them: what Banana OS needs whatever the program asks for
+    pre = aflags + ["-ffreestanding", "-fpie", "-nostdinc", "-fno-asynchronous-unwind-tables",
+                    "-fno-builtin-malloc", "-fno-math-errno", "-D__BANANA_OS__"]
+    # (gcc's own headers - float.h, the x86 intrinsics... - after the SDK's)
+    post = ["-fno-stack-protector", "-isystem", os.path.join(SDK, "include"),
+            "-isystem", gcc_out(["-print-file-name=include"])]
+    if cpu == "x86_64":
+        post.append("-mno-red-zone")
+    return aflags, pre, post
+
+
+def sdk_libc(cpu, pre, post):
+    """the SDK's C library for this CPU, built once: (crt0.o, its folder)"""
+    srcs = LIBC + (["divdi3"] if cpu == "i686" else [])
+    h = hashlib.sha256()
+    h.update(open(os.path.realpath(__file__), "rb").read())
+    h.update((gcc_out(["--version"]) + cpu + " ".join(srcs)).encode())
+    for f in sorted(os.listdir(os.path.join(SDK, "lib"))):
+        if f.endswith((".c", ".h")):
+            h.update(f.encode() + open(os.path.join(SDK, "lib", f), "rb").read())
+    for root, dirs, files in sorted(os.walk(os.path.join(SDK, "include"))):
+        dirs.sort()
+        for f in sorted(files):
+            h.update(f.encode() + open(os.path.join(root, f), "rb").read())
+    cache = os.environ.get("BANANA_CC_CACHE") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "banana-cc")
+    lib = os.path.join(cache, "%s-%s" % (cpu, h.hexdigest()[:16]))
+    if os.path.exists(os.path.join(lib, ".done")):
+        return lib
+    os.makedirs(cache, exist_ok=True)
+    # (a parallel make may link several programs at once: one builds it)
+    with open(os.path.join(cache, ".lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        if os.path.exists(os.path.join(lib, ".done")):
+            return lib
+        tmp = lib + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(os.path.join(tmp, "obj"))
+        objs = []
+        for f in srcs:
+            o = os.path.join(tmp, "obj", f + ".o")
+            if run([GCC] + pre + ["-O2", "-fstack-clash-protection", "-fvisibility=hidden",
+                                  "-fno-exceptions", "-fno-builtin",
+                                  "-fno-tree-loop-distribute-patterns", "-w", "-c",
+                                  os.path.join(SDK, "lib", f + ".c"), "-o", o] + post):
+                die("could not build the SDK's C library (%s.c)" % f)
+            objs.append(o)
+        os.rename(objs.pop(0), os.path.join(tmp, "crt0.o"))
+        if run(["ar", "rcs", os.path.join(tmp, "libc.a")] + objs):
+            die("ar failed")
+        shutil.rmtree(os.path.join(tmp, "obj"))
+        for l in EMPTY_LIBS:
+            if run(["ar", "rcs", os.path.join(tmp, "lib%s.a" % l)]):
+                die("ar failed")
+        open(os.path.join(tmp, ".done"), "w").close()
+        shutil.rmtree(lib, ignore_errors=True)
+        os.rename(tmp, lib)
+    return lib
+
+
+def main():
+    args = sys.argv[1:]
+    cpu = arch()
+    aflags, pre, post = flags(cpu)
+
+    # gcc's information options (-v, --version, -print-*...) as they are
+    if len(args) == 1 and (args[0] in ("-v", "--version", "--help", "-dumpversion",
+                                       "-dumpfullversion", "-dumpmachine", "-###")
+                           or args[0].startswith("-print-")):
+        os.execvp(GCC, [GCC] + aflags + args)
+    if not args:
+        die("no input files")
+
+    link = not any(a in ("-c", "-S", "-E", "-M", "-MM", "-fsyntax-only") for a in args)
+    # every program is a static PIE anyway: -static would ask gcc for a
+    # fixed-address one
+    args = [a for a in args if a not in ("-static", "-static-pie", "-rdynamic",
+                                         "-static-libgcc", "-shared-libgcc", "-pie", "-no-pie")]
+    if not link:
+        sys.exit(run([GCC] + pre + args + post))
+    if "-shared" in args:
+        die("shared libraries are not supported (programs are one static PIE)")
+
+    # link: compile the sources given (with the compile options), then ld
+    # with the objects, archives, -l, -L and linker options in their order
+    cflags, ldargs, sources = [], [], []
+    out = "a.out"
+    nostdlib = relocatable = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        val = None
+        if a in TAKES_ARG:
+            if i + 1 >= len(args):
+                die("missing argument to %s" % a)
+            val = args[i + 1]
+            i += 1
+        i += 1
+        if a == "-o":
+            out = val
+        elif a.startswith("-o") and len(a) > 2:
+            out = a[2:]
+        elif a == "-l":
+            ldargs.append("-l" + val)
+        elif a == "-L":
+            ldargs.append("-L" + val)
+        elif a.startswith(("-l", "-L")):
+            ldargs.append(a)
+        elif a.startswith("-Wl,"):
+            ldargs += [x for x in a[4:].split(",") if x]
+        elif a == "-Xlinker":
+            ldargs.append(val)
+        elif a in ("-T", "-u", "-z"):
+            ldargs += [a, val]
+        elif a == "-e":
+            ldargs += ["-e", val]
+        elif a in ("-s", "-r", "-nostdlib", "-nostartfiles", "-nodefaultlibs"):
+            if a == "-s":
+                ldargs.append("-s")
+            elif a == "-r":
+                relocatable = True
+            else:
+                nostdlib = True
+        elif a in ("-pthread", "-pthreads", "-v"):
+            if a == "-v":
+                cflags.append(a)
+        elif a.startswith("-"):
+            cflags.append(a)
+            if val is not None:
+                cflags.append(val)
+        elif a.endswith(SOURCE):
+            sources.append(a)
+            ldargs.append(("src", a))
+        elif a.endswith((".so", ".dylib")) or ".so." in os.path.basename(a):
+            die("%s: shared libraries are not supported" % a)
+        else:
+            ldargs.append(a)
+
+    tmpdir = None
+    try:
+        if sources:
+            tmpdir = tempfile.mkdtemp(prefix="banana-cc.")
+            for n, s in enumerate(sources):
+                o = os.path.join(tmpdir, "%d-%s.o" % (n, os.path.splitext(os.path.basename(s))[0]))
+                if run([GCC] + pre + cflags + ["-c", s, "-o", o] + post):
+                    sys.exit(1)
+                ldargs[ldargs.index(("src", s))] = o
+        emul = ["-m", "elf_x86_64" if cpu == "x86_64" else "elf_i386"]
+        if relocatable:
+            sys.exit(run([LD] + emul + ["-r", "-o", out] + ldargs))
+        lib = sdk_libc(cpu, pre, post)
+        cmd = [LD] + emul + ["-nostdlib", "-pie", "--no-dynamic-linker", "-z", "noexecstack",
+                             "-z", "norelro", "-z", "max-page-size=4096", "-z", "noseparate-code",
+                             "--hash-style=sysv", "-e", "_banana_start",
+                             "--allow-multiple-definition", "-o", out]
+        if nostdlib:
+            cmd += ldargs
+        else:
+            # libgcc (64-bit division on i686, __builtin_* helpers), if gcc
+            # has one for this CPU (an x86_64 gcc without multilib has none
+            # for i686: the SDK's divdi3 does that part there)
+            libgcc = gcc_out(aflags + ["-print-libgcc-file-name"])
+            if cpu == "i686" and gcc_out(["-m32", "-print-multi-directory"]) == ".":
+                libgcc = ""
+            cmd += ["-L" + lib, os.path.join(lib, "crt0.o")] + ldargs
+            cmd += ["--start-group", os.path.join(lib, "libc.a")] + ([libgcc] if libgcc else []) + ["--end-group"]
+        sys.exit(run(cmd))
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+main()

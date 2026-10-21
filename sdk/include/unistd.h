@@ -6,6 +6,15 @@ extern "C" {
 #endif
 #include <stddef.h>
 #include <sys/types.h>
+/* what the system has of POSIX.1-2008 (Unix programs test these) */
+#define _POSIX_VERSION      200809L
+#define _POSIX2_VERSION     200809L
+#define _POSIX_JOB_CONTROL  1
+#define _POSIX_SAVED_IDS    1
+#define _POSIX_NO_TRUNC     1
+#define _POSIX_THREADS      200809L
+#define _POSIX_TIMERS       200809L
+#define _POSIX_MONOTONIC_CLOCK 200809L
 off_t   lseek(int fd, off_t off, int whence);
 int     isatty(int fd);
 #ifndef SEEK_SET
@@ -39,6 +48,13 @@ uid_t   getuid(void);
 uid_t   geteuid(void);
 gid_t   getgid(void);
 gid_t   getegid(void);
+int     setuid(uid_t uid);         /* only to banana (1000): EPERM otherwise */
+int     setgid(gid_t gid);
+int     seteuid(uid_t uid);
+int     setegid(gid_t gid);
+int     setreuid(uid_t r, uid_t e);
+int     setregid(gid_t r, gid_t e);
+int     getgroups(int n, gid_t* list);
 int     getpagesize(void);
 int     gethostname(char* name, size_t len);
 #define F_OK 0

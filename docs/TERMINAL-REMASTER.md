@@ -122,41 +122,57 @@ programs (the test harness types into the serial console's bash).
 
 ## Status (2026-10-21) and how to continue
 
-Done and on `main`:
+Done (builds 237-239 on `main`, 240 on its branch):
 
 | Build | What | Where |
 |---|---|---|
 | 237 | Kernel open file descriptions, `dup`/`dup2`/`fcntl`, close-on-exec, kernel pipes and socket pairs (API 25) | `kernel/kfile.c`, `kernel/app.c` (`fdt[]`, `HOLD`), `sdk/lib/ufd.c`, `sdk/lib/posix.c` |
 | 238 | Programs wholly in their mmap region; copy-on-write `fork`, `execve` (+ `#!`), `waitpid`, groups, sessions, `kill`, `posix_spawn`, `system`/`popen`, `environ`; per-task cwd; CR0.WP (API 26) | `kernel/uspace.c` (`uvm_fork`, `P_COW`, `uvm_write`), `kernel/upage.c` (refcounts), `kernel/app.c` ("Unix processes" section, `load_program`, `run()` loop), `kernel/appcall64.asm` (`app_resume_user`), `sdk/lib/proc.c` |
 | 239 | Ptys + line discipline, termios, controlling terminal, job control (stop/continue, SIGTTIN/TTOU, SIGHUP), `/dev/*` (API 27) | `kernel/pty.c`, `kernel/app.c` ("terminals" section: `dev_open`, `pts_read`, `a_tty_ioctl`, `proc_stop`), `sdk/lib/tty.c` |
+| 240 | The cross toolchain (`banana-cc`, `banana-configure`, `banana-config.site`); GNU bash 5.2.37 as `/bin/bash` and `/bin/sh` (built in, 64-bit); `bin=` in package manifests; `poll` gives `EINTR`; `main` gets `envp`; SDK: `<wctype.h>`, `wcwidth`, `pselect`, `mktemp`, `set*id`, `getgrent`, `getcwd(NULL, 0)`, `_POSIX_VERSION` | `sdk/tools/banana-cc`, `ports/bash/build.sh`, `kernel/pkg.c` (`each_bin`), `kernel/builtin_apps.c`, `kernel/app.c` (`a_poll`), `sdk/lib/utf8.c` |
 
-Tests: `selftest pipes` (kernel pipes + pty line discipline), `posixtest proc`
-and `posixtest tty` (run by `selftest posix`). Known limits: `execve` only
+Tests: `selftest pipes` (kernel pipes + pty line discipline), `posixtest proc`,
+`posixtest tty` and `posixtest bash` (scripts, pipelines, `#!`, and `bash -i`
+on a pty: editing, history, ^C, job control - all run by `selftest posix`). Known limits: `execve` only
 from a process's main thread; job control's "orphaned process group" rule is
 not applied; `fchdir` / directory descriptors do not exist yet; the SDK's
 stdio reads files a byte per system call (slow, correct).
 
+Bash, as of build 240: runs from `/bin` (the kernel shell finds it there:
+`bash -c '...'`, `bash script.sh`, `sh -c '...'`); interactive on a pty. Not yet: bash on
+the text / serial consoles (they are not ttys - phase 6: `bash -i` there
+reads empty lines), a termcap / terminfo entry (readline works without one,
+as on a dumb terminal plus the arrow keys: no clear-screen, no
+`tput`), the GNU tools a script expects (`ls`, `cat`, `tr`... - step 4).
+Testing it from the kernel shell: it expands `$name` itself, even between
+single quotes - write `${name}`, or put the script in a file.
+
 ### Next: phase 4 + 5 (in this order)
 
-1. **A cross toolchain for autoconf ports** - `sdk/tools/banana-cc`: a gcc
+Steps 1 and 2 are done (build 240); the cross toolchain's use is in
+`sdk/README.md` ("Porting Unix software"), `ports/bash/build.sh` is the
+example port (configure's answers for what it would run, `bin=` packaging).
+
+1. ~~**A cross toolchain for autoconf ports** - `sdk/tools/banana-cc`: a gcc
    wrapper (the flags of `ports/ffmpeg/build.sh`: `-ffreestanding -fpie
    -nostdinc -I sdk/include -D__BANANA_OS__`, linking `crt0` + the SDK libc
    + libgcc into a PIE the kernel's loader takes - see `sdk/banana.mk`'s
    link rule). Configure with `--host=x86_64-pc-linux-gnu
    --build=x86_64-build-linux-gnu` (forces cross mode) and pre-set
-   `ac_cv_*` for anything configure would run.
-2. **Port GNU bash 5.2** (`ports/bash/build.sh`, download + sha256 like the
+   `ac_cv_*` for anything configure would run.~~ (done)
+2. ~~**Port GNU bash 5.2** (`ports/bash/build.sh`, download + sha256 like the
    other ports): `--without-bash-malloc --disable-nls --enable-job-control`,
    its bundled readline. Expect gaps in the SDK libc to fill (getpwnam,
    sigsetjmp, locale, `fnmatch`, `strsignal`...). Package it so it lands as
    `/bin/bash` and `/bin/sh`: `kernel/pkg.c` installs into `/apps/<name>/`
    only - add a manifest key (e.g. `bin=bash,sh`) that also puts the program
-   at `/bin/<name>`.
+   at `/bin/<name>`.~~ (done)
 3. **The terminal emulator app** (`apps/terminal`, a desktop app built with
    the SDK): `forkpty()` + `execve("/bin/bash")`, any number of windows and
    tabs, xterm-256color escapes, UTF-8 / wide characters, scrollback,
    selection, `TIOCSWINSZ` on resize. Replaces `term_win_t` / `TERM_WIN_MAX`
-   in `kernel/gui.c`. Ship a terminfo entry with `TERM=xterm-256color`.
+   in `kernel/gui.c`. Ship a terminfo entry with `TERM=xterm-256color` (and a termcap one:
+   bash's readline reads `/etc/termcap`, `TERMCAP`).
 4. **GNU coreutils, grep, sed, gawk, findutils, diffutils, less, ncurses,
    zsh** as ports into `/bin`.
 5. **Phase 6**: the kernel shell's commands (`shell/*.c`) become `/bin`

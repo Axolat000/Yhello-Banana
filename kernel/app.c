@@ -1029,6 +1029,7 @@ static int a_sock_ctl(int fd, int op, int arg) {
 /* poll(): struct pollfd { int fd; short events, revents; } x n; how many
  * are ready, 0 after timeout_ms (-1: no limit) */
 typedef struct { int fd; short events, revents; } apollfd_t;
+static int sig_waiting(app_proc_t* p);
 #define APOLLIN   0x1
 #define APOLLOUT  0x4
 #define APOLLNVAL 0x20
@@ -1057,6 +1058,7 @@ static int a_poll(void* fds, int n, int timeout_ms) {
         }
         if (ready || !timeout_ms) return ready;
         if (timeout_ms > 0 && timer_ms() - start >= (uint32_t)timeout_ms) return 0;
+        if (sig_waiting(p)) return -4;                   /* EINTR, as Linux (even with SA_RESTART) */
         if (socks) net_wait(10);
         else kpipe_sleep(gen, 10);                       /* (a pipe's other end wakes it) */
         breathe(p, 1);

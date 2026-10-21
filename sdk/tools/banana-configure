@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# banana-configure - runs an autoconf configure script for Banana OS:
+#
+#     banana-configure /path/to/configure [configure options...]
+#
+# CC is banana-cc (sdk/tools/banana-cc) for BANANA_ARCH (x86_64, the
+# default, or i686), AR / RANLIB / STRIP binutils'. --host and --build are
+# two different names, so configure knows it cross-compiles and runs
+# nothing it built; what it would have run comes from banana-config.site
+# (CONFIG_SITE) - a port can add its own answers in the environment
+# (ac_cv_...=..., or its own CONFIG_SITE file, read after this one).
+
+TOOLS=$(cd "$(dirname "$0")" && pwd)
+[ $# -ge 1 ] || { echo "usage: banana-configure <configure> [options...]" >&2; exit 2; }
+CONFIGURE=$1; shift
+
+ARCH=${BANANA_ARCH:-x86_64}
+case $ARCH in
+    x86_64) HOST=x86_64-pc-linux-gnu ;;
+    i686|i386) ARCH=i686; HOST=i686-pc-linux-gnu ;;
+    *) echo "banana-configure: unknown BANANA_ARCH $ARCH" >&2; exit 2 ;;
+esac
+
+SITE=$TOOLS/banana-config.site
+[ -n "$CONFIG_SITE" ] && SITE="$SITE $CONFIG_SITE"
+
+BANANA_ARCH=$ARCH CC="$TOOLS/banana-cc" CPP="$TOOLS/banana-cc -E" \
+CC_FOR_BUILD=${CC_FOR_BUILD:-gcc} \
+AR=${AR:-ar} RANLIB=${RANLIB:-ranlib} STRIP=${STRIP:-strip} \
+CONFIG_SITE=$SITE \
+    exec "$CONFIGURE" --host=$HOST --build=x86_64-build-linux-gnu \
+    --disable-shared --enable-static "$@"

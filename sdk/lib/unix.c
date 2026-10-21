@@ -262,6 +262,20 @@ int mkstemp(char* tmpl) {
     return -1;
 }
 
+/* (unsafe: the name may be taken before it is used - mkstemp is not) */
+char* mktemp(char* tmpl) {
+    size_t n = strlen(tmpl);
+    if (n < 6 || strcmp(tmpl + n - 6, "XXXXXX")) { errno = EINVAL; tmpl[0] = 0; return tmpl; }
+    for (int tries = 0; tries < 100; tries++) {
+        unsigned r = __banana->random();
+        for (int i = 0; i < 6; i++) tmpl[n - 6 + i] = "abcdefghijklmnopqrstuvwxyz0123456789"[(r >> (i * 5)) % 36];
+        if (access(tmpl, 0) != 0) return tmpl;
+    }
+    errno = EEXIST;
+    tmpl[0] = 0;
+    return tmpl;
+}
+
 ssize_t getdelim(char** line, size_t* cap, int delim, FILE* f) {
     if (!line || !cap || !f) { errno = EINVAL; return -1; }
     size_t n = 0;
@@ -328,6 +342,34 @@ int getgrnam_r(const char* name, struct group* g, char* buf, size_t len, struct 
     if (r) *g = *r;
     *out = r ? g : NULL;
     return 0;
+}
+
+/* the user database, walked (one entry each) */
+static int g_pwent, g_grent;
+void setpwent(void) { g_pwent = 0; }
+void endpwent(void) { g_pwent = 0; }
+struct passwd* getpwent(void) { return g_pwent++ ? NULL : &g_pw; }
+void setgrent(void) { g_grent = 0; }
+void endgrent(void) { g_grent = 0; }
+struct group* getgrent(void) { return g_grent++ ? NULL : &g_gr; }
+
+/* changing user: there is only banana, so only to banana */
+static int same_id(unsigned id) {
+    if (id == 1000 || id == (unsigned)-1) return 0;
+    errno = EPERM;
+    return -1;
+}
+int setuid(uid_t uid) { return same_id(uid); }
+int setgid(gid_t gid) { return same_id(gid); }
+int seteuid(uid_t uid) { return same_id(uid); }
+int setegid(gid_t gid) { return same_id(gid); }
+int setreuid(uid_t r, uid_t e) { return same_id(r) || same_id(e) ? -1 : 0; }
+int setregid(gid_t r, gid_t e) { return same_id(r) || same_id(e) ? -1 : 0; }
+int getgroups(int n, gid_t* list) {
+    if (n == 0) return 1;
+    if (n < 1) { errno = EINVAL; return -1; }
+    list[0] = 1000;
+    return 1;
 }
 
 /* ── the system ───────────────────────────────────────────────────── */

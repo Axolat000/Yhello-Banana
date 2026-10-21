@@ -85,6 +85,14 @@ int      fwscanf(FILE* f, const wchar_t* fmt, ...);
 int      vfwscanf(FILE* f, const wchar_t* fmt, va_list ap);
 int      wscanf(const wchar_t* fmt, ...);
 int      vwscanf(const wchar_t* fmt, va_list ap);
+/* columns a character takes on a terminal: 0 (combining), 1 or 2 (CJK,
+ * emoji); -1 for control characters */
+int      wcwidth(wchar_t c);
+int      wcswidth(const wchar_t* s, size_t n);
+wchar_t* wcsdup(const wchar_t* s);
+size_t   wcsnlen(const wchar_t* s, size_t max);
+int      wcscasecmp(const wchar_t* a, const wchar_t* b);
+int      wcsncasecmp(const wchar_t* a, const wchar_t* b, size_t n);
 #ifdef __cplusplus
 }
 #endif

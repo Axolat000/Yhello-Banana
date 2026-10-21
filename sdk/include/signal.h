@@ -26,7 +26,10 @@ extern "C" {
 #include <time.h>
 
 typedef int sig_atomic_t;
+#ifndef __sigset_t_defined
+#define __sigset_t_defined
 typedef struct { unsigned long __val[1024 / (8 * sizeof(unsigned long))]; } sigset_t;
+#endif
 
 #define SIGHUP    1
 #define SIGINT    2

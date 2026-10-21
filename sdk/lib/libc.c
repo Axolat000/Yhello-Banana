@@ -555,7 +555,22 @@ int close(int fd) {
     __ufd_forget(fd);                                /* (out of epoll sets) */
     return __banana->close(fd);
 }
-char* getcwd(char* buf, size_t size) { return __banana->getcwd(buf, (int)size) == 0 ? buf : NULL; }
+/* getcwd(NULL, size) allocates the buffer (size 0: as long as needed), as glibc */
+char* getcwd(char* buf, size_t size) {
+    if (buf) {
+        if (!size) { errno = EINVAL; return NULL; }
+        if (__banana->getcwd(buf, (int)size) == 0) return buf;
+        errno = ERANGE;
+        return NULL;
+    }
+    char tmp[4096];
+    if (__banana->getcwd(tmp, sizeof(tmp)) != 0) { errno = ERANGE; return NULL; }
+    size_t n = strlen(tmp) + 1;
+    if (size && size < n) { errno = ERANGE; return NULL; }
+    char* r = malloc(size ? size : n);
+    if (r) memcpy(r, tmp, n);
+    return r;
+}
 int chdir(const char* path) { return __banana->chdir(path); }
 int unlink(const char* path) { return __banana->remove(path); }
 int rmdir(const char* path) { return __banana->remove(path); }

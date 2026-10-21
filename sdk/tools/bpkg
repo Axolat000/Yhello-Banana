@@ -112,6 +112,10 @@ def check(path):
             die(f"{path}: unpack names {zf}, which the package does not hold")
         if files[zf][:4] != b"PK\x03\x04":
             die(f"{path}: {zf} (unpack) is not a ZIP archive")
+    # bin=: commands in /bin, links to the program (kernel/pkg.c)
+    for b in [x.strip() for x in mf.get("bin", "").split(",") if x.strip()]:
+        if not re.fullmatch(r"[A-Za-z0-9_.+\[-]{1,32}", b) or b in (".", ".."):
+            die(f"{path}: bad command name '{b}' in bin=")
     names = ("driver-i686", "driver-x86_64") if kind == "driver" else ("app-i686", "app-x86_64")
     progs = [p for p in names if p in files]
     if not progs:

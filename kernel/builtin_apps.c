@@ -12,7 +12,7 @@
 #include "timer.h"
 #include "fsdisk.h"
 
-extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[];
+extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[], app_bash[], app_bash_end[];
 
 /* (stb_image's zlib inflater, third_party/stb) */
 char* stbi_zlib_decode_malloc(const char* buffer, int len, int* outlen);
@@ -24,6 +24,9 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "photos", app_photos, app_photos_end },
     { "code", app_code, app_code_end },
     { "store", app_store, app_store_end },
+#ifdef __x86_64__
+    { "bash", app_bash, app_bash_end },             /* (ports/bash: /bin/bash, /bin/sh) */
+#endif
 };
 
 /* /etc/builtin-apps: "name=version#crc" of each one installed from here - the

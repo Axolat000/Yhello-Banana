@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Autoconf answers for Banana OS (CONFIG_SITE of sdk/tools/banana-configure):
+# what a configure script would find out by running a test program, which
+# it cannot do when cross-compiling. Only set when not already given.
+
+: ${ac_cv_c_bigendian=no}
+: ${ac_cv_func_malloc_0_nonnull=yes}
+: ${ac_cv_func_realloc_0_nonnull=yes}
+: ${ac_cv_func_calloc_0_nonnull=yes}
+: ${gl_cv_func_malloc_0_nonnull=yes}
+: ${ac_cv_func_setvbuf_reversed=no}
+: ${ac_cv_func_getpgrp_void=yes}
+: ${ac_cv_func_setpgrp_void=yes}
+: ${ac_cv_func_closedir_void=no}
+: ${ac_cv_func_strcoll_works=yes}
+: ${ac_cv_func_strnlen_working=yes}
+: ${ac_cv_func_working_mktime=yes}
+: ${ac_cv_func_getgroups_works=yes}
+: ${ac_cv_func_chown_works=yes}
+: ${ac_cv_func_lstat_dereferences_slashed_symlink=yes}
+: ${ac_cv_func_stat_empty_string_bug=no}
+: ${ac_cv_func_lstat_empty_string_bug=no}
+: ${ac_cv_func_mmap_fixed_mapped=no}
+: ${ac_cv_sys_restartable_syscalls=yes}
+: ${ac_cv_type_getgroups=gid_t}
+
+# fork is real on the 64-bit kernel (copy-on-write); the 32-bit kernel
+# has no address spaces and gives ENOSYS
+case ${BANANA_ARCH:-x86_64} in
+    x86_64)
+        : ${ac_cv_func_fork_works=yes}
+        : ${ac_cv_func_vfork_works=yes} ;;
+    *)
+        : ${ac_cv_func_fork_works=no}
+        : ${ac_cv_func_vfork_works=no} ;;
+esac

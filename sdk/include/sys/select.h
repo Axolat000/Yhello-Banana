@@ -17,6 +17,13 @@ typedef struct { unsigned long fds_bits[FD_SETSIZE / (8 * sizeof(unsigned long))
 #define FD_ISSET(d, s) (((s)->fds_bits[__FD_W(d)] & __FD_B(d)) != 0)
 
 int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* timeout);
+#ifndef __sigset_t_defined
+#define __sigset_t_defined
+typedef struct { unsigned long __val[1024 / (8 * sizeof(unsigned long))]; } sigset_t;
+#endif
+/* select with a signal mask while it waits (set, then select: a signal
+ * between the two is taken before the wait, not during it) */
+int pselect(int n, fd_set* rd, fd_set* wr, fd_set* ex, const struct timespec* timeout, const sigset_t* mask);
 #ifdef __cplusplus
 }
 #endif

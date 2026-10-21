@@ -6,7 +6,8 @@
 const banana_api_t* __banana;
 extern unsigned long __banana_stack_top;   /* (pthread.c: the main thread's stack) */
 
-int  main(int argc, char** argv);
+/* (a main with argc, argv only, or none, takes this call as well: the C ABI) */
+int  main(int argc, char** argv, char** envp);
 extern char** environ;
 void __libc_init(void);
 void exit(int code) __attribute__((noreturn));
@@ -20,5 +21,5 @@ int _banana_start(const banana_api_t* api, int argc, char** argv) {
     if (BANANA_HAS(api, proc_kill) && argv && !argv[argc] && argv[argc + 1]) environ = argv + argc + 1;
     __banana_stack_top = (unsigned long)__builtin_frame_address(0);
     __libc_init();
-    exit(main(argc, argv));
+    exit(main(argc, argv, environ));
 }
