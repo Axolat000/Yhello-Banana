@@ -2979,8 +2979,25 @@ static void gui_poll_body(void) {
                     }
                     continue;
                 }
-                if (g_menu_open || c == 20) { gui_handle_key(c); continue; }
+                /* (Ctrl+T: the Start menu - but Ctrl+Shift+T goes to an app's window: Terminal's new tab) */
+                if (g_menu_open || (c == 20 && !(g_front_app == APP_APPWIN && (keyboard_mods() & 1)))) { gui_handle_key(c); continue; }
                 if (g_front_app == APP_NOTEPAD) notepad_key(c);
+                else if (g_front_app == APP_APPWIN && c == 27) {
+                    /* Esc alone, or the start of an arrow key's ESC [ X (queued
+                     * together by the keyboard): Esc pressed alone reaches the
+                     * app now, not with the next key */
+                    char c2 = keyboard_try_getchar();
+                    appwin_key(27);
+                    if (c2 == '[') {
+                        appwin_key('[');
+                        char c3 = keyboard_try_getchar();
+                        if (c3) appwin_key(c3);
+                        if (c3 >= '0' && c3 <= '9') { char c4 = keyboard_try_getchar(); if (c4) appwin_key(c4); }
+                    } else {
+                        appwin_key_esc();
+                        if (c2) appwin_key(c2);
+                    }
+                }
                 else if (g_front_app == APP_APPWIN) appwin_key(c);
                 else if (g_front_app == APP_FILES) explorer_key(c);
                 else if (g_front_app == APP_SETTINGS) settings_key(c);

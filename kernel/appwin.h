@@ -56,6 +56,7 @@ void     appwin_mouse(int mx, int my, int left);
 uint32_t appwin_signature(void);
 void     appwin_close_all(void);                /* the desktop quits: ask every app to close */
 void     appwin_key(char c);                    /* a key while an app window is in front */
+void     appwin_key_esc(void);                  /* an Esc with no [ after it: sent alone */
 void     appwin_fkey(int k);                    /* F1-F12 (KEYF_*) for the front app window */
 /* media keys: the window that asked for them (win_media_keys) gets them, wherever the focus is */
 void     appwin_set_media(int id, int owner);

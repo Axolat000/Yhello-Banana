@@ -122,7 +122,7 @@ programs (the test harness types into the serial console's bash).
 
 ## Status (2026-10-21) and how to continue
 
-Done (builds 237-239 on `main`, 240 on its branch):
+Done (builds 237-239 on `main`, 240-241 on its branch):
 
 | Build | What | Where |
 |---|---|---|
@@ -130,6 +130,7 @@ Done (builds 237-239 on `main`, 240 on its branch):
 | 238 | Programs wholly in their mmap region; copy-on-write `fork`, `execve` (+ `#!`), `waitpid`, groups, sessions, `kill`, `posix_spawn`, `system`/`popen`, `environ`; per-task cwd; CR0.WP (API 26) | `kernel/uspace.c` (`uvm_fork`, `P_COW`, `uvm_write`), `kernel/upage.c` (refcounts), `kernel/app.c` ("Unix processes" section, `load_program`, `run()` loop), `kernel/appcall64.asm` (`app_resume_user`), `sdk/lib/proc.c` |
 | 239 | Ptys + line discipline, termios, controlling terminal, job control (stop/continue, SIGTTIN/TTOU, SIGHUP), `/dev/*` (API 27) | `kernel/pty.c`, `kernel/app.c` ("terminals" section: `dev_open`, `pts_read`, `a_tty_ioctl`, `proc_stop`), `sdk/lib/tty.c` |
 | 240 | The cross toolchain (`banana-cc`, `banana-configure`, `banana-config.site`); GNU bash 5.2.37 as `/bin/bash` and `/bin/sh` (built in, 64-bit); `bin=` in package manifests; `poll` gives `EINTR`; `main` gets `envp`; SDK: `<wctype.h>`, `wcwidth`, `pselect`, `mktemp`, `set*id`, `getgrent`, `getcwd(NULL, 0)`, `_POSIX_VERSION` | `sdk/tools/banana-cc`, `ports/bash/build.sh`, `kernel/pkg.c` (`each_bin`), `kernel/builtin_apps.c`, `kernel/app.c` (`a_poll`), `sdk/lib/utf8.c` |
+| 241 | The Terminal app: windows with tabs, a pty + `/bin/bash` each, xterm-256color (colours up to 24-bit, scrolling regions, alternate screen, mouse reporting, bracketed paste, OSC titles, DEC line drawing), UTF-8 with double-width characters, 5000-line scrollback, selection / copy / paste, resizing (`TIOCSWINSZ`), text size; built in (64-bit). Desktop: PgUp / PgDn and a lone Esc reach app windows, Ctrl+Shift+T goes to them | `apps/terminal/vt.c` (the screen), `apps/terminal/main.c` (windows, drawing, input), `tools/tests/terminal_vt` (vt.c on Linux), `kernel/appwin.c`, `kernel/gui.c` |
 
 Tests: `selftest pipes` (kernel pipes + pty line discipline), `posixtest proc`,
 `posixtest tty` and `posixtest bash` (scripts, pipelines, `#!`, and `bash -i`
@@ -137,6 +138,20 @@ on a pty: editing, history, ^C, job control - all run by `selftest posix`). Know
 from a process's main thread; job control's "orphaned process group" rule is
 not applied; `fchdir` / directory descriptors do not exist yet; the SDK's
 stdio reads files a byte per system call (slow, correct).
+
+Terminal, as of build 241 (`apps/terminal`, "Terminal (bash)" in Apps; the
+desktop's own Terminal - the kernel shell's `term_win_t` - stays until phase
+6, as bash cannot run the kernel shell's commands yet): Ctrl+Shift+T a tab,
+Ctrl+Shift+N a window, Ctrl+Shift+W closes a tab, Ctrl+PgUp / PgDn between
+tabs, Shift+PgUp / PgDn the scrollback, Ctrl+Shift+C / V (or select, then
+right-click) copy and paste, Ctrl+= / - / 0 the text size; `terminal -e cmd`.
+`TERM=xterm-256color` with the termcap entry in `$TERMCAP` (readline uses it);
+no terminfo database yet (comes with ncurses, step 4). Not yet: CJK glyphs
+(the system has no CJK font: double-width boxes), combining marks (dropped),
+the middle mouse button (the desktop does not pass it to apps), reflowing
+wrapped lines on resize. Tested in QEMU: `tools/tests/terminal_vt/run.sh`
+(28 checks of vt.c), and screenshots of bash in it: colours, tabs, the
+alternate screen, scrollback, resize + SIGWINCH, selection and paste.
 
 Bash, as of build 240: runs from `/bin` (the kernel shell finds it there:
 `bash -c '...'`, `bash script.sh`, `sh -c '...'`); interactive on a pty. Not yet: bash on
@@ -149,7 +164,7 @@ single quotes - write `${name}`, or put the script in a file.
 
 ### Next: phase 4 + 5 (in this order)
 
-Steps 1 and 2 are done (build 240); the cross toolchain's use is in
+Steps 1 and 2 are done (build 240), step 3 (build 241); the cross toolchain's use is in
 `sdk/README.md` ("Porting Unix software"), `ports/bash/build.sh` is the
 example port (configure's answers for what it would run, `bin=` packaging).
 
@@ -167,12 +182,13 @@ example port (configure's answers for what it would run, `bin=` packaging).
    `/bin/bash` and `/bin/sh`: `kernel/pkg.c` installs into `/apps/<name>/`
    only - add a manifest key (e.g. `bin=bash,sh`) that also puts the program
    at `/bin/<name>`.~~ (done)
-3. **The terminal emulator app** (`apps/terminal`, a desktop app built with
+3. ~~**The terminal emulator app** (`apps/terminal`, a desktop app built with
    the SDK): `forkpty()` + `execve("/bin/bash")`, any number of windows and
    tabs, xterm-256color escapes, UTF-8 / wide characters, scrollback,
-   selection, `TIOCSWINSZ` on resize. Replaces `term_win_t` / `TERM_WIN_MAX`
-   in `kernel/gui.c`. Ship a terminfo entry with `TERM=xterm-256color` (and a termcap one:
-   bash's readline reads `/etc/termcap`, `TERMCAP`).
+   selection, `TIOCSWINSZ` on resize.~~ (done, build 241). Left for later:
+   replacing `term_win_t` / `TERM_WIN_MAX` in `kernel/gui.c` (with phase 6,
+   once bash can do what the kernel shell does); a terminfo entry (with
+   ncurses).
 4. **GNU coreutils, grep, sed, gawk, findutils, diffutils, less, ncurses,
    zsh** as ports into `/bin`.
 5. **Phase 6**: the kernel shell's commands (`shell/*.c`) become `/bin`

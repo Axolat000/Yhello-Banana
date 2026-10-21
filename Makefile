@@ -214,7 +214,7 @@ run-tap: Banana_OS.iso
 clean:
 	for e in $(EXAMPLES); do $(MAKE) -s -C sdk/examples/$$e clean; done
 	rm -f $(EXAMPLE_BPKZ)
-	for a in $(APPS); do $(MAKE) -s -C apps/$$a clean; done
+	for a in $(APPS) terminal; do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
 	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
@@ -262,14 +262,20 @@ ports/bash/build/bash-x86_64.bpk: ports/bash/build.sh $(SDK_DEPS) $(CROSS_DEPS)
 	ports/bash/build.sh $@
 $(BASH_BPKZ): ports/bash/build/bash-x86_64.bpk
 	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $< $@
-build/builtin-meta-x86_64.bin: $(BASH_BPKZ)
+
+# the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
+TERMINAL_BPKZ = apps/terminal/terminal-x86_64.bpk.z
+build/builtin-meta-x86_64.bin: $(BASH_BPKZ) $(TERMINAL_BPKZ)
+$(TERMINAL_BPKZ): $(wildcard apps/terminal/*.c apps/terminal/*.h) apps/terminal/Makefile apps/terminal/icon.png $(SDK_DEPS)
+	$(MAKE) -C apps/terminal terminal-x86_64.bpk.z
+kernel/appbin.o64: $(TERMINAL_BPKZ)
 
 # the App Store's facts about those packages and the examples (size, SHA-256,
 # manifest): made here, so the boot does not unpack and hash them all again
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),bash.bpk=$(BASH_BPKZ)) \
+	    $(if $(filter x86_64,$*),bash.bpk=$(BASH_BPKZ) terminal.bpk=$(TERMINAL_BPKZ)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel

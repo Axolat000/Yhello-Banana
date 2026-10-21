@@ -733,6 +733,8 @@ void appwin_key(char c) {
         case '6': k = BANANA_KEY_PGDN; g_esc = 3; break;
         case '3': k = BANANA_KEY_DELETE; g_esc = 3; break;
         case 'P': k = BANANA_KEY_DELETE; break;
+        case 'I': k = BANANA_KEY_PGUP; break;          /* (the keyboard's own: kernel/keyboard.c) */
+        case 'G': k = BANANA_KEY_PGDN; break;
         default: return;
         }
         push_simple(w, BANANA_EV_KEY, 0, 0, 0, k);
@@ -743,6 +745,13 @@ void appwin_key(char c) {
     }
     if (c == 27) { g_esc = 1; return; }
     push_simple(w, BANANA_EV_KEY, 0, 0, 0, k);
+}
+
+/* an Esc with nothing after it (appwin_key keeps one waiting for a '['): sent */
+void appwin_key_esc(void) {
+    awin_t* w = front();
+    if (g_esc == 1 && w) push_simple(w, BANANA_EV_KEY, 0, 0, 0, 27);
+    g_esc = 0;
 }
 
 /* ── taskbar / Task Manager ───────────────────────────────────────── */
