@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 26u
+#define BANANA_API_VERSION 27u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -26,6 +26,7 @@
 #define BANANA_O_CREATE  0x04
 #define BANANA_O_TRUNC   0x08
 #define BANANA_O_APPEND  0x10
+#define BANANA_O_NOCTTY  0x20          /* (version 27) a terminal opened is not made the controlling one */
 
 /* seek() whence */
 #define BANANA_SEEK_SET 0
@@ -535,6 +536,19 @@ typedef struct banana_api {
     int (*proc_setpgid)(int pid, int pgid);
     int (*proc_setsid)(void);
     int (*proc_kill)(int pid, int sig);
+
+    /* ── version 27: terminals ───────────────────────────────────────
+     * open() knows /dev: null, zero, full, random, urandom, tty, console,
+     * ptmx (a new pseudo-terminal's master), pts/N (its slave), stdin,
+     * stdout, stderr, fd/N. A session leader opening a terminal without
+     * BANANA_O_NOCTTY makes it its controlling terminal. ioctl on a
+     * terminal: Linux's request numbers (TCGETS / TCSETS* with the SDK's
+     * struct termios, TIOCGWINSZ, TIOCSWINSZ, TIOCSCTTY, TIOCNOTTY,
+     * TIOCGPGRP, TIOCSPGRP, TIOCGSID, TIOCGPTN, TIOCSPTLCK, FIONREAD,
+     * TIOCOUTQ, TCFLSH, TCSBRK, TCXONC): 0 or -errno (-ENOTTY: not one).
+     * Job control: SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU stop a process,
+     * SIGCONT continues it; proc_wait's WUNTRACED 2, WCONTINUED 8. */
+    int (*tty_ioctl)(int fd, unsigned long req, void* arg);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0
@@ -603,6 +617,9 @@ typedef struct banana_ucontext {
 #define BANANA_FD_SOCK 2
 #define BANANA_FD_PIPE 3                /* a pipe's end, or a socket pair's (is_sock) */
 #define BANANA_FD_TERM 4
+#define BANANA_FD_PTM  5                /* a pseudo-terminal's master: size its number (pts/N) */
+#define BANANA_FD_PTS  6                /* ... its slave */
+#define BANANA_FD_DEV  7                /* /dev/null, zero, full, random: size which (1-4) */
 typedef struct {
     int type, flags;                    /* flags: as F_GETFL */
     int is_sock, cloexec;

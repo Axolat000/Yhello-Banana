@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "selftest.h"
 #include "../kernel/kfile.h"
+#include "../kernel/pty.h"
 #include "../kernel/gpu.h"
 #include "../kernel/gpu_virgl.h"
 #include "../kernel/disk.h"
@@ -1119,6 +1120,7 @@ int selftest_cmd(int argc, char** argv) {
         section("graphical boot menu rendering");bootmenu_tests_run(report);
     } else if(only && !strcmp(only,"pipes")) {
         section("kernel pipes and socket pairs");kfile_tests(report);
+        section("pseudo-terminals");pty_tests(report);
     } else if(only && !strcmp(only,"mouse")) {
         section("mouse capture and relative movement");mouse_capture_tests(report);
         section("mouse: two pointing devices");mouse_source_tests(report);
@@ -1166,6 +1168,7 @@ int selftest_cmd(int argc, char** argv) {
             mouse_capture_tests(report);
             mouse_source_tests(report);
             kfile_tests(report);
+            pty_tests(report);
             bootmenu_tests_run(report);
             t_ram();
             t_sleep(0);

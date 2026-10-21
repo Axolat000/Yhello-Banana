@@ -341,10 +341,25 @@ int putchar(int c) { return fputc(c, stdout); }
 int fputs(const char* s, FILE* f) { return put_bytes(f, s, strlen(s)) < 0 ? EOF : 0; }
 int puts(const char* s) { if (fputs(s, stdout) < 0) return EOF; return putchar('\n') == EOF ? EOF : 0; }
 
-/* stdin: the terminal gives whole lines (with echo and backspace) */
+/* is descriptor 0 the console - whole lines, with echo and backspace, from
+ * the system's line editor? Or a pipe, a file, a pseudo-terminal (read) */
+static int stdin_console(void) {
+    if (!BANANA_HAS(__banana, fd_info)) return 1;
+    banana_fdinfo_t fi;
+    return __banana->fd_info(0, &fi) == 0 && fi.type == BANANA_FD_TERM;
+}
+
 static int stdin_getc(void) {
     if (g_line_pos >= g_line_len) {
         fflush(stdout);
+        if (!stdin_console()) {
+            long r;
+            do r = read(0, g_line, sizeof(g_line)); while (r < 0 && errno == EINTR);
+            if (r <= 0) { stdin->eof = 1; if (r < 0) stdin->err = 1; return EOF; }
+            g_line_len = (int)r;
+            g_line_pos = 0;
+            return (unsigned char)g_line[g_line_pos++];
+        }
         int n = __banana->readline(g_line, (int)sizeof(g_line) - 1);
         if (n < 0) { stdin->eof = 1; return EOF; }
         g_line[n] = '\n';

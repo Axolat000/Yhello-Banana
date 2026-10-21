@@ -45,6 +45,8 @@ _Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must b
 #include "upage.h"
 #include "usock.h"
 #include "kfile.h"
+#include "pty.h"
+#include "random.h"
 #include "../net/net.h"
 
 /* file descriptors: 0..255 - files, sockets, pipes, the terminal (the SDK's
@@ -152,6 +154,14 @@ typedef struct {
     int       exec_next;       /* execve: the new program is ready - run() starts it */
     uspace_t* old_us;          /* ... the old one's space and memory, freed then */
     umem_t*   old_mem;
+    /* terminals and job control (version 27): its controlling terminal (a
+     * pty; NULL: none - or the console it was started on), stopped by
+     * SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU (that signal; 0: running), what
+     * its parent's waitpid has yet to hear (WUNTRACED, WCONTINUED) */
+    struct pty* ctty;
+    int       stopped;
+    int       stop_reported;
+    int       cont_report;
 } app_proc_t;
 
 static app_proc_t g_procs[APP_MAX];
@@ -168,6 +178,21 @@ static void* g_sysframe[TASK_MAX];      /* the registers each task's system call
 static uint8_t* stack_map(app_proc_t* p, size_t size, size_t guard);
 static void stack_unmap(app_proc_t* p, uint8_t* stack, size_t size, size_t guard);
 #endif
+/* (terminals and job control: further down) */
+struct kfile;
+static long pts_read(app_proc_t* p, kfile_t* f, void* buf, unsigned long len);
+static long pts_write(app_proc_t* p, kfile_t* f, const void* buf, unsigned long len);
+static long ptm_read(app_proc_t* p, kfile_t* f, void* buf, unsigned long len);
+static long ptm_write(app_proc_t* p, kfile_t* f, const void* buf, unsigned long len);
+static long dev_read(kfile_t* f, void* buf, unsigned long len);
+static long dev_write(kfile_t* f, unsigned long len);
+static int  dev_open(app_proc_t* p, const char* path, int flags);
+#ifdef __x86_64__
+static void proc_stop(app_proc_t* p, int sig);
+static void stop_wait(app_proc_t* p);
+#endif
+static void ctty_set(app_proc_t* p, struct pty* t);
+static int  pgrp_signal(int pgrp, int sig);
 static banana_api_t g_api;
 static sigstate_t* sig_state(app_proc_t* p);     /* (the calling thread's signals) */
 
@@ -682,6 +707,7 @@ static int fd_std(app_proc_t* p) {
 static int a_open(const char* path, int flags) {
     app_proc_t* p = cur();
     if (!p || !path || !*path) return -1;
+    if (!strncmp(path, "/dev/", 5)) return dev_open(p, path, flags);   /* (-errno) */
     if (fs_find_dir(path) >= 0) return -1;
     int idx = fs_find_file(path);
     if (idx < 0) {
@@ -744,6 +770,9 @@ static long a_read(int fd, void* buf, unsigned long len) {
     case KF_CONS: return cons_read(p, buf, len);
     case KF_SOCK: return usock_recv(f->sock, buf, n32, 0, NULL, NULL);
     case KF_PIPE: return pipe_io(p, f, buf, n32, 0);
+    case KF_PTS:  return pts_read(p, f, buf, n32);
+    case KF_PTM:  return ptm_read(p, f, buf, n32);
+    case KF_DEV:  return dev_read(f, buf, n32);
     }
     /* the part asked for only: a big file on the disk is not read whole */
     int n = fs_read(f->fidx, f->pos, buf, n32);
@@ -761,6 +790,9 @@ static long fd_write(app_proc_t* p, int fd, const void* buf, unsigned long len) 
     case KF_CONS: return cons_write(p, buf, len);
     case KF_SOCK: return usock_send(f->sock, buf, n32, 0, NULL, 0);
     case KF_PIPE: return (f->flags & KF_WRITE) ? pipe_io(p, f, (void*)buf, n32, 1) : -9;
+    case KF_PTS:  return pts_write(p, f, buf, n32);
+    case KF_PTM:  return ptm_write(p, f, buf, n32);
+    case KF_DEV:  return dev_write(f, n32);
     }
     if (!(f->flags & (KF_WRITE | KF_APPEND))) return -9;
     fs_file_t* ff = fs_file_info(f->fidx);             /* (its data is not read in for a write) */
@@ -859,7 +891,8 @@ static int a_fd_info(int fd, void* out) {
     o->flags = a_fd_fcntl(fd, 3, 0);
     o->is_sock = f->type == KF_PIPE && f->is_sock;
     o->cloexec = p->cloexec[fd];
-    o->size = f->type == KF_FILE ? fs_file_info(f->fidx)->size : f->type == KF_PIPE ? (unsigned)kpipe_nread(f) : 0;
+    o->size = f->type == KF_FILE ? fs_file_info(f->fidx)->size : f->type == KF_PIPE ? (unsigned)kpipe_nread(f)
+            : f->type == KF_PTM || f->type == KF_PTS ? (unsigned)pty_index(f->pty) : f->type == KF_DEV ? (unsigned)f->dev : 0;
     o->id = (uintptr_t)f;
     return 0;
 }
@@ -1016,6 +1049,7 @@ static int a_poll(void* fds, int n, int timeout_ms) {
             else if (f->type == KF_CONS) r = ((f->flags & KF_READ) && p->kq_head != p->kq_tail ? APOLLIN : 0) | APOLLOUT;
             else if (f->type == KF_SOCK) { r = usock_poll(f->sock, ev); socks = 1; }
             else if (f->type == KF_PIPE) r = kpipe_poll(f, ev);
+            else if (f->type == KF_PTM || f->type == KF_PTS) r = pty_poll(f->pty, f->type == KF_PTM, ev);
             else r = APOLLIN | APOLLOUT;                 /* (a file is always ready) */
             r &= ev | KF_POLLERR | KF_POLLHUP | APOLLNVAL;
             pf[i].revents = (short)r;
@@ -2136,6 +2170,7 @@ static void spec_init(void) {
     SPEC(proc_setpgid, "ii", 0);
     SPEC(proc_setsid, "", 0);
     SPEC(proc_kill, "ii", 0);
+    SPEC(tty_ioctl, "iii", 0);            /* arg: checked in it, by the request */
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2329,6 +2364,7 @@ static int sig_take(app_proc_t* p, sigstate_t* st) {
 /* the thread goes back to ring 3 with registers r: its pending signals now */
 static void sig_check(app_proc_t* p, sysframe_t* r) {
     for (int guard = 0; guard < 64; guard++) {
+        if (p->stopped) stop_wait(p);                  /* (stopped: not back to its code until SIGCONT) */
         sigstate_t* st = sigst(p);
         int sig = sig_take(p, st);
         if (!sig) return;
@@ -2337,7 +2373,11 @@ static void sig_check(app_proc_t* p, sysframe_t* r) {
         if (d == BANANA_SIG_IGNORE) continue;
         /* the default: these are ignored, the rest end the app */
         if (sig == 17 || sig == 18 || sig == 23 || sig == 28) continue;   /* CHLD CONT URG WINCH */
-        if (sig >= 19 && sig <= 22) continue;          /* STOP TSTP TTIN TTOU: no job control yet */
+        if (sig >= 19 && sig <= 22) {                  /* STOP TSTP TTIN TTOU: it stops */
+            proc_stop(p, sig);
+            stop_wait(p);
+            continue;
+        }
         if (sig != 1 && sig != 2 && sig != 9 && sig != 13 && sig != 15)   /* (HUP INT KILL PIPE TERM: asked for, no crash - a shell says so) */
             ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: ended by signal %d", p->name, sig);
         p->term_sig = sig;
@@ -2623,6 +2663,17 @@ static void proc_wake(app_proc_t* p) {
 
 static void proc_signal(app_proc_t* t, int sig) {
     if (sig < 1 || sig > 64) return;
+    if (sig == 18) {                                    /* SIGCONT: it goes on, whatever it does with the signal */
+        if (t->stopped) {
+            t->stopped = 0;
+            t->cont_report = 1;
+            app_proc_t* parent = t->ppid ? proc_by_pid(t->ppid) : NULL;
+            if (parent) { parent->sig_pending |= 1ull << 16; proc_wake(parent); }
+        }
+        t->sig_pending &= ~(0xFull << 18);             /* (stops sent before: dropped) */
+    } else if (sig >= 19 && sig <= 22) {
+        t->sig_pending &= ~(1ull << 17);               /* (a SIGCONT not taken yet: dropped) */
+    }
 #ifdef __x86_64__
     t->sig_pending |= 1ull << (sig - 1);
 #else
@@ -2635,6 +2686,18 @@ static void proc_signal(app_proc_t* t, int sig) {
  * for it, it stays as a zombie (its status) and the parent gets SIGCHLD */
 static void proc_finish(app_proc_t* p) {
     int sig = p->term_sig;
+    pty_t* tty = p->ctty;
+    if (tty && p->sid == p->seq && pty_session(tty) == p->sid) {   /* the session's leader: it loses the terminal */
+        pgrp_signal(pty_fg(tty), 1);
+        pgrp_signal(pty_fg(tty), 18);
+        pty_set_session(tty, 0);
+        pty_set_fg(tty, 0);
+        for (int i = 0; i < APP_MAX; i++)
+            if (g_procs[i].used && &g_procs[i] != p && g_procs[i].sid == p->sid && g_procs[i].ctty == tty)
+                ctty_set(&g_procs[i], NULL);
+    }
+    ctty_set(p, NULL);
+    p->stopped = 0;
     p->wstatus = sig ? (sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
     app_proc_t* parent = p->ppid ? proc_by_pid(p->ppid) : NULL;
     for (int i = 0; i < APP_MAX; i++) {                 /* its children: nobody's now */
@@ -2759,6 +2822,7 @@ static int a_proc_fork(void) {
     c->ppid = p->seq;
     c->pgid = p->pgid;
     c->sid = p->sid;
+    if (p->ctty) ctty_set(c, p->ctty);
     c->last_breath = timer_ms();
     c->pid = pid;
     pid_set(pid, c->id, -1);
@@ -2928,6 +2992,16 @@ static int a_proc_wait(int pid, int* status, int options, void* ru) {
             if (!(pid == -1 || (pid > 0 && c->seq == pid) || (pid == 0 && c->pgid == p->pgid) ||
                   (pid < -1 && c->pgid == -pid))) continue;
             found = 1;
+            if ((options & 2) && c->stopped && !c->stop_reported && !c->zombie) {     /* WUNTRACED */
+                c->stop_reported = 1;
+                if (status) *status = 0x7F | (c->stopped << 8);
+                return c->seq;
+            }
+            if ((options & 8) && c->cont_report && !c->zombie) {                       /* WCONTINUED */
+                c->cont_report = 0;
+                if (status) *status = 0xFFFF;
+                return c->seq;
+            }
             if (c->zombie) {
                 int st = c->wstatus, id = c->seq;
                 c->zombie = 0;
@@ -2977,6 +3051,7 @@ static int a_proc_setsid(void) {
     for (int i = 0; i < APP_MAX; i++)                   /* a group's leader may not */
         if (g_procs[i].used && !g_procs[i].zombie && g_procs[i].pgid == p->seq) return -1;
     p->sid = p->pgid = p->seq;
+    ctty_set(p, NULL);                                  /* (a new session has no terminal yet) */
     return p->seq;
 }
 
@@ -2993,6 +3068,388 @@ static int a_proc_kill(int pid, int sig) {
     }
     return n ? 0 : -3;                                  /* ESRCH */
 }
+
+/* ── terminals: /dev, ptys, the controlling terminal, job control (version 27)
+ * /dev/ptmx gives a pseudo-terminal's master (kernel/pty.c), /dev/pts/N its
+ * slave; a session leader opening a slave without O_NOCTTY makes it its
+ * session's controlling terminal (/dev/tty then), whose foreground process
+ * group gets ^C, ^\, ^Z and SIGWINCH, and alone may read it - another
+ * group gets SIGTTIN (and stops) when it tries. */
+
+/* every live process of group pgrp gets sig; how many */
+static int pgrp_signal(int pgrp, int sig) {
+    int n = 0;
+    if (pgrp <= 0) return 0;
+    for (int i = 0; i < APP_MAX; i++) {
+        app_proc_t* t = &g_procs[i];
+        if (!t->used || t->zombie || t->pid < 0 || t->pgid != pgrp) continue;
+        proc_signal(t, sig);
+        n++;
+    }
+    return n;
+}
+
+/* the controlling terminal: set (a hold kept on it), or let go */
+static void ctty_set(app_proc_t* p, pty_t* t) {
+    if (p->ctty == t) return;
+    if (t) pty_hold(t, 1);
+    pty_t* old = p->ctty;
+    p->ctty = t;
+    if (old) pty_hold(old, -1);
+}
+
+/* what a pty's line discipline raised: signals for its foreground group;
+ * its master closed: SIGHUP and SIGCONT to it and its session's leader,
+ * and the session loses its terminal */
+static void pty_dispatch(pty_t* t) {
+    int ev = pty_events(t);
+    int fg = pty_fg(t);
+    if (ev & PTY_EV_SIGINT) pgrp_signal(fg, 2);
+    if (ev & PTY_EV_SIGQUIT) pgrp_signal(fg, 3);
+    if (ev & PTY_EV_SIGTSTP) pgrp_signal(fg, 20);
+    if (ev & PTY_EV_SIGWINCH) pgrp_signal(fg, 28);
+    if (ev & PTY_EV_HANGUP) {
+        int sid = pty_session(t);
+        pgrp_signal(fg, 1);
+        pgrp_signal(fg, 18);
+        app_proc_t* leader = sid ? proc_by_pid(sid) : NULL;
+        if (leader && leader->pgid != fg) { proc_signal(leader, 1); proc_signal(leader, 18); }
+        pty_set_session(t, 0);
+        pty_set_fg(t, 0);
+        /* (last: the holds let go may free it) */
+        for (int i = 0; i < APP_MAX; i++)
+            if (g_procs[i].used && g_procs[i].ctty == t) ctty_set(&g_procs[i], NULL);
+    }
+}
+
+static void pty_closed_hook(struct pty* t) { pty_dispatch(t); }
+
+/* a signal the process can be stopped / interrupted by: not ignored nor blocked */
+static int sig_takes(app_proc_t* p, int sig) {
+#ifdef __x86_64__
+    if (p->sig_disp[sig] == BANANA_SIG_IGNORE) return 0;
+    if ((sig_state(p)->blocked >> (sig - 1)) & 1) return 0;
+    return 1;
+#else
+    (void)p; (void)sig;
+    return 0;
+#endif
+}
+
+/* a background process of the terminal's session touching it (reading, or
+ * writing with TOSTOP, changing its modes): its group gets sig (SIGTTIN /
+ * SIGTTOU) - -4 (EINTR: it stops now); -5 (EIO) when it would never be let
+ * in (the signal ignored or blocked: for SIGTTOU that means "go ahead": 0) */
+static int bg_check(app_proc_t* p, pty_t* t, int sig) {
+    if (!p || p->ctty != t || !pty_fg(t) || p->pgid == pty_fg(t)) return 0;
+    if (!sig_takes(p, sig)) return sig == 22 ? 0 : -5;
+    pgrp_signal(p->pgid, sig);
+    return -4;
+}
+
+#define TOSTOP_F 0000400
+
+/* the slave: a read (canonical: a line; raw: VMIN / VTIME) */
+static long pts_read(app_proc_t* p, kfile_t* f, void* buf, unsigned long len) {
+    pty_t* t = f->pty;
+    int r = bg_check(p, t, 21);
+    if (r) return r;
+    if (!len) return 0;
+    int canon, vmin, vtime;
+    pty_read_mode(t, &canon, &vmin, &vtime);
+    uint32_t start = timer_ms();
+    for (;;) {
+        long n = pty_slave_read(t, (uint8_t*)buf, len);
+        if (n != -11) return n;
+        if (f->flags & KF_NONBLOCK) return -11;
+        if (!canon && vmin == 0 && (vtime == 0 || timer_ms() - start >= (uint32_t)vtime * 100u)) return 0;
+        if (sig_waiting(p)) return -4;
+        kpipe_wait(NULL, 0, 20);
+        breathe(p, 0);
+    }
+}
+
+static long pts_write(app_proc_t* p, kfile_t* f, const void* buf, unsigned long len) {
+    pty_t* t = f->pty;
+    pty_termios_t tio;
+    pty_get_termios(t, &tio);
+    if (tio.c_lflag & TOSTOP_F) {
+        int r = bg_check(p, t, 22);
+        if (r) return r;
+    }
+    unsigned long done = 0;
+    while (done < len) {
+        long n = pty_slave_write(t, (const uint8_t*)buf + done, len - done);
+        if (n > 0) { done += (unsigned long)n; continue; }
+        if (n != -11 || (f->flags & KF_NONBLOCK)) return done ? (long)done : n;
+        if (sig_waiting(p)) return done ? (long)done : -4;
+        kpipe_wait(NULL, 0, 20);
+        breathe(p, 0);
+    }
+    return (long)done;
+}
+
+static long ptm_read(app_proc_t* p, kfile_t* f, void* buf, unsigned long len) {
+    for (;;) {
+        long n = pty_master_read(f->pty, (uint8_t*)buf, len);
+        if (n != -11 || (f->flags & KF_NONBLOCK)) return n;
+        if (sig_waiting(p)) return -4;
+        kpipe_wait(NULL, 0, 20);
+        breathe(p, 0);
+    }
+}
+
+static long ptm_write(app_proc_t* p, kfile_t* f, const void* buf, unsigned long len) {
+    unsigned long done = 0;
+    while (done < len) {
+        long n = pty_master_write(f->pty, (const uint8_t*)buf + done, len - done);
+        pty_dispatch(f->pty);                            /* (^C typed: SIGINT now) */
+        if (n > 0) { done += (unsigned long)n; continue; }
+        if (n != -11 || (f->flags & KF_NONBLOCK)) return done ? (long)done : n;
+        if (sig_waiting(p)) return done ? (long)done : -4;
+        kpipe_wait(NULL, 0, 20);
+        breathe(p, 0);
+    }
+    return (long)done;
+}
+
+static long dev_read(kfile_t* f, void* buf, unsigned long len) {
+    switch (f->dev) {
+    case KF_DEV_NULL: return 0;
+    case KF_DEV_ZERO: case KF_DEV_FULL: memset(buf, 0, len); return (long)len;
+    case KF_DEV_RANDOM: random_bytes(buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len); return (long)len;
+    }
+    return -5;
+}
+
+static long dev_write(kfile_t* f, unsigned long len) {
+    return f->dev == KF_DEV_FULL ? -28 : (long)len;       /* (/dev/full: ENOSPC) */
+}
+
+/* a pty slave description for t; a session leader with no terminal (and
+ * no O_NOCTTY) takes it as its controlling terminal */
+static int pts_open(app_proc_t* p, pty_t* t, int flags) {
+    kfile_t* f = kfile_new(KF_PTS, KF_READ | KF_WRITE);
+    if (!f) return -12;
+    f->pty = t;
+    pty_slave_ref(t, 1);
+    if (!(flags & BANANA_O_NOCTTY) && p->sid == p->seq && !p->ctty && !pty_session(t)) {
+        ctty_set(p, t);
+        pty_set_session(t, p->sid);
+        pty_set_fg(t, p->pgid);
+    }
+    return fd_install(p, f, 0, 0);
+}
+
+/* open() of a path under /dev/: the devices; -errno */
+static int dev_open(app_proc_t* p, const char* path, int flags) {
+    const char* n = path + 5;
+    static const struct { const char* name; int dev; } devs[] = {
+        { "null", KF_DEV_NULL }, { "zero", KF_DEV_ZERO }, { "full", KF_DEV_FULL },
+        { "random", KF_DEV_RANDOM }, { "urandom", KF_DEV_RANDOM },
+    };
+    for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
+        if (strcmp(n, devs[i].name)) continue;
+        kfile_t* f = kfile_new(KF_DEV, KF_READ | KF_WRITE);
+        if (!f) return -12;
+        f->dev = devs[i].dev;
+        return fd_install(p, f, 0, 0);
+    }
+    if (!strcmp(n, "ptmx")) {
+        pty_t* t = pty_new();
+        if (!t) return -12;
+        kfile_t* f = kfile_new(KF_PTM, KF_READ | KF_WRITE);
+        if (!f) { pty_master_ref(t, -1); return -12; }
+        f->pty = t;
+        return fd_install(p, f, 0, 0);
+    }
+    if (!strncmp(n, "pts/", 4) && n[4] >= '0' && n[4] <= '9') {
+        int idx = 0;
+        for (const char* c = n + 4; *c; c++) {
+            if (*c < '0' || *c > '9' || idx > 1000000) return -2;
+            idx = idx * 10 + (*c - '0');
+        }
+        pty_t* t = pty_find(idx);
+        if (!t) return -2;
+        if (pty_locked(t)) return -5;                    /* (unlockpt first) */
+        return pts_open(p, t, flags | (p->ctty ? BANANA_O_NOCTTY : 0));
+    }
+    if (!strcmp(n, "tty")) {
+        if (p->ctty) return pts_open(p, p->ctty, flags | BANANA_O_NOCTTY);
+        if (!p->has_term) return -6;                     /* ENXIO: no controlling terminal */
+    }
+    if (!strcmp(n, "tty") || !strcmp(n, "console")) {
+        kfile_t* f = kfile_new(KF_CONS, KF_READ | KF_WRITE);
+        return f ? fd_install(p, f, 0, 0) : -12;
+    }
+    int fd = !strcmp(n, "stdin") ? 0 : !strcmp(n, "stdout") ? 1 : !strcmp(n, "stderr") ? 2 : -1;
+    if (fd < 0 && !strncmp(n, "fd/", 3) && n[3] >= '0' && n[3] <= '9') {
+        fd = 0;
+        for (const char* c = n + 3; *c; c++) {
+            if (*c < '0' || *c > '9' || fd > 100000) return -2;
+            fd = fd * 10 + (*c - '0');
+        }
+    }
+    if (fd >= 0) {                                       /* /dev/fd/N: a new descriptor for N's */
+        kfile_t* f = get_fd(p, fd);
+        return f ? fd_install(p, kfile_ref(f), 0, 0) : -9;
+    }
+    return -2;
+}
+
+/* ioctl on a terminal (Linux's request numbers; termios: the SDK's struct) */
+#define L_TCGETS     0x5401
+#define L_TCSETS     0x5402
+#define L_TCSETSW    0x5403
+#define L_TCSETSF    0x5404
+#define L_TCSBRK     0x5409
+#define L_TCXONC     0x540A
+#define L_TCFLSH     0x540B
+#define L_TIOCSCTTY  0x540E
+#define L_TIOCGPGRP  0x540F
+#define L_TIOCSPGRP  0x5410
+#define L_TIOCOUTQ   0x5411
+#define L_TIOCGWINSZ 0x5413
+#define L_TIOCSWINSZ 0x5414
+#define L_FIONREAD   0x541B
+#define L_TIOCNOTTY  0x5422
+#define L_TIOCGSID   0x5429
+#define L_TIOCGPTN   0x80045430u
+#define L_TIOCSPTLCK 0x40045431u
+
+static int a_tty_ioctl(int fd, unsigned long req, void* arg) {
+    app_proc_t* p = cur();
+    kfile_t* f = get_fd(p, fd);
+    if (!f) return -9;
+    if (f->type == KF_CONS) {                            /* the console: a terminal with fixed modes */
+        if (req == L_TIOCGWINSZ) {
+            if (!uok(arg, sizeof(pty_winsize_t))) return -14;
+            int c = 80, r = 25;
+            a_term_size(&c, &r);
+            pty_winsize_t* w = (pty_winsize_t*)arg;
+            w->ws_row = (uint16_t)r; w->ws_col = (uint16_t)c; w->ws_xpixel = w->ws_ypixel = 0;
+            return 0;
+        }
+        return -25;
+    }
+    if (f->type != KF_PTM && f->type != KF_PTS) return -25;              /* ENOTTY */
+    pty_t* t = f->pty;
+    int master = f->type == KF_PTM;
+    switch (req) {
+    case L_TCGETS:
+        if (!uok(arg, sizeof(pty_termios_t))) return -14;
+        pty_get_termios(t, (pty_termios_t*)arg);
+        return 0;
+    case L_TCSETS: case L_TCSETSW: case L_TCSETSF: {
+        if (!uok(arg, sizeof(pty_termios_t))) return -14;
+        int r = master ? 0 : bg_check(p, t, 22);
+        if (r) return r;
+        pty_termios_t tio;
+        memcpy(&tio, arg, sizeof(tio));
+        pty_set_termios(t, &tio, req == L_TCSETSF);
+        return 0;
+    }
+    case L_TIOCGWINSZ:
+        if (!uok(arg, sizeof(pty_winsize_t))) return -14;
+        pty_get_winsize(t, (pty_winsize_t*)arg);
+        return 0;
+    case L_TIOCSWINSZ: {
+        if (!uok(arg, sizeof(pty_winsize_t))) return -14;
+        pty_winsize_t ws;
+        memcpy(&ws, arg, sizeof(ws));
+        pty_set_winsize(t, &ws);
+        pty_dispatch(t);                                 /* (SIGWINCH) */
+        return 0;
+    }
+    case L_FIONREAD: case L_TIOCOUTQ:
+        if (!uok(arg, sizeof(int))) return -14;
+        *(int*)arg = req == L_FIONREAD ? pty_nread(t, master) : 0;
+        return 0;
+    case L_TCFLSH:
+        if ((uintptr_t)arg > 2) return -22;
+        pty_flush(t, (int)(uintptr_t)arg);
+        return 0;
+    case L_TCSBRK: case L_TCXONC:
+        return 0;
+    case L_TIOCGPTN:
+        if (!master) return -25;
+        if (!uok(arg, sizeof(int))) return -14;
+        *(int*)arg = pty_index(t);
+        return 0;
+    case L_TIOCSPTLCK:
+        if (!master) return -25;
+        if (!uok(arg, sizeof(int))) return -14;
+        pty_set_locked(t, *(int*)arg != 0);
+        return 0;
+    case L_TIOCSCTTY:                                    /* a session leader takes it */
+        if (p->sid != p->seq) return -1;
+        if (p->ctty == t) return 0;
+        if (p->ctty || (pty_session(t) && pty_session(t) != p->sid && !arg)) return -1;
+        ctty_set(p, t);
+        pty_set_session(t, p->sid);
+        pty_set_fg(t, p->pgid);
+        return 0;
+    case L_TIOCNOTTY:
+        if (p->ctty != t) return -25;
+        if (p->sid == p->seq) {                          /* the leader: the session loses it */
+            pgrp_signal(pty_fg(t), 1);
+            pgrp_signal(pty_fg(t), 18);
+            pty_set_session(t, 0);
+            pty_set_fg(t, 0);
+            for (int i = 0; i < APP_MAX; i++)
+                if (g_procs[i].used && g_procs[i].sid == p->sid && g_procs[i].ctty == t) ctty_set(&g_procs[i], NULL);
+        } else {
+            ctty_set(p, NULL);
+        }
+        return 0;
+    case L_TIOCGPGRP: case L_TIOCGSID:
+        if (!uok(arg, sizeof(int))) return -14;
+        if (!master && p->ctty != t) return -25;
+        *(int*)arg = req == L_TIOCGPGRP ? pty_fg(t) : pty_session(t);
+        return req == L_TIOCGSID && !pty_session(t) ? -25 : 0;
+    case L_TIOCSPGRP: {
+        if (!uok(arg, sizeof(int))) return -14;
+        if (p->ctty != t || pty_session(t) != p->sid) return -25;
+        int pg = *(int*)arg, ok = 0;
+        if (pg <= 0) return -22;
+        int r = bg_check(p, t, 22);
+        if (r) return r;
+        for (int i = 0; i < APP_MAX && !ok; i++)
+            ok = g_procs[i].used && !g_procs[i].zombie && g_procs[i].pgid == pg && g_procs[i].sid == p->sid;
+        if (!ok) return -1;                              /* EPERM: no such group in its session */
+        pty_set_fg(t, pg);
+        return 0;
+    }
+    }
+    return -22;
+}
+
+/* ── job control: stopping and continuing ───────────────────────────── */
+
+#ifdef __x86_64__
+/* SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU with their default: the process stops
+ * (every thread, at its next way back to its code) until SIGCONT or
+ * SIGKILL; its parent learns it (SIGCHLD, waitpid's WUNTRACED) */
+static void proc_stop(app_proc_t* p, int sig) {
+    if (!p->stopped) {
+        p->stopped = sig;
+        p->stop_reported = 0;
+        p->cont_report = 0;
+        app_proc_t* parent = p->ppid ? proc_by_pid(p->ppid) : NULL;
+        if (parent) proc_signal(parent, 17);
+    }
+}
+
+/* the calling thread waits while its process is stopped */
+static void stop_wait(app_proc_t* p) {
+    uintptr_t fl;
+    __asm__ volatile("pushf; pop %0" : "=r"(fl));
+    __asm__ volatile("sti");
+    while (p->stopped && !p->exit_req && !p->kill_req && !((p->sig_pending >> 8) & 1))
+        task_sleep_ms(50);
+    if (!(fl & 0x200)) __asm__ volatile("cli");
+}
+#endif
 
 /* (64-bit: every entry of the app's table is a system call stub instead -
  * app_syscall below; G stays for the 32-bit kernel's direct calls) */
@@ -3103,6 +3560,8 @@ static void api_init(void) {
     g_api.proc_setpgid = G(a_proc_setpgid);
     g_api.proc_setsid = G(a_proc_setsid);
     g_api.proc_kill = G(a_proc_kill);
+    g_api.tty_ioctl = G(a_tty_ioctl);
+    kfile_set_pty_hook(pty_closed_hook);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);

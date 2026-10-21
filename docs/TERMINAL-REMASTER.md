@@ -119,3 +119,53 @@ programs (the test harness types into the serial console's bash).
    diffutils, less, zsh.
 6. The old shell's commands as `/bin` programs; bash as the console, serial
    and SSH shell; `shell/` removed; test harness moved to bash.
+
+## Status (2026-10-21) and how to continue
+
+Done and on `main`:
+
+| Build | What | Where |
+|---|---|---|
+| 237 | Kernel open file descriptions, `dup`/`dup2`/`fcntl`, close-on-exec, kernel pipes and socket pairs (API 25) | `kernel/kfile.c`, `kernel/app.c` (`fdt[]`, `HOLD`), `sdk/lib/ufd.c`, `sdk/lib/posix.c` |
+| 238 | Programs wholly in their mmap region; copy-on-write `fork`, `execve` (+ `#!`), `waitpid`, groups, sessions, `kill`, `posix_spawn`, `system`/`popen`, `environ`; per-task cwd; CR0.WP (API 26) | `kernel/uspace.c` (`uvm_fork`, `P_COW`, `uvm_write`), `kernel/upage.c` (refcounts), `kernel/app.c` ("Unix processes" section, `load_program`, `run()` loop), `kernel/appcall64.asm` (`app_resume_user`), `sdk/lib/proc.c` |
+| 239 | Ptys + line discipline, termios, controlling terminal, job control (stop/continue, SIGTTIN/TTOU, SIGHUP), `/dev/*` (API 27) | `kernel/pty.c`, `kernel/app.c` ("terminals" section: `dev_open`, `pts_read`, `a_tty_ioctl`, `proc_stop`), `sdk/lib/tty.c` |
+
+Tests: `selftest pipes` (kernel pipes + pty line discipline), `posixtest proc`
+and `posixtest tty` (run by `selftest posix`). Known limits: `execve` only
+from a process's main thread; job control's "orphaned process group" rule is
+not applied; `fchdir` / directory descriptors do not exist yet; the SDK's
+stdio reads files a byte per system call (slow, correct).
+
+### Next: phase 4 + 5 (in this order)
+
+1. **A cross toolchain for autoconf ports** - `sdk/tools/banana-cc`: a gcc
+   wrapper (the flags of `ports/ffmpeg/build.sh`: `-ffreestanding -fpie
+   -nostdinc -I sdk/include -D__BANANA_OS__`, linking `crt0` + the SDK libc
+   + libgcc into a PIE the kernel's loader takes - see `sdk/banana.mk`'s
+   link rule). Configure with `--host=x86_64-pc-linux-gnu
+   --build=x86_64-build-linux-gnu` (forces cross mode) and pre-set
+   `ac_cv_*` for anything configure would run.
+2. **Port GNU bash 5.2** (`ports/bash/build.sh`, download + sha256 like the
+   other ports): `--without-bash-malloc --disable-nls --enable-job-control`,
+   its bundled readline. Expect gaps in the SDK libc to fill (getpwnam,
+   sigsetjmp, locale, `fnmatch`, `strsignal`...). Package it so it lands as
+   `/bin/bash` and `/bin/sh`: `kernel/pkg.c` installs into `/apps/<name>/`
+   only - add a manifest key (e.g. `bin=bash,sh`) that also puts the program
+   at `/bin/<name>`.
+3. **The terminal emulator app** (`apps/terminal`, a desktop app built with
+   the SDK): `forkpty()` + `execve("/bin/bash")`, any number of windows and
+   tabs, xterm-256color escapes, UTF-8 / wide characters, scrollback,
+   selection, `TIOCSWINSZ` on resize. Replaces `term_win_t` / `TERM_WIN_MAX`
+   in `kernel/gui.c`. Ship a terminfo entry with `TERM=xterm-256color`.
+4. **GNU coreutils, grep, sed, gawk, findutils, diffutils, less, ncurses,
+   zsh** as ports into `/bin`.
+5. **Phase 6**: the kernel shell's commands (`shell/*.c`) become `/bin`
+   programs (a system call runs a command's kernel code with the process's
+   stdout), bash on the consoles, serial line and SSH (a pty each), then
+   `shell/` goes. The test harness (`~/bos-tests/*.txt` on the dev VM, and
+   CI) types into the serial console's shell - move it to bash last.
+
+Testing: CI (`.github/workflows/build-iso.yml`) builds the ISO; the QEMU
+checks run on the dev VM (`tools/serialtest.py`-style: `selftest`,
+`selftest posix`). A session without the dev VM can build and push to this
+branch; run the tests where QEMU is available before merging to `main`.

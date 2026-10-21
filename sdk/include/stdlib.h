@@ -53,6 +53,12 @@ void*  bsearch(const void* key, const void* base, size_t n, size_t size, int (*c
 char*  (getenv)(const char* name);    /* (in parentheses: a program may define getenv as a macro) */
 int    setenv(const char* name, const char* value, int overwrite);
 int    unsetenv(const char* name);
+/* pseudo-terminals (API version 27) */
+int    posix_openpt(int flags);
+int    grantpt(int fd);
+int    unlockpt(int fd);
+char*  ptsname(int fd);
+int    ptsname_r(int fd, char* buf, size_t len);
 int    putenv(char* s);
 int    clearenv(void);
 int    mkstemp(char* tmpl);

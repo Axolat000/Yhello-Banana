@@ -6,6 +6,7 @@
 #include "usock.h"
 #include "task.h"
 #include "spinlock.h"
+#include "pty.h"
 
 /* one direction of a pipe or socket pair: a ring of KPIPE_SIZE bytes */
 struct kpipe {
@@ -30,6 +31,10 @@ static void changed(void) {
 }
 
 uint32_t kpipe_generation(void) { return g_gen; }
+void kfile_changed(void) { changed(); }
+
+static void (*g_pty_hook)(struct pty* t);
+void kfile_set_pty_hook(void (*fn)(struct pty* t)) { g_pty_hook = fn; }
 
 kfile_t* kfile_new(int type, int flags) {
     kfile_t* f = (kfile_t*)kmalloc(sizeof(kfile_t));
@@ -79,6 +84,12 @@ void kfile_put(kfile_t* f) {
         break;
     case KF_SOCK:
         if (f->sock) usock_close(f->sock);
+        break;
+    case KF_PTM:
+        if (!pty_master_ref(f->pty, -1) && g_pty_hook) g_pty_hook(f->pty);   /* (the last one: a hangup) */
+        break;
+    case KF_PTS:
+        pty_slave_ref(f->pty, -1);
         break;
     case KF_PIPE: {
         uintptr_t fl = spin_lock_irq(&g_lock);

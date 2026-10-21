@@ -13,6 +13,7 @@
  *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR)
  *   posixtest memory   posix_memalign with malloc / free, from several threads
  *   posixtest proc     fork, execve, waitpid, pipes between processes, posix_spawn
+ *   posixtest tty      pseudo-terminals, termios, ^C / ^Z, job control, hangup, /dev
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,8 @@
 #include <link.h>
 #include <sys/wait.h>
 #include <spawn.h>
+#include <pty.h>
+#include <termios.h>
 #include <banana.h>
 
 static int g_ok, g_fail;
@@ -1339,6 +1342,158 @@ static void t_proc(void) {
     check("fork: not on the 32-bit system (ENOSYS)", fork() == -1 && errno == ENOSYS, "");
 #endif
 }
+
+/* ── terminals: ptys, termios, job control (API version 27) ────────── */
+
+/* all a pty's master has to say within ms (or until n bytes) */
+static size_t master_drain(int m, char* out, size_t cap, int ms) {
+    size_t got = 0;
+    long until = ms_now() + ms;
+    while (got < cap - 1 && ms_now() < until) {
+        struct pollfd pf = { m, POLLIN, 0 };
+        if (poll(&pf, 1, 20) <= 0) continue;
+        ssize_t n = read(m, out + got, cap - 1 - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    out[got] = 0;
+    return got;
+}
+
+static void t_tty(void) {
+    printf("terminals: ptys, termios, job control\n");
+    char note[128] = "", b[256];
+    int m = -1, s = -1;
+    char name[64] = "";
+    int r = openpty(&m, &s, name, NULL, NULL);
+    snprintf(note, sizeof(note), "%s", name);
+    check("openpty: a master and its slave, both terminals", r == 0 && isatty(m) && isatty(s) && !strncmp(name, "/dev/pts/", 9)
+          && !strcmp(ttyname(s), name) && !strcmp(ptsname(m), name), note);
+
+    write(m, "hi\r", 3);
+    ssize_t n = read(s, b, sizeof(b));
+    size_t e = master_drain(m, b + 64, 64, 100);
+    check("canonical: the line typed, \\r made \\n, echoed as hi\\r\\n", n == 3 && !memcmp(b, "hi\n", 3) && e == 4 && !memcmp(b + 64, "hi\r\n", 4), "");
+
+    write(s, "out\n", 4);
+    e = master_drain(m, b, sizeof(b), 100);
+    check("output: \\n becomes \\r\\n (OPOST, ONLCR)", e == 5 && !memcmp(b, "out\r\n", 5), "");
+
+    struct termios t, keep;
+    tcgetattr(s, &keep);
+    t = keep;
+    cfmakeraw(&t);
+    tcsetattr(s, TCSANOW, &t);
+    write(m, "a\x7f\x03", 3);
+    n = read(s, b, sizeof(b));
+    e = master_drain(m, b + 64, 64, 50);
+    check("raw (cfmakeraw): every byte as typed, no echo, no signal", n == 3 && !memcmp(b, "a\x7f\x03", 3) && e == 0, "");
+    tcsetattr(s, TCSANOW, &keep);
+
+    struct winsize ws = { 40, 100, 0, 0 }, got;
+    check("the window size: TIOCSWINSZ, then TIOCGWINSZ", ioctl(m, TIOCSWINSZ, &ws) == 0 && ioctl(s, TIOCGWINSZ, &got) == 0
+          && got.ws_row == 40 && got.ws_col == 100, "");
+    close(s);
+    close(m);
+
+#ifdef __x86_64__
+    /* a shell's way: forkpty, the child in a session of its own on the slave */
+    pid_t pid = forkpty(&m, NULL, NULL, NULL);
+    if (pid == 0) {
+        char line[64];
+        int ok = getsid(0) == getpid() && tcgetpgrp(0) == getpgrp() && isatty(0) && isatty(1);
+        if (!fgets(line, sizeof(line), stdin)) _exit(3);
+        for (char* c = line; *c; c++) if (*c >= 'a' && *c <= 'z') *c -= 32;
+        printf("%s %s", ok ? "OK" : "BAD", line);
+        fflush(stdout);
+        _exit(0);
+    }
+    write(m, "hello\n", 6);
+    e = master_drain(m, b, sizeof(b), 2000);
+    int st = -1;
+    waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "it showed \"%.60s\"", b);
+    check("forkpty: the child's session and terminal; it reads a line, writes back", strstr(b, "OK HELLO\r\n") != NULL && WIFEXITED(st), note);
+    close(m);
+
+    /* ^C typed: SIGINT for the foreground group */
+    pid = forkpty(&m, NULL, NULL, NULL);
+    if (pid == 0) for (;;) sched_yield();
+    usleep(50000);
+    write(m, "\x03", 1);
+    st = -1;
+    waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "status %#x", st);
+    check("^C on the terminal: the foreground process gets SIGINT", WIFSIGNALED(st) && WTERMSIG(st) == SIGINT, note);
+    close(m);
+
+    /* ^Z: it stops (WUNTRACED), SIGCONT: it goes on (WCONTINUED) */
+    pid = forkpty(&m, NULL, NULL, NULL);
+    if (pid == 0) for (;;) sched_yield();
+    usleep(50000);
+    write(m, "\x1a", 1);
+    st = -1;
+    pid_t w = waitpid(pid, &st, WUNTRACED);
+    int stopped = w == pid && WIFSTOPPED(st) && WSTOPSIG(st) == SIGTSTP;
+    kill(pid, SIGCONT);
+    int st2 = -1;
+    w = waitpid(pid, &st2, WCONTINUED);
+    int cont = w == pid && WIFCONTINUED(st2);
+    kill(pid, SIGKILL);
+    int st3 = -1;
+    waitpid(pid, &st3, 0);
+    snprintf(note, sizeof(note), "%#x, %#x, %#x", st, st2, st3);
+    check("^Z stops it (WUNTRACED), SIGCONT continues it (WCONTINUED), SIGKILL ends it", stopped && cont && WIFSIGNALED(st3) && WTERMSIG(st3) == SIGKILL, note);
+    close(m);
+
+    /* a background group reading the terminal: SIGTTIN stops it */
+    pid = forkpty(&m, NULL, NULL, NULL);
+    if (pid == 0) {
+        pid_t g = fork();
+        if (g == 0) {
+            setpgid(0, 0);
+            char c;
+            read(0, &c, 1);
+            _exit(9);
+        }
+        setpgid(g, g);
+        int gs = -1;
+        waitpid(g, &gs, WUNTRACED);
+        int ok = WIFSTOPPED(gs) && WSTOPSIG(gs) == SIGTTIN;
+        kill(g, SIGKILL);
+        waitpid(g, NULL, 0);
+        _exit(ok ? 0 : 1);
+    }
+    st = -1;
+    waitpid(pid, &st, 0);
+    check("a background group reading its terminal: SIGTTIN stops it", WIFEXITED(st) && WEXITSTATUS(st) == 0, "");
+    close(m);
+
+    /* the master goes: SIGHUP for the session */
+    pid = forkpty(&m, NULL, NULL, NULL);
+    if (pid == 0) for (;;) sched_yield();
+    usleep(50000);
+    close(m);
+    st = -1;
+    waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "status %#x", st);
+    check("the master closed: SIGHUP ends the session's process", WIFSIGNALED(st) && WTERMSIG(st) == SIGHUP, note);
+#endif
+
+    /* /dev */
+    int dn = open("/dev/null", O_RDWR), dz = open("/dev/zero", O_RDONLY);
+    struct stat sn;
+    memset(b, 1, 8);
+    int ok = dn >= 0 && dz >= 0 && write(dn, "x", 1) == 1 && read(dn, b, 8) == 0 && read(dz, b, 8) == 8 && !b[0] && !b[7]
+             && stat("/dev/null", &sn) == 0 && S_ISCHR(sn.st_mode) && fstat(dn, &sn) == 0 && S_ISCHR(sn.st_mode);
+    close(dn);
+    close(dz);
+    errno = 0;
+    int nt = open("/dev/tty", O_RDWR);
+    check("/dev/null, /dev/zero (read, write, stat)", ok, "");
+    (void)nt;
+    if (nt >= 0) close(nt);
+}
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (only && !strncmp(only, "child-", 6)) return child_mode(argc, argv);
@@ -1352,6 +1507,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "time")) t_time();
     if (!only || !strcmp(only, "memory")) t_memory();
     if (!only || !strcmp(only, "proc")) t_proc();
+    if (!only || !strcmp(only, "tty")) t_tty();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

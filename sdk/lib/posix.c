@@ -30,11 +30,13 @@ int open(const char* path, int flags, ...) {
     if (flags & O_CREAT)  f |= BANANA_O_CREATE;
     if (flags & O_TRUNC)  f |= BANANA_O_TRUNC;
     if (flags & O_APPEND) f |= BANANA_O_APPEND;
+    if (flags & O_NOCTTY) f |= BANANA_O_NOCTTY;
     if ((flags & O_EXCL) && (flags & O_CREAT)) {
         banana_stat_t st;
         if (__banana->stat(path, &st) == 0) { errno = EEXIST; return -1; }
     }
     int fd = __banana->open(path, f);
+    if (fd < -1) { errno = -fd; return -1; }           /* (/dev: the system says why) */
     if (fd < 0) {
         /* why: it is not there - or it is a folder, or every descriptor is
          * taken (EMFILE: Java then knows, instead of "no such file") */
@@ -44,6 +46,7 @@ int open(const char* path, int flags, ...) {
         return -1;
     }
     if ((flags & O_CLOEXEC) && KFD) __banana->fd_fcntl(fd, F_SETFD, FD_CLOEXEC);
+    if ((flags & O_NONBLOCK) && KFD) __banana->fd_fcntl(fd, F_SETFL, O_NONBLOCK);
     return fd;
 }
 
@@ -82,15 +85,7 @@ off_t lseek(int fd, off_t off, int whence) {
     return r;
 }
 
-int isatty(int fd) {
-    if (KFD) {
-        banana_fdinfo_t fi;
-        if (__banana->fd_info(fd, &fi) != 0) { errno = EBADF; return 0; }
-        if (fi.type != BANANA_FD_TERM) { errno = ENOTTY; return 0; }
-        return 1;
-    }
-    return fd >= 0 && fd <= 2;
-}
+/* (isatty: tty.c) */
 
 int fstat(int fd, struct stat* st) {
     if (__ufd_is(fd)) return __ufd_fstat(fd, st);
@@ -100,12 +95,16 @@ int fstat(int fd, struct stat* st) {
     if (KFD) {
         if (__banana->fd_info(fd, &fi) != 0) { errno = EBADF; return -1; }
         if (fi.type != BANANA_FD_FILE) {
-            st->st_mode = fi.type == BANANA_FD_TERM ? S_IFCHR | 0620 : fi.is_sock || fi.type == BANANA_FD_SOCK ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+            static const unsigned dev_minor[] = { 0, 3, 5, 7, 8 };   /* (/dev/null, zero, full, random) */
+            int chr = fi.type == BANANA_FD_TERM || fi.type == BANANA_FD_PTM || fi.type == BANANA_FD_PTS || fi.type == BANANA_FD_DEV;
+            st->st_mode = chr ? S_IFCHR | (fi.type == BANANA_FD_DEV ? 0666 : 0620)
+                        : fi.is_sock || fi.type == BANANA_FD_SOCK ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+            st->st_rdev = fi.type == BANANA_FD_PTS ? (136u << 8) | (unsigned)fi.size : fi.type == BANANA_FD_PTM ? (5u << 8) | 2u
+                        : fi.type == BANANA_FD_DEV && fi.size < 5 ? (1u << 8) | dev_minor[fi.size] : 0x8800;
             st->st_nlink = 1;
             st->st_uid = st->st_gid = 1000;
             st->st_ino = (ino_t)(fi.id >> 4);
-            st->st_dev = fi.type == BANANA_FD_TERM ? 0x8800 : 0xF;
-            if (fi.type == BANANA_FD_TERM) st->st_rdev = 0x8800;
+            st->st_dev = chr ? 0x16 : 0xF;
             return 0;
         }
     }
@@ -123,8 +122,11 @@ int fstat(int fd, struct stat* st) {
     return 0;
 }
 
+int __dev_stat(const char* path, struct stat* st);      /* tty.c */
+
 int stat(const char* path, struct stat* st) {
     banana_stat_t b;
+    if (path && !strncmp(path, "/dev/", 5) && __dev_stat(path, st) == 0) return 0;
     if (__banana->stat(path, &b) != 0) { errno = ENOENT; return -1; }
     memset(st, 0, sizeof(*st));
     st->st_mode = b.is_dir ? (S_IFDIR | 0755) : (S_IFREG | 0644);

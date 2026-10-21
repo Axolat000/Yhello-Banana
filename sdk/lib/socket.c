@@ -199,7 +199,19 @@ int ioctl(int fd, unsigned long req, ...) {
     va_start(ap, req);
     void* arg = va_arg(ap, void*);
     va_end(ap);
-    if (req == TIOCGWINSZ) {
+    if (__ufd_is(fd)) return __ufd_ioctl(fd, req, arg);
+    if (BANANA_HAS(__banana, tty_ioctl)) {                /* (version 27) */
+        if (req == FIOCLEX || req == FIONCLEX) return fcntl(fd, F_SETFD, req == FIOCLEX ? FD_CLOEXEC : 0);
+        if (req == FIONBIO) {
+            int fl = fcntl(fd, F_GETFL);
+            if (fl < 0) return -1;
+            return fcntl(fd, F_SETFL, *(int*)arg ? fl | O_NONBLOCK : fl & ~O_NONBLOCK);
+        }
+        int r = __banana->tty_ioctl(fd, req, arg);
+        if (r >= 0) return r;
+        if (r != -ENOTTY || req != FIONREAD) { errno = -r; return -1; }
+        /* (FIONREAD of a socket or a pipe: below) */
+    } else if (req == TIOCGWINSZ) {
         if (fd > 2) { errno = ENOTTY; return -1; }
         struct winsize* w = arg;
         int c = 80, r = 25;

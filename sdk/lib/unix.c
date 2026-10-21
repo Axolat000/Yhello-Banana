@@ -287,7 +287,6 @@ ssize_t getline(char** line, size_t* cap, FILE* f) { return getdelim(line, cap, 
 
 unsigned alarm(unsigned s) { (void)s; return 0; }
 char* getlogin(void) { return "banana"; }
-char* ttyname(int fd) { return fd <= 2 ? "/dev/tty" : NULL; }
 long pathconf(const char* p, int n) { (void)p; (void)n; return 255; }
 long fpathconf(int fd, int n) { (void)fd; (void)n; return 255; }
 int getdtablesize(void) { return 64 + 3; }
@@ -801,22 +800,7 @@ char* hasmntopt(const struct mntent* m, const char* opt) { return strstr(m->mnt_
 
 /* ── terminals, processes, events ─────────────────────────────────── */
 
-static tcflag_t g_lflag = ICANON | ECHO | ISIG;
-int tcgetattr(int fd, struct termios* t) {
-    if (fd > 2) { errno = ENOTTY; return -1; }
-    memset(t, 0, sizeof(*t));
-    t->c_lflag = g_lflag;
-    t->c_iflag = ICRNL;
-    t->c_oflag = OPOST;
-    t->c_ispeed = t->c_ospeed = B38400;
-    return 0;
-}
-int tcsetattr(int fd, int when, const struct termios* t) {
-    (void)when;
-    if (fd > 2) { errno = ENOTTY; return -1; }
-    g_lflag = t->c_lflag;
-    return 0;
-}
+/* (termios, ptys: tty.c) */
 
 /* (waitid, posix_spawn: proc.c) */
 
