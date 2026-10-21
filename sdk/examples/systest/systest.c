@@ -19,6 +19,9 @@
 #include <string.h>
 #include <banana.h>
 #include <sys/mman.h>
+#include <pthread.h>
+#include <errno.h>
+#include <stdint.h>
 
 static unsigned xs(unsigned* x) {
     *x ^= *x << 13; *x ^= *x >> 17; *x ^= *x << 5;
@@ -262,9 +265,96 @@ static int t_swap(int mib, int wait) {
     return bad ? 1 : 0;
 }
 
+/* Exercise the actual SDK thread lifecycle, including allocation in destructors.
+ * No Linux thread substitute is involved in this mode. */
+extern void __malloc_stats(size_t* mapped, size_t* inuse);
+static pthread_key_t heap_key;
+static volatile int heap_dtors, heap_bad;
+static void heap_destructor(void* p) {
+    unsigned char* q = calloc(37, 1);
+    if (!q) __sync_fetch_and_add(&heap_bad, 1);
+    else {
+        for (int i = 0; i < 37; i++) if (q[i]) __sync_fetch_and_add(&heap_bad, 1);
+        free(q);
+    }
+    free(p);
+    __sync_fetch_and_add(&heap_dtors, 1);
+}
+static void* heap_worker(void* arg) {
+    unsigned char* p = malloc(257);
+    if (!p) return (void*)1;
+    memset(p, 0x5a, 257);
+    if (pthread_setspecific(heap_key, p)) { free(p); return (void*)2; }
+    for (int i = 0; i < 2000; i++) {
+        void* q = malloc((i % 127) + 1);
+        if (!q) return (void*)3;
+        memset(q, i, (i % 127) + 1);
+        free(q);
+    }
+    for (int i = 0; i < 257; i++) if (p[i] != 0x5a) return (void*)4;
+    if (arg) pthread_exit(NULL);
+    return NULL;
+}
+static int t_heap(void) {
+    size_t start_mapped, start_use, mapped, inuse;
+    __malloc_stats(&start_mapped, &start_use);
+    if (t_allocators()) return 1;
+    if (pthread_key_create(&heap_key, heap_destructor)) return 2;
+    pthread_t threads[8];
+    int made = 0, bad = 0;
+    for (; made < 8; made++)
+        if (pthread_create(&threads[made], NULL, heap_worker, (void*)(uintptr_t)(made & 1))) break;
+    for (int i = 0; i < made; i++) {
+        void* result = NULL;
+        if (pthread_join(threads[i], &result) || result) bad = 1;
+    }
+    pthread_key_delete(heap_key);
+    if (made != 8 || bad || heap_bad || heap_dtors != 8) return 3;
+    /* Cancellation is currently an ENOSYS stub; do not claim cancellation support. */
+    if (pthread_cancel(pthread_self()) != ENOSYS) return 4;
+    printf("heap pthread startup/destructors/return/exit: ok; cancellation: ENOSYS\n");
+
+    /* Buffers supplied by the kernel use a different owner than local malloc. */
+    unsigned char* k = banana_api()->malloc(257);
+    if (!k) return 5;
+    memset(k, 0xa5, 257);
+    unsigned char* grown = realloc(k, 8193);
+    if (!grown) { free(k); return 6; }
+    for (int i = 0; i < 257; i++) if (grown[i] != 0xa5) { free(grown); return 7; }
+    free(grown);
+    /* A tiny BMP goes through the real kernel image decoder and ownership path. */
+    static const unsigned char bmp[58] = {
+        'B','M',58,0,0,0,0,0,0,0,54,0,0,0,40,0,0,0,1,0,0,0,1,0,0,0,
+        1,0,24,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0x33,0x22,0x11,0
+    };
+    const char* path = "/tmp/heap-test.bmp";
+    FILE* f = fopen(path, "wb");
+    if (!f) return 8;
+    size_t wrote = fwrite(bmp, 1, sizeof(bmp), f);
+    int closed = fclose(f);
+    if (wrote != sizeof(bmp) || closed) return 9;
+    int w = 0, h = 0;
+    char err[128];
+    unsigned int* pixels = banana_api()->image_load(path, &w, &h, err, sizeof(err));
+    remove(path);
+    if (!pixels || w != 1 || h != 1 || pixels[0] != 0x112233) { free(pixels); return 10; }
+    free(pixels);
+    printf("heap kernel allocation and decoded-image ownership: ok\n");
+    __malloc_stats(&mapped, &inuse);
+    if (inuse != start_use) {
+        printf("heap live bytes changed: %lu -> %lu\n", (unsigned long)start_use, (unsigned long)inuse);
+        return 11;
+    }
+    printf("heap lifecycle: passed; live %lu, reserved %lu bytes (initial %lu)\n",
+           (unsigned long)inuse, (unsigned long)mapped, (unsigned long)start_mapped);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const char* m = argc > 1 ? argv[1] : "";
     int a = argc > 2 ? atoi(argv[2]) : 0;
+    if (!strcmp(m, "heap")) return t_heap();
     if (!strcmp(m, "ring")) return t_ring();
     if (!strcmp(m, "mem")) return t_mem(a > 0 ? a : 64, argc > 3 && !strcmp(argv[3], "high"));
     if (!strcmp(m, "threads")) return t_threads(a > 0 ? a : 8);
@@ -272,7 +362,7 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "cores")) return t_cores();
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
-    printf("usage: systest ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"
+    printf("usage: systest heap | ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }

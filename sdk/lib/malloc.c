@@ -1,23 +1,22 @@
 /* Banana OS SDK: malloc, free, realloc, calloc and aligned allocation.
  *
- * 64-bit: the app's own heap. It used to be a system call for every
- * malloc and every free (the kernel's allocator, behind its lock); now the
- * memory comes from the system in big pieces (vm_map: addresses reserved,
- * pages given on first touch, compressed away when idle) and blocks are
- * handed out here:
- *  - small blocks (up to 32 KiB): 40 size classes, cut from 64 KiB spans in
- *    1 GiB regions. Each span's bookkeeping sits in its region's header, out
- *    of the way of the blocks. Every thread keeps a few free blocks of each
- *    class (its cache, reached through the thread pointer: pthread.c), so
- *    most malloc / free pairs take no lock at all; caches are filled and
- *    emptied in batches, and given back when their thread ends.
- *  - large blocks: a mapping each; the last few freed are kept for reuse.
- *  - empty spans beyond a few are given back to the system (their pages).
- * Memory the kernel handed the app (http bodies, decoded pictures...) is
- * not the heap's: free / realloc pass it back to the kernel, told apart by
- * address (the heap is above BANANA_VM_BASE, the kernel's below).
+ * 64-bit: process-local first-fit split/coalesce arena allocator backed by
+ * vm_map / vm_unmap (RW mappings only, no MAP_FIXED, no TLS caches).
+ *  - A single static banana_mutex_t (g_lock) serializes all allocator state,
+ *    including lazy capability detection.
+ *  - Small allocations share 64 KiB arenas; free blocks are split on
+ *    allocation and coalesced with physical neighbors on free.
+ *  - Dedicated large mappings (> 1 arena) are unmapped as soon as freed (no
+ *    large-mapping cache). While live, large arenas are marked is_large so
+ *    unrelated small allocations cannot pin them.
+ *  - Nonempty arenas are never unmapped. When an arena's live block count
+ *    reaches zero, the whole arena is unmapped via vm_unmap. If vm_unmap
+ *    fails, the coalesced arena header, free block metadata, and g_mapped
+ *    accounting remain intact and reusable for future allocations.
+ *  - Pointers below BANANA_VM_BASE belong to the kernel allocator and are
+ *    forwarded to __banana->free / __banana->realloc (with __aligned_block).
  *
- * 32-bit, and systems without vm_map: the kernel's allocator, as before.
+ * 32-bit, and systems without vm_map/vm_unmap: the kernel's allocator.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -28,409 +27,356 @@
 
 extern const banana_api_t* __banana;
 
-int __aligned_block(void* p, void** raw, size_t* size, int remove);   /* posix.c (the kernel's path) */
+int __aligned_block(void* p, void** raw, size_t* size, int remove); /* posix.c */
 
-/* pthread.c: where the calling thread keeps its cache (NULL: threads have
- * no thread pointer - then every call takes the lock) */
+/* Kept for ABI compatibility with pthread.c; unused (no TLS caches). */
 void** (*__malloc_slot_fn)(void);
-void __malloc_thread_end(void* cache);
+void __malloc_thread_end(void* cache) { (void)cache; }
 
 #ifdef __x86_64__
 
-#define SPAN       65536ul
-#define REGION     (1ul << 30)
-#define NSPANS     (REGION / SPAN)
-#define MAX_REGION 64                   /* 64 GiB of small blocks */
-#define SMALL_MAX  32768ul
-#define NCLS       40
-#define FREE_KEEP  16                   /* empty spans kept ready (1 MiB); more go back */
-#define LARGE_KEEP 4                    /* freed large mappings kept for reuse */
-#define LARGE_HDR  64
-#define LARGE_MAGIC 0x6C61726765426Eull  /* "nBegral" */
-#define REGION_MAGIC 0x6E6F696765526Eull /* "nRegion" */
-#define PROT_ALL   (BANANA_PROT_READ | BANANA_PROT_WRITE | BANANA_PROT_EXEC)
+#define PAGE_SIZE        4096ul
+#define ARENA_SIZE       65536ul
+#define MIN_ALIGN        16ul
+#define MIN_SPLIT_SIZE   16ul
+#define PROT_RW          (BANANA_PROT_READ | BANANA_PROT_WRITE)
 
-typedef struct span {
-    struct span* next;
-    struct span* prev;
-    void*        free;                  /* freed blocks, a list through them */
-    uint8_t*     bump;                  /* blocks never handed out begin here */
-    uint32_t     used;                  /* handed out (thread caches count as out) */
-    uint32_t     cap;
-    uint16_t     cls;
-    uint16_t     state;                 /* S_UNUSED, S_CLASS (in use), S_FREE (empty, kept) */
-    uint32_t     released;              /* (S_FREE) its pages went back to the system */
-} span_t;
-enum { S_UNUSED = 0, S_CLASS, S_FREE };
+#define ARENA_MAGIC      0x4172656E61426E31ull /* "1nBanerA" */
+#define BLOCK_MAGIC_FREE 0x46726565426C6B31ull /* "1klBeerF" */
+#define BLOCK_MAGIC_USED 0x55736564426C6B31ull /* "1klBdesU" */
 
-typedef struct {
-    uint64_t magic;
-    uint8_t* base;                      /* the region: base .. base + REGION */
-    uint32_t next;                      /* spans never used begin here */
-    span_t   spans[NSPANS];
-} region_t;
-#define FIRST_SPAN ((uint32_t)((sizeof(region_t) + SPAN - 1) / SPAN))
+struct block;
 
-typedef struct {
-    uint64_t magic;
-    void*    map;                       /* the mapping it is in */
-    size_t   maplen;
-    size_t   cap;                       /* bytes usable from the block on */
-    int      fresh;                     /* never used: still zeroed */
-} large_t;
+typedef struct arena {
+    uint64_t      magic;
+    struct arena* prev;
+    struct arena* next;
+    struct block* first;        /* first physical block at (uint8_t*)this + sizeof(arena_t) */
+    size_t        map_size;     /* total bytes mapped via vm_map */
+    size_t        used_blocks;  /* number of live allocated blocks in this arena */
+    size_t        is_large;     /* 1 while a dedicated large allocation owns this arena */
+    size_t        pad;          /* pad header to 64 bytes (16-byte aligned) */
+} arena_t;
 
-typedef struct { void* head; uint32_t n; uint32_t pad; } tbin_t;
-typedef struct { tbin_t bin[NCLS]; } tcache_t;
+typedef struct block {
+    uint64_t      magic;        /* BLOCK_MAGIC_FREE or BLOCK_MAGIC_USED */
+    arena_t*      arena;        /* owning arena */
+    struct block* prev;         /* previous physical block in arena (NULL if first) */
+    struct block* next;         /* next physical block in arena (NULL if last) */
+    size_t        size;         /* usable bytes from payload start to next block / arena end */
+    size_t        used;         /* 1 if allocated, 0 if free */
+    size_t        pad[2];       /* pad header to 64 bytes (16-byte aligned) */
+} block_t;
 
-static uint32_t       g_size[NCLS];
-static span_t*        g_partial[NCLS];  /* spans of the class with room */
-static span_t*        g_free;           /* empty spans */
-static uint32_t       g_nfree;
-static region_t*      g_region[MAX_REGION];
-static int            g_nregion;
-static large_t*       g_large[LARGE_KEEP];
+typedef char __malloc_hdr_align_check[
+    (sizeof(arena_t) == 64 && sizeof(block_t) == 64) ? 1 : -1
+];
+
+#define ARENA_OVERHEAD   (sizeof(arena_t) + sizeof(block_t))
+#define ARENA_MAX_BLOCK  (ARENA_SIZE - ARENA_OVERHEAD)
+
 static banana_mutex_t g_lock = BANANA_MUTEX_INIT;
-static int            g_state;          /* 0 not yet, 1 the heap, -1 the kernel's */
-static size_t         g_mapped, g_inuse;
+static int            g_state;  /* 0: uninitialized, 1: local heap, -1: kernel fallback */
+static arena_t*       g_arenas;
+static size_t         g_mapped;
+static size_t         g_inuse;
 
-static int heap(void) {
-    if (g_state) return g_state > 0;
-    int ok = __banana->version >= 16 && BANANA_HAS(__banana, vm_unmap);
-    for (int i = 0, s = 16; ok && i < NCLS; i++) {
-        if (i < 8) s = 16 * (i + 1);
-        else {
-            int b = 7 + (i - 8) / 4;                    /* sizes in (2^b, 2^(b+1)] in 4 steps */
-            s = (1 << b) + ((i - 8) % 4 + 1) * (1 << (b - 2));
+static int add_overflow(size_t a, size_t b, size_t* out) {
+    if (a > SIZE_MAX - b) return 1;
+    *out = a + b;
+    return 0;
+}
+
+static int align_up_checked(size_t val, size_t align, size_t* out) {
+    size_t tmp;
+    if (add_overflow(val, align - 1, &tmp)) return 1;
+    *out = tmp & ~(align - 1);
+    return 0;
+}
+
+static int kernel_block(const void* p) {
+    return (uintptr_t)p < BANANA_VM_BASE;
+}
+
+/* Must be called with g_lock held.
+ * BANANA_HAS only checks struct size, so also verify non-NULL function pointers. */
+static int heap_init_locked(void) {
+    if (g_state == 0) {
+        int ok = __banana != NULL &&
+                 __banana->version >= 16 &&
+                 BANANA_HAS(__banana, vm_map) &&
+                 BANANA_HAS(__banana, vm_unmap) &&
+                 __banana->vm_map != NULL &&
+                 __banana->vm_unmap != NULL;
+        g_state = ok ? 1 : -1;
+    }
+    return g_state > 0;
+}
+
+static void arena_link_locked(arena_t* a) {
+    a->prev = NULL;
+    a->next = g_arenas;
+    if (g_arenas) g_arenas->prev = a;
+    g_arenas = a;
+}
+
+static void arena_unlink_locked(arena_t* a) {
+    if (a->prev) a->prev->next = a->next;
+    else g_arenas = a->next;
+    if (a->next) a->next->prev = a->prev;
+    a->prev = NULL;
+    a->next = NULL;
+}
+
+static arena_t* arena_create_locked(size_t map_size, size_t is_large) {
+    void* mem = __banana->vm_map(NULL, map_size, PROT_RW, 0);
+    if (!mem || kernel_block(mem) || ((uintptr_t)mem & (PAGE_SIZE - 1)) != 0) {
+        if (mem) __banana->vm_unmap(mem, map_size);
+        return NULL;
+    }
+    arena_t* a = (arena_t*)mem;
+    a->magic = ARENA_MAGIC;
+    a->prev = NULL;
+    a->next = NULL;
+    a->map_size = map_size;
+    a->used_blocks = 0;
+    a->is_large = is_large;
+    a->pad = 0;
+
+    block_t* b = (block_t*)((uint8_t*)a + sizeof(arena_t));
+    b->magic = BLOCK_MAGIC_FREE;
+    b->arena = a;
+    b->prev = NULL;
+    b->next = NULL;
+    b->size = map_size - ARENA_OVERHEAD;
+    b->used = 0;
+    b->pad[0] = 0;
+    b->pad[1] = 0;
+
+    a->first = b;
+    arena_link_locked(a);
+    g_mapped += map_size;
+    return a;
+}
+
+/* Attempt to allocate req bytes (already a multiple of 16) with power-of-two
+ * alignment align (>= 16) out of free block b. Splits a leading free block if
+ * alignment requires shifting the payload, and splits a trailing free block if
+ * split_tail is non-zero and sufficient remainder exists. */
+static void* carve_block_locked(block_t* b, size_t req, size_t align, int split_tail) {
+    uintptr_t u0 = (uintptr_t)b + sizeof(block_t);
+
+    if ((u0 & (align - 1)) != 0) {
+        size_t min_lead = sizeof(block_t) + MIN_SPLIT_SIZE;
+        size_t min_u_sz;
+        if (add_overflow((size_t)u0, min_lead, &min_u_sz)) return NULL;
+        size_t u_sz;
+        if (align_up_checked(min_u_sz, align, &u_sz)) return NULL;
+
+        size_t lead_total = u_sz - (size_t)u0;
+        if (b->size < lead_total || b->size - lead_total < req) return NULL;
+
+        block_t* aligned_b = (block_t*)((uintptr_t)u_sz - sizeof(block_t));
+        aligned_b->magic = BLOCK_MAGIC_FREE;
+        aligned_b->arena = b->arena;
+        aligned_b->prev = b;
+        aligned_b->next = b->next;
+        aligned_b->size = b->size - lead_total;
+        aligned_b->used = 0;
+        aligned_b->pad[0] = 0;
+        aligned_b->pad[1] = 0;
+
+        if (b->next) b->next->prev = aligned_b;
+        b->next = aligned_b;
+        b->size = lead_total - sizeof(block_t);
+        b = aligned_b;
+    } else {
+        if (b->size < req) return NULL;
+    }
+
+    if (split_tail && b->size - req >= sizeof(block_t) + MIN_SPLIT_SIZE) {
+        block_t* tail = (block_t*)((uint8_t*)b + sizeof(block_t) + req);
+        tail->magic = BLOCK_MAGIC_FREE;
+        tail->arena = b->arena;
+        tail->prev = b;
+        tail->next = b->next;
+        tail->size = b->size - req - sizeof(block_t);
+        tail->used = 0;
+        tail->pad[0] = 0;
+        tail->pad[1] = 0;
+
+        if (b->next) b->next->prev = tail;
+        b->next = tail;
+        b->size = req;
+    }
+
+    b->magic = BLOCK_MAGIC_USED;
+    b->used = 1;
+    b->arena->used_blocks++;
+    g_inuse += b->size;
+    return (void*)((uint8_t*)b + sizeof(block_t));
+}
+
+static void* heap_alloc_locked(size_t align, size_t n) {
+    if (align < MIN_ALIGN) align = MIN_ALIGN;
+    if ((align & (align - 1)) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (n == 0) n = 1;
+
+    size_t req;
+    if (align_up_checked(n, MIN_ALIGN, &req)) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    /* Compute worst-case bytes needed in a freshly mapped arena. */
+    size_t needed = ARENA_OVERHEAD;
+    if (add_overflow(needed, req, &needed)) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (align > MIN_ALIGN) {
+        if (add_overflow(needed, sizeof(block_t) + MIN_SPLIT_SIZE, &needed) ||
+            add_overflow(needed, align, &needed)) {
+            errno = ENOMEM;
+            return NULL;
         }
-        g_size[i] = (uint32_t)s;
     }
-    g_state = ok ? 1 : -1;
-    return ok;
-}
 
-static unsigned log2_floor(size_t v) {
-    uint64_t r;
-    __asm__("bsrq %1, %0" : "=r"(r) : "rm"((uint64_t)v));
-    return (unsigned)r;
-}
-
-static int cls_of(size_t n) {
-    if (n <= 128) return n ? (int)((n + 15) / 16) - 1 : 0;
-    unsigned b = log2_floor(n - 1);                     /* n - 1 in [2^b, 2^(b+1)) */
-    return 8 + (int)(b - 7) * 4 + (int)((n - 1 - ((size_t)1 << b)) >> (b - 2));
-}
-
-/* how many free blocks of a class a thread keeps */
-static uint32_t tcache_max(int ci) {
-    uint32_t n = 16384u / g_size[ci];
-    return n < 4 ? 4 : n > 64 ? 64 : n;
-}
-
-/* ── regions and spans (under g_lock) ─────────────────────────────── */
-
-static region_t* region_of(const void* p) {
-    uintptr_t base = (uintptr_t)p & ~(REGION - 1);
-    for (int i = 0; i < g_nregion; i++) if ((uintptr_t)g_region[i] == base) return g_region[i];
-    return NULL;
-}
-
-static span_t* span_of(region_t* r, const void* p) {
-    return &r->spans[((uintptr_t)p - (uintptr_t)r) / SPAN];
-}
-
-static uint8_t* span_mem(region_t* r, span_t* s) {
-    return r->base + (size_t)(s - r->spans) * SPAN;
-}
-
-/* a new region: 2 GiB of addresses reserved, the 1 GiB-aligned half used */
-static region_t* region_new(void) {
-    if (g_nregion == MAX_REGION) return NULL;
-    uint8_t* m = __banana->vm_map(NULL, 2 * REGION, PROT_ALL, 0);
-    if (!m) return NULL;
-    region_t* r = (region_t*)(((uintptr_t)m + REGION - 1) & ~(REGION - 1));
-    r->magic = REGION_MAGIC;
-    r->base = (uint8_t*)r;
-    r->next = FIRST_SPAN;
-    /* (free() looks regions up without the lock: the entry before the count) */
-    g_region[g_nregion] = r;
-    __asm__ volatile("" ::: "memory");
-    g_nregion++;
-    g_mapped += REGION;
-    return r;
-}
-
-static void list_del(span_t** head, span_t* s) {
-    if (s->prev) s->prev->next = s->next;
-    else *head = s->next;
-    if (s->next) s->next->prev = s->prev;
-    s->next = s->prev = NULL;
-}
-
-static void list_add(span_t** head, span_t* s) {
-    s->prev = NULL;
-    s->next = *head;
-    if (*head) (*head)->prev = s;
-    *head = s;
-}
-
-/* a span for class ci, with room: an empty one kept, else a new one */
-static span_t* span_new(int ci) {
-    span_t* s = g_free;
-    region_t* r = NULL;
-    if (s) {
-        list_del(&g_free, s);
-        g_nfree--;
-        r = region_of(s);
-    } else {
-        for (int i = 0; i < g_nregion && !s; i++)
-            if (g_region[i]->next < NSPANS) { r = g_region[i]; s = &r->spans[r->next++]; }
-        if (!s) {
-            r = region_new();
-            if (!r) return NULL;
-            s = &r->spans[r->next++];
-        }
-    }
-    s->cls = (uint16_t)ci;
-    s->state = S_CLASS;
-    s->free = NULL;
-    s->bump = span_mem(r, s);
-    s->used = 0;
-    s->cap = (uint32_t)(SPAN / g_size[ci]);
-    s->released = 0;
-    list_add(&g_partial[ci], s);
-    return s;
-}
-
-/* one block of class ci (NULL: no memory) */
-static void* take(int ci) {
-    span_t* s = g_partial[ci];
-    if (!s && !(s = span_new(ci))) return NULL;
-    void* p;
-    if (s->free) {
-        p = s->free;
-        s->free = *(void**)p;
-    } else {
-        p = s->bump;
-        s->bump += g_size[ci];
-    }
-    if (++s->used == s->cap) list_del(&g_partial[ci], s);
-    g_inuse += g_size[ci];
-    return p;
-}
-
-/* block p (class ci, in span s of region r) back to its span */
-static void give(region_t* r, span_t* s, void* p) {
-    int ci = s->cls;
-    *(void**)p = s->free;
-    s->free = p;
-    if (s->used-- == s->cap) list_add(&g_partial[ci], s);
-    g_inuse -= g_size[ci];
-    if (s->used) return;
-    /* empty: kept ready for any class, or its pages go back */
-    list_del(&g_partial[ci], s);
-    s->state = S_FREE;
-    if (g_nfree >= FREE_KEEP) {
-        /* (mapped again in place: the addresses stay reserved, the pages go) */
-        __banana->vm_map(span_mem(r, s), SPAN, PROT_ALL, BANANA_MAP_FIXED);
-        s->released = 1;
-    }
-    list_add(&g_free, s);
-    g_nfree++;
-}
-
-/* ── large blocks ─────────────────────────────────────────────────── */
-
-static void* large_alloc(size_t n, size_t align) {
-    if (align < 16) align = 16;
-    if (n > ((size_t)1 << 46)) return NULL;
-    size_t need = n + align + LARGE_HDR;
-    /* a kept one that fits without wasting more than half of it */
-    banana_lock(&g_lock);
-    large_t* h = NULL;
-    for (int i = 0; i < LARGE_KEEP && !h; i++) {
-        large_t* k = g_large[i];
-        if (!k || k->maplen < need || k->maplen / 2 > need) continue;
-        g_large[i] = NULL;
-        h = k;
-    }
-    banana_unlock(&g_lock);
-    void* map;
-    size_t maplen;
-    int fresh = 0;
-    if (h) {
-        map = h->map;
-        maplen = h->maplen;
-    } else {
-        maplen = (need + 4095) & ~(size_t)4095;
-        map = __banana->vm_map(NULL, maplen, PROT_ALL, 0);
-        if (!map) return NULL;
-        fresh = 1;
-    }
-    uintptr_t u = ((uintptr_t)map + LARGE_HDR + align - 1) & ~(uintptr_t)(align - 1);
-    h = (large_t*)(u - LARGE_HDR);
-    h->magic = LARGE_MAGIC;
-    h->map = map;
-    h->maplen = maplen;
-    h->cap = (uintptr_t)map + maplen - u;
-    h->fresh = fresh;
-    banana_lock(&g_lock);
-    g_inuse += h->cap;
-    if (fresh) g_mapped += maplen;
-    banana_unlock(&g_lock);
-    return (void*)u;
-}
-
-static large_t* large_of(void* p) {
-    large_t* h = (large_t*)((uintptr_t)p - LARGE_HDR);
-    return h->magic == LARGE_MAGIC ? h : NULL;
-}
-
-static void large_free(large_t* h) {
-    banana_lock(&g_lock);
-    g_inuse -= h->cap;
-    h->magic = 0;
-    /* kept for the next one that fits (the smallest kept one goes instead) */
-    int slot = -1;
-    for (int i = 0; i < LARGE_KEEP && slot < 0; i++) if (!g_large[i]) slot = i;
-    large_t* out = NULL;
-    if (slot < 0) {
-        slot = 0;
-        for (int i = 1; i < LARGE_KEEP; i++) if (g_large[i]->maplen < g_large[slot]->maplen) slot = i;
-        if (g_large[slot]->maplen >= h->maplen) { out = h; slot = -1; }
-        else out = g_large[slot];
-    }
-    if (slot >= 0) {
-        large_t* k = (large_t*)h->map;          /* (kept: its record at the mapping's start) */
-        void* map = h->map;
-        size_t maplen = h->maplen;
-        k->map = map;
-        k->maplen = maplen;
-        g_large[slot] = k;
-    }
-    if (out) g_mapped -= out->maplen;
-    banana_unlock(&g_lock);
-    if (out) __banana->vm_unmap(out->map, out->maplen);
-}
-
-/* ── thread caches ────────────────────────────────────────────────── */
-
-static tcache_t* tcache(void) {
-    void** slot = __malloc_slot_fn ? __malloc_slot_fn() : NULL;
-    if (!slot) return NULL;
-    if (!*slot) {
-        banana_lock(&g_lock);
-        tcache_t* t = take(cls_of(sizeof(tcache_t)));
-        banana_unlock(&g_lock);
-        if (!t) return NULL;
-        memset(t, 0, sizeof(*t));
-        *slot = t;
-    }
-    return (tcache_t*)*slot;
-}
-
-/* half of a full bin back to the spans */
-static void bin_drain(tbin_t* b, uint32_t keep) {
-    banana_lock(&g_lock);
-    while (b->n > keep) {
-        void* p = b->head;
-        b->head = *(void**)p;
-        b->n--;
-        region_t* r = region_of(p);
-        give(r, span_of(r, p), p);
-    }
-    banana_unlock(&g_lock);
-}
-
-void __malloc_thread_end(void* cache) {
-    tcache_t* t = (tcache_t*)cache;
-    if (!t || g_state <= 0) return;
-    for (int ci = 0; ci < NCLS; ci++) if (t->bin[ci].n) bin_drain(&t->bin[ci], 0);
-    banana_lock(&g_lock);
-    region_t* r = region_of(t);
-    if (r) give(r, span_of(r, t), t);
-    banana_unlock(&g_lock);
-}
-
-static void* small_alloc(int ci) {
-    tcache_t* t = tcache();
-    if (t) {
-        tbin_t* b = &t->bin[ci];
-        if (!b->head) {                             /* refilled in one go */
-            uint32_t want = tcache_max(ci) / 2;
-            banana_lock(&g_lock);
-            while (b->n < want) {
-                void* p = take(ci);
-                if (!p) break;
-                *(void**)p = b->head;
-                b->head = p;
-                b->n++;
+    /* First-fit search across existing non-pinned arenas (includes standard
+     * 64 KiB arenas and any arena retained after a failed vm_unmap). */
+    for (arena_t* a = g_arenas; a != NULL; a = a->next) {
+        if (a->is_large) continue;
+        for (block_t* b = a->first; b != NULL; b = b->next) {
+            if (!b->used && b->magic == BLOCK_MAGIC_FREE) {
+                void* p = carve_block_locked(b, req, align, 1);
+                if (p) return p;
             }
-            banana_unlock(&g_lock);
-            if (!b->head) return NULL;
         }
-        void* p = b->head;
-        b->head = *(void**)p;
-        b->n--;
-        return p;
     }
-    banana_lock(&g_lock);
-    void* p = take(ci);
-    banana_unlock(&g_lock);
+
+    size_t map_size = ARENA_SIZE;
+    size_t is_large = 0;
+    if (needed > ARENA_SIZE) {
+        if (align_up_checked(needed, PAGE_SIZE, &map_size)) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        is_large = 1;
+    }
+
+    arena_t* a = arena_create_locked(map_size, is_large);
+    if (!a) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    void* p = carve_block_locked(a->first, req, align, !is_large);
+    if (!p) {
+        /* Defensive cleanup if carving ever failed. */
+        arena_unlink_locked(a);
+        if (__banana->vm_unmap(a, map_size) == 0) g_mapped -= map_size;
+        else { a->is_large = 0; arena_link_locked(a); }
+        errno = ENOMEM;
+        return NULL;
+    }
     return p;
 }
 
-static void small_free(region_t* r, void* p) {
-    span_t* s = span_of(r, p);
-    tcache_t* t = tcache();
-    if (t) {
-        tbin_t* b = &t->bin[s->cls];
-        *(void**)p = b->head;
-        b->head = p;
-        if (++b->n > tcache_max(s->cls)) bin_drain(b, tcache_max(s->cls) / 2);
-        return;
+/* Locate and validate a live block without probing memory outside known arenas. */
+static block_t* find_used_block_locked(const void* p) {
+    uintptr_t addr = (uintptr_t)p;
+    if ((addr & (MIN_ALIGN - 1)) != 0) return NULL;
+
+    arena_t* a = NULL;
+    for (arena_t* cur = g_arenas; cur != NULL; cur = cur->next) {
+        uintptr_t base = (uintptr_t)cur;
+        uintptr_t min_p = base + ARENA_OVERHEAD;
+        uintptr_t end = base + cur->map_size;
+        if (addr >= min_p && addr < end) {
+            a = cur;
+            break;
+        }
     }
-    banana_lock(&g_lock);
-    give(r, s, p);
-    banana_unlock(&g_lock);
+    if (!a || a->magic != ARENA_MAGIC) return NULL;
+
+    block_t* b = (block_t*)(addr - sizeof(block_t));
+    if (b->magic != BLOCK_MAGIC_USED || !b->used || b->arena != a) return NULL;
+
+    uintptr_t end = (uintptr_t)a + a->map_size;
+    if (b->size < MIN_SPLIT_SIZE || b->size > end - addr) return NULL;
+    if (b->next && (uintptr_t)b->next != addr + b->size) return NULL;
+    if (!b->next && addr + b->size != end) return NULL;
+    if (b->prev && b->prev->next != b) return NULL;
+    if (!b->prev && a->first != b) return NULL;
+    return b;
 }
 
-/* ── what the program calls ───────────────────────────────────────── */
+static void free_block_locked(block_t* b) {
+    arena_t* a = b->arena;
+    g_inuse -= b->size;
+    a->used_blocks--;
+    b->used = 0;
+    b->magic = BLOCK_MAGIC_FREE;
 
-/* is p the kernel's (below the addresses vm_map hands out)? */
-static int kernel_block(const void* p) { return (uintptr_t)p < BANANA_VM_BASE; }
+    /* Coalesce with physical successor if free. */
+    if (b->next && !b->next->used && b->next->magic == BLOCK_MAGIC_FREE) {
+        block_t* next = b->next;
+        next->magic = 0;
+        b->size += sizeof(block_t) + next->size;
+        b->next = next->next;
+        if (b->next) b->next->prev = b;
+    }
 
-static size_t usable(void* p) {
-    region_t* r = region_of(p);
-    if (r) return g_size[span_of(r, p)->cls];
-    large_t* h = large_of(p);
-    return h ? h->cap : 0;
+    /* Coalesce with physical predecessor if free. */
+    if (b->prev && !b->prev->used && b->prev->magic == BLOCK_MAGIC_FREE) {
+        block_t* prev = b->prev;
+        b->magic = 0;
+        prev->size += sizeof(block_t) + b->size;
+        prev->next = b->next;
+        if (prev->next) prev->next->prev = prev;
+        b = prev;
+    }
+
+    /* Never unmap a nonempty arena. */
+    if (a->used_blocks != 0) return;
+
+    /* Arena is now completely empty and coalesced into a->first.
+     * Unlink and save map_size before vm_unmap so *a is never read after
+     * a successful unmap; if vm_unmap fails, the kernel left the VMA and
+     * pages intact, so re-link *a as a general reusable arena. */
+    size_t map_size = a->map_size;
+    a->is_large = 0;
+    arena_unlink_locked(a);
+    if (__banana->vm_unmap(a, map_size) == 0) {
+        g_mapped -= map_size;
+    } else {
+        arena_link_locked(a);
+    }
 }
 
 void* __malloc_aligned(size_t align, size_t n) {
-    if (!heap()) return NULL;                           /* (posix.c asks __malloc_heap first) */
-    if (!n) n = 1;
-    if (align < 16) align = 16;
-    if (n <= SMALL_MAX && align <= SMALL_MAX) {
-        /* a class whose size is a multiple of align: its blocks all are aligned */
-        size_t want = n > align ? n : align;
-        for (int ci = cls_of(want); ci < NCLS; ci++)
-            if (g_size[ci] % align == 0) {
-                void* p = small_alloc(ci);
-                if (!p) errno = ENOMEM;
-                return p;
-            }
+    banana_lock(&g_lock);
+    if (!heap_init_locked()) {
+        banana_unlock(&g_lock);
+        return NULL;
     }
-    void* p = large_alloc(n, align);
-    if (!p) errno = ENOMEM;
+    void* p = heap_alloc_locked(align, n);
+    banana_unlock(&g_lock);
     return p;
 }
 
 void* malloc(size_t n) {
-    if (heap()) {
-        void* p = n <= SMALL_MAX ? small_alloc(cls_of(n)) : large_alloc(n, 16);
-        if (!p) errno = ENOMEM;
+    banana_lock(&g_lock);
+    if (heap_init_locked()) {
+        void* p = heap_alloc_locked(MIN_ALIGN, n);
+        banana_unlock(&g_lock);
         return p;
     }
+    banana_unlock(&g_lock);
+
     void* p = __banana->malloc(n ? n : 1);
     if (!p) errno = ENOMEM;
     return p;
@@ -438,15 +384,15 @@ void* malloc(size_t n) {
 
 void free(void* p) {
     if (!p) return;
-    if (g_state > 0 && !kernel_block(p)) {
-        region_t* r = region_of(p);
-        if (r) {
-            if (span_of(r, p)->state == S_CLASS) small_free(r, p);   /* (else: freed twice - left alone) */
+    if (!kernel_block(p)) {
+        banana_lock(&g_lock);
+        if (heap_init_locked()) {
+            block_t* b = find_used_block_locked(p);
+            if (b) free_block_locked(b);
+            banana_unlock(&g_lock);
             return;
         }
-        large_t* h = large_of(p);
-        if (h) large_free(h);
-        return;                                         /* (not a block: left alone) */
+        banana_unlock(&g_lock);
     }
     void* raw;
     __banana->free(__aligned_block(p, &raw, NULL, 1) ? raw : p);
@@ -454,21 +400,37 @@ void free(void* p) {
 
 void* realloc(void* p, size_t n) {
     if (!p) return malloc(n);
-    if (!n) { free(p); return NULL; }
-    if (g_state > 0 && !kernel_block(p)) {
-        size_t have = usable(p);
-        if (!have) { errno = EINVAL; return NULL; }
-        /* it fits, and is not much too big: stays */
-        if (n <= have && (n > have / 2 || have <= 64)) return p;
-        void* q = malloc(n);
-        if (!q) return NULL;
-        memcpy(q, p, have < n ? have : n);
+    if (!n) {
         free(p);
-        return q;
+        return NULL;
+    }
+    if (!kernel_block(p)) {
+        banana_lock(&g_lock);
+        if (heap_init_locked()) {
+            block_t* b = find_used_block_locked(p);
+            if (!b) {
+                banana_unlock(&g_lock);
+                errno = EINVAL;
+                return NULL;
+            }
+            size_t have = b->size;
+            if (n <= have && (n > have / 2 || have <= 64)) {
+                banana_unlock(&g_lock);
+                return p;
+            }
+            banana_unlock(&g_lock);
+
+            void* q = malloc(n);
+            if (!q) return NULL;
+            memcpy(q, p, have < n ? have : n);
+            free(p);
+            return q;
+        }
+        banana_unlock(&g_lock);
     }
     void* raw;
     size_t old;
-    if (__aligned_block(p, &raw, &old, 0)) {           /* (from posix_memalign) */
+    if (__aligned_block(p, &raw, &old, 0)) {
         void* q = malloc(n);
         if (q) {
             memcpy(q, p, old < n ? old : n);
@@ -477,42 +439,65 @@ void* realloc(void* p, size_t n) {
         }
         return q;
     }
-    return __banana->realloc(p, n);
+    void* q = __banana->realloc(p, n);
+    if (!q) errno = ENOMEM;
+    return q;
 }
 
 void* calloc(size_t n, size_t s) {
-    if (s && n > (size_t)-1 / s) { errno = ENOMEM; return NULL; }
+    if (s && n > SIZE_MAX / s) {
+        errno = ENOMEM;
+        return NULL;
+    }
     size_t len = n * s;
     void* p = malloc(len);
     if (!p) return NULL;
-    large_t* h = g_state > 0 && len > SMALL_MAX ? large_of(p) : NULL;
-    if (!h || !h->fresh) memset(p, 0, len);            /* (a new mapping is zeroed already) */
+    memset(p, 0, len);
     return p;
 }
 
 size_t malloc_usable_size(void* p) {
     if (!p) return 0;
-    if (g_state > 0 && !kernel_block(p)) return usable(p);
+    if (!kernel_block(p)) {
+        banana_lock(&g_lock);
+        if (heap_init_locked()) {
+            block_t* b = find_used_block_locked(p);
+            size_t sz = b ? b->size : 0;
+            banana_unlock(&g_lock);
+            return sz;
+        }
+        banana_unlock(&g_lock);
+    }
     size_t old;
     void* raw;
     return __aligned_block(p, &raw, &old, 0) ? old : 0;
 }
 
-int __malloc_heap(void) { return heap(); }
-
-void __malloc_stats(size_t* mapped, size_t* inuse) {
-    if (mapped) *mapped = g_mapped;
-    if (inuse) *inuse = g_inuse;
+int __malloc_heap(void) {
+    banana_lock(&g_lock);
+    int ok = heap_init_locked();
+    banana_unlock(&g_lock);
+    return ok;
 }
 
-#else   /* ── 32-bit: the kernel's allocator ───────────────────────── */
+void __malloc_stats(size_t* mapped, size_t* inuse) {
+    banana_lock(&g_lock);
+    if (mapped) *mapped = g_mapped;
+    if (inuse) *inuse = g_inuse;
+    banana_unlock(&g_lock);
+}
+
+#else /* ── 32-bit: the kernel's allocator ───────────────────────── */
 
 void* __malloc_aligned(size_t align, size_t n) { (void)align; (void)n; return NULL; }
 int   __malloc_heap(void) { return 0; }
-void  __malloc_thread_end(void* cache) { (void)cache; }
 void  __malloc_stats(size_t* mapped, size_t* inuse) { if (mapped) *mapped = 0; if (inuse) *inuse = 0; }
 
-void* malloc(size_t n) { void* p = __banana->malloc(n ? n : 1); if (!p) errno = ENOMEM; return p; }
+void* malloc(size_t n) {
+    void* p = __banana->malloc(n ? n : 1);
+    if (!p) errno = ENOMEM;
+    return p;
+}
 
 void free(void* p) {
     void* raw;
@@ -524,7 +509,7 @@ void* realloc(void* p, size_t n) {
     void* raw;
     size_t old;
     if (p && !n) { free(p); return NULL; }
-    if (p && __aligned_block(p, &raw, &old, 0)) {      /* (from posix_memalign) */
+    if (p && __aligned_block(p, &raw, &old, 0)) {
         void* q = malloc(n);
         if (q) {
             memcpy(q, p, old < n ? old : n);
@@ -533,11 +518,13 @@ void* realloc(void* p, size_t n) {
         }
         return q;
     }
-    return __banana->realloc(p, n);
+    void* q = __banana->realloc(p, n);
+    if (!q) errno = ENOMEM;
+    return q;
 }
 
 void* calloc(size_t n, size_t s) {
-    if (s && n > (size_t)-1 / s) return NULL;
+    if (s && n > (size_t)-1 / s) { errno = ENOMEM; return NULL; }
     void* p = malloc(n * s);
     if (p) memset(p, 0, n * s);
     return p;

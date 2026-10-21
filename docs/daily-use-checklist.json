@@ -2314,5 +2314,33 @@
       "tools/test_clock_monotonic_utc.py",
       "docs/CLOCK-MONOTONIC-UTC.md"
     ]
+  },
+  {
+    "id": "base-18-sdk-heap-evaluation",
+    "title": "Qualify the process-local SDK heap under desktop load",
+    "priority": "P1",
+    "domain": "System",
+    "kind": "Consolidate",
+    "goal": "Verify that moving SDK allocation into each process improves daily-use responsiveness without losing memory or thread-lifecycle correctness.",
+    "depends": [
+      "upstream-46446439da13f6664de67d9314b212544559a0b3"
+    ],
+    "relatedTasks": [
+      "base-18"
+    ],
+    "planningReason": "The adaptation of upstream 46446439da13 replaces kernel malloc calls with a single-lock process-local heap. Host mapping and thread substitutes cannot qualify Banana pthread lifecycle, demand paging, swap, or desktop latency. Keep base-18 history intact and schedule this linked qualification only after independent review and controller validation.",
+    "evidence": "sdk/lib/malloc.c uses anonymous mappings and one lock; kernel/uspace.c reserves addresses before first-touch physical allocation. Resident mappings were previously absent from app_snapshot accounting.",
+    "acceptance": "Repeat identical workloads on the parent kernel-allocator baseline and adapted SDK, with pinned VM configuration and application rebuilds. Record syscall counts, allocations/second, resident and reserved bytes, swap use, and input latency p50/p95/max; explain regressions and retain logs. No corruption, leaked mappings after process teardown, or deadlock across pthread startup, destructors, the existing ENOSYS cancellation contract/exit, cross-thread frees, pressure, and swap. Verify kernel-owned HTTP and decoded-image buffers.",
+    "deliverable": "Reproducible Banana VM qualification and before/after performance report, with measured follow-up fixes if needed.",
+    "steps": [
+      "Add reproducible allocation workloads and counters for kernel malloc/free/realloc and vm_map/vm_unmap; measure throughput and virtual/resident memory separately on baseline and adapted builds.",
+      "Exercise real pthread startup, destructor allocation, the existing cancellation contract/exit, process teardown, HTTP/image ownership, forced memory pressure, and swap with data checks and leak accounting.",
+      "Run base-18 copy/download/audio/browser scenarios under the same VM configuration; compare input latency and desktop responsiveness, document regressions, and propose measured improvements rather than speculative caches."
+    ],
+    "tests": [
+      "Run randomized allocation preservation and mapping/unmapping failure injection on the host; retain explicit limits of substitutes.",
+      "Run BIOS and UEFI Banana VMs with SMP and reduced RAM; repeat lifecycle/ownership/pressure/swap scenarios and require no corruption, leaks or global stalls.",
+      "Capture before/after syscall count, throughput, virtual reservation, resident memory, swap use, and desktop latency with workload seeds, durations, RAM/core configuration and logs."
+    ]
   }
 ]

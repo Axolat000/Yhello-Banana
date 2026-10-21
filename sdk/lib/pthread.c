@@ -60,13 +60,7 @@ struct __pthread {
     struct __pthread_cleanup* cleanup;
     char         name[16];
     struct __pthread* next;           /* (the list of ended detached threads) */
-    void*        mcache;              /* malloc.c: the thread's cache of free blocks */
 };
-
-/* malloc.c finds the calling thread's cache through this (set once threads
- * have a thread pointer), and gives a cache back when its thread ends */
-extern void** (*__malloc_slot_fn)(void);
-void __malloc_thread_end(void* cache);
 
 static struct __pthread  g_main;
 static struct __pthread* g_by_id[IDS];
@@ -143,14 +137,6 @@ static void install(struct __pthread* t) {
     if (g_tls_ok) __banana->tls_set(t);
 }
 
-#ifdef __x86_64__
-static void** malloc_slot(void) {
-    struct __pthread* s;
-    __asm__ volatile("mov %%fs:0, %0" : "=r"(s));
-    return &s->mcache;
-}
-#endif
-
 void __pthread_init(void) {
     tls_find();
     /* the main thread's record: with a TLS block under it if the program has
@@ -168,9 +154,6 @@ void __pthread_init(void) {
     strcpy(t->name, "main");
     g_tls_ok = has_v17() && __banana->tls_set(t) == 0;
     install(t);
-#ifdef __x86_64__
-    if (g_tls_ok) __malloc_slot_fn = malloc_slot;
-#endif
 }
 
 pthread_t pthread_self(void) {
@@ -263,10 +246,6 @@ static void reap(void) {
 /* t ended (returned, or pthread_exit) */
 static void finish(struct __pthread* t) {
     run_destructors(t);
-    if (t->mcache) {                    /* (its cached blocks back to the heap) */
-        __malloc_thread_end(t->mcache);
-        t->mcache = NULL;
-    }
     life_lock();
     t->done = 1;
     if (t->detached) { t->next = g_dead; g_dead = t; }

@@ -582,7 +582,13 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* o
     return ok;
 }
 
-uint64_t uvm_resident(uspace_t* us) { return us ? us->vm_pages * 4096 : 0; }
+uint64_t uvm_resident(uspace_t* us) {
+    if (!us) return 0;
+    uintptr_t f = spin_lock_irq(&us->vm_lock);
+    uint64_t bytes = us->vm_pages * 4096;
+    spin_unlock_irq(&us->vm_lock, f);
+    return bytes;
+}
 
 /* the page table entry for va in us's own tables (any part of it), or 0 */
 static uint64_t walk(uspace_t* us, uint64_t va) {
