@@ -118,7 +118,7 @@ _start:
     or eax, 1 << 8                  ; long mode enable
     wrmsr
     mov eax, cr0
-    or eax, (1 << 31) | 1           ; paging + protection
+    or eax, (1 << 31) | (1 << 16) | 1   ; paging + write protect (the kernel too: copy-on-write) + protection
     mov cr0, eax
 
     lgdt [gdt64_ptr]

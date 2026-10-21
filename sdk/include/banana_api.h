@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 25u
+#define BANANA_API_VERSION 26u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -515,6 +515,26 @@ typedef struct banana_api {
     int (*fd_fcntl)(int fd, int cmd, long arg);
     /* what fd is: out a banana_fdinfo_t */
     int (*fd_info)(int fd, void* out);
+
+    /* ── version 26: Unix processes ──────────────────────────────────
+     * A process's pid is getpid()'s. 64-bit only (the 32-bit system: -ENOSYS).
+     * fork: a copy of the calling process (its memory copy-on-write, the same
+     * descriptors), 0 in the child, the child's pid in the parent.
+     * exec: the program at path replaces the calling one (argv, envp: NULL-
+     * ended; a #! script runs its interpreter) - it returns only if it
+     * cannot (-errno). The new program finds envp after argv's NULL.
+     * wait: Linux's wait4 - pid (-1 any child, 0 its group, < -1 the group
+     * -pid), status (or NULL), options (WNOHANG 1), rusage (or NULL: zeroed);
+     * the pid of a child that ended, 0 (WNOHANG: none yet), -errno.
+     * ids: process pid's (0: the caller) pid, ppid, pgid, sid into out[4].
+     * setpgid, setsid, kill: as POSIX's; errors -errno. */
+    int (*proc_fork)(void);
+    int (*proc_exec)(const char* path, char* const* argv, char* const* envp);
+    int (*proc_wait)(int pid, int* status, int options, void* rusage);
+    int (*proc_ids)(int pid, int* out);
+    int (*proc_setpgid)(int pid, int pgid);
+    int (*proc_setsid)(void);
+    int (*proc_kill)(int pid, int sig);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

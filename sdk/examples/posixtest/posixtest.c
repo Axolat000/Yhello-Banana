@@ -12,6 +12,7 @@
  *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
  *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR)
  *   posixtest memory   posix_memalign with malloc / free, from several threads
+ *   posixtest proc     fork, execve, waitpid, pipes between processes, posix_spawn
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,8 @@
 #include <ucontext.h>
 #include <dlfcn.h>
 #include <link.h>
+#include <sys/wait.h>
+#include <spawn.h>
 #include <banana.h>
 
 static int g_ok, g_fail;
@@ -1170,8 +1173,175 @@ static void t_memory(void) {
     check("aligned and plain blocks from several threads at once", bad == 0, note);
 }
 
+
+/* ── processes: fork, exec, wait (API version 26) ─────────────────── */
+
+#define SELF "/apps/posixtest/app-x86_64"       /* (posixtest, as the App Store installed it) */
+
+/* posixtest run by the checks below (execve, posix_spawn) */
+static int child_mode(int argc, char** argv) {
+    if (!strcmp(argv[1], "child-echo")) {
+        const char* v = getenv("BANANA_TEST");
+        printf("%s %s %d\n", argc > 2 ? argv[2] : "?", v ? v : "none", isatty(1));
+        return 0;
+    }
+    if (!strcmp(argv[1], "child-exit")) return argc > 2 ? atoi(argv[2]) : 0;
+    if (!strcmp(argv[1], "child-fd")) {                   /* a descriptor close-on-exec closed: 0 */
+        int fd = argc > 2 ? atoi(argv[2]) : -1;
+        return fcntl(fd, F_GETFD) == -1 && errno == EBADF ? 0 : 1;
+    }
+    return 99;
+}
+
+static void t_proc(void) {
+    printf("processes: fork, exec, wait\n");
+#ifdef __x86_64__
+    char note[96] = "";
+    int st = -1;
+    pid_t me = getpid();
+
+    pid_t pid = fork();
+    if (pid == 0) _exit(42);
+    pid_t w = waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "pid %d, status %#x", (int)pid, st);
+    check("fork: the child exits 42, waitpid gets it", pid > 0 && pid != me && w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 42, note);
+
+    static int in_data = 1;
+    volatile int on_stack = 7;
+    char* in_heap = malloc(64);
+    strcpy(in_heap, "parent");
+    pid = fork();
+    if (pid == 0) {
+        int ok = in_data == 1 && on_stack == 7 && !strcmp(in_heap, "parent") && getppid() == me && getpid() != me;
+        in_data = 2;
+        on_stack = 8;
+        strcpy(in_heap, "child");
+        _exit(ok && in_data == 2 && on_stack == 8 && !strcmp(in_heap, "child") ? 0 : 1);
+    }
+    waitpid(pid, &st, 0);
+    check("copy-on-write: the child sees the parent's memory, its own writes stay its own",
+          WIFEXITED(st) && WEXITSTATUS(st) == 0 && in_data == 1 && on_stack == 7 && !strcmp(in_heap, "parent"), "");
+    free(in_heap);
+
+    int pp[2];
+    pipe(pp);
+    pid = fork();
+    if (pid == 0) {
+        close(pp[0]);
+        char b[1000];
+        for (int i = 0; i < 100; i++) { memset(b, 'a' + i % 26, sizeof(b)); write(pp[1], b, sizeof(b)); }
+        _exit(0);
+    }
+    close(pp[1]);
+    long total = 0;
+    int same = 1;
+    char b[4096];
+    ssize_t n;
+    while ((n = read(pp[0], b, sizeof(b))) > 0) {
+        for (ssize_t i = 0; i < n; i++) if (b[i] != 'a' + (int)((total + i) / 1000) % 26) same = 0;
+        total += n;
+    }
+    close(pp[0]);
+    waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "%ld bytes", total);
+    check("a pipe from the child: 100 KB in order, then the end", total == 100000 && same && WIFEXITED(st), note);
+
+    pipe(pp);
+    pid = fork();
+    if (pid == 0) {
+        dup2(pp[1], 1);
+        close(pp[0]);
+        close(pp[1]);
+        char* av[] = { "posixtest", "child-echo", "hello", NULL };
+        char* ev[] = { "BANANA_TEST=yes", NULL };
+        execve(SELF, av, ev);
+        _exit(127);
+    }
+    close(pp[1]);
+    char out[64] = "";
+    size_t got = 0;
+    while (got < sizeof(out) - 1 && (n = read(pp[0], out + got, sizeof(out) - 1 - got)) > 0) got += (size_t)n;
+    out[got] = 0;
+    close(pp[0]);
+    waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "it wrote \"%.40s\", status %#x", out, st);
+    check("execve: the new program gets argv and envp, its stdout is the pipe", !strcmp(out, "hello yes 0\n") && WIFEXITED(st) && WEXITSTATUS(st) == 0, note);
+
+    errno = 0;
+    char* nav[] = { "nothing", NULL };
+    int r = execve("/no/such/program", nav, environ);
+    check("execve of a missing file: ENOENT, and the caller goes on", r == -1 && errno == ENOENT, "");
+
+    pid = fork();
+    if (pid == 0) for (;;) sched_yield();
+    usleep(50000);
+    int none = waitpid(pid, &st, WNOHANG);
+    kill(pid, SIGTERM);
+    w = waitpid(pid, &st, 0);
+    snprintf(note, sizeof(note), "WNOHANG %d, status %#x", none, st);
+    check("kill(child, SIGTERM): it ends by the signal; WNOHANG before: 0", none == 0 && w == pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM, note);
+    errno = 0;
+    check("waitpid with no child left: ECHILD", waitpid(-1, &st, 0) == -1 && errno == ECHILD, "");
+
+    char* sav[] = { "posixtest", "child-exit", "3", NULL };
+    pid = -1;
+    int e = posix_spawn(&pid, SELF, NULL, NULL, sav, environ);
+    w = waitpid(pid, &st, 0);
+    char* bad[] = { "x", NULL };
+    pid_t p2 = 0;
+    int e2 = posix_spawn(&p2, "/no/such/program", NULL, NULL, bad, environ);
+    snprintf(note, sizeof(note), "spawn %d, status %#x, missing: %d", e, st, e2);
+    check("posix_spawn: the program's exit code; a missing one: ENOENT", e == 0 && w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 3 && e2 == ENOENT, note);
+
+    int keep = open("/tmp/pt-cloexec", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    char fdarg[16];
+    snprintf(fdarg, sizeof(fdarg), "%d", keep);
+    char* cav[] = { "posixtest", "child-fd", fdarg, NULL };
+    e = posix_spawn(&pid, SELF, NULL, NULL, cav, environ);
+    w = waitpid(pid, &st, 0);
+    close(keep);
+    unlink("/tmp/pt-cloexec");
+    check("O_CLOEXEC: the descriptor is gone in the program exec started", keep >= 0 && e == 0 && WIFEXITED(st) && WEXITSTATUS(st) == 0, "");
+
+    pid = fork();
+    if (pid == 0) {
+        int ok = setpgid(0, 0) == 0 && getpgrp() == getpid() && getsid(0) == getsid(getppid());
+        _exit(ok ? 0 : 1);
+    }
+    waitpid(pid, &st, 0);
+    check("setpgid(0, 0) in the child: its own group, the same session", WIFEXITED(st) && WEXITSTATUS(st) == 0, "");
+
+    /* 20 children at once, each a pipe's writer: every one is waited for */
+    int fds[20];
+    pid_t kids[20];
+    int made = 0;
+    for (int i = 0; i < 20; i++) {
+        int q[2];
+        if (pipe(q)) break;
+        pid_t k = fork();
+        if (k == 0) { close(q[0]); char c = (char)('A' + i); write(q[1], &c, 1); _exit(i); }
+        close(q[1]);
+        if (k < 0) { close(q[0]); break; }
+        fds[made] = q[0];
+        kids[made++] = k;
+    }
+    int good = made == 20;
+    for (int i = 0; i < made; i++) {
+        char c = 0;
+        if (read(fds[i], &c, 1) != 1 || c != 'A' + i) good = 0;
+        close(fds[i]);
+        if (waitpid(kids[i], &st, 0) != kids[i] || WEXITSTATUS(st) != i) good = 0;
+    }
+    snprintf(note, sizeof(note), "%d made", made);
+    check("20 children at once, each through its own pipe", good, note);
+#else
+    errno = 0;
+    check("fork: not on the 32-bit system (ENOSYS)", fork() == -1 && errno == ENOSYS, "");
+#endif
+}
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
+    if (only && !strncmp(only, "child-", 6)) return child_mode(argc, argv);
     if (!only || !strcmp(only, "mmap")) t_mmap();
     if (!only || !strcmp(only, "threads")) t_threads();
     if (!only || !strcmp(only, "sockets")) t_sockets();
@@ -1181,6 +1351,7 @@ int main(int argc, char** argv) {
     if (!only || !strcmp(only, "files")) t_files();
     if (!only || !strcmp(only, "time")) t_time();
     if (!only || !strcmp(only, "memory")) t_memory();
+    if (!only || !strcmp(only, "proc")) t_proc();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

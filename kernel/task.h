@@ -109,6 +109,9 @@ struct tlb_tag;
 void task_set_user(uintptr_t cr3, const struct tlb_tag* tag, uintptr_t rsp0);
 /* the calling task's FS base from now on (an app thread's TLS; 64-bit) */
 void task_set_fs(uintptr_t base);
+uintptr_t task_get_fs(void);              /* (fork: the calling thread's, for its child) */
+/* the calling task's current folder (kernel/fs.c), its own */
+int* task_cwd_slot(void);
 
 /* 1 once the scheduler runs (task_init): tasks may sleep */
 int  task_ready(void);

@@ -51,6 +51,12 @@
 static void fpu_init(void) { fpu_cpu_init(); }
 
 void kernel_main(uint32_t magic, uint32_t mb_info) {
+#ifdef __x86_64__
+    /* the kernel's own writes obey read-only pages too (CR0.WP): a write into
+     * a page a fork shares faults, and gets its copy (kernel/uspace.c) - the
+     * same for the UEFI loader's way in; the other cores copy this CR0 */
+    { uintptr_t cr0; __asm__ volatile("mov %%cr0, %0" : "=r"(cr0)); __asm__ volatile("mov %0, %%cr0" :: "r"(cr0 | 0x10000)); }
+#endif
     /* Install exception handlers before anything else: a fault before
      * this point is unrecoverable anyway, but once the IDT is live, any
      * CPU exception paints a readable panic screen instead of silently

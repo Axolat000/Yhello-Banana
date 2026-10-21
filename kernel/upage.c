@@ -12,6 +12,7 @@ typedef struct pchunk {
     uintptr_t      base;
     uint32_t       npages;               /* 512 (2 MiB), or fewer when the heap had no 2 MiB in one piece */
     uint64_t       used[PER / 64];
+    uint16_t       extra[PER];           /* references past the first (pages a fork shares) */
     uint32_t       nused;
     int            high;                 /* from hmem (else the kernel heap) */
     struct pchunk* next;
@@ -96,6 +97,37 @@ static void* alloc(int reserve) {
 void* upage_alloc(void) { return alloc(0); }
 void* upage_alloc_reserve(void) { return alloc(1); }
 
+/* the chunk holding page a and its index there (lock held): NULL if none */
+static pchunk_t* chunk_of(uintptr_t a, uint32_t* idx) {
+    for (pchunk_t* c = g_chunks; c; c = c->next) {
+        if (a < c->base || a >= c->base + (uintptr_t)c->npages * 4096u) continue;
+        uint32_t i = (uint32_t)((a - c->base) / 4096u);
+        if (!(c->used[i / 64] & (1ull << (i % 64)))) return NULL;
+        *idx = i;
+        return c;
+    }
+    return NULL;
+}
+
+int upage_ref(void* p) {
+    uint32_t i;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    pchunk_t* c = chunk_of((uintptr_t)p, &i);
+    int ok = c && c->extra[i] < 0xFFFF;
+    if (ok) c->extra[i]++;
+    spin_unlock_irq(&g_lock, f);
+    return ok ? 0 : -1;
+}
+
+uint32_t upage_refs(void* p) {
+    uint32_t i, n = 0;
+    uintptr_t f = spin_lock_irq(&g_lock);
+    pchunk_t* c = chunk_of((uintptr_t)p, &i);
+    if (c) n = 1u + c->extra[i];
+    spin_unlock_irq(&g_lock, f);
+    return n;
+}
+
 void upage_free(void* p) {
     uintptr_t a = (uintptr_t)p;
     pchunk_t* drop = NULL;
@@ -105,6 +137,7 @@ void upage_free(void* p) {
         if (a < c->base || a >= c->base + (uintptr_t)c->npages * 4096u) continue;
         uint32_t i = (uint32_t)((a - c->base) / 4096u);
         if (!(c->used[i / 64] & (1ull << (i % 64)))) break;      /* (not handed out: ignored) */
+        if (c->extra[i]) { c->extra[i]--; break; }          /* (still another's: only one reference goes) */
         c->used[i / 64] &= ~(1ull << (i % 64));
         c->nused--;
         g_used -= 4096;

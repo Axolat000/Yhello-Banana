@@ -152,7 +152,7 @@ static uchunk_t* new_chunk(umem_t* m, uint32_t n) {
     memset(mem, 0, (size_t)n * BLOCK);        /* nothing of the kernel's (or another app's) left in it */
     /* (if the tables cannot be made, the block is still the app's - given
      * back when it exits - but never handed out) */
-    if (uspace_map(m->us, (uintptr_t)mem, n * BLOCK) < 0) {
+    if (m->us && uspace_map(m->us, (uintptr_t)mem, n * BLOCK) < 0) {     /* (none: the kernel's own scratch memory) */
         c->free_pages = 0;
         c->broken = 1;
         return NULL;

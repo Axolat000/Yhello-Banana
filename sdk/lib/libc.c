@@ -565,7 +565,7 @@ static int has_v17(void) {
 }
 
 pid_t getpid(void) { return has_v17() ? __banana->app_id() : 1; }
-pid_t getppid(void) { return 1; }
+/* (getppid: proc.c) */
 /* a thread's id: the app's and the thread's, so no two threads share one */
 pid_t gettid(void) { return getpid() * 1000 + (__banana->version >= 3 ? __banana->thread_id() : 0); }
 int getpagesize(void) { return 4096; }

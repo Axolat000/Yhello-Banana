@@ -22,6 +22,7 @@
 #define P_KEPT    0x200ull              /* (a free bit) a mapped page made inaccessible: PROT_NONE */
 #define P_ZSW     0x400ull              /* (a free bit) not present: compressed, the entry number in the address bits (kernel/zswap.c) */
 #define P_DEV     0x800ull              /* (a free bit) a device page (uvm_map_frames): not the app's memory */
+#define P_COW     (1ull << 52)          /* (a free bit) shared with a fork's other process: copied on the first write */
 #define ADDR_MASK 0x000FFFFFFFFFF000ull
 #define GIBS      512                   /* 1 GiB slots of PML4[0]: the first 512 GiB */
 #define UVM_PML4  ((int)(UVM_BASE >> 39))
@@ -279,6 +280,13 @@ static uint64_t prot_bits(int prot) {
     return P_PRESENT | P_USER | ((prot & UVM_WRITE) ? P_WRITE : 0);
 }
 
+/* the same for a page a fork shares (cow): never writable - the first
+ * write copies it (uvm_fault) */
+static uint64_t pte_bits(int prot, uint64_t cow) {
+    uint64_t b = prot_bits(prot);
+    return cow ? (b & ~P_WRITE) | P_COW : b;
+}
+
 /* the next level's table under entry *e (made if make): NULL if none */
 static uint64_t* vm_next(uint64_t* e, int make) {
     if (!(*e & P_PRESENT)) {
@@ -524,7 +532,7 @@ int uvm_protect(uspace_t* us, uintptr_t addr, uint64_t len, int prot) {
             uint64_t next = a + 4096;
             uint64_t* pte = vm_pte(us, a, 0, &next);
             if (pte && (*pte & (P_PRESENT | P_KEPT))) {
-                *pte = (*pte & ADDR_MASK) | prot_bits(prot);
+                *pte = (*pte & ADDR_MASK) | pte_bits(prot, *pte & P_COW);
                 if (cur) invlpg(a);
             }
             a = next;
@@ -567,7 +575,24 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* o
     if (prot && (!(err & 2) || (prot & UVM_WRITE))) {
         uint64_t* pte = vm_pte(us, addr & ~4095ull, 1, NULL);
         if (!pte && on_disk) ok = 3;                       /* (no memory for its page table: make some) */
-        if (pte && (*pte & P_PRESENT)) {
+        if (pte && (*pte & P_PRESENT) && (err & 2) && (*pte & P_COW)) {
+            /* a page a fork shares, written: its own copy now - or, the last
+             * process holding it, simply its own */
+            void* old = (void*)(uintptr_t)(*pte & ADDR_MASK);
+            if (upage_refs(old) <= 1) {
+                *pte = (uint64_t)(uintptr_t)old | prot_bits(prot);
+                ok = 1;
+            } else {
+                void* pg = upage_alloc();
+                if (pg) {
+                    memcpy(pg, old, 4096);
+                    *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
+                    upage_free(old);                        /* (one reference less) */
+                    ok = 1;
+                } else if (on_disk) ok = 3;
+            }
+            invlpg(addr);
+        } else if (pte && (*pte & P_PRESENT)) {
             invlpg(addr);                                  /* another thread put it there first */
             ok = 1;
         } else if (pte && (*pte & P_ZSW)) {
@@ -670,6 +695,73 @@ int uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) {
     return 1;
 }
 
+
+/* ── fork: the region shared copy-on-write; writing into another space ── */
+
+int uvm_fork(uspace_t* from, uspace_t* to, uintptr_t* zsw) {
+    if (!from || !to || to->nvma) return -1;
+    int rc = 0;
+    uintptr_t f = spin_lock_irq(&from->vm_lock);
+    if (vma_room(to, from->nvma)) rc = -1;
+    for (int i = 0; !rc && i < from->nvma; i++) {
+        uvma_t v = from->vma[i];
+        if (v.prot & UVM_DEV) continue;                  /* (a device's pages - a GPU buffer - stay the parent's) */
+        to->vma[to->nvma++] = v;
+        for (uint64_t a = v.start; a < v.end; ) {
+            uint64_t next = a + 4096;
+            uint64_t* pte = vm_pte(from, a, 0, &next);
+            if (next > v.end) next = v.end;
+            if (!pte || !*pte) { a = next; continue; }
+            if (*pte & P_ZSW) { *zsw = (uintptr_t)a; rc = -2; break; }      /* (compressed: in first) */
+            if (!(*pte & (P_PRESENT | P_KEPT)) || (*pte & P_DEV)) { a = next; continue; }
+            void* frame = (void*)(uintptr_t)(*pte & ADDR_MASK);
+            uint64_t* tpte = vm_pte(to, a, 1, NULL);
+            if (!tpte || upage_ref(frame) != 0) { rc = -1; break; }
+            uint64_t e = (*pte & P_PRESENT) ? ((*pte & ~P_WRITE) | P_COW) : (*pte | P_COW);
+            *pte = e;
+            *tpte = e & ~P_ACCESSED;
+            to->vm_pages++;
+            a = next;
+        }
+    }
+    spin_unlock_irq(&from->vm_lock, f);
+    shootdown(from);                                     /* (its pages read-only now, on every core) */
+    if (rc) {
+        vm_release(to, UVM_BASE, UVM_BASE + UVM_SIZE);   /* (the references it took go back) */
+        to->nvma = 0;
+    }
+    return rc;
+}
+
+int uvm_write(uspace_t* us, uintptr_t va, const void* src, uint64_t n) {
+    if (!us || !n || !in_region(va, n)) return -1;
+    const uint8_t* s = (const uint8_t*)src;
+    while (n) {
+        uint64_t page = va & ~4095ull, off = va - page;
+        uint64_t take = 4096 - off < n ? 4096 - off : n;
+        uintptr_t f = spin_lock_irq(&us->vm_lock);
+        int i = vma_at(us, page);
+        uint64_t* pte = i >= 0 && !(us->vma[i].prot & UVM_DEV) ? vm_pte(us, page, 1, NULL) : NULL;
+        uint8_t* frame = NULL;
+        if (pte && (*pte & (P_PRESENT | P_KEPT)) && !(*pte & P_COW)) frame = (uint8_t*)(uintptr_t)(*pte & ADDR_MASK);
+        else if (pte && !*pte) {
+            frame = (uint8_t*)upage_alloc();
+            if (frame) {
+                memset(frame, 0, 4096);
+                int prot = us->vma[i].prot;
+                *pte = (uint64_t)(uintptr_t)frame | (prot & (UVM_READ | UVM_WRITE | UVM_EXEC) ? prot_bits(prot) : P_KEPT);
+                us->vm_pages++;
+            }
+        }
+        if (frame) memcpy(frame + off, s, take);
+        spin_unlock_irq(&us->vm_lock, f);
+        if (!frame) return -1;                           /* (a page in use otherwise: only for fresh spaces) */
+        va += take;
+        s += take;
+        n -= take;
+    }
+    return 0;
+}
 /* ── compressing pages away (kernel/zswap.c) ───────────────────────────
  * A batch of pages is taken out of the app's tables (PENDING entries that
  * still hold them), the other cores forget them, each is compressed and
@@ -694,7 +786,7 @@ static uint32_t page_out(uspace_t* us, int force, uint32_t max, uint8_t* buf, ui
             while (a < end && n < OUT_BATCH && done + (uint32_t)n < max && seen++ < 1024) {   /* (the lock: not long) */
                 uint64_t next = a + 4096;
                 uint64_t* pte = vm_pte(us, a, 0, &next);
-                if (pte && (*pte & P_PRESENT) && (*pte & P_USER) && !(*pte & P_DEV)) {
+                if (pte && (*pte & P_PRESENT) && (*pte & P_USER) && !(*pte & (P_DEV | P_COW))) {   /* (shared pages stay) */
                     if (!force && (*pte & P_ACCESSED)) {
                         *pte &= ~P_ACCESSED;              /* used lately: its turn comes if it stays unused */
                         cleared = 1;
@@ -830,5 +922,7 @@ int       uvm_unmap_frames(uspace_t* us, uintptr_t addr, uint32_t n, uint64_t fr
 uint32_t  uvm_page_out_all(int force, uint32_t max) { (void)force; (void)max; return 0; }
 uint64_t  uvm_compressed(uspace_t* us) { (void)us; return 0; }
 int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n) { (void)us; (void)m; (void)a; (void)n; return 1; }
+int       uvm_fork(uspace_t* from, uspace_t* to, uintptr_t* zsw) { (void)from; (void)to; (void)zsw; return -1; }
+int       uvm_write(uspace_t* us, uintptr_t va, const void* src, uint64_t n) { (void)us; (void)va; (void)src; (void)n; return -1; }
 
 #endif

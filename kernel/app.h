@@ -20,7 +20,7 @@
  * released when it exits.
  */
 
-#define APP_MAX 32      /* apps running at once */
+#define APP_MAX 96      /* processes (apps) at once, zombies included */
 
 /* runs the app at path (an ELF file) in the calling task - a shell's -
  * and returns its exit code once it ends; -1 with err if it cannot start */

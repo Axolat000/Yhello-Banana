@@ -69,4 +69,14 @@ uint32_t  uvm_page_out_all(int force, uint32_t max);
  * where a fault of its own must not happen (a signal frame) */
 int       uvm_user_writable(uspace_t* us, umem_t* m, uintptr_t a, uint64_t n);
 
+/* fork: to (a new space, nothing mapped) gets from's ranges, every page of
+ * them shared copy-on-write (read-only in both until written: uvm_fault
+ * copies it then). 0; -1 out of memory (to emptied again); -2: the page at
+ * *zsw is compressed away - bring it in (a fault), then call this again */
+int       uvm_fork(uspace_t* from, uspace_t* to, uintptr_t* zsw);
+/* copies n bytes to va in space us, which need not be the running one (a
+ * program loaded into a new space): its pages are given now. 0, or -1 (not
+ * mapped, no memory) */
+int       uvm_write(uspace_t* us, uintptr_t va, const void* src, uint64_t n);
+
 #endif

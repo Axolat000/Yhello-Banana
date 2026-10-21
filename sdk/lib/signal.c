@@ -164,9 +164,8 @@ int raise(int sig) {
     return local_raise(sig);
 }
 
-int kill(pid_t pid, int sig) {
-    if (sig < 0 || sig >= NSIG) { errno = EINVAL; return -1; }
-    if (pid != 0 && pid != -1 && pid != getpid()) { errno = ESRCH; return -1; }  /* (other apps: not ours) */
+/* a signal to the calling process (proc.c: kill, for its own pid) */
+int __kill_self(int sig) {
     if (!sig) return 0;
 #ifdef __x86_64__
     if (has_sig() && __banana->sig_send(-1, sig) == 0) return 0;
@@ -174,7 +173,6 @@ int kill(pid_t pid, int sig) {
     return local_raise(sig);
 }
 
-int killpg(pid_t pgrp, int sig) { return kill(pgrp, sig); }
 int siginterrupt(int sig, int flag) { (void)sig; (void)flag; return 0; }
 
 void psignal(int sig, const char* s) {

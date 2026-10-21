@@ -138,9 +138,36 @@ typedef struct {
     uint64_t  sig_pending;     /* sent to the app: the first thread not blocking one takes it */
     uintptr_t sig_entry;       /* the SDK's entry(sig, info, uc) */
     uintptr_t sigret_stub;     /* ... returns there: sigreturn */
+    /* Unix processes (version 26): its pid is seq; its parent's (0: started by
+     * the system, nobody waits for it), its process group and session. Ended
+     * while its parent lives: a zombie - nothing left but its status, until
+     * the parent waits for it. */
+    int       ppid, pgid, sid;
+    int       zombie;
+    int       wstatus;         /* as waitpid gives it */
+    int       term_sig;        /* the signal that ended it (0: exit) */
+    int       waiting;         /* in waitpid: the terminal's keys are not for it */
+    void*     fork_frame;      /* a fork's child: the registers it goes on with (sysframe_t) */
+    uintptr_t fork_fs;         /* ... and its thread pointer */
+    int       exec_next;       /* execve: the new program is ready - run() starts it */
+    uspace_t* old_us;          /* ... the old one's space and memory, freed then */
+    umem_t*   old_mem;
 } app_proc_t;
 
 static app_proc_t g_procs[APP_MAX];
+/* the environment a program the system starts gets (execve passes its own) */
+static const char* const g_default_env[] = {
+    "HOME=/home/banana", "USER=banana", "LOGNAME=banana", "PATH=/bin:/usr/bin:/apps",
+    "LANG=C.UTF-8", "SHELL=/bin/sh", "TMPDIR=/tmp", "TERM=banana", NULL,
+};
+static int g_seq = 100;                 /* the last pid given (an app slot's seq) */
+#ifdef __x86_64__
+static void* g_sysframe[TASK_MAX];      /* the registers each task's system call came in with (fork) */
+#endif
+#ifdef __x86_64__
+static uint8_t* stack_map(app_proc_t* p, size_t size, size_t guard);
+static void stack_unmap(app_proc_t* p, uint8_t* stack, size_t size, size_t guard);
+#endif
 static banana_api_t g_api;
 static sigstate_t* sig_state(app_proc_t* p);     /* (the calling thread's signals) */
 
@@ -229,16 +256,19 @@ static void breathe(app_proc_t* p, int force) {
     uint32_t now = timer_ms();
     if (p->exit_req) leave(p, p->exit_req_code);
     /* the 32-bit kernel has no guard pages: a smashed canary stops the app */
+#ifndef __x86_64__
     if (!cur_thread(p) && *(volatile uint32_t*)p->stack != STACK_CANARY) {
         ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: stack overflow - it used more than %u KiB of stack "
                   "(big local arrays? malloc them)", p->name, APP_STACK >> 10);
+        p->term_sig = 11;
         *(volatile uint32_t*)p->stack = STACK_CANARY;
         leave(p, 139);
     }
+#endif
     if (!force && now - p->last_breath < 20) return;
     p->last_breath = now;
-    if (appwin_kill_requested(p->id) || p->kill_req) leave(p, 137);
-    if (focused(p)) {
+    if (appwin_kill_requested(p->id) || p->kill_req) { p->term_sig = 9; leave(p, 137); }
+    if (focused(p) && !p->waiting) {                /* (a shell waiting for its child: the keys are the child's) */
         char c = keyboard_try_getchar();
         if (c == 3) {
             p->interrupted = 1;
@@ -248,7 +278,7 @@ static void breathe(app_proc_t* p, int force) {
             else if (p->sig_disp[2] == BANANA_SIG_IGNORE) {}
             else
 #endif
-            if (!p->handles_int) { terminal_writeln("^C"); leave(p, 130); }
+            if (!p->handles_int) { terminal_writeln("^C"); p->term_sig = 2; leave(p, 130); }
         } else if (c) {
             key_push(p, (unsigned char)c);
         }
@@ -278,12 +308,12 @@ static void* a_realloc(void* ptr, unsigned long size) {
 
 /* memory of app `owner` (its window pictures: kernel/appwin.c) */
 void* app_mem_alloc(int owner, size_t size) {
-    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used) return NULL;
+    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used || g_procs[owner].zombie) return NULL;
     return umem_alloc(g_procs[owner].mem, size);
 }
 
 void app_mem_free(int owner, void* ptr) {
-    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used) return;
+    if (owner < 0 || owner >= APP_MAX || !g_procs[owner].used || g_procs[owner].zombie) return;
     umem_free(g_procs[owner].mem, ptr);
 }
 
@@ -354,6 +384,14 @@ static int a_vm_protect(void* addr, unsigned long len, int prot) {
 int app_vm_fault(uintptr_t addr, uint32_t err, int from_user, int ints_on) {
     app_proc_t* p = cur();
     if (!p || !p->us) return 0;
+#ifdef __x86_64__
+    {   /* the kernel's tables loaded (not the app's): a page put in its tables
+         * would not help - the access would fault again, forever */
+        uintptr_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        if ((cr3 & ~(uintptr_t)0xFFF & 0x000FFFFFFFFFF000ull) != uspace_cr3(p->us)) return 0;
+    }
+#endif
     /* (it gives up - out of memory - only once 400 rounds in a row freed nothing) */
     for (int idle = 0; idle < 400; ) {
         uint32_t idx = 0;
@@ -1582,7 +1620,11 @@ static int thread_tramp(void* arg) {
 
 /* a thread's stacks back to the app / the kernel */
 static void thread_free(app_proc_t* p, athread_t* t) {
+#ifdef __x86_64__
+    if (!t->own_stack) stack_unmap(p, t->stack, t->stack_size, APP_GUARD);
+#else
     if (!t->own_stack) umem_free_pages(p->mem, t->stack, APP_GUARD);
+#endif
 #ifdef __x86_64__
     kstack_free(t->kstack);
 #endif
@@ -1638,7 +1680,11 @@ static int thread_new(int (*fn)(void*), void* arg, void* stack, unsigned long si
         t->own_stack = 1;
     } else {
         t->stack_size = size ? (size + 4095) & ~4095ul : APP_STACK;
+#ifdef __x86_64__
+        t->stack = stack_map(p, t->stack_size, APP_GUARD);  /* (its mmap region: a fork copies it) */
+#else
         t->stack = (uint8_t*)umem_alloc_pages(p->mem, t->stack_size, APP_GUARD);
+#endif
     }
 #ifdef __x86_64__
     t->kstack = kstack_new();
@@ -2083,6 +2129,13 @@ static void spec_init(void) {
     SPEC(fd_dup, "iii", 0);
     SPEC(fd_fcntl, "iii", 0);
     SPEC(fd_info, "io", sizeof(banana_fdinfo_t));
+    SPEC(proc_fork, "", 0);
+    SPEC(proc_exec, "sii", 0);           /* argv, envp: checked in it */
+    SPEC(proc_wait, "iIio", 144);        /* (struct rusage) */
+    SPEC(proc_ids, "io", 16);
+    SPEC(proc_setpgid, "ii", 0);
+    SPEC(proc_setsid, "", 0);
+    SPEC(proc_kill, "ii", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2284,7 +2337,10 @@ static void sig_check(app_proc_t* p, sysframe_t* r) {
         if (d == BANANA_SIG_IGNORE) continue;
         /* the default: these are ignored, the rest end the app */
         if (sig == 17 || sig == 18 || sig == 23 || sig == 28) continue;   /* CHLD CONT URG WINCH */
-        ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: ended by signal %d", p->name, sig);
+        if (sig >= 19 && sig <= 22) continue;          /* STOP TSTP TTIN TTOU: no job control yet */
+        if (sig != 1 && sig != 2 && sig != 9 && sig != 13 && sig != 15)   /* (HUP INT KILL PIPE TERM: asked for, no crash - a shell says so) */
+            ksnprintf(p->crash_msg, sizeof(p->crash_msg), "%s: ended by signal %d", p->name, sig);
+        p->term_sig = sig;
         leave(p, 128 + sig);
     }
 }
@@ -2449,6 +2505,7 @@ void app_syscall(sysframe_t* r) {
         return;
     }
     if (slot >= API_SLOTS || !g_spec[slot].args) bad_call(p, slot, "an unknown system call");
+    { int me = task_current_pid(); if (me >= 0 && me < TASK_MAX) g_sysframe[me] = r; }    /* (fork copies it) */
     uint64_t a[SYS_ARGS];
     if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
     sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
@@ -2458,12 +2515,17 @@ void app_syscall(sysframe_t* r) {
 }
 
 /* the call table an app gets, in its memory: the system's, every function
- * a stub; the font and the strings copied; the return stub after them */
+ * a stub; the font and the strings copied; the return stub after them -
+ * built here and copied into its mmap region (with the rest of its memory,
+ * a fork copies it: the same address in the child) */
 static int make_uapi(app_proc_t* p) {
     size_t tab = (sizeof(banana_api_t) + 15) & ~(size_t)15;
     size_t stubs = API_SLOTS * STUB + 2 * STUB;     /* (+ the return and sigreturn stubs) */
-    uint8_t* m = (uint8_t*)umem_alloc_pages(p->mem, tab + stubs + sizeof(font8x8_basic) + 64, 0);
-    if (!m) return -1;
+    size_t total = tab + stubs + sizeof(font8x8_basic) + 64;
+    uint8_t* m = (uint8_t*)kzalloc(total);
+    uintptr_t at = m ? uvm_map(p->us, p->mem, 0, total, UVM_READ | UVM_WRITE | UVM_EXEC, 0) : 0;
+    if (!at) { kfree(m); return -1; }
+#define RT(x) (at + (uintptr_t)((const uint8_t*)(x) - m))     /* where it is in the app */
     banana_api_t* ua = (banana_api_t*)m;
     memcpy(ua, &g_api, sizeof(g_api));
     void** slot = (void**)ua;
@@ -2484,9 +2546,9 @@ static int make_uapi(app_proc_t* p) {
             st[5] = 0xCD; st[6] = SYSCALL_VECTOR;       /* int 0x80 */
             st[7] = 0xC3;                               /* ret */
         }
-        if (g_spec[k].args) slot[k] = st;
+        if (g_spec[k].args) slot[k] = (void*)RT(st);
     }
-    p->ret_stub = (uintptr_t)(m + tab) + SYS_RETURN * STUB;
+    p->ret_stub = RT(m + tab) + SYS_RETURN * STUB;
     /* A C function returns its int in eax. Preserve it as the syscall's
      * first argument BEFORE loading the syscall number into eax. Ordinary
      * call stubs leave rdi alone; it is not the function's return value. */
@@ -2507,19 +2569,430 @@ static int make_uapi(app_proc_t* p) {
     if (sc) { st[5] = 0x0F; st[6] = 0x05; }
     else { st[5] = 0xCD; st[6] = SYSCALL_VECTOR; }
     st[7] = 0x0F; st[8] = 0x0B;                         /* ud2: does not return here */
-    p->sigret_stub = (uintptr_t)st;
+    p->sigret_stub = RT(st);
     uint8_t* font = m + tab + stubs;
     memcpy(font, font8x8_basic, sizeof(font8x8_basic));
-    ua->font8x8 = font;
+    ua->font8x8 = (__typeof__(ua->font8x8))RT(font);
     char* str = (char*)font + sizeof(font8x8_basic);
     kstrlcpy(str, g_api.arch, 16);
-    ua->arch = str;
+    ua->arch = (const char*)RT(str);
     kstrlcpy(str + 16, g_api.os_version, 16);
-    ua->os_version = str + 16;
-    p->uapi = ua;
+    ua->os_version = (const char*)RT(str + 16);
+#undef RT
+    int rc = uvm_write(p->us, at, m, total);
+    kfree(m);
+    if (rc) return -1;
+    p->uapi = (banana_api_t*)at;
     return 0;
 }
 #endif
+
+/* ── Unix processes (version 26) ───────────────────────────────────────
+ * fork, execve, waitpid, process groups and sessions, kill. A process is an
+ * app slot: its pid is seq. fork (64-bit) gives the child a new address
+ * space sharing every page copy-on-write (kernel/uspace.c), the same
+ * descriptors, a task of its own that goes back to ring 3 from the same
+ * system call with 0. execve loads the new program into a new space while
+ * the old one runs the call; run() then frees the old one and starts it.
+ * A process that ends while its parent lives stays as a zombie - its exit
+ * status - until the parent waits for it. */
+
+#define WNOHANG_F 1
+
+
+static void teardown(app_proc_t* p);
+static void stop_threads(app_proc_t* p);
+#ifdef __x86_64__
+static int  load_program(app_proc_t* p, const uint8_t* f, uint32_t size, int argc, char** argv,
+                         char** envp, char* err, int ecap);
+static uint64_t elf_span(const uint8_t* f, uint32_t size);
+#endif
+
+static app_proc_t* proc_by_pid(int pid) {
+    for (int i = 0; i < APP_MAX; i++)
+        if (g_procs[i].used && !g_procs[i].zombie && g_procs[i].seq == pid) return &g_procs[i];
+    return NULL;
+}
+
+/* every task of p looks again (a wait, a sleep it is in) */
+static void proc_wake(app_proc_t* p) {
+    if (p->pid >= 0) task_wake(p->pid);
+    for (int t = 0; t < APP_THREADS; t++)
+        if (p->threads[t].used && !p->threads[t].done && p->threads[t].pid >= 0) task_wake(p->threads[t].pid);
+}
+
+static void proc_signal(app_proc_t* t, int sig) {
+    if (sig < 1 || sig > 64) return;
+#ifdef __x86_64__
+    t->sig_pending |= 1ull << (sig - 1);
+#else
+    if (sig == 9 || sig == 15 || sig == 2) t->kill_req = 1;   /* (no signals here: the ones that end it) */
+#endif
+    proc_wake(t);
+}
+
+/* the process ended: what it held goes back; with a parent that may wait
+ * for it, it stays as a zombie (its status) and the parent gets SIGCHLD */
+static void proc_finish(app_proc_t* p) {
+    int sig = p->term_sig;
+    p->wstatus = sig ? (sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
+    app_proc_t* parent = p->ppid ? proc_by_pid(p->ppid) : NULL;
+    for (int i = 0; i < APP_MAX; i++) {                 /* its children: nobody's now */
+        app_proc_t* c = &g_procs[i];
+        if (!c->used || c == p || c->ppid != p->seq) continue;
+        if (c->zombie) { c->zombie = 0; c->used = 0; }
+        else c->ppid = 0;
+    }
+    teardown(p);
+    if (parent && parent->sig_disp[17] != BANANA_SIG_IGNORE) {
+        p->zombie = 1;                                  /* (used stays: the slot is its status) */
+        proc_signal(parent, 17);                        /* SIGCHLD - and a waitpid wakes */
+    } else {
+        p->used = 0;
+    }
+}
+
+#ifdef __x86_64__
+/* the registers of the system call a fork's child goes on from (on top of
+ * its kernel stack), then ring 3 - until it ends (app_leave) */
+int app_resume_user(void* frame, uintptr_t* saved_sp);
+static int resume_user(app_proc_t* p) {
+    sysframe_t* fr = (sysframe_t*)((kstack_top(p->kstack) - sizeof(sysframe_t)) & ~(uintptr_t)15);
+    memcpy(fr, p->fork_frame, sizeof(sysframe_t));
+    kfree(p->fork_frame);
+    p->fork_frame = NULL;
+    task_set_user(uspace_cr3(p->us), uspace_tag(p->us), kstack_top(p->kstack));
+    task_set_fs(p->fork_fs);
+    int rc = app_resume_user(fr, &p->saved_sp);
+    task_set_user(0, NULL, 0);
+    task_set_fs(0);
+    return rc;
+}
+
+/* execve done: the old program's space goes (the kernel's tables are loaded) */
+static void exec_switch(app_proc_t* p) {
+    p->exec_next = 0;
+    gpu_virgl_release(p->id + 1);
+    gem_release(p->id + 1);
+    appwin_close_owner(p->id);              /* (their pictures were the old program's memory) */
+    webview_close_owner(p->id);
+    umem_destroy(p->old_mem);
+    uspace_destroy(p->old_us);
+    p->old_mem = NULL;
+    p->old_us = NULL;
+}
+#endif
+
+static int run(app_proc_t* p);
+
+#ifdef __x86_64__
+static void fork_entry(void) {
+    app_proc_t* p = cur();
+    if (!p) return;
+    if (p->has_term) terminal_vt_set_active(p->vt);
+    else task_set_background();
+    run(p);
+    proc_finish(p);
+}
+#endif
+
+static int a_proc_fork(void) {
+#ifdef __x86_64__
+    app_proc_t* p = cur();
+    int me = task_current_pid();
+    sysframe_t* r = me >= 0 && me < TASK_MAX ? (sysframe_t*)g_sysframe[me] : NULL;
+    if (!p || !r || !p->us) return -38;
+    app_proc_t* c = NULL;
+    for (int i = 0; i < APP_MAX; i++) if (!g_procs[i].used) { c = &g_procs[i]; c->id = i; break; }
+    if (!c) return -11;                                  /* EAGAIN: too many processes */
+    int id = c->id;
+    memset(c, 0, sizeof(*c));
+    c->id = id;
+    c->used = 1;
+    c->zombie = 1;                                      /* (being made: nobody's yet - waits, lists skip it) */
+    c->pid = -1;
+    c->seq = ++g_seq;
+    kstrlcpy(c->name, p->name, sizeof(c->name));
+    c->entry = p->entry; c->base = p->base; c->code_lo = p->code_lo; c->code_hi = p->code_hi;
+    c->stack = p->stack; c->guard = p->guard; c->guarded = 1;
+    c->argc = p->argc; c->argv = p->argv;
+    c->uapi = p->uapi; c->ret_stub = p->ret_stub; c->sigret_stub = p->sigret_stub;
+    c->vt = p->vt; c->has_term = p->has_term; c->handles_int = p->handles_int;
+    c->own_task = 1;
+    memcpy(c->sig_disp, p->sig_disp, sizeof(c->sig_disp));
+    c->sig_onstack = p->sig_onstack;
+    c->sig_entry = p->sig_entry;
+    sigstate_t* st = sig_state(p);
+    c->msig.blocked = st->blocked;
+    c->msig.alt_sp = st->alt_sp; c->msig.alt_size = st->alt_size; c->msig.alt_flags = st->alt_flags;
+    int rc = -12;
+    c->us = uspace_create();
+    c->mem = c->us ? umem_create(c->us) : NULL;
+    c->kstack = kstack_new();
+    c->fork_frame = kmalloc(sizeof(sysframe_t));
+    if (c->us && c->mem && c->kstack && c->fork_frame) {
+        for (int tries = 0; tries < 100000; tries++) {
+            uintptr_t zsw = 0;
+            rc = uvm_fork(p->us, c->us, &zsw);
+            if (rc != -2) break;
+            if (!app_vm_fault(zsw, 0, 1, 1)) { rc = -12; break; }    /* (compressed away: back in, then again) */
+        }
+    }
+    int pid = rc == 0 ? task_create(c->name, fork_entry) : -1;
+    if (pid < 0) {
+        teardown(c);
+        kfree(c->fork_frame);
+        c->fork_frame = NULL;
+        c->used = 0;
+        c->zombie = 0;
+        return rc ? -12 : -11;
+    }
+    for (int i = 0; i < APP_FDS; i++) {
+        if (!p->fdt[i]) continue;
+        c->fdt[i] = kfile_ref(p->fdt[i]);
+        c->cloexec[i] = p->cloexec[i];
+    }
+    memcpy(c->fork_frame, r, sizeof(sysframe_t));
+    ((sysframe_t*)c->fork_frame)->rax = 0;             /* fork() is 0 in the child */
+    ((sysframe_t*)c->fork_frame)->int_no = 0x80;
+    c->fork_fs = task_get_fs();
+    c->ppid = p->seq;
+    c->pgid = p->pgid;
+    c->sid = p->sid;
+    c->last_breath = timer_ms();
+    c->pid = pid;
+    pid_set(pid, c->id, -1);
+    c->zombie = 0;                                      /* it runs once we yield */
+    return c->seq;
+#else
+    return -38;                                          /* ENOSYS: the 32-bit kernel has no address spaces */
+#endif
+}
+
+#ifdef __x86_64__
+/* a NULL-ended array of strings from the app (argv, envp) into kernel memory:
+ * *out (one block: the pointers then the strings), *n; 0 or -errno */
+static int copy_strv(char* const* v, char*** out, int* n) {
+    *out = NULL;
+    *n = 0;
+    int count = 0;
+    uint64_t bytes = 0;
+    for (; v; count++) {
+        if (count > 65536 || !uok(&v[count], sizeof(char*))) return -14;
+        const char* s = v[count];
+        if (!s) break;
+        if (!ustr(s)) return -14;
+        bytes += strlen(s) + 1;
+        if (bytes > (2u << 20)) return -7;              /* E2BIG */
+    }
+    char** blk = (char**)kmalloc((size_t)(count + 1) * sizeof(char*) + (size_t)bytes + 1);
+    if (!blk) return -12;
+    char* s = (char*)(blk + count + 1);
+    for (int i = 0; i < count; i++) {
+        size_t l = strlen(v[i]) + 1;
+        memcpy(s, v[i], l);
+        blk[i] = s;
+        s += l;
+    }
+    blk[count] = NULL;
+    *out = blk;
+    *n = count;
+    return 0;
+}
+#endif
+
+static int a_proc_exec(const char* path, char* const* argv, char* const* envp) {
+#ifdef __x86_64__
+    app_proc_t* p = cur();
+    if (!p || !path) return -14;
+    if (cur_thread(p)) return -38;                      /* (from its main thread only, for now) */
+    char** kargv = NULL;
+    char** kenv = NULL;
+    int argc = 0, envc = 0, rc = copy_strv(argv, &kargv, &argc);
+    if (!rc) rc = copy_strv(envp, &kenv, &envc);
+    char file[256];
+    kstrlcpy(file, path, sizeof(file));
+    /* #!: the interpreter runs, given the script (up to 4 levels) */
+    for (int depth = 0; !rc; depth++) {
+        int fi = fs_find_file(file);
+        if (fi < 0) { rc = fs_find_dir(file) >= 0 ? -13 : -2; break; }       /* EACCES, ENOENT */
+        fs_file_t* f = fs_get_file(fi);
+        if (!f || !f->content) { rc = -5; break; }
+        const char* c = (const char*)f->content;
+        if (f->size < 2 || c[0] != '#' || c[1] != '!') break;
+        if (depth == 4) { rc = -40; break; }            /* ELOOP */
+        char line[256];
+        uint32_t k = 2, n = 0;
+        while (k < f->size && (c[k] == ' ' || c[k] == '\t')) k++;
+        while (k < f->size && c[k] != '\n' && n < sizeof(line) - 1) line[n++] = c[k++];
+        line[n] = 0;
+        while (n && (line[n - 1] == ' ' || line[n - 1] == '\t' || line[n - 1] == '\r')) line[--n] = 0;
+        char* arg = line;
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
+        if (*arg) { *arg++ = 0; while (*arg == ' ' || *arg == '\t') arg++; }
+        if (!line[0]) { rc = -8; break; }               /* ENOEXEC */
+        /* argv: interpreter [arg] script argv[1..] */
+        char* nv[4];
+        int nn = 0;
+        nv[nn++] = line;
+        if (*arg) nv[nn++] = arg;
+        nv[nn++] = file;
+        int newc = nn + (argc > 1 ? argc - 1 : 0);
+        uint64_t bytes = 0;
+        for (int i = 0; i < nn; i++) bytes += strlen(nv[i]) + 1;
+        for (int i = 1; i < argc; i++) bytes += strlen(kargv[i]) + 1;
+        char** blk = (char**)kmalloc((size_t)(newc + 1) * sizeof(char*) + (size_t)bytes);
+        if (!blk) { rc = -12; break; }
+        char* s = (char*)(blk + newc + 1);
+        for (int i = 0; i < newc; i++) {
+            const char* src = i < nn ? nv[i] : kargv[i - nn + 1];
+            size_t l = strlen(src) + 1;
+            memcpy(s, src, l);
+            blk[i] = s;
+            s += l;
+        }
+        blk[newc] = NULL;
+        kfree(kargv);
+        kargv = blk;
+        argc = newc;
+        kstrlcpy(file, kargv[0], sizeof(file));
+    }
+    if (rc) { kfree(kargv); kfree(kenv); return rc; }
+    int fi = fs_find_file(file);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (!f || elf_span((const uint8_t*)f->content, f->size) == 0) { kfree(kargv); kfree(kenv); return -8; }
+    /* the new program into a new space, the old one kept until it is loaded */
+    struct {
+        uspace_t* us; umem_t* mem; banana_entry_t entry; uintptr_t base, code_lo, code_hi;
+        uint8_t* stack; uint8_t* guard; char** argv; int argc;
+        banana_api_t* uapi; uintptr_t ret_stub, sigret_stub;
+    } old = { p->us, p->mem, p->entry, p->base, p->code_lo, p->code_hi, p->stack, p->guard, p->argv, p->argc,
+              p->uapi, p->ret_stub, p->sigret_stub };
+    p->us = uspace_create();
+    p->mem = p->us ? umem_create(p->us) : NULL;
+    p->stack = NULL;
+    char err[96];
+    fs_pin(fi);
+    int bad = !p->mem || load_program(p, (const uint8_t*)f->content, f->size, argc, kargv, kenv, err, sizeof(err)) != 0;
+    fs_unpin(fi);
+    kfree(kenv);
+    if (bad) {
+        umem_destroy(p->mem);
+        uspace_destroy(p->us);
+        p->us = old.us; p->mem = old.mem; p->entry = old.entry; p->base = old.base;
+        p->code_lo = old.code_lo; p->code_hi = old.code_hi; p->stack = old.stack; p->guard = old.guard;
+        p->argv = old.argv; p->argc = old.argc; p->uapi = old.uapi; p->ret_stub = old.ret_stub;
+        p->sigret_stub = old.sigret_stub;
+        kfree(kargv);
+        return -12;
+    }
+    /* what a new program does not keep: the other threads, descriptors
+     * marked close-on-exec, signal handlers (back to the default), its
+     * alternate signal stack, the clipboard's copy */
+    uspace_t* nus = p->us;                              /* (their stacks are in the old space) */
+    umem_t* nmem = p->mem;
+    p->us = old.us;
+    p->mem = old.mem;
+    stop_threads(p);
+    p->exit_req = 0;
+    p->us = nus;
+    p->mem = nmem;
+    for (int i = 0; i < APP_FDS; i++) if (p->fdt[i] && p->cloexec[i]) fd_close(p, i);
+    for (int s = 1; s <= 64; s++) if (p->sig_disp[s] == BANANA_SIG_CATCH) p->sig_disp[s] = BANANA_SIG_DEFAULT;
+    p->sig_entry = 0;
+    p->sig_onstack = 0;
+    p->msig.alt_sp = 0; p->msig.alt_size = 0; p->msig.alt_flags = 0;
+    p->clip = NULL;
+    const char* base = strrchr(argc ? kargv[0] : file, '/');
+    kstrlcpy(p->name, base ? base + 1 : (argc ? kargv[0] : file), sizeof(p->name));
+    kfree(kargv);
+    p->old_us = old.us;
+    p->old_mem = old.mem;
+    p->exec_next = 1;
+    leave(p, 0);                                        /* (run() starts the new program) */
+#else
+    (void)path; (void)argv; (void)envp;
+    return -38;
+#endif
+}
+
+static int a_proc_wait(int pid, int* status, int options, void* ru) {
+    app_proc_t* p = cur();
+    if (!p) return -10;
+    if (ru) memset(ru, 0, 144);                          /* (struct rusage: not kept) */
+    for (;;) {
+        int found = 0;
+        for (int i = 0; i < APP_MAX; i++) {
+            app_proc_t* c = &g_procs[i];
+            if (!c->used || c == p || c->ppid != p->seq || c->pid == -1) continue;
+            if (!(pid == -1 || (pid > 0 && c->seq == pid) || (pid == 0 && c->pgid == p->pgid) ||
+                  (pid < -1 && c->pgid == -pid))) continue;
+            found = 1;
+            if (c->zombie) {
+                int st = c->wstatus, id = c->seq;
+                c->zombie = 0;
+                c->used = 0;
+                if (status) *status = st;
+                return id;
+            }
+        }
+        if (!found) return -10;                         /* ECHILD */
+        if (options & WNOHANG_F) return 0;
+        if (sig_waiting(p)) return -4;                  /* EINTR: a handler runs first */
+        p->waiting = 1;
+        task_sleep_ms(50);                              /* (a child that ends wakes it) */
+        breathe(p, 1);
+        p->waiting = 0;
+    }
+}
+
+static int a_proc_ids(int pid, int* out) {
+    app_proc_t* p = cur();
+    app_proc_t* t = pid ? proc_by_pid(pid) : p;
+    if (!t) return -3;                                  /* ESRCH */
+    out[0] = t->seq; out[1] = t->ppid; out[2] = t->pgid; out[3] = t->sid;
+    return 0;
+}
+
+static int a_proc_setpgid(int pid, int pgid) {
+    app_proc_t* p = cur();
+    if (!p || pgid < 0) return -22;
+    app_proc_t* t = pid ? proc_by_pid(pid) : p;
+    if (!t || (t != p && t->ppid != p->seq)) return -3;
+    if (t->sid != p->sid || t->seq == t->sid) return -1;           /* EPERM: another session, or its leader */
+    if (!pgid) pgid = t->seq;
+    if (pgid != t->seq) {                               /* joining a group: one of its session's */
+        int ok = 0;
+        for (int i = 0; i < APP_MAX && !ok; i++)
+            ok = g_procs[i].used && !g_procs[i].zombie && g_procs[i].pgid == pgid && g_procs[i].sid == p->sid;
+        if (!ok) return -1;
+    }
+    t->pgid = pgid;
+    return 0;
+}
+
+static int a_proc_setsid(void) {
+    app_proc_t* p = cur();
+    if (!p) return -1;
+    for (int i = 0; i < APP_MAX; i++)                   /* a group's leader may not */
+        if (g_procs[i].used && !g_procs[i].zombie && g_procs[i].pgid == p->seq) return -1;
+    p->sid = p->pgid = p->seq;
+    return p->seq;
+}
+
+static int a_proc_kill(int pid, int sig) {
+    app_proc_t* p = cur();
+    if (!p || sig < 0 || sig > 64) return -22;
+    int n = 0;
+    for (int i = 0; i < APP_MAX; i++) {
+        app_proc_t* t = &g_procs[i];
+        if (!t->used || t->zombie || t->pid < 0) continue;
+        if (!(pid > 0 ? t->seq == pid : pid == 0 ? t->pgid == p->pgid : pid == -1 ? 1 : t->pgid == -pid)) continue;
+        n++;
+        if (sig) proc_signal(t, sig);
+    }
+    return n ? 0 : -3;                                  /* ESRCH */
+}
 
 /* (64-bit: every entry of the app's table is a system call stub instead -
  * app_syscall below; G stays for the 32-bit kernel's direct calls) */
@@ -2623,6 +3096,13 @@ static void api_init(void) {
     g_api.fd_dup = G(a_fd_dup);
     g_api.fd_fcntl = G(a_fd_fcntl);
     g_api.fd_info = G(a_fd_info);
+    g_api.proc_fork = G(a_proc_fork);
+    g_api.proc_exec = G(a_proc_exec);
+    g_api.proc_wait = G(a_proc_wait);
+    g_api.proc_ids = G(a_proc_ids);
+    g_api.proc_setpgid = G(a_proc_setpgid);
+    g_api.proc_setsid = G(a_proc_setsid);
+    g_api.proc_kill = G(a_proc_kill);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);
@@ -2710,8 +3190,11 @@ typedef struct { int32_t tag; uint32_t val; } dyn_t;
 
 
 /* m: the app's memory to load it into (NULL: the kernel's, for a driver) */
+/* run_at: where the program will run (64-bit: in its mmap region, the image
+ * built in a kernel buffer and copied there), its lowest page; 0: where it
+ * is loaded */
 static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_out, banana_entry_t* entry, uintptr_t* base_out,
-                    uintptr_t* lo_out, uintptr_t* hi_out, char* err, int ecap) {
+                    uintptr_t* lo_out, uintptr_t* hi_out, uintptr_t run_at, char* err, int ecap) {
     const ehdr_t* eh = (const ehdr_t*)f;
     if (size < sizeof(ehdr_t) || memcmp(eh->ident, "\x7f" "ELF", 4) != 0) { kstrlcpy(err, "not an ELF program", (size_t)ecap); return -1; }
     if (eh->ident[4] != ELF_CLASS || eh->machine != EM_HOST) {
@@ -2739,6 +3222,7 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
     uint8_t* mem = (uint8_t*)(((uintptr_t)raw + 4095) & ~(uintptr_t)4095);
     memset(mem, 0, span);
     uintptr_t base = (uintptr_t)mem - lo;
+    uintptr_t run = run_at ? run_at - lo : base;     /* (relocated for there) */
     const dyn_t* dyn = NULL;
     for (int i = 0; i < eh->phnum; i++) {
         if (ph[i].type == PT_LOAD) memcpy((void*)(base + (uintptr_t)ph[i].vaddr), f + ph[i].offset, (size_t)ph[i].filesz);
@@ -2783,7 +3267,7 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
                 if (type == R_X86_64_NONE) continue;
                 if (!IN_IMAGE(r[0], 8)) { bad = 1; break; }
                 uint64_t* P = (uint64_t*)(base + r[0]);
-                if (type == R_X86_64_RELATIVE) { *P = base + r[2]; continue; }
+                if (type == R_X86_64_RELATIVE) { *P = run + r[2]; continue; }
                 /* a symbol of the program itself */
                 uintptr_t sa = symtab + (uintptr_t)si * syment;
                 if (!symtab || !IN_IMAGE(sa, 24)) { bad = 1; break; }
@@ -2797,15 +3281,15 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
                     bad = 2;
                     break;
                 }
-                uint64_t S = base + val;
+                uint64_t S = run + val;
                 if (type == 1) *P = S + r[2];                          /* R_X86_64_64 */
                 else if (type == 6 || type == 7) *P = S;               /* GLOB_DAT, JUMP_SLOT */
-                else if (type == 2) *(uint32_t*)P = (uint32_t)(S + r[2] - (uint64_t)(uintptr_t)P);   /* PC32 */
+                else if (type == 2) *(uint32_t*)P = (uint32_t)(S + r[2] - (run + r[0]));   /* PC32 */
                 else { ksnprintf(why, sizeof(why), "unsupported relocation type %u", type); bad = 2; break; }
             }
         }
 #else
-        (void)rela; (void)relasz; (void)relaent;
+        (void)rela; (void)relasz; (void)relaent; (void)run;
         if (!syment) syment = 16;
         uintptr_t tabs[2][2] = { { rel, relsz }, { pltrel == DT_REL ? jmprel : 0, pltrelsz } };
         if (rel && relent && relent != 8) bad = 1;
@@ -2849,10 +3333,10 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
         }
     }
     *image_out = raw;
-    *entry = (banana_entry_t)(base + (uintptr_t)eh->entry);
-    *base_out = base;
-    *lo_out = (uintptr_t)mem;
-    *hi_out = (uintptr_t)mem + span;
+    *entry = (banana_entry_t)(run + (uintptr_t)eh->entry);
+    *base_out = run;
+    *lo_out = run + lo;
+    *hi_out = run + lo + span;
     return 0;
 }
 
@@ -2860,7 +3344,7 @@ static int load_elf(umem_t* m, const uint8_t* f, uint32_t size, uint8_t** image_
 int app_load_image(const uint8_t* f, uint32_t size, uint8_t** raw, uintptr_t* entry, char* err, int ecap) {
     banana_entry_t e;
     uintptr_t base, lo, hi;
-    if (load_elf(NULL, f, size, raw, &e, &base, &lo, &hi, err, ecap) < 0) return -1;
+    if (load_elf(NULL, f, size, raw, &e, &base, &lo, &hi, 0, err, ecap) < 0) return -1;
     *entry = (uintptr_t)e;
     return 0;
 }
@@ -2902,7 +3386,8 @@ static void discard(app_proc_t* p) {
     p->us = NULL;
 }
 
-static void release(app_proc_t* p) {
+/* everything the process holds goes (its slot stays: proc_finish decides) */
+static void teardown(app_proc_t* p) {
     stop_threads(p);
     for (int i = 0; i < APP_FDS; i++) fd_close(p, i);   /* its descriptors: sockets close (connections end), pipes too */
     gpu_virgl_release(p->id + 1);
@@ -2911,18 +3396,41 @@ static void release(app_proc_t* p) {
     webview_close_owner(p->id);
     discard(p);
     pid_clear(p->pid, p->id);
+#ifdef __x86_64__
+    umem_destroy(p->old_mem);              /* (an execve that never ran its program) */
+    uspace_destroy(p->old_us);
+    p->old_mem = NULL;
+    p->old_us = NULL;
+    kfree(p->fork_frame);
+    p->fork_frame = NULL;
+#endif
+}
+
+static void release(app_proc_t* p) {
+    teardown(p);
     p->used = 0;
 }
 
 
 static int run(app_proc_t* p) {
+#ifndef __x86_64__
     *(volatile uint32_t*)p->stack = STACK_CANARY;      /* the bottom of the stack: overflow check */
-    p->running = 1;
+#endif
 #ifdef __x86_64__
-    p->guarded = 1;                                     /* (its guard pages: umem_alloc_pages) */
-    p->exit_code = enter_user(p, (uintptr_t)p->entry, (uintptr_t)p->uapi, (uintptr_t)p->argc,
-                              (uintptr_t)p->argv, p->stack, APP_STACK, p->kstack, &p->saved_sp);
+    p->guarded = 1;                                     /* (its guard pages: stack_map) */
+    for (;;) {
+        p->running = 1;
+        if (p->fork_frame)                              /* a fork's child: from its parent's system call */
+            p->exit_code = resume_user(p);
+        else
+            p->exit_code = enter_user(p, (uintptr_t)p->entry, (uintptr_t)p->uapi, (uintptr_t)p->argc,
+                                      (uintptr_t)p->argv, p->stack, APP_STACK, p->kstack, &p->saved_sp);
+        p->running = 0;
+        if (!p->exec_next) break;
+        exec_switch(p);                                 /* execve: the new program now */
+    }
 #else
+    p->running = 1;
     p->exit_code = app_enter(trampoline, p, p->stack + APP_STACK, &p->saved_sp);
 #endif
     p->running = 0;
@@ -2934,8 +3442,10 @@ static int run(app_proc_t* p) {
             terminal_putchar('\n');
         }
     }
+#ifndef __x86_64__
     if (*(volatile uint32_t*)p->stack != STACK_CANARY)
         klog("app %s: its stack overflowed (256 KiB) - memory may be damaged\n", p->name);
+#endif
     return p->exit_code;
 }
 
@@ -2980,6 +3490,7 @@ void app_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) {
     /* reported by run(), back on the task's own stack: this may be the
      * dedicated fault stack, which must not be in use when we yield */
     kstrlcpy(p->crash_msg, line, sizeof(p->crash_msg));
+    p->term_sig = vector == 0 || vector == 16 || vector == 19 ? 8 : vector == 6 ? 4 : vector == 17 ? 7 : 11;
     athread_t* t = cur_thread(p);
     if (t) {                                /* a crash in a thread ends the whole app */
         if (!p->exit_req) { p->exit_req = 1; p->exit_req_code = 139; }
@@ -2988,6 +3499,95 @@ void app_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t addr) {
     }
     held_drop(); app_leave(p->saved_sp, 139);
 }
+
+#ifdef __x86_64__
+/* a stack in the app's mmap region: size bytes, guard bytes under them that
+ * fault (an overflow); its lowest address, NULL */
+static uint8_t* stack_map(app_proc_t* p, size_t size, size_t guard) {
+    uintptr_t a = uvm_map(p->us, p->mem, 0, guard + size, UVM_READ | UVM_WRITE, 0);
+    if (!a) return NULL;
+    if (guard && uvm_protect(p->us, a, guard, 0) != 0) {
+        uvm_unmap(p->us, p->mem, a, guard + size);
+        return NULL;
+    }
+    return (uint8_t*)(a + guard);
+}
+
+static void stack_unmap(app_proc_t* p, uint8_t* stack, size_t size, size_t guard) {
+    if (stack) uvm_unmap(p->us, p->mem, (uintptr_t)stack - guard, guard + size);
+}
+
+/* the bytes an ELF's loadable segments span (whole pages), 0 if it is not one */
+static uint64_t elf_span(const uint8_t* f, uint32_t size) {
+    const ehdr_t* eh = (const ehdr_t*)f;
+    if (size < sizeof(ehdr_t) || memcmp(eh->ident, "\x7f" "ELF", 4) != 0 || eh->phentsize != sizeof(phdr_t) ||
+        eh->phoff + (uint32_t)eh->phnum * sizeof(phdr_t) > size) return 0;
+    const phdr_t* ph = (const phdr_t*)(f + eh->phoff);
+    uint64_t lo = ~0ull, hi = 0;
+    for (int i = 0; i < eh->phnum; i++) {
+        if (ph[i].type != PT_LOAD) continue;
+        if (ph[i].vaddr < lo) lo = ph[i].vaddr;
+        if (ph[i].vaddr + ph[i].memsz > hi) hi = ph[i].vaddr + ph[i].memsz;
+    }
+    if (hi <= lo || hi - lo > APP_MAX_IMAGE) return 0;
+    lo &= ~4095ull;
+    return (hi - lo + 4095) & ~4095ull;
+}
+
+/* 64-bit: the program in file f, into p's (new, empty) space - everything
+ * its code can point at is in its mmap region, so a fork shares all of it
+ * copy-on-write: the image (built in kernel scratch memory, relocated for
+ * where it runs, copied there), its stack, argv, the call table. 0, or -1
+ * with err */
+static int load_program(app_proc_t* p, const uint8_t* f, uint32_t size, int argc, char** argv,
+                        char** envp, char* err, int ecap) {
+    uint64_t span = elf_span(f, size);
+    uintptr_t at = span ? uvm_map(p->us, p->mem, 0, span, UVM_READ | UVM_WRITE | UVM_EXEC, 0) : 0x1000;
+    if (!at) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
+    umem_t* tmp = umem_create(NULL);
+    uint8_t* raw = NULL;
+    if (!tmp) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
+    if (load_elf(tmp, f, size, &raw, &p->entry, &p->base, &p->code_lo, &p->code_hi, at, err, ecap) != 0) {
+        umem_destroy(tmp);
+        return -1;
+    }
+    int rc = span ? uvm_write(p->us, at, raw, span) : -1;   /* (umem pages: page-aligned already) */
+    umem_destroy(tmp);
+    if (rc) { kstrlcpy(err, span ? "out of memory" : "no loadable code", (size_t)ecap); return -1; }
+    p->stack = stack_map(p, APP_STACK, APP_GUARD);
+    p->guard = p->stack ? p->stack - APP_GUARD : NULL;
+    /* argv: its pointers, NULL, the environment's (envp: NULL - the system's
+     * default), NULL, then the strings - the C library finds environ after argv */
+    if (!envp) envp = (char**)g_default_env;
+    int envc = 0;
+    while (envp[envc]) envc++;
+    uint64_t need = (uint64_t)(argc + 1 + envc + 1) * sizeof(char*);
+    for (int i = 0; i < argc; i++) need += strlen(argv[i]) + 1;
+    for (int i = 0; i < envc; i++) need += strlen(envp[i]) + 1;
+    uint8_t* blk = (uint8_t*)kmalloc(need);
+    uintptr_t ua = blk ? uvm_map(p->us, p->mem, 0, need, UVM_READ | UVM_WRITE, 0) : 0;
+    if (ua) {
+        char** ptrs = (char**)blk;
+        uint64_t off = (uint64_t)(argc + 1 + envc + 1) * sizeof(char*);
+        for (int i = 0; i < argc + 1 + envc; i++) {
+            const char* s = i < argc ? argv[i] : i > argc ? envp[i - argc - 1] : NULL;
+            if (!s) { ptrs[i] = NULL; continue; }
+            size_t l = strlen(s) + 1;
+            ptrs[i] = (char*)(ua + off);
+            memcpy(blk + off, s, l);
+            off += l;
+        }
+        ptrs[argc + 1 + envc] = NULL;
+        if (uvm_write(p->us, ua, blk, need) != 0) ua = 0;
+    }
+    kfree(blk);
+    p->argv = (char**)ua;
+    p->argc = argc;
+    if (!p->kstack) p->kstack = kstack_new();
+    if (!p->stack || !ua || !p->kstack || make_uapi(p) != 0) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
+    return 0;
+}
+#endif
 
 /* reads, loads and prepares an app (slot claimed, not started) */
 static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, int ecap) {
@@ -3000,8 +3600,8 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     int id = p->id;
     memset(p, 0, sizeof(*p));
     p->id = id;
-    static int s_seq = 100;
-    p->seq = ++s_seq;
+    p->seq = ++g_seq;
+    p->pgid = p->sid = p->seq;                          /* (its own group and session; no parent) */
     fs_file_t* f = fs_get_file(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
 #ifdef __x86_64__
@@ -3011,37 +3611,46 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     p->mem = umem_create(p->us);
     if (!p->mem) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
     if (fd_std(p) != 0) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
-    uint8_t* image;
+#ifdef __x86_64__
     fs_pin(fi);
-    int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, err, ecap) != 0;
+    int bad = load_program(p, (const uint8_t*)f->content, f->size, argc, argv, NULL, err, ecap) != 0;
     fs_unpin(fi);
     if (bad) { discard(p); return NULL; }
-    /* its stack, guard pages under it (64-bit: they fault) */
+#else
+    uint8_t* image;
+    fs_pin(fi);
+    int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, 0, err, ecap) != 0;
+    fs_unpin(fi);
+    if (bad) { discard(p); return NULL; }
+    /* its stack (a canary at its bottom: the 32-bit kernel has no guard pages) */
     p->stack = (uint8_t*)umem_alloc_pages(p->mem, APP_STACK, APP_GUARD);
     p->guard = p->stack ? p->stack - APP_GUARD : NULL;
-    /* argv: the pointers and the strings in one block of its memory */
-    uint32_t need = (uint32_t)(argc + 1) * sizeof(char*);
+    /* argv: the pointers, NULL, the default environment's pointers, NULL,
+     * then the strings - in one block of its memory */
+    int envc = 0;
+    while (g_default_env[envc]) envc++;
+    uint32_t need = (uint32_t)(argc + 1 + envc + 1) * sizeof(char*);
     for (int i = 0; i < argc; i++) need += (uint32_t)strlen(argv[i]) + 1;
+    for (int i = 0; i < envc; i++) need += (uint32_t)strlen(g_default_env[i]) + 1;
     p->argv = (char**)umem_alloc(p->mem, need);
     int ok = p->stack && p->argv;
-#ifdef __x86_64__
-    p->kstack = kstack_new();
-    ok = ok && p->kstack && make_uapi(p) == 0;
-#endif
     if (!ok) {
         discard(p);
         kstrlcpy(err, "out of memory", (size_t)ecap);
         return NULL;
     }
-    char* s = (char*)(p->argv + argc + 1);
-    for (int i = 0; i < argc; i++) {
+    char* s = (char*)(p->argv + argc + 1 + envc + 1);
+    for (int i = 0; i < argc + 1 + envc; i++) {
+        const char* src = i < argc ? argv[i] : i > argc ? g_default_env[i - argc - 1] : NULL;
+        if (!src) { p->argv[i] = NULL; continue; }
         p->argv[i] = s;
-        size_t l = strlen(argv[i]) + 1;
-        memcpy(s, argv[i], l);
+        size_t l = strlen(src) + 1;
+        memcpy(s, src, l);
         s += l;
     }
-    p->argv[argc] = NULL;
+    p->argv[argc + 1 + envc] = NULL;
     p->argc = argc;
+#endif
     const char* base = strrchr(argc ? argv[0] : path, '/');
     kstrlcpy(p->name, base ? base + 1 : (argc ? argv[0] : path), sizeof(p->name));
     p->used = 1;
@@ -3060,7 +3669,7 @@ int app_exec(const char* path, int argc, char** argv, char* err, int ecap) {
     int rc = run(p);
     terminal_vt_set_active(p->vt);
     terminal_setcolor(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-    release(p);
+    proc_finish(p);
     return rc;
 }
 
@@ -3070,7 +3679,7 @@ static void spawned_entry(void) {
     task_set_background();             /* no terminal: it talks through its windows */
     run(p);
     klog("app %s exited (%d)\n", p->name, p->exit_code);
-    release(p);
+    proc_finish(p);
 }
 
 int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
@@ -3099,7 +3708,7 @@ static uint32_t app_mem_bytes(app_proc_t* p) {
 
 int app_count(void) {
     int n = 0;
-    for (int i = 0; i < APP_MAX; i++) if (g_procs[i].used) n++;
+    for (int i = 0; i < APP_MAX; i++) if (g_procs[i].used && !g_procs[i].zombie) n++;
     return n;
 }
 
@@ -3108,7 +3717,7 @@ void app_list(void) {
     int any = 0;
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
-        if (!p->used) continue;
+        if (!p->used || p->zombie) continue;
         uint32_t mem = app_mem_bytes(p);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
@@ -3122,7 +3731,7 @@ int app_snapshot(app_info_t* out, int max) {
     int n = 0;
     for (int i = 0; i < APP_MAX && n < max; i++) {
         app_proc_t* p = &g_procs[i];
-        if (!p->used) continue;
+        if (!p->used || p->zombie) continue;
         out[n].id = p->id;
         kstrlcpy(out[n].name, p->name, sizeof(out[n].name));
         out[n].pid = p->pid;
@@ -3136,13 +3745,14 @@ int app_snapshot(app_info_t* out, int max) {
 }
 
 int app_kill(int id) {
-    if (id < 0 || id >= APP_MAX || !g_procs[id].used) return -1;
+    if (id < 0 || id >= APP_MAX || !g_procs[id].used || g_procs[id].zombie) return -1;
     g_procs[id].kill_req = 1;
+    proc_wake(&g_procs[id]);
     return 0;
 }
 
 int app_console_focused(void) {
     for (int i = 0; i < APP_MAX; i++)
-        if (g_procs[i].used && focused(&g_procs[i])) return 1;
+        if (g_procs[i].used && !g_procs[i].zombie && focused(&g_procs[i])) return 1;
     return 0;
 }

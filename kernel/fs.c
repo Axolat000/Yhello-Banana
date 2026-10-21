@@ -28,7 +28,8 @@ static int        g_dfree = 1, g_ffree;    /* no free entry below these */
 #define FHASH 65536
 static int32_t g_dhash[DHASH], g_fhash[FHASH];
 
-static int       cwd      = 0;   /* current dir index (0 = root) */
+/* the current folder: each task's own (kernel/task.c) */
+#define cwd (*task_cwd_slot())
 static int       home_dir = 0;   /* dir index of /home/banana */
 
 /* mounted volumes (USB sticks): index = mount id, 0 unused */

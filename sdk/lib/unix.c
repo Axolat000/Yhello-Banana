@@ -283,18 +283,8 @@ ssize_t getdelim(char** line, size_t* cap, int delim, FILE* f) {
 }
 ssize_t getline(char** line, size_t* cap, FILE* f) { return getdelim(line, cap, '\n', f); }
 
-/* ── processes (there are only apps: no fork, exec or children) ───── */
+/* ── processes: fork, exec, wait, groups (proc.c) ─────────────────── */
 
-pid_t fork(void) { errno = ENOSYS; return -1; }
-pid_t vfork(void) { errno = ENOSYS; return -1; }
-int execve(const char* p, char* const a[], char* const e[]) { (void)p; (void)a; (void)e; errno = ENOSYS; return -1; }
-int execv(const char* p, char* const a[]) { (void)p; (void)a; errno = ENOSYS; return -1; }
-int execvp(const char* p, char* const a[]) { (void)p; (void)a; errno = ENOSYS; return -1; }
-pid_t wait(int* s) { (void)s; errno = ECHILD; return -1; }
-pid_t waitpid(pid_t pid, int* s, int o) { (void)pid; (void)s; (void)o; errno = ECHILD; return -1; }
-pid_t setsid(void) { return getpid(); }
-pid_t getpgrp(void) { return getpid(); }
-int setpgid(pid_t a, pid_t b) { (void)a; (void)b; return 0; }
 unsigned alarm(unsigned s) { (void)s; return 0; }
 char* getlogin(void) { return "banana"; }
 char* ttyname(int fd) { return fd <= 2 ? "/dev/tty" : NULL; }
@@ -828,20 +818,7 @@ int tcsetattr(int fd, int when, const struct termios* t) {
     return 0;
 }
 
-int waitid(idtype_t type, id_t id, siginfo_t* info, int options) { (void)type; (void)id; (void)info; (void)options; errno = ECHILD; return -1; }
-int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* fa, const posix_spawnattr_t* a,
-                char* const argv[], char* const envp[]) {
-    (void)pid; (void)path; (void)fa; (void)a; (void)argv; (void)envp;
-    return ENOSYS;
-}
-int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* fa, const posix_spawnattr_t* a,
-                 char* const argv[], char* const envp[]) {
-    return posix_spawn(pid, file, fa, a, argv, envp);
-}
-int posix_spawnattr_init(posix_spawnattr_t* a) { a->__flags = 0; return 0; }
-int posix_spawnattr_destroy(posix_spawnattr_t* a) { (void)a; return 0; }
-int posix_spawn_file_actions_init(posix_spawn_file_actions_t* fa) { fa->__n = 0; return 0; }
-int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* fa) { (void)fa; return 0; }
+/* (waitid, posix_spawn: proc.c) */
 
 /* (epoll, eventfd: ufd.c) inotify: not here yet (Java's file watching fails cleanly) */
 int inotify_init(void) { errno = ENOSYS; return -1; }
@@ -1110,7 +1087,6 @@ int wscanf(const wchar_t* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfw
 
 ldiv_t ldiv(long a, long b) { ldiv_t d = { a / b, a % b }; return d; }
 lldiv_t lldiv(long long a, long long b) { lldiv_t d = { a / b, a % b }; return d; }
-int system(const char* cmd) { return cmd ? -1 : 0; }               /* (no shell to run it) */
 char* secure_getenv(const char* name) { return getenv(name); }
 
 int vasprintf(char** out, const char* fmt, va_list ap) {
@@ -1128,5 +1104,3 @@ int vasprintf(char** out, const char* fmt, va_list ap) {
 }
 int asprintf(char** out, const char* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vasprintf(out, fmt, ap); va_end(ap); return r; }
 
-FILE* popen(const char* cmd, const char* mode) { (void)cmd; (void)mode; errno = ENOSYS; return NULL; }
-int pclose(FILE* f) { (void)f; errno = ECHILD; return -1; }

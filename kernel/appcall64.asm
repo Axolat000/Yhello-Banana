@@ -85,6 +85,44 @@ app_enter_user:
     xor r15d, r15d
     iretq
 
+
+; int app_resume_user(void* frame, uintptr_t* saved_sp);
+;
+; A fork's child goes back to ring 3 from the system call its parent made:
+; like app_enter_user (the callee-saved registers kept here, the stack
+; pointer stored through saved_sp: app_leave comes back here), then every
+; register comes from frame - the system call's (kernel/app.c's sysframe_t:
+; PUSH_ALL's order, int_no and err_code, then what iretq takes), on top of
+; the child's own kernel stack - and iretq.
+global app_resume_user
+
+app_resume_user:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rsi], rsp
+    cli                             ; (the frame is on the kernel stack the TSS names: no interrupt in between)
+    mov rsp, rdi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16                     ; int_no, err_code
+    iretq
 app_leave:
     mov rsp, rdi
     mov eax, esi

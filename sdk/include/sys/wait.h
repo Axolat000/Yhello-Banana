@@ -4,9 +4,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* (apps start no child processes: wait fails with ECHILD) */
+/* waiting for child processes (API version 26) */
 #include <sys/types.h>
 #include <signal.h>
+#include <sys/resource.h>
 #define WNOHANG    1
 #define WUNTRACED  2
 #define WSTOPPED   2
@@ -22,6 +23,8 @@ typedef enum { P_ALL, P_PID, P_PGID } idtype_t;
 #define WSTOPSIG(s)    WEXITSTATUS(s)
 pid_t wait(int* status);
 pid_t waitpid(pid_t pid, int* status, int options);
+pid_t wait3(int* status, int options, struct rusage* ru);
+pid_t wait4(pid_t pid, int* status, int options, struct rusage* ru);
 
 int   waitid(idtype_t type, id_t id, siginfo_t* info, int options);
 #ifdef __cplusplus

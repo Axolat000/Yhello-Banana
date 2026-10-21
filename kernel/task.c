@@ -91,6 +91,7 @@ typedef struct task {
     const struct tlb_tag* tag;            /* ... and what the TLBs keep of them (kernel/tlb.c) */
     uintptr_t    rsp0;                    /* ... and the kernel stack ring 3 enters on (0: none) */
     uintptr_t    fs_base;                 /* ... and its thread pointer (TLS, 64-bit): task_set_fs */
+    int          cwd;                     /* its current folder (kernel/fs.c's index): inherited from its creator */
 } task_t;
 
 static task_t           g_tasks[TASK_MAX];
@@ -486,6 +487,7 @@ static void idle_entry(void) {
 }
 
 
+static int g_boot_cwd;                     /* the current folder before the tasks (task_cwd_slot) */
 void task_init(const char* main_task_name) {
     for (int i = 0; i < TASK_MAX; i++) g_tasks[i].state = TASK_UNUSED;
     g_counter_per_ms = timer_counter_per_ms();
@@ -502,6 +504,7 @@ void task_init(const char* main_task_name) {
     t->run_start = timer_counter();
     t->switched_in = t->run_start;
     t->stack_top = (uintptr_t)stack_bottom + 65536;
+    t->cwd = g_boot_cwd;                    /* (where kernel/fs.c put it before the tasks: $HOME) */
     guard_set(t, (uintptr_t*)stack_bottom);  /* the boot stack (boot/boot*.asm) */
 
     set_name(g_idle.name, "idle", TASK_NAME_MAX);
@@ -550,6 +553,7 @@ int task_create_stack(const char* name, void (*entry)(void), uint32_t stack_byte
     t->recover = NULL;
     t->crash[0] = 0;
     /* a nice value the user chose is inherited (an app's threads) */
+    t->cwd = g_current ? g_current->cwd : 0;          /* (a new task starts where its creator is) */
     t->nice_set = g_current && g_current != &g_idle && g_current->nice_set;
     set_nice(t, t->nice_set ? g_current->nice : 0);
     t->switched_in = 0;
@@ -1064,3 +1068,11 @@ void task_recover_fault(uint32_t vector, uint32_t err, uintptr_t ip, uintptr_t a
     __asm__ volatile("sti");
     kjmp_jump(b, 1);
 }
+
+/* the calling task's current folder (kernel/fs.c): each task has its own - a
+ * shell's cd does not move the others; before the scheduler runs, one for all */
+int* task_cwd_slot(void) {
+    return g_current ? &g_current->cwd : &g_boot_cwd;
+}
+
+uintptr_t task_get_fs(void) { return g_current ? g_current->fs_base : 0; }
