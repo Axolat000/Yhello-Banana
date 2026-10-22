@@ -25,6 +25,9 @@ extern "C" {
 #define AT_FDCWD    (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200
+#define AT_SYMLINK_FOLLOW 0x400
+#define AT_EACCESS  0x200
+#define AT_EMPTY_PATH 0x1000
 #define F_GETLK  5
 #define F_SETLK  6
 #define F_SETLKW 7
@@ -43,12 +46,24 @@ struct flock { short l_type, l_whence; off_t l_start, l_len; pid_t l_pid; };
 #define F_SETLK64  F_SETLK
 #define F_SETLKW64 F_SETLKW
 #define POSIX_FADV_NORMAL 0
+#define POSIX_FADV_RANDOM 1
+#define POSIX_FADV_SEQUENTIAL 2
+#define POSIX_FADV_WILLNEED 3
 #define POSIX_FADV_DONTNEED 4
+#define POSIX_FADV_NOREUSE 5
 int posix_fallocate(int fd, off_t off, off_t len);
 int posix_fadvise(int fd, off_t off, off_t len, int advice);
 #define O_BINARY   0
+#define O_TEXT     0
+#define O_RSYNC    O_SYNC
+#define O_PATH     010000000
+#define O_TMPFILE  020200000
 #define O_CLOEXEC  02000000
 int open(const char* path, int flags, ...);
+/* a folder opened (O_RDONLY, O_DIRECTORY) is a descriptor for the *at calls (API version 28) */
+int openat(int dirfd, const char* path, int flags, ...);
+#define openat64 openat
+int creat(const char* path, mode_t mode);
 #define open64 open
 #define O_LARGEFILE 0
 int fcntl(int fd, int cmd, ...);

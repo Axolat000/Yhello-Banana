@@ -122,7 +122,7 @@ programs (the test harness types into the serial console's bash).
 
 ## Status (2026-10-21) and how to continue
 
-Done (builds 237-239 on `main`, 240-241 on its branch):
+Done (builds 237-239 on `main`, 240-242 on its branch):
 
 | Build | What | Where |
 |---|---|---|
@@ -131,13 +131,13 @@ Done (builds 237-239 on `main`, 240-241 on its branch):
 | 239 | Ptys + line discipline, termios, controlling terminal, job control (stop/continue, SIGTTIN/TTOU, SIGHUP), `/dev/*` (API 27) | `kernel/pty.c`, `kernel/app.c` ("terminals" section: `dev_open`, `pts_read`, `a_tty_ioctl`, `proc_stop`), `sdk/lib/tty.c` |
 | 240 | The cross toolchain (`banana-cc`, `banana-configure`, `banana-config.site`); GNU bash 5.2.37 as `/bin/bash` and `/bin/sh` (built in, 64-bit); `bin=` in package manifests; `poll` gives `EINTR`; `main` gets `envp`; SDK: `<wctype.h>`, `wcwidth`, `pselect`, `mktemp`, `set*id`, `getgrent`, `getcwd(NULL, 0)`, `_POSIX_VERSION` | `sdk/tools/banana-cc`, `ports/bash/build.sh`, `kernel/pkg.c` (`each_bin`), `kernel/builtin_apps.c`, `kernel/app.c` (`a_poll`), `sdk/lib/utf8.c` |
 | 241 | The Terminal app: windows with tabs, a pty + `/bin/bash` each, xterm-256color (colours up to 24-bit, scrolling regions, alternate screen, mouse reporting, bracketed paste, OSC titles, DEC line drawing), UTF-8 with double-width characters, 5000-line scrollback, selection / copy / paste, resizing (`TIOCSWINSZ`), text size; built in (64-bit). Desktop: PgUp / PgDn and a lone Esc reach app windows, Ctrl+Shift+T goes to them | `apps/terminal/vt.c` (the screen), `apps/terminal/main.c` (windows, drawing, input), `tools/tests/terminal_vt` (vt.c on Linux), `kernel/appwin.c`, `kernel/gui.c` |
+| 242 | The GNU tools in `/bin`, built in (64-bit): coreutils 9.5 (one program, 107 names), grep 3.11, sed 4.9, findutils 4.10 (`find`, `xargs`), diffutils 3.10, gawk 5.3.1 (`awk`), ncurses 6.5 (`tput`, `clear`, `tic`, `infocmp`... and a terminfo database in `/usr/share/terminfo`), less 668 (`more`), zsh 5.9; bash and zsh set their own prompts (`/apps/bash/bashrc`, `/apps/zsh/zshrc`). Unix files (API 28): `lstat`, modes, owners, symlinks, `utimes`, `unlink`, directory descriptors (`openat` and the other `*at` calls, `fchdir`, `fdopendir`); a buffered stdio (`<stdio_ext.h>` for gnulib); GNU `getopt_long`; `<search.h>`; glibc's `strerror` texts; `program_invocation_name`. `ports/port.sh`: what the ports share; `bin=` links a name to the package's file of that name | `ports/port.sh`, `ports/*/build.sh`, `sdk/lib/ufs.c`, `sdk/lib/stdio.c`, `sdk/lib/unix.c` (`getopt`, `tsearch`), `kernel/app.c` (`a_fs_ustat`... `KF_DIR`), `kernel/fs.c` (`fs_utime`, `fs_file_setattr`), `kernel/pkg.c` (`bin_target`), `Makefile` (`PORTS64`) |
 
 Tests: `selftest pipes` (kernel pipes + pty line discipline), `posixtest proc`,
 `posixtest tty` and `posixtest bash` (scripts, pipelines, `#!`, and `bash -i`
 on a pty: editing, history, ^C, job control - all run by `selftest posix`). Known limits: `execve` only
 from a process's main thread; job control's "orphaned process group" rule is
-not applied; `fchdir` / directory descriptors do not exist yet; the SDK's
-stdio reads files a byte per system call (slow, correct).
+not applied.
 
 Terminal, as of build 241 (`apps/terminal`, "Terminal (bash)" in Apps; the
 desktop's own Terminal - the kernel shell's `term_win_t` - stays until phase
@@ -146,7 +146,7 @@ Ctrl+Shift+N a window, Ctrl+Shift+W closes a tab, Ctrl+PgUp / PgDn between
 tabs, Shift+PgUp / PgDn the scrollback, Ctrl+Shift+C / V (or select, then
 right-click) copy and paste, Ctrl+= / - / 0 the text size; `terminal -e cmd`.
 `TERM=xterm-256color` with the termcap entry in `$TERMCAP` (readline uses it);
-no terminfo database yet (comes with ncurses, step 4). Not yet: CJK glyphs
+the terminfo database in `/usr/share/terminfo` (build 242). Not yet: CJK glyphs
 (the system has no CJK font: double-width boxes), combining marks (dropped),
 the middle mouse button (the desktop does not pass it to apps), reflowing
 wrapped lines on resize. Tested in QEMU: `tools/tests/terminal_vt/run.sh`
@@ -162,9 +162,25 @@ as on a dumb terminal plus the arrow keys: no clear-screen, no
 Testing it from the kernel shell: it expands `$name` itself, even between
 single quotes - write `${name}`, or put the script in a file.
 
+GNU tools, as of build 242: each port is `ports/<name>/build.sh` on
+`ports/port.sh` (download + sha256, configure's answers, `port_package`), in
+`PORTS64` in the Makefile (built in, 64-bit: a port is rebuilt when its
+folder's scripts or data, the SDK or `port.sh` change). Tested in QEMU:
+`ls`, `cp`, `mv`, `rm`, `ln -s`, `chmod`, `stat`, `touch -d`, `sort`, `wc`,
+`od`, `sha256sum`, `date`, `seq`, `tr`, `cut`, `dd`, `du`, `df`, `grep -rn`,
+`sed -i`, `find -exec`, `xargs`, `diff -u`, `cmp`, `awk`, `tput`, `infocmp`,
+`less` (paging, search; in the Terminal), zsh (`-c` and interactive);
+`selftest` and `posixtest` (64- and 32-bit). Known limits: no hard links
+(`ln` without `-s`: EPERM); only the modification time is kept (`atime` is
+it too); `readdir` gives `DT_UNKNOWN` for files (programs `stat` them); the
+SDK's `mincore` says every page is there (gnulib's stack overflow
+detection is off: `port.sh` patches `sigsegv.in.h`); zsh's function library
+(`compinit`, prompt themes) is not packaged; no NLS (English only); no CJK
+font for wide characters.
+
 ### Next: phase 4 + 5 (in this order)
 
-Steps 1 and 2 are done (build 240), step 3 (build 241); the cross toolchain's use is in
+Steps 1 and 2 are done (build 240), step 3 (build 241), step 4 (build 242); the cross toolchain's use is in
 `sdk/README.md` ("Porting Unix software"), `ports/bash/build.sh` is the
 example port (configure's answers for what it would run, `bin=` packaging).
 
@@ -189,8 +205,8 @@ example port (configure's answers for what it would run, `bin=` packaging).
    replacing `term_win_t` / `TERM_WIN_MAX` in `kernel/gui.c` (with phase 6,
    once bash can do what the kernel shell does); a terminfo entry (with
    ncurses).
-4. **GNU coreutils, grep, sed, gawk, findutils, diffutils, less, ncurses,
-   zsh** as ports into `/bin`.
+4. ~~**GNU coreutils, grep, sed, gawk, findutils, diffutils, less, ncurses,
+   zsh** as ports into `/bin`.~~ (done, build 242)
 5. **Phase 6**: the kernel shell's commands (`shell/*.c`) become `/bin`
    programs (a system call runs a command's kernel code with the process's
    stdout), bash on the consoles, serial line and SSH (a pty each), then

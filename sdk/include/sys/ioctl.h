@@ -6,6 +6,12 @@ extern "C" {
 #endif
 /* Linux's request numbers: sockets (FIONREAD, FIONBIO), terminals - the
  * pseudo-terminals' every one below (API version 27), the console's size */
+/* Linux's encoding of the request numbers */
+#define _IOC(dir, type, nr, size) (((unsigned)(dir) << 30) | ((unsigned)(size) << 16) | ((unsigned)(type) << 8) | (unsigned)(nr))
+#define _IO(type, nr)         _IOC(0, (type), (nr), 0)
+#define _IOW(type, nr, t)     _IOC(1, (type), (nr), sizeof(t))
+#define _IOR(type, nr, t)     _IOC(2, (type), (nr), sizeof(t))
+#define _IOWR(type, nr, t)    _IOC(3, (type), (nr), sizeof(t))
 #define TCGETS     0x5401
 #define TCSETS     0x5402
 #define TCSETSW    0x5403

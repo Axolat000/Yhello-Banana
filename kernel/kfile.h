@@ -24,6 +24,7 @@
 #define KF_PTM  5          /* a pseudo-terminal's master (/dev/ptmx: kernel/pty.c) */
 #define KF_PTS  6          /* ... its slave (/dev/pts/N, /dev/tty) */
 #define KF_DEV  7          /* /dev/null, zero, full, random, urandom (dev: which) */
+#define KF_DIR  8          /* a folder (open of one: its path - openat, fchdir, fdopendir) */
 
 #define KF_DEV_NULL   1
 #define KF_DEV_ZERO   2
@@ -62,6 +63,7 @@ typedef struct kfile {
     int           is_sock;         /* KF_PIPE: a socket pair's end (shutdown, S_IFSOCK) */
     struct pty*   pty;             /* KF_PTM, KF_PTS */
     int           dev;             /* KF_DEV: KF_DEV_* */
+    char*         path;            /* KF_DIR: its absolute path (kmalloc'd) */
 } kfile_t;
 
 kfile_t* kfile_new(int type, int flags);       /* one reference; NULL if out of memory */

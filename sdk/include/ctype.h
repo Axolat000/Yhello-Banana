@@ -17,6 +17,9 @@ int isgraph(int c);
 int iscntrl(int c);
 int tolower(int c);
 int toupper(int c);
+int isascii(int c);
+int toascii(int c);
+int isblank(int c);
 #ifdef __cplusplus
 }
 #endif

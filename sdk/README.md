@@ -243,8 +243,22 @@ port's own answers in the environment (`ac_cv_...=yes`). No shared
 libraries (`-shared` fails, so configure falls back to static ones).
 `fork` and `exec` exist on the 64-bit kernel only (the 32-bit one runs
 apps without address spaces): Unix programs are usually 64-bit.
-`ports/bash/build.sh` is the example: GNU bash, packaged with `bin=bash,sh`
-(below).
+`ports/port.sh` has what the ports share (download + sha256, configure
+again from scratch when its options or the SDK change, `port_package`);
+`ports/bash/build.sh` and `ports/coreutils/build.sh` are examples, packaged
+with `bin=` (below).
+
+What Unix programs find in the C library (API version 28, "Unix files"):
+`stat` / `lstat` / `fstat` with modes, owners and times; `chmod`, `chown`,
+`symlink`, `readlink`, `utimes` / `utimensat` (the modification time),
+`unlink`, `rename`; directory descriptors - `open(dir, O_DIRECTORY)`,
+`openat` and the other `*at` calls, `fchdir`, `fdopendir`, `dirfd`;
+`realpath` through symlinks; `scandir`. Hard links are not supported
+(`link`: `EPERM`). stdio is buffered (full for files and pipes, by line for
+a terminal) with `fseeko`, `tmpfile`, `dprintf`, the `*_unlocked` calls and
+`<stdio_ext.h>` (`__fpending`, `__fpurge`... - what gnulib uses). Also GNU
+`getopt_long` (`<getopt.h>`), `<search.h>` (`tsearch`, `hsearch`,
+`lsearch`), glibc's `strerror` texts and `program_invocation_name`.
 
 ### Drivers
 
@@ -293,8 +307,10 @@ examples in `driver/examples`) into `.bpk` packages of type `driver`.
   (only relative relocations: `bpkg check` verifies it)
 - your `DATA` files, installed next to the program in `/apps/<name>/`
 - `bin=name,...` in the manifest (optional): commands in `/bin` - each
-  `/bin/<name>` is a link to the program, made when the package is
-  installed and removed with it (bash: `bin=bash,sh`)
+  `/bin/<name>` is a link to `/apps/<pkg>/<name>` when the package has a
+  file of that name (a package of several programs: coreutils, diffutils),
+  otherwise to the program; made when the package is installed and removed
+  with it (bash: `bin=bash,sh`)
 - `icon.png` - from `ICON = picture.png` in the Makefile: the app's picture
   on the desktop, the taskbar, the Start menu and in the App Store (square;
   its four corners' colour, when they agree, is see-through)

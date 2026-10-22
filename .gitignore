@@ -34,3 +34,5 @@ build/test/
 sdk/examples/posixtest/*.so
 # the App Store's facts about the built-in packages (tools/mkbuiltinmeta.py)
 build/builtin-meta-*.bin
+build/ports64.inc
+build/ports64.h

@@ -1,0 +1,11 @@
+# /apps/zsh/zshrc - read by every interactive zsh (its etcdir: ports/zsh/build.sh),
+# then ~/.zshrc. A prompt, history and colours by default.
+PROMPT='%B%F{green}%n@%m%f%b:%B%F{blue}%~%f%b%# '
+HISTFILE=~/.zsh_history
+HISTSIZE=1000
+SAVEHIST=1000
+setopt hist_ignore_dups share_history
+bindkey -e
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias ll='ls -l'

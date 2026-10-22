@@ -312,6 +312,11 @@ int  fs_chown(const char* path, int uid, int gid);        /* -1 keeps that one; 
 int  fs_symlink(const char* target, const char* linkpath);
 /* a link's target into out: its length, or -1 (not a link) */
 int  fs_readlink(const char* path, char* out, int cap);
+/* its last change's time (follow: through a link); 0 or -1 */
+int  fs_utime(const char* path, int follow, uint32_t mtime);
+/* an open file's (index): its time; chmod / chown (~0u: kept); 0 or -1 */
+void fs_file_utime(int idx, uint32_t mtime);
+int  fs_file_setattr(int idx, uint32_t perms, uint32_t uid, uint32_t gid);
 int  fs_is_symlink(int idx);
 /* the mode of a file / folder (the default when not set yet) */
 uint32_t fs_file_mode(int idx);

@@ -18,7 +18,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y nasm gcc-multilib binutils xorriso mtools python3 sbsigntool efitools
+          sudo apt-get install -y nasm gcc-multilib binutils xorriso mtools python3 sbsigntool efitools ncurses-bin
 
       # Secure Boot: the loaders are signed with the Banana OS key (a repository
       # secret); without it (forks) they are built unsigned
@@ -42,16 +42,36 @@ jobs:
             ports/ffmpeg/build
           key: ffmpeg-7.1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
 
-      # GNU bash for /bin/bash and /bin/sh (ports/bash/build.sh, 64-bit):
-      # the download kept, the build too while its script and the SDK stay
-      - name: bash build cache
+      # the Unix programs in /bin (ports/<name>/build.sh with ports/port.sh,
+      # 64-bit): bash, coreutils, grep, sed, findutils, diffutils, gawk,
+      # ncurses (+ terminfo), less, zsh - the downloads kept, the builds too
+      # while their scripts and the SDK stay (port.sh reconfigures otherwise)
+      - name: Unix ports build cache
         uses: actions/cache@v4
         with:
           path: |
             ports/bash/src
             ports/bash/build
-          key: bash-5.2.37-${{ hashFiles('ports/bash/build.sh', 'sdk/tools/banana-*', 'sdk/lib/*.c', 'sdk/include/**') }}
-          restore-keys: bash-5.2.37-
+            ports/coreutils/src
+            ports/coreutils/build
+            ports/grep/src
+            ports/grep/build
+            ports/sed/src
+            ports/sed/build
+            ports/findutils/src
+            ports/findutils/build
+            ports/diffutils/src
+            ports/diffutils/build
+            ports/gawk/src
+            ports/gawk/build
+            ports/ncurses/src
+            ports/ncurses/build
+            ports/less/src
+            ports/less/build
+            ports/zsh/src
+            ports/zsh/build
+          key: unix-ports-v1-${{ hashFiles('ports/port.sh', 'ports/bash/*', 'ports/coreutils/*', 'ports/grep/*', 'ports/sed/*', 'ports/findutils/*', 'ports/diffutils/*', 'ports/gawk/*', 'ports/ncurses/*', 'ports/less/*', 'ports/zsh/*', 'sdk/tools/banana-*', 'sdk/lib/*.c', 'sdk/include/**') }}
+          restore-keys: unix-ports-v1-
 
       - name: Build Banana_OS.iso
         run: |

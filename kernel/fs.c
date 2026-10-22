@@ -2116,6 +2116,37 @@ int fs_symlink(const char* target, const char* linkpath) {
     return i;
 }
 
+/* the time of its last change (touch); follow: through a link; 0 or -1 */
+int fs_utime(const char* path, int follow, uint32_t mtime) {
+    g_io_err = g_perm_err = 0;
+    int idx, k = lookup(path, follow, &idx);
+    if (k < 0) return -1;
+    touched();
+    if (k) D(idx).mtime = mtime; else F(idx).mtime = mtime;
+    sys_setattr(k, idx, ~0u, ~0u, ~0u, mtime);
+    return 0;
+}
+
+/* the same, for an open file (by its index) */
+void fs_file_utime(int idx, uint32_t mtime) {
+    if (idx < 0 || idx >= g_fslots || !F(idx).used) return;
+    touched();
+    F(idx).mtime = mtime;
+    sys_setattr(0, idx, ~0u, ~0u, ~0u, mtime);
+}
+
+/* chmod / chown of an open file (by its index): 0 or -1 */
+int fs_file_setattr(int idx, uint32_t perms, uint32_t uid, uint32_t gid) {
+    if (idx < 0 || idx >= g_fslots || !F(idx).used) return -1;
+    if (F(idx).mnt) { g_io_err = 1; return -1; }
+    touched();
+    if (perms != ~0u) F(idx).mode = (fmode(idx) & FS_S_IFMT) | (perms & 07777u);
+    if (uid != ~0u) F(idx).uid = uid;
+    if (gid != ~0u) F(idx).gid = gid;
+    sys_setattr(0, idx, perms == ~0u ? ~0u : perms & 07777u, uid, gid, ~0u);
+    return 0;
+}
+
 int fs_readlink(const char* path, char* out, int cap) {
     int idx;
     if (lookup(path, 0, &idx) != 0 || !is_link(idx)) return -1;

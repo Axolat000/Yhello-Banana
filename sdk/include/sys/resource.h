@@ -19,6 +19,16 @@ struct rlimit { rlim_t rlim_cur, rlim_max; };
 #define RLIMIT_NOFILE  7
 #define RLIMIT_MEMLOCK 8
 #define RLIMIT_AS      9
+#define RLIMIT_LOCKS   10
+#define RLIMIT_SIGPENDING 11
+#define RLIMIT_MSGQUEUE 12
+#define RLIMIT_NICE    13
+#define RLIMIT_RTPRIO  14
+#define RLIMIT_RTTIME  15
+#define RLIMIT_NLIMITS 16
+#define RLIM_NLIMITS   RLIMIT_NLIMITS
+#define RLIM_SAVED_MAX RLIM_INFINITY
+#define RLIM_SAVED_CUR RLIM_INFINITY
 struct rusage {
     struct timeval ru_utime, ru_stime;
     long ru_maxrss, ru_ixrss, ru_idrss, ru_isrss, ru_minflt, ru_majflt, ru_nswap, ru_inblock, ru_oublock,
@@ -28,6 +38,8 @@ struct rusage {
 #define RUSAGE_CHILDREN (-1)
 #define RUSAGE_THREAD   1
 #define PRIO_PROCESS 0
+#define PRIO_PGRP    1
+#define PRIO_USER    2
 int getrlimit(int res, struct rlimit* r);
 int setrlimit(int res, const struct rlimit* r);
 int getrusage(int who, struct rusage* r);

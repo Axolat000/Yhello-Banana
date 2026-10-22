@@ -168,8 +168,7 @@ static void child_env(void) {
     setenv("TERM_PROGRAM", "banana-terminal", 1);
     setenv("TERMCAP", TERMCAP_ENTRY, 1);
     setenv("LANG", "C.UTF-8", 0);
-    if (!getenv("PS1"))
-        setenv("PS1", "\\[\\e[1;32m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ ", 1);
+    /* (the shells' prompts: their own rc files - /apps/bash/bashrc, /apps/zsh/zshrc) */
     unsetenv("COLUMNS");
     unsetenv("LINES");
 }

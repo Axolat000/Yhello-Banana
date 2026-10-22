@@ -68,6 +68,13 @@ int    fstat(int fd, struct stat* st);
 int    lstat(const char* path, struct stat* st);
 int    fstatat(int dirfd, const char* path, struct stat* st, int flags);
 int    mkdir(const char* path, mode_t mode);
+int    mkdirat(int dirfd, const char* path, mode_t mode);
+int    fchmodat(int dirfd, const char* path, mode_t mode, int flags);
+#define UTIME_NOW  ((1l << 30) - 1l)
+#define UTIME_OMIT ((1l << 30) - 2l)
+/* times[1]: the last change (the access time is not kept); NULL: now */
+int    utimensat(int dirfd, const char* path, const struct timespec times[2], int flags);
+int    futimens(int fd, const struct timespec times[2]);
 int    chmod(const char* path, mode_t mode);
 int    fchmod(int fd, mode_t mode);
 mode_t umask(mode_t mask);

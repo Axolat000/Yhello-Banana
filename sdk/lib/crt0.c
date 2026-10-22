@@ -9,6 +9,8 @@ extern unsigned long __banana_stack_top;   /* (pthread.c: the main thread's stac
 /* (a main with argc, argv only, or none, takes this call as well: the C ABI) */
 int  main(int argc, char** argv, char** envp);
 extern char** environ;
+extern char* program_invocation_name;
+extern char* program_invocation_short_name;
 void __libc_init(void);
 void exit(int code) __attribute__((noreturn));
 
@@ -19,6 +21,13 @@ int _banana_start(const banana_api_t* api, int argc, char** argv) {
     /* version 26: the environment follows argv's NULL (execve's envp, or the
      * system's default) */
     if (BANANA_HAS(api, proc_kill) && argv && !argv[argc] && argv[argc + 1]) environ = argv + argc + 1;
+    /* (the name error messages start with: GNU's program_invocation_name) */
+    if (argv && argc > 0 && argv[0] && argv[0][0]) {
+        program_invocation_name = argv[0];
+        char* s = argv[0];
+        for (char* c = argv[0]; *c; c++) if (*c == '/') s = c + 1;
+        program_invocation_short_name = s;
+    }
     __banana_stack_top = (unsigned long)__builtin_frame_address(0);
     __libc_init();
     exit(main(argc, argv, environ));

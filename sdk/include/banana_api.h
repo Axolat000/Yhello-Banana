@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 27u
+#define BANANA_API_VERSION 28u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -153,6 +153,14 @@ typedef struct {
     unsigned int size;        /* bytes (files) */
     int          is_dir;
 } banana_stat_t;
+
+/* fs_ustat (version 28): mode as Linux's st_mode (S_IFREG, S_IFDIR,
+ * S_IFLNK | permissions) */
+typedef struct {
+    unsigned int       mode, uid, gid, nlink;
+    unsigned long long size, ino, dev;
+    long long          atime, mtime, ctime;
+} banana_ustat_t;
 
 typedef struct {
     char         name[64];
@@ -549,6 +557,27 @@ typedef struct banana_api {
      * Job control: SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU stop a process,
      * SIGCONT continues it; proc_wait's WUNTRACED 2, WCONTINUED 8. */
     int (*tty_ioctl)(int fd, unsigned long req, void* arg);
+
+    /* ── version 28: Unix files ───────────────────────────────────────
+     * What the files' own records say: the mode (type and permissions),
+     * owner, times, symbolic links. Errors are -errno. fs_ustat: follow 0
+     * is lstat (the link itself); fs_fdstat: an open file's (-EBADF for a
+     * descriptor that is not a file); fs_utime: its last change, seconds
+     * since 1970 (-1: now); fs_unlink: dir 1 removes an empty folder
+     * (rmdir), 0 anything else (unlink: -EISDIR for a folder); fs_fdattr:
+     * what 1 chmod(a), 2 chown(a, b; -1 keeps one), 3 the time (a). */
+    int (*fs_ustat)(const char* path, int follow, banana_ustat_t* st);
+    int (*fs_fdstat)(int fd, banana_ustat_t* st);
+    int (*fs_chmod)(const char* path, unsigned int mode);
+    int (*fs_chown)(const char* path, int uid, int gid);
+    int (*fs_symlink)(const char* target, const char* linkpath);
+    int (*fs_readlink)(const char* path, char* buf, int cap);      /* its length */
+    int (*fs_utime)(const char* path, int follow, long long mtime);
+    int (*fs_unlink)(const char* path, int dir);
+    int (*fs_fdattr)(int fd, int what, long long a, long long b);
+    /* open() of a folder (read only) gives a descriptor of type
+     * BANANA_FD_DIR; fs_fdpath: its absolute path (a file's too) - its length */
+    int (*fs_fdpath)(int fd, char* buf, int cap);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0
@@ -620,6 +649,7 @@ typedef struct banana_ucontext {
 #define BANANA_FD_PTM  5                /* a pseudo-terminal's master: size its number (pts/N) */
 #define BANANA_FD_PTS  6                /* ... its slave */
 #define BANANA_FD_DEV  7                /* /dev/null, zero, full, random: size which (1-4) */
+#define BANANA_FD_DIR  8                /* a folder (version 28) */
 typedef struct {
     int type, flags;                    /* flags: as F_GETFL */
     int is_sock, cloexec;

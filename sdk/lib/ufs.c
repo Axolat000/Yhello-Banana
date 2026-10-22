@@ -1,0 +1,542 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* Banana OS SDK: Unix files - what a file's own record says (stat: the
+ * mode, owner, times, links), changing it (chmod, chown, utimensat),
+ * symbolic links, unlink / rmdir / rename with their errors, folder
+ * descriptors and the *at calls over them (openat, fstatat, unlinkat...),
+ * fchdir, fdopendir, realpath. With the system's calls of API version 28;
+ * on an older system what it can do (a mode by kind, no links). */
+#include <banana.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <utime.h>
+
+#define V28 BANANA_HAS(__banana, fs_fdpath)
+
+int __ufd_is(int fd);
+int __ufd_fstat(int fd, struct stat* st);
+int __dev_stat(const char* path, struct stat* st);      /* tty.c */
+
+static int fail(int e) { errno = e; return -1; }
+static int ret(int r) { return r < 0 ? fail(-r) : r; }
+
+/* ── stat ─────────────────────────────────────────────────────────── */
+
+static void from_ustat(const banana_ustat_t* u, struct stat* st) {
+    memset(st, 0, sizeof(*st));
+    st->st_mode = u->mode;
+    st->st_uid = u->uid;
+    st->st_gid = u->gid;
+    st->st_nlink = u->nlink;
+    st->st_size = (off_t)u->size;
+    st->st_ino = (ino_t)u->ino;
+    st->st_dev = (dev_t)u->dev;
+    st->st_atim.tv_sec = (time_t)u->atime;
+    st->st_mtim.tv_sec = (time_t)u->mtime;
+    st->st_ctim.tv_sec = (time_t)u->ctime;
+    st->st_blksize = 4096;
+    st->st_blocks = (blkcnt_t)((u->size + 4095) / 4096 * 8);
+}
+
+/* (an older system: the kind of thing, its size) */
+static int stat_old(const char* path, struct stat* st) {
+    banana_stat_t b;
+    if (__banana->stat(path, &b) != 0) return fail(ENOENT);
+    memset(st, 0, sizeof(*st));
+    st->st_mode = b.is_dir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+    st->st_size = b.size;
+    st->st_nlink = 1;
+    st->st_uid = st->st_gid = 1000;
+    st->st_dev = 1;
+    for (const char* c = path; *c; c++) st->st_ino = st->st_ino * 31 + (unsigned char)*c;   /* (a stable number per path) */
+    st->st_blocks = (b.size + 511) / 512;
+    st->st_blksize = 4096;
+    return 0;
+}
+
+static int stat_any(const char* path, struct stat* st, int follow) {
+    if (!path) return fail(EFAULT);
+    if (!*path) return fail(ENOENT);
+    if (!strncmp(path, "/dev/", 5) && __dev_stat(path, st) == 0) return 0;
+    if (!V28) return stat_old(path, st);
+    banana_ustat_t u;
+    int r = __banana->fs_ustat(path, follow, &u);
+    if (r < 0) return fail(-r);
+    from_ustat(&u, st);
+    return 0;
+}
+
+int stat(const char* path, struct stat* st) { return stat_any(path, st, 1); }
+int lstat(const char* path, struct stat* st) { return stat_any(path, st, 0); }
+
+int fstat(int fd, struct stat* st) {
+    if (__ufd_is(fd)) return __ufd_fstat(fd, st);
+    memset(st, 0, sizeof(*st));
+    st->st_blksize = 4096;
+    if (V28) {
+        banana_ustat_t u;
+        if (__banana->fs_fdstat(fd, &u) == 0) { from_ustat(&u, st); return 0; }
+    }
+    banana_fdinfo_t fi;
+    if (BANANA_HAS(__banana, fd_info)) {
+        if (__banana->fd_info(fd, &fi) != 0) return fail(EBADF);
+        if (fi.type != BANANA_FD_FILE) {
+            static const unsigned dev_minor[] = { 0, 3, 5, 7, 8 };   /* (/dev/null, zero, full, random) */
+            int chr = fi.type == BANANA_FD_TERM || fi.type == BANANA_FD_PTM || fi.type == BANANA_FD_PTS || fi.type == BANANA_FD_DEV;
+            st->st_mode = fi.type == BANANA_FD_DIR ? S_IFDIR | 0755 : chr ? S_IFCHR | (fi.type == BANANA_FD_DEV ? 0666 : 0620)
+                        : fi.is_sock || fi.type == BANANA_FD_SOCK ? S_IFSOCK | 0777 : S_IFIFO | 0600;
+            st->st_rdev = fi.type == BANANA_FD_PTS ? (136u << 8) | (unsigned)fi.size : fi.type == BANANA_FD_PTM ? (5u << 8) | 2u
+                        : fi.type == BANANA_FD_DEV && fi.size < 5 ? (1u << 8) | dev_minor[fi.size] : 0x8800;
+            st->st_nlink = 1;
+            st->st_uid = st->st_gid = 1000;
+            st->st_ino = (ino_t)(fi.id >> 4);
+            st->st_dev = chr ? 0x16 : 0xF;
+            return 0;
+        }
+    }
+    if (fd <= 2) { st->st_mode = S_IFCHR | 0620; return 0; }
+    long cur = __banana->seek(fd, 0, SEEK_CUR);
+    if (cur < 0) return fail(EBADF);
+    long end = __banana->seek(fd, 0, SEEK_END);
+    __banana->seek(fd, cur, SEEK_SET);
+    st->st_mode = S_IFREG | 0644;
+    st->st_size = end;
+    st->st_nlink = 1;
+    st->st_uid = st->st_gid = 1000;
+    st->st_ino = (ino_t)fd;
+    st->st_blocks = (end + 511) / 512;
+    return 0;
+}
+
+/* ── folder descriptors and *at ────────────────────────────────────── */
+
+/* path, relative to the folder dirfd (AT_FDCWD: the current one), as a path: 0 or -1 */
+static int at(int dirfd, const char* path, char* out, size_t cap, int empty_ok) {
+    if (!path) return fail(EFAULT);
+    if (!*path && !empty_ok) return fail(ENOENT);
+    if (path[0] == '/' || dirfd == AT_FDCWD) {
+        if (strlen(path) >= cap) return fail(ENAMETOOLONG);
+        strcpy(out, path);
+        return 0;
+    }
+    if (!V28) return fail(ENOTSUP);
+    char dir[PATH_MAX];
+    int n = __banana->fs_fdpath(dirfd, dir, sizeof(dir));
+    if (n < 0) return fail(n == -9 ? EBADF : -n);
+    if (!*path) { snprintf(out, cap, "%s", dir); return 0; }
+    if ((size_t)snprintf(out, cap, "%s%s%s", dir, n && dir[n - 1] == '/' ? "" : "/", path) >= cap) return fail(ENAMETOOLONG);
+    return 0;
+}
+
+int fstatat(int dirfd, const char* path, struct stat* st, int flags) {
+    if ((flags & AT_EMPTY_PATH) && path && !*path) return fstat(dirfd, st);
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    return stat_any(p, st, !(flags & AT_SYMLINK_NOFOLLOW));
+}
+
+int openat(int dirfd, const char* path, int flags, ...) {
+    va_list ap;
+    va_start(ap, flags);
+    int mode = (flags & O_CREAT) ? va_arg(ap, int) : 0;
+    va_end(ap);
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    return open(p, flags, mode);
+}
+
+int fchdir(int fd) {
+    if (!V28) return fail(ENOTSUP);
+    char dir[PATH_MAX];
+    int n = __banana->fs_fdpath(fd, dir, sizeof(dir));
+    if (n < 0) return fail(n == -9 ? EBADF : -n);
+    return chdir(dir);
+}
+
+int mkdirat(int dirfd, const char* path, mode_t mode) {
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    return mkdir(p, mode);
+}
+
+int faccessat(int dirfd, const char* path, int mode, int flags) {
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    struct stat st;
+    if (stat_any(p, &st, !(flags & AT_SYMLINK_NOFOLLOW))) return -1;
+    if (mode == F_OK) return 0;
+    /* (one user: the owner's bits - everything runs as it) */
+    if (((mode & R_OK) && !(st.st_mode & 0400)) || ((mode & W_OK) && !(st.st_mode & 0200)) ||
+        ((mode & X_OK) && !(st.st_mode & 0111))) return fail(EACCES);
+    return 0;
+}
+int access(const char* path, int mode) { return faccessat(AT_FDCWD, path, mode, 0); }
+int eaccess(const char* path, int mode) { return faccessat(AT_FDCWD, path, mode, 0); }
+int euidaccess(const char* path, int mode) { return faccessat(AT_FDCWD, path, mode, 0); }
+
+/* ── changing a file's record ──────────────────────────────────────── */
+
+int fchmodat(int dirfd, const char* path, mode_t mode, int flags) {
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    if (flags & AT_SYMLINK_NOFOLLOW) {               /* (a link's own mode: Linux has none either) */
+        struct stat st;
+        if (lstat(p, &st)) return -1;
+        if (S_ISLNK(st.st_mode)) return fail(EOPNOTSUPP);
+    }
+    if (!V28) { struct stat st; return stat(p, &st); }
+    return ret(__banana->fs_chmod(p, mode));
+}
+int chmod(const char* path, mode_t mode) { return fchmodat(AT_FDCWD, path, mode, 0); }
+int fchmod(int fd, mode_t mode) {
+    if (!V28) return 0;
+    int r = __banana->fs_fdattr(fd, 1, mode, 0);
+    if (r == -9) {                                   /* (a folder's descriptor: by its path) */
+        char dir[PATH_MAX];
+        if (__banana->fs_fdpath(fd, dir, sizeof(dir)) >= 0) return chmod(dir, mode);
+    }
+    return ret(r);
+}
+
+int fchownat(int dirfd, const char* path, uid_t u, gid_t g, int flags) {
+    char p[PATH_MAX];
+    (void)flags;                                     /* (the system changes the link's target) */
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    if (!V28) { struct stat st; return stat(p, &st); }
+    return ret(__banana->fs_chown(p, u == (uid_t)-1 ? -1 : (int)u, g == (gid_t)-1 ? -1 : (int)g));
+}
+int chown(const char* path, uid_t u, gid_t g) { return fchownat(AT_FDCWD, path, u, g, 0); }
+int lchown(const char* path, uid_t u, gid_t g) { return fchownat(AT_FDCWD, path, u, g, AT_SYMLINK_NOFOLLOW); }
+int fchown(int fd, uid_t u, gid_t g) {
+    if (!V28) return 0;
+    return ret(__banana->fs_fdattr(fd, 2, u == (uid_t)-1 ? -1 : (long long)u, g == (gid_t)-1 ? -1 : (long long)g));
+}
+
+/* the time of the last change (the system keeps no access time of ours):
+ * NULL or UTIME_NOW: now; UTIME_OMIT: kept */
+static long long when(const struct timespec* t) {
+    if (!t || t[1].tv_nsec == UTIME_NOW) return -1;
+    return (long long)t[1].tv_sec;
+}
+
+int utimensat(int dirfd, const char* path, const struct timespec t[2], int flags) {
+    if (!path) return futimens(dirfd, t);
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    if (!V28) { struct stat st; return stat(p, &st); }
+    if (t && t[1].tv_nsec == UTIME_OMIT) { struct stat st; return stat_any(p, &st, !(flags & AT_SYMLINK_NOFOLLOW)); }
+    return ret(__banana->fs_utime(p, !(flags & AT_SYMLINK_NOFOLLOW), when(t)));
+}
+
+int futimens(int fd, const struct timespec t[2]) {
+    if (!V28) return 0;
+    if (t && t[1].tv_nsec == UTIME_OMIT) return 0;
+    int r = __banana->fs_fdattr(fd, 3, when(t), 0);
+    if (r == -9) {
+        char dir[PATH_MAX];
+        if (__banana->fs_fdpath(fd, dir, sizeof(dir)) >= 0) return utimensat(AT_FDCWD, dir, t, 0);
+    }
+    return ret(r);
+}
+
+static int tv_to_ts(const struct timeval* tv, struct timespec* ts) {
+    if (!tv) return 0;
+    for (int i = 0; i < 2; i++) { ts[i].tv_sec = tv[i].tv_sec; ts[i].tv_nsec = tv[i].tv_usec * 1000; }
+    return 1;
+}
+int utimes(const char* path, const struct timeval t[2]) {
+    struct timespec ts[2];
+    return utimensat(AT_FDCWD, path, tv_to_ts(t, ts) ? ts : NULL, 0);
+}
+int lutimes(const char* path, const struct timeval t[2]) {
+    struct timespec ts[2];
+    return utimensat(AT_FDCWD, path, tv_to_ts(t, ts) ? ts : NULL, AT_SYMLINK_NOFOLLOW);
+}
+int futimes(int fd, const struct timeval t[2]) {
+    struct timespec ts[2];
+    return futimens(fd, tv_to_ts(t, ts) ? ts : NULL);
+}
+int futimesat(int dirfd, const char* path, const struct timeval t[2]) {
+    struct timespec ts[2];
+    return utimensat(dirfd, path, tv_to_ts(t, ts) ? ts : NULL, 0);
+}
+int utime(const char* path, const struct utimbuf* b) {
+    struct timespec ts[2];
+    if (b) { ts[0].tv_sec = b->actime; ts[1].tv_sec = b->modtime; ts[0].tv_nsec = ts[1].tv_nsec = 0; }
+    return utimensat(AT_FDCWD, path, b ? ts : NULL, 0);
+}
+
+/* ── links ─────────────────────────────────────────────────────────── */
+
+int symlinkat(const char* target, int dirfd, const char* linkpath) {
+    char p[PATH_MAX];
+    if (!target || !*target) return fail(ENOENT);
+    if (at(dirfd, linkpath, p, sizeof(p), 0)) return -1;
+    if (!V28) return fail(EPERM);
+    return ret(__banana->fs_symlink(target, p));
+}
+int symlink(const char* target, const char* linkpath) { return symlinkat(target, AT_FDCWD, linkpath); }
+
+ssize_t readlinkat(int dirfd, const char* path, char* buf, size_t len) {
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    if (!V28) { struct stat st; return stat(p, &st) ? -1 : fail(EINVAL); }
+    return ret(__banana->fs_readlink(p, buf, len > INT_MAX ? INT_MAX : (int)len));
+}
+ssize_t readlink(const char* path, char* buf, size_t len) { return readlinkat(AT_FDCWD, path, buf, len); }
+
+/* (hard links: the system's files have one name each) */
+int linkat(int a, const char* from, int b, const char* to, int flags) {
+    (void)a; (void)from; (void)b; (void)to; (void)flags;
+    return fail(EPERM);
+}
+int link(const char* from, const char* to) { return linkat(AT_FDCWD, from, AT_FDCWD, to, 0); }
+
+/* ── removing, renaming, making folders ────────────────────────────── */
+
+int unlinkat(int dirfd, const char* path, int flags) {
+    char p[PATH_MAX];
+    if (at(dirfd, path, p, sizeof(p), 0)) return -1;
+    if (!V28) return __banana->remove(p) == 0 ? 0 : fail(ENOENT);
+    return ret(__banana->fs_unlink(p, (flags & AT_REMOVEDIR) != 0));
+}
+int unlink(const char* path) { return unlinkat(AT_FDCWD, path, 0); }
+int rmdir(const char* path) { return unlinkat(AT_FDCWD, path, AT_REMOVEDIR); }
+int remove(const char* path) {
+    struct stat st;
+    if (lstat(path, &st)) return -1;
+    return S_ISDIR(st.st_mode) ? rmdir(path) : unlink(path);
+}
+
+int renameat(int da, const char* from, int db, const char* to) {
+    char a[PATH_MAX], b[PATH_MAX];
+    if (at(da, from, a, sizeof(a), 0) || at(db, to, b, sizeof(b), 0)) return -1;
+    struct stat sa, sb;
+    if (lstat(a, &sa)) return -1;
+    int have_b = lstat(b, &sb) == 0;
+    if (have_b) {
+        if (sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev) return 0;      /* (the same file) */
+        /* POSIX: a folder replaces only an empty folder, a file only a file */
+        if (S_ISDIR(sa.st_mode) && !S_ISDIR(sb.st_mode)) return fail(ENOTDIR);
+        if (!S_ISDIR(sa.st_mode) && S_ISDIR(sb.st_mode)) return fail(EISDIR);
+        if (S_ISDIR(sb.st_mode) && rmdir(b)) return -1;
+    }
+    if (__banana->rename(a, b) != 0) return fail(EACCES);
+    return 0;
+}
+int rename(const char* from, const char* to) { return renameat(AT_FDCWD, from, AT_FDCWD, to); }
+int renameat2(int da, const char* from, int db, const char* to, unsigned flags) {
+    if (flags & 1) {                                  /* RENAME_NOREPLACE */
+        char b[PATH_MAX];
+        struct stat st;
+        if (at(db, to, b, sizeof(b), 0)) return -1;
+        if (lstat(b, &st) == 0) return fail(EEXIST);
+    } else if (flags) return fail(EINVAL);
+    return renameat(da, from, db, to);
+}
+
+/* errno as on Linux, EEXIST above all: Java's Files.createDirectories takes
+ * a folder that is there by it (it saw a stale ENOENT and gave up) */
+int mkdir(const char* path, mode_t mode) {
+    if (!path || !*path) return fail(ENOENT);
+    struct stat st;
+    if (lstat(path, &st) == 0) return fail(EEXIST);
+    if (__banana->mkdir(path) == 0) {
+        if (V28) {
+            mode_t m = umask(0);
+            umask(m);
+            if ((mode & ~m & 07777) != 0755) __banana->fs_chmod(path, mode & ~m & 07777);
+        }
+        return 0;
+    }
+    /* why not: the folder it would go in */
+    char parent[PATH_MAX];
+    size_t n = strlen(path);
+    if (n >= sizeof(parent)) return fail(ENAMETOOLONG);
+    memcpy(parent, path, n + 1);
+    while (n > 1 && parent[n - 1] == '/') parent[--n] = 0;
+    char* slash = strrchr(parent, '/');
+    if (slash == parent) slash[1] = 0;
+    else if (slash) *slash = 0;
+    else strcpy(parent, ".");
+    if (stat(parent, &st)) return fail(ENOENT);
+    return fail(S_ISDIR(st.st_mode) ? EACCES : ENOTDIR);
+}
+
+/* ── folders ──────────────────────────────────────────────────────── */
+
+struct __dir {
+    char          path[PATH_MAX];
+    int           index;
+    int           fd;                 /* dirfd()'s, -1 until asked for */
+    struct dirent ent;
+};
+
+DIR* opendir(const char* path) {
+    struct stat st;
+    if (!path || stat(path, &st)) return NULL;
+    if (!S_ISDIR(st.st_mode)) { errno = ENOTDIR; return NULL; }
+    DIR* d = calloc(1, sizeof(DIR));
+    if (!d) { errno = ENOMEM; return NULL; }
+    snprintf(d->path, sizeof(d->path), "%s", path);
+    d->fd = -1;
+    return d;
+}
+
+DIR* fdopendir(int fd) {
+    if (!V28) { errno = ENOTSUP; return NULL; }
+    char dir[PATH_MAX];
+    int n = __banana->fs_fdpath(fd, dir, sizeof(dir));
+    if (n < 0) { errno = n == -9 ? EBADF : -n; return NULL; }
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISDIR(st.st_mode)) { errno = ENOTDIR; return NULL; }
+    DIR* d = opendir(dir);
+    if (d) d->fd = fd;                       /* (closedir closes it) */
+    return d;
+}
+
+/* "." and ".." first, as everywhere, then what the folder holds */
+struct dirent* readdir(DIR* d) {
+    memset(&d->ent, 0, sizeof(d->ent));
+    if (d->index < 2) {
+        strcpy(d->ent.d_name, d->index ? ".." : ".");
+        d->ent.d_type = DT_DIR;
+    } else {
+        banana_dirent_t e;
+        if (__banana->readdir(d->path, d->index - 2, &e) != 0) return NULL;
+        snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", e.name);
+        /* (a file might be a link: the caller asks lstat when it matters) */
+        d->ent.d_type = e.is_dir ? DT_DIR : V28 ? DT_UNKNOWN : DT_REG;
+    }
+    d->index++;
+    d->ent.d_ino = (ino_t)d->index;
+    d->ent.d_off = d->index;
+    d->ent.d_reclen = sizeof(struct dirent);
+    return &d->ent;
+}
+
+int readdir_r(DIR* d, struct dirent* e, struct dirent** out) {
+    struct dirent* r = readdir(d);
+    if (r) { *e = *r; *out = e; } else *out = NULL;
+    return 0;
+}
+
+int closedir(DIR* d) {
+    if (!d) return fail(EBADF);
+    if (d->fd >= 0) close(d->fd);
+    free(d);
+    return 0;
+}
+void rewinddir(DIR* d) { d->index = 0; }
+long telldir(DIR* d) { return d->index; }
+void seekdir(DIR* d, long pos) { d->index = (int)pos; }
+int dirfd(DIR* d) {
+    if (d->fd < 0) d->fd = open(d->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    return d->fd;
+}
+
+/* ── realpath ──────────────────────────────────────────────────────── */
+
+/* the absolute path, with ".", ".." and symbolic links gone; it must exist */
+char* realpath(const char* path, char* resolved) {
+    char buf[PATH_MAX], rest[PATH_MAX], link[PATH_MAX];
+    if (!path) { errno = EINVAL; return NULL; }
+    if (!*path) { errno = ENOENT; return NULL; }
+    if (strlen(path) >= sizeof(rest)) { errno = ENAMETOOLONG; return NULL; }
+    strcpy(rest, path);
+    if (rest[0] == '/') buf[0] = 0;
+    else if (!getcwd(buf, sizeof(buf))) return NULL;
+    if (!strcmp(buf, "/")) buf[0] = 0;
+    size_t n = strlen(buf);
+    int links = 0;
+    char* p = rest;
+    while (*p) {
+        while (*p == '/') p++;
+        char* e = p;
+        while (*e && *e != '/') e++;
+        size_t l = (size_t)(e - p);
+        if (l == 0) break;
+        if (l == 1 && p[0] == '.') { p = e; continue; }
+        if (l == 2 && p[0] == '.' && p[1] == '.') {
+            while (n > 0 && buf[n - 1] != '/') n--;
+            if (n > 0) n--;
+            buf[n] = 0;
+            p = e;
+            continue;
+        }
+        if (n + 1 + l + 1 > sizeof(buf)) { errno = ENAMETOOLONG; return NULL; }
+        buf[n++] = '/';
+        memcpy(buf + n, p, l);
+        buf[n + l] = 0;
+        struct stat st;
+        if (lstat(buf, &st)) return NULL;
+        if (S_ISLNK(st.st_mode)) {
+            if (++links > 40) { errno = ELOOP; return NULL; }
+            ssize_t k = readlink(buf, link, sizeof(link) - 1);
+            if (k < 0) return NULL;
+            link[k] = 0;
+            /* the link's target, then what was left of the path */
+            if ((size_t)k + 1 + strlen(e) + 1 > sizeof(link)) { errno = ENAMETOOLONG; return NULL; }
+            strcat(link, "/");
+            strcat(link, e);
+            strcpy(rest, link);
+            p = rest;
+            if (rest[0] == '/') n = 0;
+            else n--;                                /* (relative: from the link's folder) */
+            buf[n] = 0;
+            continue;
+        }
+        if (*e && !S_ISDIR(st.st_mode)) { errno = ENOTDIR; return NULL; }
+        n += l;
+        p = e;
+    }
+    if (!n) { buf[0] = '/'; buf[1] = 0; }
+    if (!resolved) return strdup(buf);
+    strcpy(resolved, buf);
+    return resolved;
+}
+
+int creat(const char* path, mode_t mode) { return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode); }
+
+int alphasort(const struct dirent** a, const struct dirent** b) { return strcoll((*a)->d_name, (*b)->d_name); }
+
+int scandir(const char* path, struct dirent*** list, int (*sel)(const struct dirent*),
+            int (*cmp)(const struct dirent**, const struct dirent**)) {
+    DIR* d = opendir(path);
+    if (!d) return -1;
+    struct dirent** v = NULL;
+    size_t n = 0, cap = 0;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        if (sel && !sel(e)) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 32;
+            struct dirent** k = realloc(v, cap * sizeof(*v));
+            if (!k) goto fail;
+            v = k;
+        }
+        if (!(v[n] = malloc(sizeof(struct dirent)))) goto fail;
+        *v[n++] = *e;
+    }
+    closedir(d);
+    if (cmp && n > 1) qsort(v, n, sizeof(*v), (int (*)(const void*, const void*))cmp);
+    *list = v;
+    return (int)n;
+fail:
+    while (n) free(v[--n]);
+    free(v);
+    closedir(d);
+    errno = ENOMEM;
+    return -1;
+}
+
+int chroot(const char* path) { (void)path; return fail(EPERM); }
+long gethostid(void) { return 0x0a00020f; }

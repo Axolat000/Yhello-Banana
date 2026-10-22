@@ -11,6 +11,9 @@
 
 /* compiled code goes in malloc'd memory, which apps can run as it is (sys/mman.h: mkcljit.sh) */
 #define PAGESIZE 4096
+/* (TinyCC's freopen of stdout for its output: not here - stdio.h first, so
+ * the macro does not touch its declaration) */
+#include <stdio.h>
 #define freopen(path, mode, f) ((void)(path), (void)(mode), (f))
 
 /* (TinyCC's own style; its warnings are not ours to fix) */

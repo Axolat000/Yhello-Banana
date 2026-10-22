@@ -8,6 +8,12 @@ extern "C" {
 #include <stdint.h>
 typedef long ssize_t;
 typedef long off_t;
+/* (time_t too, as POSIX has it here: <time.h> has it as well) */
+#ifndef __time_t_defined
+#define __time_t_defined
+typedef long time_t;
+typedef long clock_t;
+#endif
 typedef int pid_t;
 typedef unsigned int mode_t;
 typedef unsigned int uid_t;

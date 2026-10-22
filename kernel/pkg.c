@@ -149,8 +149,9 @@ static int unpack_spec(const char* mf, uint32_t len, char* file, int fcap, char*
 
 /* "bin=<name>[,<name>...]" in a manifest: the program is also a command of
  * the system's - /bin/<name>, a symbolic link to /apps/<app>/app-<cpu>
- * (bash: bin=bash,sh). A name already in /bin is replaced; the links go
- * with the package. */
+ * (bash: bin=bash,sh), or to /apps/<app>/<name> when the package has a
+ * file of that name (a package of several programs: findutils' xargs).
+ * A name already in /bin is replaced; the links go with the package. */
 static int bin_name_ok(const char* n, int l) {
     if (l < 1 || l > 32 || (l <= 2 && n[0] == '.')) return 0;
     for (int i = 0; i < l; i++) {
@@ -164,8 +165,10 @@ static int bin_name_ok(const char* n, int l) {
 /* calls fn(name, path of /bin/name) for each valid name of bin= */
 static void each_bin(const char* mf, uint32_t len, const char* app,
                      void (*fn)(const char* app, const char* link)) {
-    char v[256], link[FS_PATH_LEN];
-    mf_get(mf, len, "bin", v, sizeof(v));
+    char link[FS_PATH_LEN];
+    char* v = (char*)kmalloc(4096);             /* (coreutils: 105 commands) */
+    if (!v) return;
+    mf_get(mf, len, "bin", v, 4096);
     for (char* p = v; *p;) {
         char* e = p;
         while (*e && *e != ',') e++;
@@ -180,15 +183,18 @@ static void each_bin(const char* mf, uint32_t len, const char* app,
         p = *e ? e + 1 : e;
         while (*p == ' ') p++;
     }
+    kfree(v);
 }
 
-static void bin_target(const char* app, char* out, int cap) {
-    ksnprintf(out, (size_t)cap, "%s/%s/app-%s", PKG_DIR, app, BANANA_ARCH);
+static void bin_target(const char* app, const char* link, char* out, int cap) {
+    ksnprintf(out, (size_t)cap, "%s/%s/%s", PKG_DIR, app, link + 5);        /* (link: /bin/<name>) */
+    if (fs_find_file(out) < 0) ksnprintf(out, (size_t)cap, "%s/%s/app-%s", PKG_DIR, app, BANANA_ARCH);
 }
 
 static void bin_add(const char* app, const char* link) {
     char target[FS_PATH_LEN];
-    bin_target(app, target, sizeof(target));
+    bin_target(app, link, target, sizeof(target));
+    fs_chmod(target, 0755);
     fs_mkdir_p("/bin");
     fs_stat_t st;
     if (fs_stat(link, 0, &st) == 0) {
@@ -201,7 +207,7 @@ static void bin_add(const char* app, const char* link) {
 /* only a link that is still this package's */
 static void bin_remove(const char* app, const char* link) {
     char target[FS_PATH_LEN], have[FS_PATH_LEN];
-    bin_target(app, target, sizeof(target));
+    bin_target(app, link, target, sizeof(target));
     if (fs_readlink(link, have, sizeof(have)) >= 0 && !strcmp(have, target)) fs_delete(link, 0);
 }
 
@@ -270,6 +276,8 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
             kfree(d);
             return -1;
         }
+        /* the programs can be run (bash looks at the x bits) */
+        if (!strncmp((const char*)e, "app-", 4) || !strncmp((const char*)e, "driver-", 7)) fs_chmod(path, 0755);
     }
     kfree(d);
     char unpacked[96] = "";

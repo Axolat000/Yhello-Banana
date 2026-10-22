@@ -42,7 +42,7 @@ VERBOSE = bool(os.environ.get("BANANA_CC_VERBOSE"))
 
 LIBC = ["crt0", "libc", "malloc", "stdio", "banana", "math", "posix", "setjmp", "mman",
         "pthread", "socket", "signal", "dl", "cxxrt", "unix", "utf8", "ufd", "math99",
-        "proc", "tty"]
+        "proc", "tty", "ufs"]
 # the other libraries a Unix program may ask for: all in libc.a
 EMPTY_LIBS = ["m", "pthread", "dl", "rt", "util", "crypt", "resolv", "iconv", "intl", "xnet"]
 

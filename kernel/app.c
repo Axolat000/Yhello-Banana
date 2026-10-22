@@ -708,7 +708,19 @@ static int a_open(const char* path, int flags) {
     app_proc_t* p = cur();
     if (!p || !path || !*path) return -1;
     if (!strncmp(path, "/dev/", 5)) return dev_open(p, path, flags);   /* (-errno) */
-    if (fs_find_dir(path) >= 0) return -1;
+    int didx = fs_find_dir(path);
+    if (didx >= 0) {
+        /* a folder: a descriptor that knows where it is (read: EISDIR) */
+        if (flags & (BANANA_O_WRITE | BANANA_O_TRUNC | BANANA_O_APPEND)) return -21;
+        kfile_t* d = kfile_new(KF_DIR, KF_READ);
+        char* ap = (char*)kmalloc(FS_PATH_LEN);
+        if (!d || !ap) { kfree(ap); kfile_put(d); return -12; }
+        fs_dir_path(didx, ap, FS_PATH_LEN);
+        if (!ap[0]) kstrlcpy(ap, "/", FS_PATH_LEN);
+        d->path = ap;
+        int fd = fd_install(p, d, 0, 0);
+        return fd < 0 ? -24 : fd;
+    }
     int idx = fs_find_file(path);
     if (idx < 0) {
         if (!(flags & BANANA_O_CREATE)) return -1;
@@ -773,6 +785,7 @@ static long a_read(int fd, void* buf, unsigned long len) {
     case KF_PTS:  return pts_read(p, f, buf, n32);
     case KF_PTM:  return ptm_read(p, f, buf, n32);
     case KF_DEV:  return dev_read(f, buf, n32);
+    case KF_DIR:  return -21;                           /* EISDIR */
     }
     /* the part asked for only: a big file on the disk is not read whole */
     int n = fs_read(f->fidx, f->pos, buf, n32);
@@ -793,6 +806,7 @@ static long fd_write(app_proc_t* p, int fd, const void* buf, unsigned long len) 
     case KF_PTS:  return pts_write(p, f, buf, n32);
     case KF_PTM:  return ptm_write(p, f, buf, n32);
     case KF_DEV:  return dev_write(f, n32);
+    case KF_DIR:  return -9;
     }
     if (!(f->flags & (KF_WRITE | KF_APPEND))) return -9;
     fs_file_t* ff = fs_file_info(f->fidx);             /* (its data is not read in for a write) */
@@ -1095,6 +1109,144 @@ static int a_stat(const char* path, banana_stat_t* st) {
     if (f >= 0) { st->size = fs_file_info(f)->size; st->is_dir = 0; return 0; }
     if (fs_find_dir(path) >= 0) { st->size = 0; st->is_dir = 1; return 0; }
     return -1;
+}
+
+/* ── Unix files (version 28) ───────────────────────────────────────── */
+
+/* why the last fs call failed: -EACCES, -EIO, or ENOENT */
+static int fs_errno(void) { return fs_perm_error() ? -13 : -2; }
+
+static void ustat_fill(banana_ustat_t* u, const fs_stat_t* st) {
+    memset(u, 0, sizeof(*u));
+    u->mode = st->mode;
+    u->uid = st->uid;
+    u->gid = st->gid;
+    u->nlink = st->is_dir ? 2 : 1;
+    u->size = st->size;
+    u->ino = st->is_dir ? (uint64_t)st->index * 2 + 1 : (uint64_t)st->index * 2 + 2;
+    u->dev = (uint64_t)st->mnt + 1;
+    u->atime = st->atime;
+    u->mtime = st->mtime;
+    u->ctime = st->ctime;
+}
+
+static int a_fs_ustat(const char* path, int follow, banana_ustat_t* u) {
+    if (!path || !u || !uok(u, sizeof(*u))) return -14;
+    fs_stat_t st;
+    if (fs_stat(path, follow, &st) != 0) return fs_errno();
+    ustat_fill(u, &st);
+    return 0;
+}
+
+static int a_fs_fdstat(int fd, banana_ustat_t* u) {
+    if (!u || !uok(u, sizeof(*u))) return -14;
+    HOLD(h, fd);
+    if (!h) return -9;
+    if (h->type == KF_DIR) {
+        fs_stat_t ds;
+        if (fs_stat(h->path, 1, &ds) != 0) return -2;
+        ustat_fill(u, &ds);
+        return 0;
+    }
+    if (h->type != KF_FILE) return -9;
+    fs_file_t* ff = fs_file_info(h->fidx);
+    if (!ff) return -9;
+    fs_stat_t st;
+    memset(&st, 0, sizeof(st));
+    st.index = h->fidx;
+    st.mode = fs_file_mode(h->fidx);
+    st.uid = ff->uid;
+    st.gid = ff->gid;
+    st.size = ff->size;
+    st.atime = ff->atime;
+    st.mtime = ff->mtime;
+    st.ctime = ff->ctime;
+    st.mnt = ff->mnt;
+    ustat_fill(u, &st);
+    return 0;
+}
+
+static int a_fs_chmod(const char* path, unsigned int mode) {
+    if (!path) return -14;
+    if (fs_chmod(path, mode & 07777u) == 0) return 0;
+    fs_stat_t st;
+    return fs_stat(path, 1, &st) != 0 ? -2 : fs_perm_error() ? -13 : -1;     /* (FAT: no modes - EPERM) */
+}
+
+static int a_fs_chown(const char* path, int uid, int gid) {
+    if (!path) return -14;
+    if (fs_chown(path, uid, gid) == 0) return 0;
+    fs_stat_t st;
+    return fs_stat(path, 1, &st) != 0 ? -2 : -1;
+}
+
+static int a_fs_symlink(const char* target, const char* linkpath) {
+    if (!target || !linkpath) return -14;
+    fs_stat_t st;
+    if (fs_stat(linkpath, 0, &st) == 0) return -17;                       /* EEXIST */
+    if (fs_symlink(target, linkpath) >= 0) return 0;
+    return fs_perm_error() ? -13 : -2;
+}
+
+static int a_fs_readlink(const char* path, char* buf, int cap) {
+    if (!path || !buf || cap <= 0 || !uok(buf, (size_t)cap)) return -14;
+    fs_stat_t st;
+    if (fs_stat(path, 0, &st) != 0) return -2;
+    if (!st.is_link) return -22;                                          /* EINVAL: not a link */
+    char t[FS_PATH_LEN];
+    int n = fs_readlink(path, t, sizeof(t));
+    if (n < 0) return -5;
+    if (n > cap) n = cap;                                                 /* (cut, as readlink does) */
+    memcpy(buf, t, (size_t)n);
+    return n;
+}
+
+static int a_fs_utime(const char* path, int follow, long long mtime) {
+    if (!path) return -14;
+    uint32_t t = mtime < 0 ? rtc_now() : (uint32_t)mtime;
+    return fs_utime(path, follow, t) == 0 ? 0 : fs_errno();
+}
+
+static int a_fs_unlink(const char* path, int dir) {
+    if (!path || !*path) return -2;
+    fs_stat_t st;
+    if (fs_stat(path, 0, &st) != 0) return -2;
+    if (dir) {
+        if (!st.is_dir) return -20;                                       /* ENOTDIR */
+        int d[1], f[1];
+        if (fs_list_dirs(path, d, 1) > 0 || fs_list_files(path, f, 1) > 0) return -39;   /* ENOTEMPTY */
+        fs_delete(path, 1);
+    } else {
+        if (st.is_dir) return -21;                                        /* EISDIR */
+        fs_delete(path, 0);
+    }
+    fs_stat_t again;
+    if (fs_stat(path, 0, &again) == 0) return fs_perm_error() ? -13 : -16; /* (EBUSY: still there) */
+    return 0;
+}
+
+/* a folder descriptor's path (a file's too): its length */
+static int a_fs_fdpath(int fd, char* buf, int cap) {
+    if (!buf || cap <= 0 || !uok(buf, (size_t)cap)) return -14;
+    HOLD(h, fd);
+    if (!h) return -9;
+    char t[FS_PATH_LEN];
+    if (h->type == KF_DIR) kstrlcpy(t, h->path, sizeof(t));
+    else if (h->type == KF_FILE) fs_file_path(h->fidx, t, sizeof(t));
+    else return -20;                                                      /* ENOTDIR */
+    int n = (int)strlen(t);
+    if (n >= cap) return -34;                                             /* ERANGE */
+    memcpy(buf, t, (size_t)n + 1);
+    return n;
+}
+
+static int a_fs_fdattr(int fd, int what, long long a, long long b) {
+    HOLD(h, fd);
+    if (!h || h->type != KF_FILE) return -9;
+    if (what == 1) return fs_file_setattr(h->fidx, (uint32_t)a & 07777u, ~0u, ~0u) == 0 ? 0 : -1;
+    if (what == 2) return fs_file_setattr(h->fidx, ~0u, a < 0 ? ~0u : (uint32_t)a, b < 0 ? ~0u : (uint32_t)b) == 0 ? 0 : -1;
+    if (what == 3) { fs_file_utime(h->fidx, a < 0 ? rtc_now() : (uint32_t)a); return 0; }
+    return -22;
 }
 
 static int a_readdir(const char* path, int index, banana_dirent_t* ent) {
@@ -2173,6 +2325,16 @@ static void spec_init(void) {
     SPEC(proc_setsid, "", 0);
     SPEC(proc_kill, "ii", 0);
     SPEC(tty_ioctl, "iii", 0);            /* arg: checked in it, by the request */
+    SPEC(fs_ustat, "sio", sizeof(banana_ustat_t));
+    SPEC(fs_fdstat, "io", sizeof(banana_ustat_t));
+    SPEC(fs_chmod, "si", 0);
+    SPEC(fs_chown, "sii", 0);
+    SPEC(fs_symlink, "ss", 0);
+    SPEC(fs_readlink, "sbi", 0);
+    SPEC(fs_utime, "sii", 0);
+    SPEC(fs_unlink, "si", 0);
+    SPEC(fs_fdattr, "iiii", 0);
+    SPEC(fs_fdpath, "ibi", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -3563,6 +3725,16 @@ static void api_init(void) {
     g_api.proc_setsid = G(a_proc_setsid);
     g_api.proc_kill = G(a_proc_kill);
     g_api.tty_ioctl = G(a_tty_ioctl);
+    g_api.fs_ustat = G(a_fs_ustat);
+    g_api.fs_fdstat = G(a_fs_fdstat);
+    g_api.fs_chmod = G(a_fs_chmod);
+    g_api.fs_chown = G(a_fs_chown);
+    g_api.fs_symlink = G(a_fs_symlink);
+    g_api.fs_readlink = G(a_fs_readlink);
+    g_api.fs_utime = G(a_fs_utime);
+    g_api.fs_unlink = G(a_fs_unlink);
+    g_api.fs_fdattr = G(a_fs_fdattr);
+    g_api.fs_fdpath = G(a_fs_fdpath);
     kfile_set_pty_hook(pty_closed_hook);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);

@@ -62,12 +62,27 @@ int     gethostname(char* name, size_t len);
 #define W_OK 2
 #define R_OK 4
 extern char** environ;
+/* (getopt_long: <getopt.h>) */
+extern char* optarg;
+extern int optind, opterr, optopt;
+int     getopt(int argc, char* const argv[], const char* opts);
 int     access(const char* path, int mode);
 ssize_t readlink(const char* path, char* buf, size_t len);
 int     symlink(const char* target, const char* path);
 int     link(const char* from, const char* to);
 int     chown(const char* path, uid_t u, gid_t g);
 int     fchown(int fd, uid_t u, gid_t g);
+int     lchown(const char* path, uid_t u, gid_t g);
+int     fchownat(int dirfd, const char* path, uid_t u, gid_t g, int flags);
+int     faccessat(int dirfd, const char* path, int mode, int flags);
+int     eaccess(const char* path, int mode);
+int     euidaccess(const char* path, int mode);
+ssize_t readlinkat(int dirfd, const char* path, char* buf, size_t len);
+int     symlinkat(const char* target, int dirfd, const char* path);
+int     linkat(int fromfd, const char* from, int tofd, const char* to, int flags);
+int     unlinkat(int dirfd, const char* path, int flags);
+int     chroot(const char* path);            /* (EPERM: one root) */
+long    gethostid(void);
 int     lchown(const char* path, uid_t u, gid_t g);
 int     fsync(int fd);
 int     fdatasync(int fd);

@@ -79,7 +79,7 @@ mkdir -p "$OUT/sdklibc"
 cd "$OUT"
 # the SDK libc as an archive: configure links its tests against it (so it
 # finds what the libc has), and the app links it in the end anyway
-LIBC_SRCS="crt0 libc malloc stdio banana math posix"
+LIBC_SRCS="crt0 libc malloc stdio banana math posix setjmp mman pthread socket signal dl cxxrt unix utf8 ufd math99 proc tty ufs"
 [ $ARCH = i686 ] && LIBC_SRCS="$LIBC_SRCS divdi3"
 for f in $LIBC_SRCS; do
     gcc $CFLAGS -O2 -fno-builtin -fno-tree-loop-distribute-patterns -c "$SDK/lib/$f.c" -o "sdklibc/$f.o"

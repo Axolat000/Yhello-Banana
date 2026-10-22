@@ -5,8 +5,11 @@
 extern "C" {
 #endif
 #include <stddef.h>
+#ifndef __time_t_defined
+#define __time_t_defined
 typedef long time_t;
 typedef long clock_t;
+#endif
 #define CLOCKS_PER_SEC 1000
 struct tm {
     int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst;

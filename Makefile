@@ -247,25 +247,43 @@ kernel/exbin.o kernel/exbin.o64: $(EXAMPLE_BPKZ)
 APPS     = mediaplayer music amethyst photos code store
 APP_DEPS = $(SDK_DEPS) ports/ffmpeg/build.sh
 define APP_RULE
-apps/$(1)/$(1)-i686.bpk.z apps/$(1)/$(1)-x86_64.bpk.z: $$(wildcard apps/$(1)/*.c) apps/$(1)/Makefile $$(APP_DEPS)
+# (&: one make of the app makes both - two at once raced in its folder)
+apps/$(1)/$(1)-i686.bpk.z apps/$(1)/$(1)-x86_64.bpk.z &: $$(wildcard apps/$(1)/*.c) apps/$(1)/Makefile $$(APP_DEPS)
 	$$(MAKE) -C apps/$(1) bundle
 endef
 $(foreach a,$(APPS),$(eval $(call APP_RULE,$(a))))
 kernel/appbin.o: $(foreach a,$(APPS),apps/$(a)/$(a)-i686.bpk.z) build/builtin-meta-i686.bin
-kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin $(BASH_BPKZ)
+kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builtin-meta-x86_64.bin $(PORT_BPKZ) build/ports64.inc
 
-# GNU bash (ports/bash), 64-bit only (it needs fork): /bin/bash and /bin/sh,
-# built with the SDK's cross compiler (sdk/tools/banana-cc)
-BASH_BPKZ = ports/bash/build/bash-x86_64.bpk.z
-CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site
-ports/bash/build/bash-x86_64.bpk: ports/bash/build.sh $(SDK_DEPS) $(CROSS_DEPS)
-	ports/bash/build.sh $@
-$(BASH_BPKZ): ports/bash/build/bash-x86_64.bpk
-	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $< $@
+# Unix software (ports/<name>/build.sh, with ports/port.sh), 64-bit only (it
+# forks): GNU bash (/bin/bash, /bin/sh), coreutils... - built with the SDK's
+# cross compiler (sdk/tools/banana-cc), built into the 64-bit kernel and
+# installed at boot, their commands in /bin (bin= in their manifests).
+# kernel/appbin.asm and kernel/builtin_apps.c take the list from
+# build/ports64.inc and build/ports64.h, made from PORTS64.
+PORTS64    = bash coreutils grep sed findutils diffutils gawk ncurses less zsh
+PORT_BPKZ  = $(foreach p,$(PORTS64),ports/$(p)/build/$(p)-x86_64.bpk.z)
+CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site ports/port.sh
+define PORT_RULE
+ports/$(1)/build/$(1)-x86_64.bpk: $$(filter-out %/src %/build,$$(wildcard ports/$(1)/*)) $$(SDK_DEPS) $$(CROSS_DEPS)
+	ports/$(1)/build.sh $$@
+ports/$(1)/build/$(1)-x86_64.bpk.z: ports/$(1)/build/$(1)-x86_64.bpk
+	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $$< $$@
+endef
+$(foreach p,$(PORTS64),$(eval $(call PORT_RULE,$(p))))
+# (less and zsh are linked with ncurses' library)
+ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
+build/ports64.inc: Makefile
+	mkdir -p build
+	{ $(foreach p,$(PORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) } > $@
+build/ports64.h: Makefile
+	mkdir -p build
+	{ $(foreach p,$(PORTS64),echo 'PORT($(p))';) } > $@
+kernel/builtin_apps.o64: build/ports64.h
 
 # the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
 TERMINAL_BPKZ = apps/terminal/terminal-x86_64.bpk.z
-build/builtin-meta-x86_64.bin: $(BASH_BPKZ) $(TERMINAL_BPKZ)
+build/builtin-meta-x86_64.bin: $(PORT_BPKZ) $(TERMINAL_BPKZ)
 $(TERMINAL_BPKZ): $(wildcard apps/terminal/*.c apps/terminal/*.h) apps/terminal/Makefile apps/terminal/icon.png $(SDK_DEPS)
 	$(MAKE) -C apps/terminal terminal-x86_64.bpk.z
 kernel/appbin.o64: $(TERMINAL_BPKZ)
@@ -275,7 +293,7 @@ kernel/appbin.o64: $(TERMINAL_BPKZ)
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),bash.bpk=$(BASH_BPKZ) terminal.bpk=$(TERMINAL_BPKZ)) \
+	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel

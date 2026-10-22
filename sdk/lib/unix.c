@@ -136,79 +136,20 @@ int clearenv(void) {
 
 /* ── folders ──────────────────────────────────────────────────────── */
 
-struct __dir {
-    char          path[512];
-    int           index;
-    struct dirent ent;
-};
 
-DIR* opendir(const char* path) {
-    banana_stat_t st;
-    if (!path || __banana->stat(path, &st) != 0) { errno = ENOENT; return NULL; }
-    if (!st.is_dir) { errno = ENOTDIR; return NULL; }
-    DIR* d = calloc(1, sizeof(DIR));
-    if (!d) { errno = ENOMEM; return NULL; }
-    snprintf(d->path, sizeof(d->path), "%s", path);
-    return d;
-}
 
-DIR* fdopendir(int fd) { (void)fd; errno = ENOTSUP; return NULL; }
 
 /* "." and ".." first, as everywhere, then what the folder holds */
-struct dirent* readdir(DIR* d) {
-    memset(&d->ent, 0, sizeof(d->ent));
-    if (d->index < 2) {
-        strcpy(d->ent.d_name, d->index ? ".." : ".");
-        d->ent.d_type = DT_DIR;
-    } else {
-        banana_dirent_t e;
-        if (__banana->readdir(d->path, d->index - 2, &e) != 0) return NULL;
-        snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", e.name);
-        d->ent.d_type = e.is_dir ? DT_DIR : DT_REG;
-    }
-    d->index++;
-    d->ent.d_ino = (ino_t)d->index;
-    d->ent.d_off = d->index;
-    d->ent.d_reclen = sizeof(struct dirent);
-    return &d->ent;
-}
 
-int readdir_r(DIR* d, struct dirent* e, struct dirent** out) {
-    struct dirent* r = readdir(d);
-    if (r) { *e = *r; *out = e; } else *out = NULL;
-    return 0;
-}
 
-int closedir(DIR* d) { free(d); return 0; }
-void rewinddir(DIR* d) { d->index = 0; }
-int dirfd(DIR* d) { (void)d; errno = ENOTSUP; return -1; }
 
 /* ── files ────────────────────────────────────────────────────────── */
 
-int lstat(const char* path, struct stat* st) { return stat(path, st); }      /* (no links here) */
 
-int fstatat(int dirfd, const char* path, struct stat* st, int flags) {
-    (void)dirfd; (void)flags;
-    return stat(path, st);
-}
 
-int access(const char* path, int mode) {
-    (void)mode;
-    banana_stat_t st;
-    if (!path || __banana->stat(path, &st) != 0) { errno = ENOENT; return -1; }
-    return 0;
-}
 
-int chmod(const char* path, mode_t mode) { (void)mode; return access(path, 0); }
-int fchmod(int fd, mode_t mode) { (void)fd; (void)mode; return 0; }
-int chown(const char* path, uid_t u, gid_t g) { (void)u; (void)g; return access(path, 0); }
-int fchown(int fd, uid_t u, gid_t g) { (void)fd; (void)u; (void)g; return 0; }
-int lchown(const char* path, uid_t u, gid_t g) { return chown(path, u, g); }
 mode_t umask(mode_t m) { static mode_t cur = 022; mode_t o = cur; cur = m & 0777; return o; }
 int mkfifo(const char* path, mode_t mode) { (void)path; (void)mode; errno = ENOTSUP; return -1; }
-ssize_t readlink(const char* path, char* buf, size_t len) { (void)buf; (void)len; errno = access(path, 0) ? ENOENT : EINVAL; return -1; }
-int symlink(const char* a, const char* b) { (void)a; (void)b; errno = EPERM; return -1; }
-int link(const char* a, const char* b) { (void)a; (void)b; errno = EPERM; return -1; }
 int fsync(int fd) { (void)fd; return 0; }
 int fdatasync(int fd) { (void)fd; return 0; }
 void sync(void) {}
@@ -307,12 +248,15 @@ int getdtablesize(void) { return 64 + 3; }
 
 /* ── the user ─────────────────────────────────────────────────────── */
 
-static struct passwd g_pw = { "banana", "x", 1000, 1000, "Banana OS", "/home/banana", "/bin/sh" };
+static struct passwd g_pw = { "banana", "x", 1000, 1000, "Banana OS", "/home/banana", "/bin/bash" };
+static struct passwd g_root = { "root", "x", 0, 0, "root", "/root", "/bin/bash" };
 static char* g_members[] = { "banana", NULL };
+static char* g_root_members[] = { NULL };
 static struct group g_gr = { "banana", "x", 1000, g_members };
+static struct group g_root_gr = { "root", "x", 0, g_root_members };
 
-struct passwd* getpwuid(uid_t uid) { return uid == 1000 || uid == 0 ? &g_pw : NULL; }
-struct passwd* getpwnam(const char* name) { return name && !strcmp(name, "banana") ? &g_pw : NULL; }
+struct passwd* getpwuid(uid_t uid) { return uid == 1000 ? &g_pw : uid == 0 ? &g_root : NULL; }
+struct passwd* getpwnam(const char* name) { return !name ? NULL : !strcmp(name, "banana") ? &g_pw : !strcmp(name, "root") ? &g_root : NULL; }
 int getpwuid_r(uid_t uid, struct passwd* pw, char* buf, size_t len, struct passwd** out) {
     (void)buf; (void)len;
     struct passwd* p = getpwuid(uid);
@@ -327,8 +271,8 @@ int getpwnam_r(const char* name, struct passwd* pw, char* buf, size_t len, struc
     *out = p ? pw : NULL;
     return 0;
 }
-struct group* getgrgid(gid_t gid) { return gid == 1000 ? &g_gr : NULL; }
-struct group* getgrnam(const char* name) { return name && !strcmp(name, "banana") ? &g_gr : NULL; }
+struct group* getgrgid(gid_t gid) { return gid == 1000 ? &g_gr : gid == 0 ? &g_root_gr : NULL; }
+struct group* getgrnam(const char* name) { return !name ? NULL : !strcmp(name, "banana") ? &g_gr : !strcmp(name, "root") ? &g_root_gr : NULL; }
 int getgrgid_r(gid_t gid, struct group* g, char* buf, size_t len, struct group** out) {
     (void)buf; (void)len;
     struct group* r = getgrgid(gid);
@@ -348,10 +292,10 @@ int getgrnam_r(const char* name, struct group* g, char* buf, size_t len, struct 
 static int g_pwent, g_grent;
 void setpwent(void) { g_pwent = 0; }
 void endpwent(void) { g_pwent = 0; }
-struct passwd* getpwent(void) { return g_pwent++ ? NULL : &g_pw; }
+struct passwd* getpwent(void) { int i = g_pwent++; return i == 0 ? &g_root : i == 1 ? &g_pw : NULL; }
 void setgrent(void) { g_grent = 0; }
 void endgrent(void) { g_grent = 0; }
-struct group* getgrent(void) { return g_grent++ ? NULL : &g_gr; }
+struct group* getgrent(void) { int i = g_grent++; return i == 0 ? &g_root_gr : i == 1 ? &g_gr : NULL; }
 
 /* changing user: there is only banana, so only to banana */
 static int same_id(unsigned id) {
@@ -520,7 +464,31 @@ struct lconv* localeconv(void) {
     return &l;
 }
 
-char* nl_langinfo(nl_item item) { return item == CODESET ? "UTF-8" : ""; }
+char* nl_langinfo(nl_item item) {
+    static const char* const days[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+    static const char* const months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    if (item >= ABDAY_1 && item <= DAY_7) return (char*)days[item - ABDAY_1];
+    if (item >= ABMON_1 && item <= MON_12) return (char*)months[item - ABMON_1];
+    switch (item) {
+    case CODESET: return "UTF-8";
+    case AM_STR: return "AM";
+    case PM_STR: return "PM";
+    case D_T_FMT: return "%a %b %e %H:%M:%S %Y";
+    case D_FMT: return "%m/%d/%y";
+    case T_FMT: return "%H:%M:%S";
+    case T_FMT_AMPM: return "%I:%M:%S %p";
+    case RADIXCHAR: return ".";
+    case THOUSEP: return "";
+    case YESEXPR: return "^[yY]";
+    case NOEXPR: return "^[nN]";
+    case YESSTR: return "yes";
+    case NOSTR: return "no";
+    case CRNCYSTR: return "-";
+    }
+    return "";
+}
 
 /* ── floating point environment (x87 control word and SSE MXCSR) ─── */
 
@@ -685,7 +653,6 @@ size_t confstr(int name, char* buf, size_t len) {
     return strlen(v) + 1;
 }
 
-int fchdir(int fd) { (void)fd; errno = ENOTSUP; return -1; }
 
 /* ── time odds and ends ───────────────────────────────────────────── */
 
@@ -757,10 +724,7 @@ int posix_fallocate(int fd, off_t off, off_t len) {
 }
 int posix_fadvise(int fd, off_t off, off_t len, int advice) { (void)fd; (void)off; (void)len; (void)advice; return 0; }
 
-/* (stdio streams are not shared between threads here) */
-void flockfile(FILE* f) { (void)f; }
-void funlockfile(FILE* f) { (void)f; }
-int ftrylockfile(FILE* f) { (void)f; return 0; }
+/* (flockfile & co.: stdio.c) */
 
 int getloadavg(double loads[], int n) {
     for (int i = 0; i < n && i < 3; i++) loads[i] = 0;
@@ -785,9 +749,6 @@ int statvfs(const char* path, struct statvfs* out) {
 int fstatvfs(int fd, struct statvfs* out) { (void)fd; return statvfs("/", out); }
 
 /* file times: Banana OS keeps none an app can set (accepted, unchanged) */
-int utimes(const char* path, const struct timeval t[2]) { (void)t; return access(path, 0); }
-int lutimes(const char* path, const struct timeval t[2]) { return utimes(path, t); }
-int futimes(int fd, const struct timeval t[2]) { (void)fd; (void)t; return 0; }
 int mknod(const char* path, mode_t mode, dev_t dev) { (void)path; (void)mode; (void)dev; errno = EPERM; return -1; }
 
 /* copy between two descriptors through a buffer */
@@ -1130,3 +1091,317 @@ int vasprintf(char** out, const char* fmt, va_list ap) {
 }
 int asprintf(char** out, const char* fmt, ...) { va_list ap; va_start(ap, fmt); int r = vasprintf(out, fmt, ap); va_end(ap); return r; }
 
+
+/* ── getopt (GNU's behaviour) ─────────────────────────────────────── */
+
+#include <getopt.h>
+
+char* optarg;
+int optind = 1, opterr = 1, optopt;
+static int g_optpos;                       /* the place in a cluster of short options (-abc) */
+
+static void opt_err(const char* argv0, const char* fmt, const char* what, int c) {
+    if (!opterr) return;
+    fprintf(stderr, "%s: ", argv0);
+    if (what) fprintf(stderr, fmt, what);
+    else fprintf(stderr, fmt, c);
+    fputc('\n', stderr);
+}
+
+/* the long option at argv[optind] (after its dashes: s) */
+static int long_opt(int argc, char* const argv[], const char* opts, const struct option* lo, int* index,
+                    const char* s, int dashes) {
+    const char* eq = strchr(s, '=');
+    size_t n = eq ? (size_t)(eq - s) : strlen(s);
+    int match = -1, count = 0;
+    for (int i = 0; lo[i].name; i++) {
+        if (strncmp(lo[i].name, s, n)) continue;
+        if (strlen(lo[i].name) == n) { match = i; count = 1; break; }      /* exact */
+        /* (an abbreviation: one option, or several meaning the same) */
+        if (match < 0 || lo[i].has_arg != lo[match].has_arg || lo[i].flag != lo[match].flag || lo[i].val != lo[match].val) count++;
+        if (match < 0) match = i;
+    }
+    int colon = opts[0] == ':';
+    if (match < 0) {
+        if (dashes == 1) return -2;                  /* (getopt_long_only: try it as short ones) */
+        opt_err(argv[0], "unrecognized option '%s'", argv[optind], 0);
+        optind++;
+        optopt = 0;
+        return '?';
+    }
+    if (count > 1) {
+        opt_err(argv[0], "option '%s' is ambiguous", argv[optind], 0);
+        optind++;
+        optopt = 0;
+        return '?';
+    }
+    const struct option* o = &lo[match];
+    char* arg = eq ? (char*)eq + 1 : NULL;
+    const char* whole = argv[optind];
+    optind++;
+    if (o->has_arg == no_argument && arg) {
+        char name[128];
+        snprintf(name, sizeof(name), "%s%s", dashes == 2 ? "--" : "-", o->name);
+        opt_err(argv[0], "option '%s' doesn't allow an argument", name, 0);
+        optopt = o->flag ? 0 : o->val;
+        return '?';
+    }
+    if (o->has_arg == required_argument && !arg) {
+        if (optind < argc) arg = argv[optind++];
+        else {
+            opt_err(argv[0], "option '%s' requires an argument", whole, 0);
+            optopt = o->flag ? 0 : o->val;
+            return colon ? ':' : '?';
+        }
+    }
+    optarg = arg;
+    if (index) *index = match;
+    if (o->flag) { *o->flag = o->val; return 0; }
+    return o->val;
+}
+
+/* the next option, from argv[optind] on (already an option there) */
+static int opt_core(int argc, char* const argv[], const char* opts, const struct option* lo, int* index, int longonly) {
+    char* a = argv[optind];
+    if (!g_optpos) {
+        if (a[1] == '-' && !a[2]) { optind++; return -1; }                       /* -- */
+        if (lo && a[1] == '-') return long_opt(argc, argv, opts, lo, index, a + 2, 2);
+        if (lo && longonly && a[2]) {
+            int r = long_opt(argc, argv, opts, lo, index, a + 1, 1);
+            if (r != -2) return r;
+            if (!strchr(opts, a[1])) {
+                opt_err(argv[0], "unrecognized option '%s'", a, 0);
+                optind++;
+                optopt = 0;
+                return '?';
+            }
+        }
+        g_optpos = 1;
+    }
+    int c = (unsigned char)a[g_optpos++];
+    const char* o = c == ':' || c == '-' || c == '+' ? NULL : strchr(opts, c);
+    int colon = opts[0] == ':';
+    if (!a[g_optpos]) { optind++; g_optpos = 0; }
+    if (!o) {
+        opt_err(argv[0], "invalid option -- '%c'", NULL, c);
+        optopt = c;
+        return '?';
+    }
+    optarg = NULL;
+    if (o[1] == ':') {
+        if (g_optpos) {                                  /* -ovalue */
+            optarg = a + g_optpos;
+            optind++;
+            g_optpos = 0;
+        } else if (o[2] != ':') {                        /* -o value (not for an optional one) */
+            if (optind < argc) optarg = argv[optind++];
+            else {
+                opt_err(argv[0], "option requires an argument -- '%c'", NULL, c);
+                optopt = c;
+                return colon ? ':' : '?';
+            }
+        }
+    }
+    return c;
+}
+
+static int opt_any(int argc, char* const argv[], const char* opts, const struct option* lo, int* index, int longonly) {
+    if (!optind) { optind = 1; g_optpos = 0; }       /* (0: start again, as GNU) */
+    optarg = NULL;
+    if (optind >= argc || !argv[optind]) return -1;
+    int mode = opts[0] == '+' ? '+' : opts[0] == '-' ? '-' : getenv("POSIXLY_CORRECT") ? '+' : 0;
+    if (opts[0] == '+' || opts[0] == '-') opts++;
+    if (g_optpos) return opt_core(argc, argv, opts, lo, index, longonly);
+    int skipped = optind;
+    if (mode != '+') {
+        /* the operands before the next option are skipped (and moved after it) */
+        int i = optind;
+        while (i < argc && argv[i] && !(argv[i][0] == '-' && argv[i][1])) {
+            if (mode == '-') { optarg = argv[i]; optind = i + 1; return 1; }
+            i++;
+        }
+        if (i >= argc || !argv[i]) return -1;
+        optind = i;
+    } else if (!(argv[optind][0] == '-' && argv[optind][1])) return -1;
+    int resumed = optind;
+    int r = opt_core(argc, argv, opts, lo, index, longonly);
+    if (resumed > skipped) {
+        /* what this option took (it and its argument) goes before the operands */
+        char** v = (char**)argv;
+        int took = optind - resumed;
+        for (int k = 0; k < took; k++) {
+            char* last = v[optind - 1];
+            for (int j = optind - 1; j > skipped; j--) v[j] = v[j - 1];
+            v[skipped] = last;
+        }
+        optind = skipped + took;
+    }
+    return r;
+}
+
+int getopt(int argc, char* const argv[], const char* opts) { return opt_any(argc, argv, opts, NULL, NULL, 0); }
+int getopt_long(int argc, char* const argv[], const char* opts, const struct option* lo, int* index) {
+    return opt_any(argc, argv, opts, lo, index, 0);
+}
+int getopt_long_only(int argc, char* const argv[], const char* opts, const struct option* lo, int* index) {
+    return opt_any(argc, argv, opts, lo, index, 1);
+}
+
+/* ── <search.h> ───────────────────────────────────────────────────── */
+
+#include <search.h>
+
+/* a tree's node: its key first (what tsearch gives back points at it) */
+typedef struct tnode { const void* key; struct tnode *left, *right; int height; } tnode_t;
+
+static int th(tnode_t* n) { return n ? n->height : 0; }
+static void tfix(tnode_t* n) { int a = th(n->left), b = th(n->right); n->height = (a > b ? a : b) + 1; }
+static tnode_t* trot(tnode_t* n, int right) {                 /* (AVL rotations) */
+    tnode_t* p = right ? n->left : n->right;
+    if (right) { n->left = p->right; p->right = n; } else { n->right = p->left; p->left = n; }
+    tfix(n);
+    tfix(p);
+    return p;
+}
+static tnode_t* tbalance(tnode_t* n) {
+    tfix(n);
+    int d = th(n->left) - th(n->right);
+    if (d > 1) {
+        if (th(n->left->left) < th(n->left->right)) n->left = trot(n->left, 0);
+        return trot(n, 1);
+    }
+    if (d < -1) {
+        if (th(n->right->right) < th(n->right->left)) n->right = trot(n->right, 1);
+        return trot(n, 0);
+    }
+    return n;
+}
+static tnode_t* tins(tnode_t* n, const void* key, int (*cmp)(const void*, const void*), tnode_t** found) {
+    if (!n) {
+        n = malloc(sizeof(*n));
+        if (!n) return NULL;
+        n->key = key;
+        n->left = n->right = NULL;
+        n->height = 1;
+        *found = n;
+        return n;
+    }
+    int c = cmp(key, n->key);
+    if (!c) { *found = n; return n; }
+    tnode_t* k = tins(c < 0 ? n->left : n->right, key, cmp, found);
+    if (!k) return n;                                  /* (out of memory: found stays NULL) */
+    if (c < 0) n->left = k; else n->right = k;
+    return tbalance(n);
+}
+void* tsearch(const void* key, void** root, int (*cmp)(const void*, const void*)) {
+    if (!root) return NULL;
+    tnode_t* found = NULL;
+    tnode_t* r = tins((tnode_t*)*root, key, cmp, &found);
+    if (r) *root = r;
+    return found;
+}
+void* tfind(const void* key, void* const* root, int (*cmp)(const void*, const void*)) {
+    if (!root) return NULL;
+    for (tnode_t* n = (tnode_t*)*root; n;) {
+        int c = cmp(key, n->key);
+        if (!c) return n;
+        n = c < 0 ? n->left : n->right;
+    }
+    return NULL;
+}
+static tnode_t* tdel(tnode_t* n, const void* key, int (*cmp)(const void*, const void*), tnode_t** parent, int* done) {
+    if (!n) return NULL;
+    int c = cmp(key, n->key);
+    if (c) {
+        *parent = n;
+        if (c < 0) n->left = tdel(n->left, key, cmp, parent, done);
+        else n->right = tdel(n->right, key, cmp, parent, done);
+        return tbalance(n);
+    }
+    *done = 1;
+    tnode_t* r;
+    if (!n->left || !n->right) r = n->left ? n->left : n->right;
+    else {                                             /* (the next one up takes its place) */
+        tnode_t* m = n->right;
+        while (m->left) m = m->left;
+        n->key = m->key;
+        int d2 = 0;
+        tnode_t* dummy = NULL;
+        n->right = tdel(n->right, m->key, cmp, &dummy, &d2);
+        return tbalance(n);
+    }
+    free(n);
+    return r;
+}
+void* tdelete(const void* key, void** root, int (*cmp)(const void*, const void*)) {
+    if (!root || !*root) return NULL;
+    tnode_t* parent = NULL;
+    int done = 0;
+    tnode_t* r = tdel((tnode_t*)*root, key, cmp, &parent, &done);
+    if (!done) return NULL;
+    *root = r;
+    /* (the parent of what went - an approximation after rebalancing - or the root) */
+    static tnode_t fake;
+    return parent ? (void*)parent : r ? (void*)r : (void*)&fake;
+}
+static void twalk1(const tnode_t* n, void (*action)(const void*, VISIT, int), int depth) {
+    if (!n) return;
+    if (!n->left && !n->right) { action(n, leaf, depth); return; }
+    action(n, preorder, depth);
+    twalk1(n->left, action, depth + 1);
+    action(n, postorder, depth);
+    twalk1(n->right, action, depth + 1);
+    action(n, endorder, depth);
+}
+void twalk(const void* root, void (*action)(const void*, VISIT, int)) { if (root && action) twalk1(root, action, 0); }
+void tdestroy(void* root, void (*free_key)(void*)) {
+    tnode_t* n = root;
+    if (!n) return;
+    tdestroy(n->left, free_key);
+    tdestroy(n->right, free_key);
+    if (free_key) free_key((void*)n->key);
+    free(n);
+}
+
+void* lfind(const void* key, const void* base, size_t* n, size_t size, int (*cmp)(const void*, const void*)) {
+    for (size_t i = 0; i < *n; i++) if (!cmp(key, (const char*)base + i * size)) return (char*)base + i * size;
+    return NULL;
+}
+void* lsearch(const void* key, void* base, size_t* n, size_t size, int (*cmp)(const void*, const void*)) {
+    void* r = lfind(key, base, n, size, cmp);
+    if (r) return r;
+    r = (char*)base + *n * size;
+    memcpy(r, key, size);
+    (*n)++;
+    return r;
+}
+
+static ENTRY* g_htab;
+static size_t g_hsize, g_hused;
+int hcreate(size_t n) {
+    size_t s = 16;
+    while (s < n * 2) s <<= 1;
+    g_htab = calloc(s, sizeof(ENTRY));
+    if (!g_htab) return 0;
+    g_hsize = s;
+    g_hused = 0;
+    return 1;
+}
+void hdestroy(void) { free(g_htab); g_htab = NULL; g_hsize = g_hused = 0; }
+ENTRY* hsearch(ENTRY item, ACTION action) {
+    if (!g_htab) { errno = ESRCH; return NULL; }
+    size_t h = 5381;
+    for (const char* c = item.key; *c; c++) h = h * 33 + (unsigned char)*c;
+    for (size_t i = 0; i < g_hsize; i++) {
+        ENTRY* e = &g_htab[(h + i) & (g_hsize - 1)];
+        if (!e->key) {
+            if (action == FIND || g_hused + 1 >= g_hsize) { errno = action == FIND ? ESRCH : ENOMEM; return NULL; }
+            *e = item;
+            g_hused++;
+            return e;
+        }
+        if (!strcmp(e->key, item.key)) return e;
+    }
+    errno = ESRCH;
+    return NULL;
+}
