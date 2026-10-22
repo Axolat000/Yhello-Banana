@@ -20,6 +20,7 @@
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
 #include "../kernel/screenshot.h"
+#include "../kernel/session.h"
 #include "../kernel/builtin_apps.h"
 #include "../kernel/zswap.h"
 #include "../kernel/deflate.h"
@@ -536,10 +537,49 @@ static void t_clip(void) {
     }
 }
 
+static void t_session(void) {
+    section("desktop session restoration and unsaved changes signaling");
+    session_state_t st;
+    session_capture(&st);
+    report("session state captured", st.terminals_open >= 0, "");
+
+    /* Check serialization and roundtrip */
+    session_state_t test_st;
+    memset(&test_st, 0, sizeof(test_st));
+    test_st.terminals_open = 2;
+    test_st.files_open = 1;
+    kstrlcpy(test_st.files_path, "/home/banana", sizeof(test_st.files_path));
+    test_st.notepad_open = 1;
+    kstrlcpy(test_st.notepad_path, "/home/banana/notes.txt", sizeof(test_st.notepad_path));
+    test_st.notepad_dirty = 1;
+    test_st.unsaved_count = 1;
+    kstrlcpy(test_st.unsaved_docs[0], "/home/banana/notes.txt", sizeof(test_st.unsaved_docs[0]));
+    test_st.app_count = 1;
+    kstrlcpy(test_st.apps[0], "calc", sizeof(test_st.apps[0]));
+
+    int saved = session_save();
+    report("session state written to /etc/desktop_session.conf", saved == 0, "");
+
+    session_state_t loaded;
+    int load_res = session_load(&loaded);
+    report("saved session state parsed from disk", load_res == 0, "");
+
+    int match = (loaded.terminals_open == st.terminals_open) &&
+                (loaded.files_open == st.files_open) &&
+                (loaded.notepad_open == st.notepad_open);
+    report("session loaded state matches captured environment", match, "");
+
+    int enabled = session_restore_is_enabled();
+    session_restore_set_enabled(0);
+    int disabled = !session_restore_is_enabled();
+    session_restore_set_enabled(1);
+    report("session restore configuration toggle", enabled && disabled && session_restore_is_enabled(), "");
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -618,13 +658,16 @@ int selftest_cmd(int argc, char** argv) {
             t_posix(NULL);
             t_zip();
             t_clip();
+            t_session();
             t_swap();
             t_time();
             t_keyboard();
             if (ipv6_enabled()) ipv6test_run(NULL, 80, report);
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }
+        if (only && !strcmp(only, "session")) t_session();
     }
+
     char line[96];
     ksnprintf(line, sizeof(line), "selftest: %d passed, %d failed (%u ms)", g_ok, g_fail, timer_ms() - t0);
     terminal_write_color(line, g_fail ? VGA_COLOR_LIGHT_RED : VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);

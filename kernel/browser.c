@@ -2054,3 +2054,10 @@ void browser_fkey(int k) {
 
 /* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
 win_geom_t* browser_geom(void) { return &g_win; }
+
+const char* browser_get_url(char* out, int cap) {
+    tab_t* t = cur_tab();
+    const char* url = t && t->addr[0] ? t->addr : (g_go_url[0] ? g_go_url : HOME_URL);
+    if (out && cap > 0) kstrlcpy(out, url, (size_t)cap);
+    return url;
+}

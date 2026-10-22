@@ -13,6 +13,9 @@
 #                                 `selftest` and the threads / cltest examples
 #                                 at the serial console; log in
 #                                 build/logs/apps-<firmware>.log
+#   tools/dev.sh install-test [bios|uefi]
+#                                 test installation to a disposable disk image,
+#                                 standalone disk boot, and ISO update
 #   tools/dev.sh clean            make clean
 #
 # Environment: MEM (QEMU memory, default 512M), SMP (cores, default 4),
@@ -135,11 +138,19 @@ do_apps() {
     return $rc
 }
 
+do_install_test() {
+    local fw="${1:-bios}"
+    do_build
+    bold "== Testing installation, disk boot and update on disposable disk ($fw)"
+    bash "$ROOT/tools/ci-install-test.sh" "$fw"
+}
+
 case "${1:-build}" in
     build) do_build ;;
     run)   do_run "${2:-bios}" ;;
     test)  do_test "${2:-bios}" "${3:-60}" ;;
     apps)  do_apps "${2:-bios}" ;;
+    install-test) do_install_test "${2:-bios}" ;;
     clean) (cd "$ROOT" && make clean) ;;
     *)     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

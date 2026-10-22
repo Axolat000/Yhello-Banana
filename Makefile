@@ -34,6 +34,13 @@ WEBP_SRCS = $(wildcard third_party/libwebp/src/dec/*.c third_party/libwebp/src/d
 C_SRCS   = $(wildcard kernel/*.c) $(wildcard shell/*.c) $(wildcard net/*.c) \
            $(wildcard crypto/*.c) $(wildcard usb/*.c) $(wildcard web/*.c) $(wildcard media/*.c) \
            third_party/stb/stb_image_impl.c $(WEBP_SRCS)
+MBEDTLS_SRCS = $(wildcard third_party/mbedtls/library/*.c ports/mbedtls/*.c)
+C_SRCS += $(MBEDTLS_SRCS)
+MBEDTLS_FLAGS = -DNDEBUG -I ports/mbedtls -I ports/mbedtls/libc -I third_party/mbedtls/include \
+                -DMBEDTLS_CONFIG_FILE=\"banana_config.h\"
+$(MBEDTLS_SRCS:.c=.o): CFLAGS += $(MBEDTLS_FLAGS)
+$(MBEDTLS_SRCS:.c=.o64): CFLAGS64 += $(MBEDTLS_FLAGS)
+
 ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm
 ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm
 kernel/frameworkbin.o kernel/frameworkbin.o64: $(wildcard web/fixtures/* web/fixtures/astro/* web/fixtures/astro/_astro/*) $(wildcard web/test/cases/mutation_observer*.html)

@@ -64,28 +64,6 @@ jobs:
               print('No effective changes to propose against main.')
               raise SystemExit(0)
 
-          commits = comparison['commits']
-          rows = []
-          for commit in commits:
-              sha = commit['sha']
-              if not re.fullmatch(r'[0-9a-f]{40,64}', sha):
-                  raise RuntimeError('Unexpected commit SHA from GitHub')
-              rows.append('- `' + sha[:12] + '` — ' + safe_title(commit['commit']['message']))
-          total = comparison['total_commits']
-          if total > len(commits):
-              rows.append('- Showing the first ' + str(len(commits)) + ' of '
-                          + str(total) + ' commits; see the PR Commits tab for the full list.')
-
-          body = (
-              'This PR proposes changes from `codex/integration` to `main`.\n\n'
-              'Proposed commits:\n' + '\n'.join(rows) + '\n\n'
-              'For OS commits integrated by the supervisor, the supervisor checks the build '
-              'and tests before integration. Configuration and workflow setup commits do '
-              'not constitute OS build validation. This workflow only creates or updates '
-              'the PR; it does not execute repository code or repeat those checks.\n\n'
-              'Merging remains a manual decision by the user in GitHub.'
-          )
-          title = 'Agent-reviewed Banana OS changes'
           query = urllib.parse.urlencode({
               'state': 'open', 'head': owner + ':codex/integration',
               'base': 'main', 'per_page': 100,
@@ -93,6 +71,58 @@ jobs:
           existing = request('/pulls?' + query)
           if len(existing) > 1:
               raise RuntimeError('Multiple open PRs for this branch; no new PR created')
+          # Keep the human-reviewed feature summary and extend it with concrete
+          # new subjects. Internal scheduling commits never become release notes.
+          curated = None
+          baseline = None
+          if existing:
+              old_body = existing[0].get('body') or ''
+              match = re.search(r'<!-- yhello-summary-start -->(.*?)<!-- yhello-summary-end -->', old_body, re.S)
+              head = re.search(r'<!-- yhello-summary-head: ([0-9a-f]{40,64}) -->', old_body)
+              if match and head:
+                  extra = request('/compare/' + head.group(1) + '...codex%2Fintegration?per_page=100')
+                  if extra.get('status') in ('ahead', 'identical'):
+                      curated = match.group(1).strip()
+                      baseline = head.group(1)
+                      comparison = extra
+
+          rows = []
+          seen = set()
+          first_subject = None
+          for commit in comparison.get('commits', []):
+              raw = commit['commit']['message'].splitlines()[0]
+              raw = re.sub(r'^Merge:\s*', '', raw).strip()
+              if (re.match(r'^(Integrate reviewed|Checkpoint|Sync reviewed)\b', raw, re.I)
+                      or re.search(r'\bbase-\d+\b|\bstep\s+\d+\b', raw, re.I)):
+                  continue
+              key = raw.casefold()
+              if key in seen:
+                  continue
+              seen.add(key)
+              first_subject = first_subject or raw
+              rows.append('- ' + safe_title(raw))
+
+          if curated:
+              title = existing[0]['title']
+              body = ('<!-- yhello-summary-start -->\n' + curated
+                      + '\n<!-- yhello-summary-end -->\n'
+                      + '<!-- yhello-summary-head: ' + baseline + ' -->\n')
+              if rows:
+                  body += '\n### Additional changes since this summary\n\n' + '\n'.join(rows) + '\n'
+          else:
+              title = (first_subject[:100] if first_subject else 'Review Banana OS feature changes')
+              body = '### What this changes\n\n' + ('\n'.join(rows) if rows else
+                      'See Files changed for the proposed source changes; a concrete feature summary is required before merging.') + '\n'
+
+          body += ('\n### Test before merging\n\n'
+                   'Open the **PR ISO / Downloadable test ISO** check and download its '
+                   '**Yhello-Banana-ISO** artifact. Unzip it and boot Banana_OS.iso in a VM '
+                   'with Secure Boot disabled. Check SOURCE-COMMIT.txt against the PR head.\n\n'
+                   'The controller runs independent integration checks before promoting OS changes. '
+                   'See individual check results and validation notes for exact scope; a successful '
+                   'build does not establish physical hardware compatibility. '
+                   'The user decides whether to merge this PR into main.\n')
+
           if existing:
               pr = existing[0]
               if pr['title'] != title or pr.get('body') != body:

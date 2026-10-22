@@ -212,20 +212,32 @@ Each job must reach a serial shell prompt, then run `selftest boot` and
 `selftest ram` with a `0 failed` result, within 180 seconds for boot and
 180 seconds per command. A timeout, missing expected result, crash or panic
 reported during a command fails the job. The job itself has a 15-minute limit.
-These are offline boot smoke checks, not the full app/POSIX, filesystem,
-installation, reboot, update or hardware test suites.
+The boot matrix also executes host ext4 and journal replay tests (`sh tools/ext4test/run.sh`),
+and verifies installation, standalone disk boot, and ISO update on disposable disk images
+(`bash tools/ci-install-test.sh [bios|uefi]`):
 
-`build/logs/boot-<firmware>/` contains `serial.log`, `results.log` and
-`provenance.txt` (commit SHA, ISO SHA-256, QEMU version and arguments).
-CI attempts to upload these even on failure as
-`boot-<firmware>-<SHA>-<attempt>` with 14-day retention; failures before QEMU
-starts can have no serial log. The ISO artifact is retained for three days.
-Firmware variable copies are disposable and are not uploaded.
+```
+make
+sh tools/ext4test/run.sh
+bash tools/ci-boot.sh bios
+bash tools/ci-boot.sh uefi
+bash tools/ci-install-test.sh bios
+bash tools/ci-install-test.sh uefi
+```
 
-This implements base-07 step 1 only. Existing pre-release publication is
-unchanged and does not wait for the boot jobs. The current workflow has no
-stable channel; stable gating and its intentional-failure demonstration remain
-base-07 step 3. Do not treat successful smoke jobs as full release validation.
+`tools/ci-install-test.sh` attaches a fresh 512 MiB raw disk image to QEMU via IDE without network access.
+It tests:
+1. `disks` and `install 1 --minimal` with confirmation `y` until `install: done`.
+2. Standalone QEMU boot directly from the installed disk without `-cdrom`, verifying `selftest boot` and `selftest ram` report 0 failed.
+3. Booting the live CD with the installed disk attached, executing `update 1`, and verifying comparison/update succeeds without corrupting existing data.
+The temporary disk image is removed upon exit. Evidence logs (`serial-install.log`, `results-install.log`, `serial-diskboot.log`, `results-diskboot.log`, `serial-update.log`, `results-update.log`, `provenance.txt`) are stored under `build/logs/install-<firmware>/` and archived in CI with 14-day retention.
+
+This implements base-07 steps 1, 2, and 3. Existing pre-release publication remains
+available immediately for rapid developer builds, while the dedicated stable publication channel
+(`publish-stable` job) is gated strictly on full success of the `boot` matrix across both BIOS and UEFI
+targets. If any offline boot smoke test, host ext4 journal replay check, disposable image installation,
+standalone disk boot, or ISO update test fails, times out, encounters a panic/crash, or reports unexpected
+skipped tests, the `boot` matrix fails with non-zero exit and `publish-stable` is blocked from publishing.
 
 ### `tools/test-exfat.sh [bios|uefi]`
 
