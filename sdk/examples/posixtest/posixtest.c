@@ -10,7 +10,7 @@
  *   posixtest epoll    epoll, eventfd, pipes, socket pairs, dup2
  *   posixtest signals  handlers, faults as signals, masks, pthread_kill
  *   posixtest dlopen   shared libraries (libdemo, libdemo2 next to it)
- *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR)
+ *   posixtest files    mkdir's errors (EEXIST, ENOENT, ENOTDIR), hard links, both times
  *   posixtest memory   posix_memalign with malloc / free, from several threads
  *   posixtest proc     fork, execve, waitpid, pipes between processes, posix_spawn
  *   posixtest tty      pseudo-terminals, termios, ^C / ^Z, job control, hangup, /dev
@@ -1100,6 +1100,58 @@ static void t_files(void) {
     errno = 0;
     int nd = mkdir(under, 0755);
     check("mkdir with no parent: ENOENT; under a file: ENOTDIR", deep == -1 && e1 == ENOENT && nd == -1 && errno == ENOTDIR, "");
+    errno = 0;
+    int od = open(file, O_RDONLY | O_DIRECTORY);
+    check("open(a file, O_DIRECTORY): ENOTDIR", od == -1 && errno == ENOTDIR, "");
+    if (od >= 0) close(od);
+
+    /* hard links (API version 29): two names, one file */
+    char other[340], sub2[340];
+    snprintf(other, sizeof(other), "%s/b-link", dir);
+    snprintf(sub2, sizeof(sub2), "%s/sub", dir);
+    mkdir(sub2, 0755);
+    snprintf(sub2, sizeof(sub2), "%s/sub/c-link", dir);
+    f = fopen(file, "w");
+    if (f) { fputs("one", f); fclose(f); }
+    struct stat sa, sb;
+    int l1 = link(file, other), l2 = link(other, sub2);
+    int st1 = stat(file, &sa) == 0 && stat(sub2, &sb) == 0;
+    char note[96];
+    snprintf(note, sizeof(note), "nlink %d, ino %ld / %ld", st1 ? (int)sa.st_nlink : -1, st1 ? (long)sa.st_ino : -1L, st1 ? (long)sb.st_ino : -1L);
+    check("link() twice: 3 names, the same inode", l1 == 0 && l2 == 0 && st1 && sa.st_nlink == 3 && sa.st_ino == sb.st_ino, note);
+    f = fopen(other, "a");
+    if (f) { fputs(" two", f); fclose(f); }
+    char got[32] = "";
+    f = fopen(sub2, "r");
+    if (f) { if (!fgets(got, sizeof(got), f)) got[0] = 0; fclose(f); }
+    check("written through one name, read through another", !strcmp(got, "one two"), got);
+    int rs = rename(file, other);                       /* (two names of one file: nothing happens) */
+    int un = unlink(file);
+    got[0] = 0;
+    f = fopen(other, "r");
+    if (f) { if (!fgets(got, sizeof(got), f)) got[0] = 0; fclose(f); }
+    int st2 = stat(other, &sa) == 0;
+    check("rename onto its own other name, unlink one: the data stays", rs == 0 && un == 0 && st2 && sa.st_nlink == 2 && !strcmp(got, "one two"), got);
+    errno = 0;
+    int e_ex = link(other, sub2) == -1 && errno == EEXIST;
+    errno = 0;
+    int e_dir = link(dir, file) == -1 && errno == EPERM;
+    errno = 0;
+    int e_no = link(file, file) == -1 && errno == ENOENT;
+    check("link: EEXIST, EPERM for a folder, ENOENT", e_ex && e_dir && e_no, "");
+
+    /* the access and modification times apart (utimensat, UTIME_OMIT) */
+    struct timespec ts[2] = { { 1577934245, 0 }, { 0, UTIME_OMIT } };
+    int u1 = utimensat(AT_FDCWD, other, ts, 0);
+    ts[0].tv_nsec = UTIME_OMIT; ts[1].tv_sec = 1609556645; ts[1].tv_nsec = 0;
+    int u2 = utimensat(AT_FDCWD, other, ts, 0);
+    int st3 = stat(sub2, &sa) == 0;
+    snprintf(note, sizeof(note), "atime %ld, mtime %ld", st3 ? (long)sa.st_atime : -1L, st3 ? (long)sa.st_mtime : -1L);
+    check("utimensat: atime and mtime each kept (all names)", u1 == 0 && u2 == 0 && st3 && sa.st_atime == 1577934245 && sa.st_mtime == 1609556645, note);
+    unlink(other);
+    unlink(sub2);
+    snprintf(sub2, sizeof(sub2), "%s/sub", dir);
+    rmdir(sub2);
     remove(file);
     rmdir(dir);
 }

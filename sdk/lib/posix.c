@@ -31,6 +31,11 @@ int open(const char* path, int flags, ...) {
     if (flags & O_TRUNC)  f |= BANANA_O_TRUNC;
     if (flags & O_APPEND) f |= BANANA_O_APPEND;
     if (flags & O_NOCTTY) f |= BANANA_O_NOCTTY;
+    if (flags & O_DIRECTORY) {                     /* a folder or nothing (mv, find: is it one?) */
+        banana_stat_t st;
+        if (__banana->stat(path, &st) != 0) { errno = ENOENT; return -1; }
+        if (!st.is_dir) { errno = ENOTDIR; return -1; }
+    }
     if ((flags & O_EXCL) && (flags & O_CREAT)) {
         banana_stat_t st;
         if (__banana->stat(path, &st) == 0) { errno = EEXIST; return -1; }

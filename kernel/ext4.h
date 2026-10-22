@@ -90,6 +90,8 @@ uint32_t ext4_symlink(uint32_t dir, const char* name, const char* target, uint32
  * its last link. 0, or -1 */
 int  ext4_unlink(uint32_t dir, const char* name);
 int  ext4_rmdir(uint32_t dir, const char* name);
+/* name in dir: another (hard) link to file ino. 0, or -1 */
+int  ext4_link(uint32_t dir, const char* name, uint32_t ino);
 /* moves / renames; a file of the new name is replaced. 0, or -1 */
 int  ext4_rename(uint32_t odir, const char* oname, uint32_t ndir, const char* nname);
 

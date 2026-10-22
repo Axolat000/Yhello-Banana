@@ -14,8 +14,11 @@
  * pixels per em; glyphs are anti-aliased and cached.
  */
 
-/* FONT_EMOJI: Noto Emoji (fonts/LICENSE-NotoEmoji), drawn where the others lack a character (font.c pick) */
-enum { FONT_SANS = 0, FONT_SANS_BOLD, FONT_MONO, FONT_MONO_BOLD, FONT_EMOJI, FONT_FACES };
+/* FONT_EMOJI: Noto Emoji (fonts/LICENSE-NotoEmoji), FONT_CJK: Droid Sans
+ * Fallback (fonts/LICENSE-DroidSansFallback: Chinese, Japanese kana),
+ * FONT_HANGUL: Nanum Gothic (fonts/LICENSE-NanumGothic: Korean) - drawn
+ * where the others lack a character (font.c pick) */
+enum { FONT_SANS = 0, FONT_SANS_BOLD, FONT_MONO, FONT_MONO_BOLD, FONT_EMOJI, FONT_CJK, FONT_HANGUL, FONT_FACES };
 
 /*
  * Fonts the user installs (Settings > Fonts, or "Install font" in Files):
@@ -28,7 +31,7 @@ enum { FONT_SANS = 0, FONT_SANS_BOLD, FONT_MONO, FONT_MONO_BOLD, FONT_EMOJI, FON
  */
 #define FONT_UI        64          /* a face number: the interface font */
 #define FONT_DIR       "/usr/share/fonts"
-#define FONT_USER_MAX  10          /* (the built-in faces and these: 15 at most, the glyph cache's 4 bits) */
+#define FONT_USER_MAX  8           /* (the built-in faces and these: 15 at most, the glyph cache's 4 bits) */
 
 /* loads a .ttf file as a user font: its face, or -1 with the reason in err */
 int  font_user_load(const char* path, char* err, int cap);

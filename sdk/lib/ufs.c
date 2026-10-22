@@ -222,24 +222,33 @@ int fchown(int fd, uid_t u, gid_t g) {
 
 /* the time of the last change (the system keeps no access time of ours):
  * NULL or UTIME_NOW: now; UTIME_OMIT: kept */
-static long long when(const struct timespec* t) {
-    if (!t || t[1].tv_nsec == UTIME_NOW) return -1;
-    return (long long)t[1].tv_sec;
+#define V29 BANANA_HAS(__banana, fs_utimes)
+
+/* a time for the system: seconds, -1 now, -2 as it is */
+static long long when1(const struct timespec* t, int k) {
+    if (!t || t[k].tv_nsec == UTIME_NOW) return -1;
+    if (t[k].tv_nsec == UTIME_OMIT) return -2;
+    return (long long)t[k].tv_sec;
 }
+static long long when(const struct timespec* t) { return when1(t, 1); }
 
 int utimensat(int dirfd, const char* path, const struct timespec t[2], int flags) {
     if (!path) return futimens(dirfd, t);
     char p[PATH_MAX];
     if (at(dirfd, path, p, sizeof(p), 0)) return -1;
     if (!V28) { struct stat st; return stat(p, &st); }
-    if (t && t[1].tv_nsec == UTIME_OMIT) { struct stat st; return stat_any(p, &st, !(flags & AT_SYMLINK_NOFOLLOW)); }
-    return ret(__banana->fs_utime(p, !(flags & AT_SYMLINK_NOFOLLOW), when(t)));
+    int follow = !(flags & AT_SYMLINK_NOFOLLOW);
+    if (t && t[0].tv_nsec == UTIME_OMIT && t[1].tv_nsec == UTIME_OMIT) { struct stat st; return stat_any(p, &st, follow); }
+    if (V29) return ret(__banana->fs_utimes(p, follow, when1(t, 0), when1(t, 1)));
+    if (t && t[1].tv_nsec == UTIME_OMIT) { struct stat st; return stat_any(p, &st, follow); }
+    return ret(__banana->fs_utime(p, follow, when(t)));
 }
 
 int futimens(int fd, const struct timespec t[2]) {
     if (!V28) return 0;
-    if (t && t[1].tv_nsec == UTIME_OMIT) return 0;
-    int r = __banana->fs_fdattr(fd, 3, when(t), 0);
+    if (t && t[0].tv_nsec == UTIME_OMIT && t[1].tv_nsec == UTIME_OMIT) return 0;
+    int r = V29 ? __banana->fs_fdattr(fd, 4, when1(t, 0), when1(t, 1))
+          : t && t[1].tv_nsec == UTIME_OMIT ? 0 : __banana->fs_fdattr(fd, 3, when(t), 0);
     if (r == -9) {
         char dir[PATH_MAX];
         if (__banana->fs_fdpath(fd, dir, sizeof(dir)) >= 0) return utimensat(AT_FDCWD, dir, t, 0);
@@ -293,10 +302,19 @@ ssize_t readlinkat(int dirfd, const char* path, char* buf, size_t len) {
 }
 ssize_t readlink(const char* path, char* buf, size_t len) { return readlinkat(AT_FDCWD, path, buf, len); }
 
-/* (hard links: the system's files have one name each) */
+/* hard links (version 29): another name of the same file, on the system's
+ * own disk (not on FAT / exFAT sticks: EPERM) */
 int linkat(int a, const char* from, int b, const char* to, int flags) {
-    (void)a; (void)from; (void)b; (void)to; (void)flags;
-    return fail(EPERM);
+    char p[PATH_MAX], q[PATH_MAX];
+    if (flags & ~AT_SYMLINK_FOLLOW) return fail(EINVAL);
+    if (at(a, from, p, sizeof(p), 0) || at(b, to, q, sizeof(q), 0)) return -1;
+    if (!V29) return fail(EPERM);
+    if (flags & AT_SYMLINK_FOLLOW) {
+        char r[PATH_MAX];
+        if (!realpath(p, r)) return -1;
+        strcpy(p, r);
+    }
+    return ret(__banana->fs_link(p, q));
 }
 int link(const char* from, const char* to) { return linkat(AT_FDCWD, from, AT_FDCWD, to, 0); }
 

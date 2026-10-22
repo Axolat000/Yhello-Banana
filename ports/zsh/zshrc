@@ -6,6 +6,12 @@ HISTSIZE=1000
 SAVEHIST=1000
 setopt hist_ignore_dups share_history
 bindkey -e
+# completion (the function library in /usr/share/zsh, the package's): Tab
+# completes commands, options, files...; a menu to pick from
+autoload -Uz compinit && compinit -d ~/.zcompdump
+zstyle ':completion:*' menu select
+zstyle ':completion:*' list-colors ''
+autoload -Uz promptinit && promptinit      # (prompt -l: the themes)
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ll='ls -l'

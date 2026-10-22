@@ -150,7 +150,7 @@ static int grow_files(int n) {
         if (g_fslots >= FS_MAX_FILES) return -1;
         fs_file_t* c = (fs_file_t*)kzalloc(CHUNK * sizeof(fs_file_t));
         if (!c) return -1;
-        for (int k = 0; k < CHUNK; k++) { c[k].hnext = -2; c[k].sib = -1; }
+        for (int k = 0; k < CHUNK; k++) { c[k].hnext = -2; c[k].sib = -1; c[k].lnext = -1; }
         g_fch[g_fslots / CHUNK] = c;
         g_fslots += CHUNK;
     }
@@ -330,8 +330,60 @@ void fs_set_disk_ops(int (*read)(int idx, uint8_t* buf, uint32_t size),
     g_disk_clean = clean;
 }
 
+/* ── hard links ──
+ * The names of one file are entries in a ring (lnext), each with its own
+ * name and folder, sharing what an inode holds: the data (the same content
+ * buffer), its size, the disk's node, the mode, owner and dates. A change
+ * made through one name is copied to the others (links_sync); the data is
+ * freed with the last name. */
+static int in_ring(int i) { return F(i).lnext >= 0 && F(i).lnext != i; }
+
+static void links_sync(int i) {
+    if (i < 0 || !in_ring(i)) return;
+    const fs_file_t* s = &F(i);
+    for (int j = s->lnext, n = 0; j != i && j >= 0 && n < FS_MAX_FILES; j = F(j).lnext, n++) {
+        fs_file_t* d = &F(j);
+        d->content = s->content;
+        d->size = s->size;
+        d->cap = s->cap;
+        d->loaded = s->loaded;
+        d->loading = s->loading;
+        d->node = s->node;
+        d->data_gen = s->data_gen;
+        d->last_use = s->last_use;
+        d->mtime = s->mtime;
+        d->ctime = s->ctime;
+        d->atime = s->atime;
+        d->mode = s->mode;
+        d->uid = s->uid;
+        d->gid = s->gid;
+    }
+}
+
+/* takes name i out of its ring (the others keep the data) */
+static void ring_leave(int i) {
+    if (!in_ring(i)) { F(i).lnext = -1; return; }
+    int p = F(i).lnext;
+    while (F(p).lnext != i) p = F(p).lnext;
+    F(p).lnext = F(i).lnext;
+    if (F(p).lnext == p) F(p).lnext = -1;
+    F(i).lnext = -1;
+}
+
+static int same_file(int a, int b) {
+    if (a == b) return 1;
+    if (!in_ring(a)) return 0;
+    for (int j = F(a).lnext; j != a; j = F(j).lnext) if (j == b) return 1;
+    return 0;
+}
+
+static int file_index(const fs_file_t* f);
+
 /* the file is in use: the last to be dropped from RAM */
-static void used_now(fs_file_t* f) { f->last_use = timer_ms(); }
+static void used_now(fs_file_t* f) {
+    f->last_use = timer_ms();
+    if (f->lnext >= 0) links_sync(file_index(f));
+}
 
 /* bumped by every change to the tree or a file (the disk autosave watches it) */
 static uint32_t g_fs_gen = 1;
@@ -380,6 +432,7 @@ static void read_now(fs_file_t* f) {
     if (!now || f->mnt || g_sys.used) return;          /* (sticks and the ext4 disk: not kept) */
     if (f->atime <= f->mtime || now - f->atime > 86400u) {
         f->atime = now;
+        if (f->lnext >= 0) links_sync(file_index(f));
         touched();
     }
 }
@@ -434,6 +487,8 @@ static void free_file(int i) {
     settle(&F(i));
     unlink_file(i);
     if (i < g_ffree) g_ffree = i;
+    if (in_ring(i)) F(i).content = NULL;            /* (the file's other names keep its data) */
+    ring_leave(i);
     kfree(F(i).content);
     F(i).content = NULL;
     F(i).size = F(i).cap = 0;
@@ -474,7 +529,14 @@ static int reserve(fs_file_t* f, uint32_t size) {
 
 /* A file on a USB stick or on the installed disk is read in the first time
  * it is used: what is kept is not bounded by the RAM, only what is in use. */
+static int load_data(fs_file_t* f);
 static int ensure_loaded(fs_file_t* f) {
+    int rc = load_data(f);
+    if (f->lnext >= 0) links_sync(file_index(f));
+    return rc;
+}
+
+static int load_data(fs_file_t* f) {
     if (!f->used) return 0;
     settle(f);
     if (f->loaded) return 0;
@@ -483,6 +545,7 @@ static int ensure_loaded(fs_file_t* f) {
     used_now(f);
     if (reserve(f, f->size) != 0) return -1;
     f->loading = 1;                       /* (the read lets the other tasks run) */
+    if (f->lnext >= 0) links_sync(file_index(f));
     int rc = m ? m->ops->read(m->ctx, f->node, (uint8_t*)f->content, f->size)
                : g_disk_read(file_index(f), (uint8_t*)f->content, f->size);
     f->loading = 0;
@@ -532,7 +595,15 @@ static int create_file_in(int parent, const char* name_in) {
     return i;
 }
 
+static int data_write(int idx, const void* data, uint32_t len);
+/* (every name of the file sees the change) */
 int fs_write(int idx, const void* data, uint32_t len) {
+    int rc = data_write(idx, data, len);
+    if (idx >= 0 && idx < g_fslots) links_sync(idx);
+    return rc;
+}
+
+static int data_write(int idx, const void* data, uint32_t len) {
     touched();
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
@@ -541,6 +612,7 @@ int fs_write(int idx, const void* data, uint32_t len) {
     settle(f);
     used_now(f);
     if (reserve(f, len) != 0) return -1;
+    links_sync(idx);                    /* (the buffer may have moved: the other names too, before the disk lets others run) */
     f->data_gen = g_fs_gen;
     f->mtime = rtc_now();
     mount_t* m = mount_of(f->mnt);
@@ -575,7 +647,15 @@ static void drop(int i);
  * what could be downloaded by the free memory */
 #define APPEND_STREAM_MIN (1u << 20)
 
+static int data_append(int idx, const void* data, uint32_t len);
+/* (every name of the file sees the change) */
 int fs_append(int idx, const void* data, uint32_t len) {
+    int rc = data_append(idx, data, len);
+    if (idx >= 0 && idx < g_fslots) links_sync(idx);
+    return rc;
+}
+
+static int data_append(int idx, const void* data, uint32_t len) {
     touched();
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
@@ -599,6 +679,7 @@ int fs_append(int idx, const void* data, uint32_t len) {
     }
     if (ensure_loaded(f) != 0) return -1;
     if (reserve(f, f->size + len) != 0) return -1;
+    links_sync(idx);
     if (m && m->ops->append(m->ctx, f->node, f->size, data, len) != 0) {
         g_io_err = 1;
         f->loaded = 0;
@@ -610,7 +691,15 @@ int fs_append(int idx, const void* data, uint32_t len) {
     return 0;
 }
 
+static int data_write_at(int idx, uint32_t off, const void* data, uint32_t len);
+/* (every name of the file sees the change) */
 int fs_write_at(int idx, uint32_t off, const void* data, uint32_t len) {
+    int rc = data_write_at(idx, off, data, len);
+    if (idx >= 0 && idx < g_fslots) links_sync(idx);
+    return rc;
+}
+
+static int data_write_at(int idx, uint32_t off, const void* data, uint32_t len) {
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
     if (off == f->size) return fs_append(idx, data, len);
@@ -648,7 +737,15 @@ int fs_write_at(int idx, uint32_t off, const void* data, uint32_t len) {
     return 0;
 }
 
+static int data_truncate(int idx, uint32_t size);
+/* (every name of the file sees the change) */
 int fs_truncate(int idx, uint32_t size) {
+    int rc = data_truncate(idx, size);
+    if (idx >= 0 && idx < g_fslots) links_sync(idx);
+    return rc;
+}
+
+static int data_truncate(int idx, uint32_t size) {
     fs_file_t* f = fs_file_info(idx);
     if (!f || !f->used) return -1;
     if (size == f->size) return 0;
@@ -1050,16 +1147,17 @@ int fs_create(const char* path) {
 }
 
 /* a mode, owner or date change on the ext4 disk too (entries on no mount) */
-static void sys_setattr(int is_dir, int idx, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime) {
+static void sys_setattr(int is_dir, int idx, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t atime, uint32_t mtime) {
+    if (!is_dir) links_sync(idx);                       /* (a file's other names: the same inode) */
     if (!g_sys.used || !g_sys.ops->setattr) return;
     if (is_dir ? D(idx).mnt : F(idx).mnt) return;
     uint32_t node = is_dir ? D(idx).node : F(idx).node;
-    if (node && g_sys.ops->setattr(g_sys.ctx, node, is_dir, perms, uid, gid, mtime) != 0) g_io_err = 1;
+    if (node && g_sys.ops->setattr(g_sys.ctx, node, is_dir, perms, uid, gid, atime, mtime) != 0) g_io_err = 1;
 }
 
 int fs_touch(const char* path) {
     int i = fs_create(path);
-    if (i >= 0) { touched(); F(i).mtime = rtc_now(); sys_setattr(0, i, ~0u, ~0u, ~0u, F(i).mtime); }
+    if (i >= 0) { touched(); F(i).mtime = rtc_now(); sys_setattr(0, i, ~0u, ~0u, ~0u, ~0u, F(i).mtime); }
     return i;
 }
 
@@ -1072,6 +1170,7 @@ void fs_set_times(int is_dir, int idx, uint32_t mtime, uint32_t ctime) {
         if (idx < 0 || idx >= g_fslots) return;
         F(idx).mtime = mtime;
         F(idx).ctime = ctime;
+        links_sync(idx);
     }
 }
 
@@ -1097,6 +1196,7 @@ fs_file_t* fs_get_file(int idx) {
         /* unreadable (stick pulled out...): callers get zeros, not garbage */
         if (reserve(f, f->size) != 0) return (void*)0;
         memset(f->content, 0, f->size + 1);
+        links_sync(idx);
     }
     return f;
 }
@@ -1206,7 +1306,7 @@ int fs_copy(const char* src, const char* dst) {
     if (tidx < 0) return -1;
 
     if (fs_write(tidx, F(sidx).content, F(sidx).size) != 0) return -1;
-    if (F(sidx).mtime) F(tidx).mtime = F(sidx).mtime;    /* a copy keeps the original's date */
+    if (F(sidx).mtime) { F(tidx).mtime = F(sidx).mtime; links_sync(tidx); }   /* a copy keeps the original's date */
     return tidx;
 }
 
@@ -1233,7 +1333,7 @@ int fs_move(const char* src, const char* dst) {
 
     if (sfile >= 0) {
         int existing = find_file_in(target_dir, target_name);
-        if (existing == sfile) return sfile;
+        if (existing >= 0 && same_file(existing, sfile)) return sfile;   /* (two names of one file: nothing to do) */
         if (find_dir_in(target_dir, target_name) >= 0) return -1;
         if (F(sfile).mnt != D(target_dir).mnt) {
             /* onto / off a USB stick: copy, then delete the original */
@@ -1864,14 +1964,18 @@ int fs_read(int idx, uint32_t off, void* buf, uint32_t len) {
     if (m && m->ops->read_at) {
         /* straight from the disk, through its cache: nothing else of it read in */
         f->loading = 1;
+        links_sync(idx);
         int rc = m->ops->read_at(m->ctx, f->node, off, buf, len);
         f->loading = 0;
+        links_sync(idx);
         return rc == (int)len ? (int)len : -1;
     }
     if (!f->loaded && !f->mnt && g_disk_read_range && f->size > STREAM_MIN) {
         f->loading = 1;                     /* (a write or a delete waits for it) */
+        links_sync(idx);
         int rc = g_disk_read_range(idx, off, (uint8_t*)buf, len);
         f->loading = 0;
+        links_sync(idx);
         return rc == 0 ? (int)len : -1;
     }
     if (!f->loaded && ensure_loaded(f) != 0) return -1;
@@ -1893,6 +1997,7 @@ void fs_unpin(int idx) {
 static int droppable(int i) {
     fs_file_t* f = &F(i);
     if (!f->used || !f->loaded || f->loading || f->pins || !f->content || f->cap < 4096) return 0;
+    for (int j = f->lnext; j >= 0 && j != i; j = F(j).lnext) if (F(j).pins) return 0;
     if (f->mnt || g_sys.used) return mount_of(f->mnt) != NULL;   /* written through: sticks, the ext4 disk */
     return g_disk_clean && g_disk_clean(i, f->data_gen);  /* the installed disk: once saved */
 }
@@ -1905,6 +2010,7 @@ static void drop(int i) {
     f->content = NULL;
     f->cap = 0;
     f->loaded = 0;
+    links_sync(i);
 }
 
 uint32_t fs_evict(uint32_t want, uint32_t min_idle_ms) {
@@ -1998,6 +2104,7 @@ void fs_set_meta(int is_dir, int idx, uint32_t mode, uint32_t uid, uint32_t gid,
         F(idx).uid = uid;
         F(idx).gid = gid;
         F(idx).atime = atime;
+        links_sync(idx);
     }
 }
 
@@ -2050,6 +2157,9 @@ int fs_stat(const char* path, int follow, fs_stat_t* st) {
         st->size = F(idx).size;
         st->atime = F(idx).atime; st->mtime = F(idx).mtime; st->ctime = F(idx).ctime;
         st->mnt = F(idx).mnt;
+        st->nlink = fs_nlink(idx);
+        st->ino = idx;
+        for (int j = F(idx).lnext; j >= 0 && j != idx; j = F(j).lnext) if (j < st->ino) st->ino = j;
     }
     return 0;
 }
@@ -2062,7 +2172,7 @@ int fs_chmod(const char* path, uint32_t perms) {
     touched();
     if (k) D(idx).mode = FS_S_IFDIR | (perms & 07777u);
     else F(idx).mode = (fmode(idx) & FS_S_IFMT) | (perms & 07777u);
-    sys_setattr(k, idx, perms & 07777u, ~0u, ~0u, ~0u);
+    sys_setattr(k, idx, perms & 07777u, ~0u, ~0u, ~0u, ~0u);
     return 0;
 }
 
@@ -2079,7 +2189,7 @@ int fs_chown(const char* path, int uid, int gid) {
         if (uid >= 0) F(idx).uid = (uint32_t)uid;
         if (gid >= 0) F(idx).gid = (uint32_t)gid;
     }
-    sys_setattr(k, idx, ~0u, uid >= 0 ? (uint32_t)uid : ~0u, gid >= 0 ? (uint32_t)gid : ~0u, ~0u);
+    sys_setattr(k, idx, ~0u, uid >= 0 ? (uint32_t)uid : ~0u, gid >= 0 ? (uint32_t)gid : ~0u, ~0u, ~0u);
     return 0;
 }
 
@@ -2116,23 +2226,31 @@ int fs_symlink(const char* target, const char* linkpath) {
     return i;
 }
 
-/* the time of its last change (touch); follow: through a link; 0 or -1 */
-int fs_utime(const char* path, int follow, uint32_t mtime) {
+/* the times of its last access and change (touch; ~0u: kept); follow:
+ * through a link; 0 or -1 */
+int fs_utime(const char* path, int follow, uint32_t atime, uint32_t mtime) {
     g_io_err = g_perm_err = 0;
     int idx, k = lookup(path, follow, &idx);
     if (k < 0) return -1;
     touched();
-    if (k) D(idx).mtime = mtime; else F(idx).mtime = mtime;
-    sys_setattr(k, idx, ~0u, ~0u, ~0u, mtime);
+    if (k) {
+        if (atime != ~0u) D(idx).atime = atime;
+        if (mtime != ~0u) D(idx).mtime = mtime;
+    } else {
+        if (atime != ~0u) F(idx).atime = atime;
+        if (mtime != ~0u) F(idx).mtime = mtime;
+    }
+    sys_setattr(k, idx, ~0u, ~0u, ~0u, atime, mtime);
     return 0;
 }
 
 /* the same, for an open file (by its index) */
-void fs_file_utime(int idx, uint32_t mtime) {
+void fs_file_utime(int idx, uint32_t atime, uint32_t mtime) {
     if (idx < 0 || idx >= g_fslots || !F(idx).used) return;
     touched();
-    F(idx).mtime = mtime;
-    sys_setattr(0, idx, ~0u, ~0u, ~0u, mtime);
+    if (atime != ~0u) F(idx).atime = atime;
+    if (mtime != ~0u) F(idx).mtime = mtime;
+    sys_setattr(0, idx, ~0u, ~0u, ~0u, atime, mtime);
 }
 
 /* chmod / chown of an open file (by its index): 0 or -1 */
@@ -2143,8 +2261,64 @@ int fs_file_setattr(int idx, uint32_t perms, uint32_t uid, uint32_t gid) {
     if (perms != ~0u) F(idx).mode = (fmode(idx) & FS_S_IFMT) | (perms & 07777u);
     if (uid != ~0u) F(idx).uid = uid;
     if (gid != ~0u) F(idx).gid = gid;
-    sys_setattr(0, idx, perms == ~0u ? ~0u : perms & 07777u, uid, gid, ~0u);
+    sys_setattr(0, idx, perms == ~0u ? ~0u : perms & 07777u, uid, gid, ~0u, ~0u);
     return 0;
+}
+
+uint32_t fs_nlink(int idx) {
+    if (idx < 0 || idx >= g_fslots || !F(idx).used) return 0;
+    uint32_t n = 1;
+    for (int j = F(idx).lnext; j >= 0 && j != idx && n < 65000; j = F(j).lnext) n++;
+    return n;
+}
+
+int fs_link(const char* oldpath, const char* newpath) {
+    g_io_err = g_perm_err = 0;
+    int src, k = lookup(oldpath, 0, &src);
+    if (k < 0) return -2;
+    if (k) return -1;                                    /* (no links to folders) */
+    char p[FS_PATH_LEN];
+    expand_tilde(newpath, p, sizeof(p));
+    char leaf[FS_NAME_LEN];
+    int parent = resolve_parent_leaf(p, leaf, sizeof(leaf));
+    if (parent < 0 || !leaf[0]) return -2;
+    if (find_file_in(parent, leaf) >= 0 || find_dir_in(parent, leaf) >= 0) return -17;
+    if (F(src).mnt || D(parent).mnt) return F(src).mnt == D(parent).mnt ? -1 : -18;   /* FAT / exFAT: no links */
+    if (!dir_writable(parent)) return -13;
+    if (fs_nlink(src) >= 65000) return -31;              /* (EMLINK) */
+    settle(&F(src));
+    if (g_sys.used) {
+        /* the ext4 disk: another directory entry for the inode */
+        if (!g_sys.ops->link || !F(src).node) return -1;
+        if (g_sys.ops->link(g_sys.ctx, D(parent).node, leaf, F(src).node) != 0) { g_io_err = 1; return -5; }
+    }
+    int i = new_file_slot();
+    if (i < 0) return -5;
+    touched();
+    fs_file_t* f = &F(i);
+    k_strcpy(f->name, leaf, FS_NAME_LEN);
+    f->used = 1;
+    f->parent_dir = parent;
+    f->mnt = 0;
+    f->pins = 0;
+    f->lnext = in_ring(src) ? F(src).lnext : src;
+    F(src).lnext = i;
+    F(src).ctime = rtc_now();
+    links_sync(src);                                     /* (the data and the rest: the file's) */
+    link_file(i);
+    dir_changed(parent);
+    return i;
+}
+
+void fs_join_links(int idx) {
+    if (idx < 0 || idx >= g_fslots || !F(idx).used || F(idx).mnt || !F(idx).node || in_ring(idx)) return;
+    for (int j = 0; j < g_fslots; j++) {
+        if (j == idx || !F(j).used || F(j).mnt || F(j).node != F(idx).node) continue;
+        F(idx).lnext = in_ring(j) ? F(j).lnext : j;
+        F(j).lnext = idx;
+        links_sync(j);                                   /* (its data may be read in already) */
+        return;
+    }
 }
 
 int fs_readlink(const char* path, char* out, int cap) {

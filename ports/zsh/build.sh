@@ -1,9 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # zsh 5.9 for Banana OS (/bin/zsh), its modules built in, on ncurses
-# (ports/ncurses: built first), with /apps/zsh/zshrc (prompt, history).
-# Not shipped: its function library
-# (completion, prompt themes) - zsh runs without it.
+# (ports/ncurses: built first), with /apps/zsh/zshrc (prompt, history,
+# completion) and its function library - completion, prompt themes, vcs_info
+# (functions.zip, unpacked into /usr/share/zsh: its fpath). Left out: the
+# completions for other systems (AIX, BSD, Cygwin, macOS, Solaris and other
+# Linux distributions' tools).
 #     ports/zsh/build.sh <output.bpk>
 [ -n "$1" ] || { echo "usage: $0 <output.bpk>"; exit 1; }
 OUT=$(realpath -m "$1")
@@ -30,6 +32,23 @@ port_configure --disable-dynamic --enable-multibyte --disable-gdbm --disable-pcr
     --with-tcsetpgrp --with-term-lib=ncursesw --enable-etcdir=/apps/zsh --disable-zsh-mem \
     --prefix=/usr --bindir=/bin
 port_make
+# the function library, as `make install.fns` lays it out (one folder)
+rm -rf fns functions.zip
+make install.fns DESTDIR="$B/fns" >/dev/null
+for d in AIX BSD Cygwin Darwin Solaris Mandriva Redhat openSUSE Debian; do
+    for f in "$SRC"/Completion/$d/*/*; do rm -f "fns/usr/share/zsh/$PORT_VER/functions/${f##*/}"; done
+done
+python3 -c "
+import os, zipfile
+z = zipfile.ZipFile('functions.zip', 'w', zipfile.ZIP_DEFLATED)
+top = 'fns/usr/share/zsh'
+for root, dirs, files in sorted(os.walk(top)):
+    dirs.sort()
+    for f in sorted(files):
+        p = os.path.join(root, f)
+        z.write(p, os.path.relpath(p, top))
+z.close()"
 port_package "$OUT" name=zsh "title=Z shell" version=$PORT_VER type=console \
     "description=zsh, the Z shell: a bash-like shell with more (/bin/zsh)" \
-    "author=Paul Falstad and the zsh developers" "category=Developer Tools" bin=zsh -- Src/zsh "zshrc=$PORT_DIR/zshrc"
+    "author=Paul Falstad and the zsh developers" "category=Developer Tools" bin=zsh unpack=functions.zip:/usr/share/zsh \
+    -- Src/zsh "zshrc=$PORT_DIR/zshrc" "functions.zip=$B/functions.zip"

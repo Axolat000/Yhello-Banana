@@ -71,8 +71,22 @@ port_configure() {
     cd "$B"
 }
 
+# the programs linked again when the SDK's C library changed (make sees no
+# change of its own: the library is not one of its files)
+port_relink() {
+    local sum f
+    sum=$(cat "$SDK"/lib/*.c "$SDK"/lib/*.h "$SDK/tools/banana-cc" 2>/dev/null | sha256sum | cut -d" " -f1)
+    [ "$(cat "$B/.libc" 2>/dev/null)" = "$sum" ] && return
+    find "$B" -type f ! -name '*.o' ! -name '*.a' ! -path '*/pkgdata/*' -size +1k | while read -r f; do
+        [ "$(head -c 4 "$f" | od -An -c | tr -d ' ')" = "177ELF" ] || continue
+        case $(od -An -tx1 -j16 -N1 "$f" | tr -d ' ') in 02|03) rm -f "$f" ;; esac
+    done
+    echo "$sum" > "$B/.libc"
+}
+
 # port_make targets...: make, its errors shown if it fails
 port_make() {
+    port_relink
     make -j"$(nproc)" "$@" >make.log 2>&1 || { grep -E "error|Error" make.log | head -40; exit 1; }
 }
 

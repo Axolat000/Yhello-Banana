@@ -1121,9 +1121,9 @@ static void ustat_fill(banana_ustat_t* u, const fs_stat_t* st) {
     u->mode = st->mode;
     u->uid = st->uid;
     u->gid = st->gid;
-    u->nlink = st->is_dir ? 2 : 1;
+    u->nlink = st->is_dir ? 2 : st->nlink ? st->nlink : 1;
     u->size = st->size;
-    u->ino = st->is_dir ? (uint64_t)st->index * 2 + 1 : (uint64_t)st->index * 2 + 2;
+    u->ino = st->is_dir ? (uint64_t)st->index * 2 + 1 : (uint64_t)st->ino * 2 + 2;
     u->dev = (uint64_t)st->mnt + 1;
     u->atime = st->atime;
     u->mtime = st->mtime;
@@ -1154,6 +1154,9 @@ static int a_fs_fdstat(int fd, banana_ustat_t* u) {
     fs_stat_t st;
     memset(&st, 0, sizeof(st));
     st.index = h->fidx;
+    st.nlink = fs_nlink(h->fidx);
+    st.ino = h->fidx;
+    for (int j = ff->lnext; j >= 0 && j != h->fidx; j = fs_file_info(j)->lnext) if (j < st.ino) st.ino = j;
     st.mode = fs_file_mode(h->fidx);
     st.uid = ff->uid;
     st.gid = ff->gid;
@@ -1204,7 +1207,21 @@ static int a_fs_readlink(const char* path, char* buf, int cap) {
 static int a_fs_utime(const char* path, int follow, long long mtime) {
     if (!path) return -14;
     uint32_t t = mtime < 0 ? rtc_now() : (uint32_t)mtime;
-    return fs_utime(path, follow, t) == 0 ? 0 : fs_errno();
+    return fs_utime(path, follow, ~0u, t) == 0 ? 0 : fs_errno();
+}
+
+/* (version 29) -1 now, -2 as it is */
+static uint32_t utime_of(long long t) { return t == -2 ? ~0u : t < 0 ? rtc_now() : (uint32_t)t; }
+
+static int a_fs_utimes(const char* path, int follow, long long atime, long long mtime) {
+    if (!path) return -14;
+    return fs_utime(path, follow, utime_of(atime), utime_of(mtime)) == 0 ? 0 : fs_errno();
+}
+
+static int a_fs_link(const char* oldpath, const char* newpath) {
+    if (!oldpath || !newpath) return -14;
+    int rc = fs_link(oldpath, newpath);
+    return rc >= 0 ? 0 : rc;
 }
 
 static int a_fs_unlink(const char* path, int dir) {
@@ -1245,7 +1262,8 @@ static int a_fs_fdattr(int fd, int what, long long a, long long b) {
     if (!h || h->type != KF_FILE) return -9;
     if (what == 1) return fs_file_setattr(h->fidx, (uint32_t)a & 07777u, ~0u, ~0u) == 0 ? 0 : -1;
     if (what == 2) return fs_file_setattr(h->fidx, ~0u, a < 0 ? ~0u : (uint32_t)a, b < 0 ? ~0u : (uint32_t)b) == 0 ? 0 : -1;
-    if (what == 3) { fs_file_utime(h->fidx, a < 0 ? rtc_now() : (uint32_t)a); return 0; }
+    if (what == 3) { fs_file_utime(h->fidx, ~0u, a < 0 ? rtc_now() : (uint32_t)a); return 0; }
+    if (what == 4) { fs_file_utime(h->fidx, utime_of(a), utime_of(b)); return 0; }
     return -22;
 }
 
@@ -2335,6 +2353,7 @@ static void spec_init(void) {
     SPEC(fs_unlink, "si", 0);
     SPEC(fs_fdattr, "iiii", 0);
     SPEC(fs_fdpath, "ibi", 0);
+    SPEC(fs_link, "ss", 0); SPEC(fs_utimes, "siii", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -3735,6 +3754,8 @@ static void api_init(void) {
     g_api.fs_unlink = G(a_fs_unlink);
     g_api.fs_fdattr = G(a_fs_fdattr);
     g_api.fs_fdpath = G(a_fs_fdpath);
+    g_api.fs_link = G(a_fs_link);
+    g_api.fs_utimes = G(a_fs_utimes);
     kfile_set_pty_hook(pty_closed_hook);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);

@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 28u
+#define BANANA_API_VERSION 29u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -578,6 +578,15 @@ typedef struct banana_api {
     /* open() of a folder (read only) gives a descriptor of type
      * BANANA_FD_DIR; fs_fdpath: its absolute path (a file's too) - its length */
     int (*fs_fdpath)(int fd, char* buf, int cap);
+
+    /* ── version 29: hard links, both times ───────────────────────────
+     * fs_link: newpath another name of the file oldpath names (a link
+     * there is not followed; -EPERM for a folder or on FAT / exFAT,
+     * -EXDEV across volumes, -EEXIST); fs_utimes: the last access's and
+     * last change's times, seconds since 1970, -1 now, -2 as it is.
+     * fs_fdattr also takes what 4: the two times (a, b - the same way). */
+    int (*fs_link)(const char* oldpath, const char* newpath);
+    int (*fs_utimes)(const char* path, int follow, long long atime, long long mtime);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

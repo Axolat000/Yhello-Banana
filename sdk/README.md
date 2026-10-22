@@ -253,8 +253,9 @@ What Unix programs find in the C library (API version 28, "Unix files"):
 `symlink`, `readlink`, `utimes` / `utimensat` (the modification time),
 `unlink`, `rename`; directory descriptors - `open(dir, O_DIRECTORY)`,
 `openat` and the other `*at` calls, `fchdir`, `fdopendir`, `dirfd`;
-`realpath` through symlinks; `scandir`. Hard links are not supported
-(`link`: `EPERM`). stdio is buffered (full for files and pipes, by line for
+`realpath` through symlinks; `scandir`. Since API version 29: hard links
+(`link`, `linkat`: not on FAT / exFAT sticks - `EPERM`), and `utimensat` /
+`futimens` set the access and modification times apart (`UTIME_OMIT`). stdio is buffered (full for files and pipes, by line for
 a terminal) with `fseeko`, `tmpfile`, `dprintf`, the `*_unlocked` calls and
 `<stdio_ext.h>` (`__fpending`, `__fpurge`... - what gnulib uses). Also GNU
 `getopt_long` (`<getopt.h>`), `<search.h>` (`tsearch`, `hsearch`,

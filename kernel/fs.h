@@ -49,6 +49,7 @@ typedef struct {
     uint32_t atime;      /* last read (relatime: at most once a day, or after a change) */
     uint32_t mode;       /* FS_S_IF* | permissions; 0 = not set yet (FS_MODE_FILE) */
     uint32_t uid, gid;
+    int32_t  lnext;      /* hard links: the next name of the same file (a ring), -1 none */
 } fs_file_t;
 
 typedef struct {
@@ -226,11 +227,14 @@ typedef struct {
     int (*read_at)(void* ctx, uint32_t node, uint32_t off, void* buf, uint32_t len);
     int (*write_at)(void* ctx, uint32_t node, uint32_t off, const void* data, uint32_t len);
     int (*truncate)(void* ctx, uint32_t node, uint32_t size);
-    /* mode (permission bits), owner, group, the modification date (local
-     * time); ~0u: as it is */
-    int (*setattr)(void* ctx, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime);
+    /* mode (permission bits), owner, group, the access and modification
+     * dates (local time); ~0u: as it is */
+    int (*setattr)(void* ctx, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid,
+                   uint32_t atime, uint32_t mtime);
     /* a symbolic link named name in parent, to target: *node */
     int (*symlink)(void* ctx, uint32_t parent, const char* name, const char* target, uint32_t* node);
+    /* a hard link: name in parent, another name of file node */
+    int (*link)(void* ctx, uint32_t parent, const char* name, uint32_t node);
 } fs_mount_ops_t;
 
 /* The installed disk as the tree's own backing (kernel/fsdisk.c, ext4):
@@ -302,6 +306,8 @@ typedef struct {
     uint32_t atime, mtime, ctime;
     uint16_t mnt;
     int      index;          /* fs_get_file / fs_get_dir index */
+    uint32_t nlink;          /* a file's names (hard links) */
+    int      ino;            /* the same for every name of a file (its lowest index) */
 } fs_stat_t;
 
 /* follow: 1 like stat(), 0 like lstat(); 0 or -1 */
@@ -312,12 +318,26 @@ int  fs_chown(const char* path, int uid, int gid);        /* -1 keeps that one; 
 int  fs_symlink(const char* target, const char* linkpath);
 /* a link's target into out: its length, or -1 (not a link) */
 int  fs_readlink(const char* path, char* out, int cap);
-/* its last change's time (follow: through a link); 0 or -1 */
-int  fs_utime(const char* path, int follow, uint32_t mtime);
-/* an open file's (index): its time; chmod / chown (~0u: kept); 0 or -1 */
-void fs_file_utime(int idx, uint32_t mtime);
+/* its last access's and last change's times, ~0u: as it is (follow:
+ * through a link); 0 or -1 */
+int  fs_utime(const char* path, int follow, uint32_t atime, uint32_t mtime);
+/* an open file's (index): its times; chmod / chown (~0u: kept); 0 or -1 */
+void fs_file_utime(int idx, uint32_t atime, uint32_t mtime);
 int  fs_file_setattr(int idx, uint32_t perms, uint32_t uid, uint32_t gid);
 int  fs_is_symlink(int idx);
+/* Hard links: a file may have several names (in any folders of the same
+ * volume - the RAM tree and the ext4 disk, not FAT / exFAT): every name is
+ * an entry of its own, sharing the data, mode, owner and dates with the
+ * others; the data goes with the last name. fs_link makes newpath another
+ * name of the file oldpath names (a link there is not followed): its index,
+ * or -ENOENT (-2), -EEXIST (-17), -EPERM (-1: a folder, FAT), -EXDEV (-18:
+ * another volume), -EACCES (-13), -EIO (-5) */
+int  fs_link(const char* oldpath, const char* newpath);
+/* the names file idx has (1 without hard links) */
+uint32_t fs_nlink(int idx);
+/* loading a folder of the ext4 disk: file idx is another name of a file
+ * whose entry may already be in the tables (same node) - joins it */
+void fs_join_links(int idx);
 /* the mode of a file / folder (the default when not set yet) */
 uint32_t fs_file_mode(int idx);
 uint32_t fs_dir_mode(int idx);

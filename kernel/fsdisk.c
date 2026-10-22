@@ -1538,9 +1538,14 @@ static int op4_write_at(void* c, uint32_t node, uint32_t off, const void* data, 
     return ext4_write(node, off, data, len);
 }
 static int op4_truncate(void* c, uint32_t node, uint32_t size) { (void)c; return ext4_truncate(node, size); }
-static int op4_setattr(void* c, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid, uint32_t mtime) {
+static int op4_setattr(void* c, uint32_t node, int is_dir, uint32_t perms, uint32_t uid, uint32_t gid,
+                       uint32_t atime, uint32_t mtime) {
     (void)c; (void)is_dir;
-    return ext4_setattr(node, perms, uid, gid, ~0u, mtime == ~0u ? ~0u : to_utc(mtime), ~0u);
+    return ext4_setattr(node, perms, uid, gid, atime == ~0u ? ~0u : to_utc(atime), mtime == ~0u ? ~0u : to_utc(mtime), ~0u);
+}
+static int op4_link(void* c, uint32_t parent, const char* name, uint32_t node) {
+    (void)c;
+    return ext4_link(parent, name, node);
 }
 static int op4_symlink(void* c, uint32_t parent, const char* name, const char* target, uint32_t* node) {
     (void)c;
@@ -1554,6 +1559,7 @@ static int op4_symlink(void* c, uint32_t parent, const char* name, const char* t
 static const fs_mount_ops_t g_e4ops = {
     op4_read, op4_write, op4_append, op4_create, op4_remove, op4_rename, op4_unmount,
     op4_remove_at, op4_rename_at, op4_read_at, op4_write_at, op4_truncate, op4_setattr, op4_symlink,
+    op4_link,
 };
 
 /* ── loading the tree ── */
@@ -1602,6 +1608,7 @@ static int e4_load_dir(int idx, uint32_t ino) {
             int f = fs_mount_add_file(0, idx, e->name, e->ino, (uint32_t)st.size);
             if (f < 0) continue;
             e4_meta(0, f, &st);
+            if (st.links > 1) fs_join_links(f);           /* (another name of a file already in the tables) */
         }
     }
     kfree(l.e);

@@ -1187,6 +1187,21 @@ uint32_t ext4_symlink(uint32_t dir, const char* name, const char* target, uint32
     return make_node(dir, name, EXT4_S_IFLNK | 0777u, uid, gid, target ? target : "");
 }
 
+/* name in dir, another link to file ino (not a folder): 0, or -1 */
+int ext4_link(uint32_t dir, const char* name, uint32_t ino) {
+    if (!g_mounted || !name || !*name || strlen(name) > 255) return -1;
+    lock();
+    raw_inode_t in;
+    int rc = -1;
+    if (!lookup_locked(dir, name) && iread(ino, &in) == 0 && !is_dir_i(&in) && i_links(&in) < 65000) {
+        uint32_t t = (i_mode(&in) & EXT4_S_IFMT) == EXT4_S_IFLNK ? EXT4_FT_LNK : EXT4_FT_REG;
+        rc = dir_add(dir, name, ino, t);
+        if (rc == 0) links_add(ino, 1);
+    }
+    unlock();
+    return rc;
+}
+
 /* name out of dir; its inode loses a link (and goes with the last) */
 static int unlink_locked(uint32_t dir, const char* name, int want_dir) {
     dir_t d;
