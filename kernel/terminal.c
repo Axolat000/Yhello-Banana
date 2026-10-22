@@ -188,7 +188,80 @@ static void console_cursor(size_t* row, size_t* col) {
     *col = (vt_active == CONSOLE_VT) ? term_col : vt_col[CONSOLE_VT];
 }
 
+/* ── a task's output for a program (kernel commands run as /bin programs:
+ * kernel/kcmd.c) - written to its stdout instead of the screen, the colours
+ * and cursor moves as ANSI escapes when that is a terminal ── */
+#define REDIR_MAX 32
+typedef struct {
+    int    pid;                     /* the task (0: a free slot) */
+    void (*put)(void* ctx, const char* s, uint32_t n);
+    void*  ctx;
+    int    ansi, cols, rows;
+    int    fg, bg;                  /* the colour last sent (-1: none yet) */
+    char   buf[512];
+    uint32_t n;
+} redir_t;
+static redir_t g_redir[REDIR_MAX];
+static int g_nredir;
+
+static redir_t* redir_cur(void) {
+    if (!g_nredir) return NULL;
+    int me = task_current_pid() + 1;
+    for (int i = 0; i < REDIR_MAX; i++) if (g_redir[i].pid == me) return &g_redir[i];
+    return NULL;
+}
+static void r_flush(redir_t* r) {
+    if (r->n) { uint32_t n = r->n; r->n = 0; r->put(r->ctx, r->buf, n); }
+}
+static void r_out(redir_t* r, const char* s, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (r->n == sizeof(r->buf)) r_flush(r);
+        r->buf[r->n++] = s[i];
+    }
+}
+static void r_str(redir_t* r, const char* s) { r_out(r, s, (uint32_t)strlen(s)); }
+
+/* the VGA colour as an ANSI one (light grey on black: the default) */
+static void r_color(redir_t* r, int fg, int bg) {
+    if (!r->ansi || (fg == r->fg && bg == r->bg)) return;
+    static const uint8_t ansi[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    char e[32];
+    if (fg == VGA_COLOR_LIGHT_GREY && bg == VGA_COLOR_BLACK) ksnprintf(e, sizeof(e), "\x1b[0m");
+    else if (bg == VGA_COLOR_BLACK) ksnprintf(e, sizeof(e), "\x1b[0;%um", (fg & 8 ? 90u : 30u) + ansi[fg & 7]);
+    else ksnprintf(e, sizeof(e), "\x1b[0;%u;%um", (fg & 8 ? 90u : 30u) + ansi[fg & 7], (bg & 8 ? 100u : 40u) + ansi[bg & 7]);
+    r_str(r, e);
+    r->fg = fg;
+    r->bg = bg;
+}
+
+int terminal_redirect_begin(void (*put)(void* ctx, const char* s, uint32_t n), void* ctx, int ansi, int cols, int rows) {
+    for (int i = 0; i < REDIR_MAX; i++) {
+        if (g_redir[i].pid) continue;
+        redir_t* r = &g_redir[i];
+        memset(r, 0, sizeof(*r));
+        r->put = put; r->ctx = ctx; r->ansi = ansi;
+        r->cols = cols > 0 ? cols : 80; r->rows = rows > 0 ? rows : 24;
+        r->fg = VGA_COLOR_LIGHT_GREY; r->bg = VGA_COLOR_BLACK;
+        r->pid = task_current_pid() + 1;
+        g_nredir++;
+        return 0;
+    }
+    return -1;
+}
+
+void terminal_redirect_end(void) {
+    redir_t* r = redir_cur();
+    if (!r) return;
+    r_color(r, VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    r_flush(r);
+    r->pid = 0;
+    g_nredir--;
+}
+
+int terminal_redirected(void) { return redir_cur() != NULL; }
+
 void terminal_flush(void) {
+    { redir_t* r = redir_cur(); if (r) { r_flush(r); return; } }
     if(crash_preview_active() || crash_in_progress())return;
     if (!fb_console_on()) return;
     if (splash_active()) return;            /* the boot screen is up: the text waits in the grid */
@@ -336,8 +409,10 @@ void terminal_init(void) {
 static int capturing(void);
 static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t col);
 
+
 void terminal_clear(void) {
     if (capturing()) return;
+    { redir_t* r = redir_cur(); if (r) { if (r->ansi) r_str(r, "\x1b[H\x1b[2J"); return; } }
     tty_clear_screen((int)vt_active);
     g_term_gen++;
     size_t h = terminal_usable_height();
@@ -383,6 +458,7 @@ void terminal_clear(void) {
 }
 
 void terminal_setcolor(uint8_t fg, uint8_t bg) {
+    { redir_t* r = redir_cur(); if (r) { r_color(r, fg, bg); return; } }
     term_color = vga_entry_color(fg, bg);
     vt_color[vt_active] = term_color;
 }
@@ -430,11 +506,13 @@ void terminal_serial_mirror(int on) {
 }
 
 size_t terminal_get_width(void) {
-    return terminal_width();
+    redir_t* r = redir_cur();
+    return r ? (size_t)r->cols : terminal_width();
 }
 
 size_t terminal_get_height(void) {
-    return terminal_usable_height();
+    redir_t* r = redir_cur();
+    return r ? (size_t)r->rows : terminal_usable_height();
 }
 
 /* Output capture for shell redirection (`cmd > file`): while a task
@@ -537,6 +615,7 @@ static void grid_back(void) {
 
 void terminal_putchar(char c) {
     if (capturing()) { capture_putc(c); return; }
+    { redir_t* r = redir_cur(); if (r) { r_out(r, &c, 1); if (c == '\n' && !r->ansi) r_flush(r); return; } }
     g_term_gen++;
     /* the console shell (vt0) is mirrored to the serial port */
     if (vt_active == 0 && g_serial_mirror) serial_putc(c);
@@ -666,6 +745,14 @@ void terminal_writeln(const char* str) {
 }
 
 void terminal_write_color(const char* str, uint8_t fg, uint8_t bg) {
+    redir_t* r = redir_cur();
+    if (r) {
+        int ofg = r->fg, obg = r->bg;
+        r_color(r, fg, bg);
+        terminal_write(str);
+        r_color(r, ofg, obg);
+        return;
+    }
     uint8_t saved = term_color, saved_vt = vt_color[vt_active];
     terminal_setcolor(fg, bg);
     terminal_write(str);
@@ -674,6 +761,7 @@ void terminal_write_color(const char* str, uint8_t fg, uint8_t bg) {
 }
 
 void terminal_cursor_left(void) {
+    { redir_t* r = redir_cur(); if (r) { if (r->ansi) r_str(r, "\x1b[D"); return; } }
     g_term_gen++;
     if (term_col > 0) {
         size_t old_row = term_row, old_col = term_col;
@@ -686,6 +774,7 @@ void terminal_cursor_left(void) {
 }
 
 void terminal_cursor_right(void) {
+    { redir_t* r = redir_cur(); if (r) { if (r->ansi) r_str(r, "\x1b[C"); return; } }
     g_term_gen++;
     size_t w = terminal_width();
     if (term_col + 1 < w) {
@@ -699,6 +788,13 @@ void terminal_cursor_right(void) {
 }
 
 void terminal_set_cursor(size_t row, size_t col) {
+    {
+        redir_t* r = redir_cur();
+        if (r) {
+            if (r->ansi) { char e[24]; ksnprintf(e, sizeof(e), "\x1b[%u;%uH", (unsigned)row + 1, (unsigned)col + 1); r_str(r, e); }
+            return;
+        }
+    }
     g_term_gen++;
     size_t h = terminal_usable_height();
     size_t w = terminal_width();
@@ -736,6 +832,26 @@ void terminal_putentryat(char c, uint8_t fg, uint8_t bg, size_t row, size_t col)
 }
 
 static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t col) {
+    {
+        redir_t* r = redir_cur();
+        if (r) {
+            /* (a cell somewhere: the cursor kept where it was - top, the editor) */
+            if (!r->ansi || cp == TERMINAL_WIDE_CONT) return;
+            char e[40];
+            int ofg = r->fg, obg = r->bg;
+            ksnprintf(e, sizeof(e), "\x1b7\x1b[%u;%uH", (unsigned)row + 1, (unsigned)col + 1);
+            r_str(r, e);
+            r_color(r, fg, bg);
+            char u[4];
+            int n = cp < 0x80 ? (u[0] = (char)cp, 1) : cp < 0x800 ? (u[0] = (char)(0xC0 | cp >> 6), u[1] = (char)(0x80 | (cp & 63)), 2)
+                  : cp < 0x10000 ? (u[0] = (char)(0xE0 | cp >> 12), u[1] = (char)(0x80 | ((cp >> 6) & 63)), u[2] = (char)(0x80 | (cp & 63)), 3)
+                  : (u[0] = (char)(0xF0 | cp >> 18), u[1] = (char)(0x80 | ((cp >> 12) & 63)), u[2] = (char)(0x80 | ((cp >> 6) & 63)), u[3] = (char)(0x80 | (cp & 63)), 4);
+            r_out(r, u, (uint32_t)n);
+            r_color(r, ofg, obg);
+            r_str(r, "\x1b8");
+            return;
+        }
+    }
     g_term_gen++;
     if (row >= VGA_HEIGHT || col >= VGA_WIDTH) return;
     if (term_mode == TERMINAL_MODE_FRAMEBUFFER && gfx_available()) {

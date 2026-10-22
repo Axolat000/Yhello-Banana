@@ -217,7 +217,42 @@ static int global_key(uint8_t sc1) {
     return 0;
 }
 
+/* ── a task's keys from elsewhere (kernel/kcmd.c: a kernel command run for
+ * a program reads its stdin) ── */
+#define KIN_MAX 32
+typedef struct { int pid; int (*get)(void* ctx, int wait); void* ctx; char back[16]; int nback; } kin_t;
+static kin_t g_kin[KIN_MAX];
+static int g_nkin;
+
+static kin_t* kin_cur(void) {
+    if (!g_nkin) return NULL;
+    int me = task_current_pid() + 1;
+    for (int i = 0; i < KIN_MAX; i++) if (g_kin[i].pid == me) return &g_kin[i];
+    return NULL;
+}
+
+int keyboard_redirect_begin(int (*get)(void* ctx, int wait), void* ctx) {
+    for (int i = 0; i < KIN_MAX; i++) {
+        if (g_kin[i].pid) continue;
+        g_kin[i].get = get;
+        g_kin[i].ctx = ctx;
+        g_kin[i].nback = 0;
+        g_kin[i].pid = task_current_pid() + 1;
+        g_nkin++;
+        return 0;
+    }
+    return -1;
+}
+
+void keyboard_redirect_end(void) {
+    kin_t* k = kin_cur();
+    if (!k) return;
+    k->pid = 0;
+    g_nkin--;
+}
+
 int keyboard_take_fkey(void) {
+    if (kin_cur()) return 0;                          /* (a program's: no F-keys of the console's) */
     if (g_fk_head == g_fk_tail) return 0;
     int c = g_fk[g_fk_head];
     g_fk_head = (g_fk_head + 1) % 16;
@@ -802,6 +837,12 @@ int keyboard_held_char(int c) {
 }
 
 char keyboard_try_getchar(void) {
+    kin_t* k = kin_cur();
+    if (k) {
+        if (k->nback) return k->back[--k->nback];
+        int c = k->get(k->ctx, 0);
+        return c > 0 ? (char)c : 0;
+    }
     /* daemons have no keyboard; an SSH session's shell reads its client */
     if (task_is_background()) return 0;
     int tt = tty_current();
@@ -893,6 +934,12 @@ int keyboard_ctrl_alt_del_pending(void) {
 }
 
 char keyboard_getchar(void) {
+    kin_t* k = kin_cur();
+    if (k) {
+        if (k->nback) return k->back[--k->nback];
+        int c = k->get(k->ctx, 1);
+        return c > 0 ? (char)c : 4;                    /* (its end: ^D) */
+    }
     while (1) {
         /* PS/2 and serial both feed keyboard_try_getchar(); while neither
          * has anything, let other tasks run (and the CPU idle). */
@@ -935,6 +982,8 @@ int keyboard_mods(void) { return (shift_held ? 1 : 0) | (ctrl_held ? 2 : 0) | (a
 
 /* a character read too early goes back to the front of the queue */
 void keyboard_unget(char c) {
+    kin_t* k = kin_cur();
+    if (k) { if (k->nback < 16) k->back[k->nback++] = c; return; }
     int prev = (q_head + QUEUE_SIZE - 1) % QUEUE_SIZE;
     if (prev == q_tail) return;                 /* full */
     q_head = prev;

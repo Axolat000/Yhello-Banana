@@ -95,6 +95,14 @@ int   terminal_capture_start(void);
 char* terminal_capture_stop(uint32_t* len);
 int   terminal_is_capturing(void);        /* the calling task's output is redirected */
 
+/* A kernel command run for a program (kernel/kcmd.c): until _end, what the
+ * calling task writes goes to put() instead of the screen - colours, clears
+ * and cursor moves as ANSI escapes when ansi (its stdout is a terminal);
+ * the text size it is told is cols x rows. begin: 0, or -1 (too many). */
+int  terminal_redirect_begin(void (*put)(void* ctx, const char* s, uint32_t n), void* ctx, int ansi, int cols, int rows);
+void terminal_redirect_end(void);
+int  terminal_redirected(void);
+
 /* GUI helpers */
 void terminal_get_cursor(size_t* row, size_t* col);
 void terminal_set_reserved_bottom(size_t rows);

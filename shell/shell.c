@@ -2321,6 +2321,7 @@ static void cmd_stopx(void) {
 
 /* ── dispatch ───────────────────────────────────────────────────── */
 static void dispatch_cmd(const char* raw_line, int persona);
+static void dispatch_plain(const char* line, int persona);
 
 /* `cmd > file` / `cmd >> file`: runs cmd with its output captured
  * (kernel/terminal.c) and writes that to the file instead of the screen. */
@@ -2435,7 +2436,27 @@ static void dispatch_cmd(const char* raw_line, int persona) {
         }
     }
 
-    const char* line = k_skip_spaces(final_buf);
+    dispatch_plain(k_skip_spaces(final_buf), persona);
+}
+
+/* kernel/kcmd.c: a command line as a program gives it (bash has expanded
+ * it already: no $, !! or aliases here) - 0, or 127 if no such command */
+static int g_no_path;                           /* (dispatch_plain: no $PATH search - it would find the caller) */
+static int g_not_found;
+int shell_exec_line(const char* line) {
+    char buf[SH_LINE_MAX];
+    char unquoted[SH_LINE_MAX];
+    k_strcpy_n(buf, line, sizeof(buf));
+    const char* l = unquote_path_cmd(buf, unquoted, sizeof(unquoted));
+    int was = g_no_path;
+    g_no_path = 1;
+    g_not_found = 0;
+    dispatch_plain(k_skip_spaces(l), g_default_shell_kind);
+    g_no_path = was;
+    return g_not_found ? 127 : 0;
+}
+
+static void dispatch_plain(const char* line, int persona) {
     if (!*line) return;
 
     /* install / update / installer: not there on an installed system */
@@ -2688,9 +2709,10 @@ static void dispatch_cmd(const char* raw_line, int persona) {
     if (netcmd_dispatch(line)) return;
 
     /* a program, a script or an installed app found through $PATH */
-    if (path_run(line, persona)) return;
+    if (!g_no_path && path_run(line, persona)) return;
 
     /* unknown */
+    g_not_found = 1;
     terminal_write_color(shell_kind_name(persona), VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_write_color(": command not found: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
     terminal_writeln(line);

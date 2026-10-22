@@ -620,6 +620,10 @@ typedef struct banana_api {
      * until a signal it does not block comes (at once: none can slip in
      * between); -EINTR - the signal's handler runs as it returns */
     int (*sig_suspend)(const unsigned long long* mask);
+    /* kcmd: one of the system's own commands (startx, install, pkg...: what
+     * the old built-in shell had) run with this program's stdin and stdout
+     * - 0, 127 if there is no such command (apps/kcmd: their /bin links) */
+    int (*kcmd)(const char* line);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

@@ -44,6 +44,7 @@ _Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must b
 #include "hmem.h"
 #include "upage.h"
 #include "usock.h"
+#include "../shell/shell.h"
 #include "kfile.h"
 #include "pty.h"
 #include "random.h"
@@ -2063,6 +2064,62 @@ static int a_sig_mask(int how, const unsigned long long* set, unsigned long long
     return 0;
 }
 
+/* ── the system's commands as programs (version 30: kcmd) ─────────────
+ * /bin/startx, /bin/install... (apps/kcmd) give their command line here: the
+ * old built-in shell's command runs in the calling task, what it writes
+ * going to the program's stdout (a terminal: with its colours and cursor
+ * moves as escapes) and the keys it reads coming from its stdin */
+static void kcmd_put(void* ctx, const char* s, uint32_t n) {
+    app_proc_t* p = (app_proc_t*)ctx;
+    while (n) {
+        long r = fd_write(p, 1, s, n);
+        if (r == -11) { task_sleep_ms(2); continue; }      /* (a terminal's queue full: it drains) */
+        if (r <= 0) return;
+        s += r;
+        n -= (uint32_t)r;
+    }
+}
+
+static long a_read(int fd, void* buf, unsigned long len);
+static int kcmd_get(void* ctx, int wait) {
+    app_proc_t* p = (app_proc_t*)ctx;
+    for (;;) {
+        kfile_t* f = get_fd(p, 0);
+        if (!f) return -1;
+        int ready = f->type == KF_PTS ? (pty_poll(f->pty, 0, KF_POLLIN) & (KF_POLLIN | KF_POLLHUP)) != 0
+                  : f->type == KF_PIPE ? (kpipe_poll(f, KF_POLLIN) & (KF_POLLIN | KF_POLLHUP)) != 0 : 1;
+        if (ready) {
+            uint8_t c;
+            long r = a_read(0, &c, 1);
+            if (r == 1) return c;
+            if (r != -11) return -1;                      /* (the end, an error) */
+        }
+        if (!wait) return 0;
+        if (p->kill_req || p->exit_req) return -1;
+        task_sleep_ms(5);
+    }
+}
+
+static int a_kcmd(const char* line) {
+    app_proc_t* p = cur();
+    if (!p || !line) return -14;
+    kfile_t* o = get_fd(p, 1);
+    if (o && o->type == KF_CONS) return shell_exec_line(line);     /* (the console's own: as it was) */
+    int cols = 80, rows = 24;
+    if (o && o->type == KF_PTS) {
+        pty_winsize_t ws;
+        pty_get_winsize(o->pty, &ws);
+        if (ws.ws_col) cols = ws.ws_col;
+        if (ws.ws_row) rows = ws.ws_row;
+    }
+    if (terminal_redirect_begin(kcmd_put, p, o && o->type == KF_PTS, cols, rows)) return -12;
+    keyboard_redirect_begin(kcmd_get, p);
+    int rc = shell_exec_line(line);
+    keyboard_redirect_end();
+    terminal_redirect_end();
+    return rc;
+}
+
 /* sigsuspend (version 30): the mask set and the wait begun at once - no
  * signal taken between the two (the SDK did them as two calls: a SIGCHLD
  * handled at the first one's return, then a wait for ever - zsh) */
@@ -2487,6 +2544,7 @@ static void spec_init(void) {
     SPEC(proc_alarm, "iiio", 2 * sizeof(long long));
     SPEC(proc_list, "ii", 0);
     SPEC(sig_suspend, "L", 0);
+    SPEC(kcmd, "s", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -3897,6 +3955,7 @@ static void api_init(void) {
     g_api.fs_utimes = G(a_fs_utimes);
     g_api.proc_alarm = G(a_proc_alarm);
     g_api.sig_suspend = G(a_sig_suspend);
+    g_api.kcmd = G(a_kcmd);
 #ifdef __x86_64__
     g_api.proc_list = G(a_proc_list);                  /* (the system calls' table: 64-bit) */
 #endif

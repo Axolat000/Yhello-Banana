@@ -22,4 +22,10 @@ void shell_run_remote(int tty);
 void shell_power(int restart);
 void shell_sleep(void);
 
+/* one command line of this shell's, for a program (kernel/app.c: kcmd) -
+ * its output and keys are the program's already (terminal / keyboard
+ * redirects); nothing is expanded, nothing searched in $PATH: 0, or 127
+ * if there is no such command */
+int shell_exec_line(const char* line);
+
 #endif

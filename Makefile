@@ -275,7 +275,7 @@ $(foreach p,$(PORTS64),$(eval $(call PORT_RULE,$(p))))
 ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
 # Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built
 # in the same way: ps & co. (apps/procps)
-APPS64      = procps
+APPS64      = procps kcmd
 APPS64_BPKZ = $(foreach a,$(APPS64),apps/$(a)/$(a)-x86_64.bpk.z)
 define APP64_RULE
 apps/$(1)/$(1)-x86_64.bpk.z: $$(filter-out %.bpk %.bpk.z %/build,$$(wildcard apps/$(1)/*)) $$(SDK_DEPS)

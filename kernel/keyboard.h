@@ -94,4 +94,10 @@ void keyboard_set_owner(int pid);
 #define KEYF_CODE(k) ((k) & 0xFF)
 int keyboard_take_fkey(void);
 
+/* A kernel command run for a program (kernel/kcmd.c): until _end, the
+ * calling task's keys come from get(ctx, wait) - a byte (> 0), 0 none yet
+ * (wait 0), -1 the end; keyboard_getchar gives ^D (4) at the end */
+int  keyboard_redirect_begin(int (*get)(void* ctx, int wait), void* ctx);
+void keyboard_redirect_end(void);
+
 #endif
