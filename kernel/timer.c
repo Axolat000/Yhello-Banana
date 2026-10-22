@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "smp.h"
 #include "latency.h"
 #include "types.h"
 #include "idt.h"
@@ -124,7 +125,18 @@ uint64_t timer_ms64(void) {
     return ms;
 }
 
-uint32_t timer_ms(void) { return (uint32_t)timer_ms64(); }
+uint64_t timer_core_now_ms(void) {
+    if (g_tsc_clock) {
+        int cpu = cpu_id();
+        int64_t off = smp_tsc_core_offset(cpu);
+        int64_t adj = (int64_t)(tsc_now() - g_tsc0) + off;
+        if (adj < 0) adj = 0;
+        return (uint64_t)adj / g_tsc_per_ms;
+    }
+    return timer_ms64();
+}
+
+uint32_t timer_ms(void) { return (uint32_t)timer_core_now_ms(); }
 
 uint32_t timer_ticks(void) {
     return timer_ms() / 10u;
