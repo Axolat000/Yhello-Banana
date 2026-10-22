@@ -122,10 +122,13 @@ const void* acpi_table_at(uint64_t addr, const char* sig) { return table_at(addr
 
 /* the 32-bit kernel uses one core */
 static cpu_topo_t g_topo0;
+static smp_tsc_sync_t g_tsc_sync0 = { .qualified = 1, .offset = 0, .rtt_min = 0, .error_code = 0 };
 const cpu_topo_t* cpu_topo(int cpu) { (void)cpu; return &g_topo0; }
 int smp_phys_cores(void) { return 1; }
 int smp_threads_per_core(void) { return 1; }
 int smp_x2apic(void) { return 0; }
+int64_t smp_tsc_core_offset(int cpu) { (void)cpu; return 0; }
+const smp_tsc_sync_t* smp_tsc_status(int cpu) { (void)cpu; return &g_tsc_sync0; }
 void smp_init(void) {}
 void smp_send_ipi(int cpu, int vector) { (void)cpu; (void)vector; }
 void smp_panic_stop_others(void) {}
@@ -354,10 +357,140 @@ static void ioapic_restore(void) {
         for (uint32_t i = 0; i < g_ioa[k].pins; i++) ioa_wr(&g_ioa[k], 0x10 + 2 * i, g_ioa[k].lo[i]);
 }
 
-static inline uint64_t tsc(void) {
+static inline uint64_t tsc_serialized(void) {
     uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    /* lfence serializes preceding instructions before rdtsc */
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi) :: "memory");
     return ((uint64_t)hi << 32) | lo;
+}
+
+static inline uint64_t tsc(void) {
+    return tsc_serialized();
+}
+
+/* ── Cross-core TSC qualification and synchronization ─────────────────
+ * Each AP qualifies its TSC agreement with the BSP before scheduling tasks.
+ * Uses ordered round-trips with serializing fences to compute the minimum
+ * round-trip time (RTT) and relative offset. If skew is bounded, the software
+ * offset is tracked per core. If communication times out or jitter exceeds
+ * bounds, the failure is recorded. */
+#define TS_ROUNDS 8
+static volatile uint64_t g_ts_ap, g_ts_bsp;
+static volatile int      g_ts_step;          /* 1: AP stamp out, 2: BSP answered, 0: next round, 3: done */
+static volatile int64_t  g_ts_off;
+static volatile uint64_t g_ts_rtt;
+static smp_tsc_sync_t    g_tsc_sync[SMP_MAX_CPUS];
+
+int64_t smp_tsc_core_offset(int cpu) {
+    if (cpu < 0 || cpu >= SMP_MAX_CPUS) return 0;
+    return g_tsc_sync[cpu].offset;
+}
+
+const smp_tsc_sync_t* smp_tsc_status(int cpu) {
+    if (cpu < 0 || cpu >= SMP_MAX_CPUS) return NULL;
+    return &g_tsc_sync[cpu];
+}
+
+static int ts_wait(int want) {
+    for (uint32_t i = 0; g_ts_step != want; i++) {
+        if (i > 200000000u) return -1;
+        __asm__ volatile("pause");
+    }
+    return 0;
+}
+
+static int64_t ts_measure(uint64_t* rtt_out) {
+    int64_t best = 0;
+    uint64_t rtt = ~0ull;
+    for (int r = 0; r < TS_ROUNDS; r++) {
+        uint64_t a1 = tsc_serialized();
+        g_ts_ap = a1;
+        __sync_synchronize();
+        g_ts_step = 1;
+        if (ts_wait(2)) break;
+        uint64_t a2 = tsc_serialized(), b = g_ts_bsp;
+        if (a2 > a1 && (a2 - a1) < rtt) {
+            rtt = a2 - a1;
+            best = (int64_t)(b - (a1 + (a2 - a1) / 2));
+        }
+        g_ts_step = 0;
+        if (ts_wait(0)) break;
+    }
+    *rtt_out = rtt;
+    return best;
+}
+
+static void tsc_sync_ap(void) {
+    uint64_t rtt = ~0ull;
+    int64_t off = ts_measure(&rtt);
+    g_ts_off = off;
+    g_ts_rtt = rtt;
+    __sync_synchronize();
+    g_ts_step = 3;
+}
+
+static int tsc_sync_bsp(int cpu) {
+    for (;;) {
+        for (uint32_t i = 0; g_ts_step != 1 && g_ts_step != 3; i++) {
+            if (i > 200000000u) {
+                klog("smp: core %d did not compare its TSC (timeout)\n", cpu);
+                g_tsc_sync[cpu].qualified = 0;
+                g_tsc_sync[cpu].error_code = 1;
+                g_ts_step = 0;
+                return -1;
+            }
+            __asm__ volatile("pause");
+        }
+        if (g_ts_step == 3) break;
+        g_ts_bsp = tsc_serialized();
+        __sync_synchronize();
+        g_ts_step = 2;
+        for (uint32_t i = 0; g_ts_step == 2; i++) {
+            if (i > 200000000u) {
+                klog("smp: core %d stopped comparing its TSC\n", cpu);
+                g_tsc_sync[cpu].qualified = 0;
+                g_tsc_sync[cpu].error_code = 1;
+                g_ts_step = 0;
+                return -1;
+            }
+            __asm__ volatile("pause");
+        }
+    }
+
+    uint64_t per = timer_tsc_per_ms(), us = per / 1000 ? per / 1000 : 1;
+    int64_t off = g_ts_off;
+    uint64_t rtt = g_ts_rtt;
+    g_ts_step = 0;
+
+    if (rtt == ~0ull) {
+        klog("smp: core %d TSC measurement incomplete\n", cpu);
+        g_tsc_sync[cpu].qualified = 0;
+        g_tsc_sync[cpu].error_code = 1;
+        return -1;
+    }
+
+    uint64_t max_rtt = per ? per * 5 : 20000000ull; /* 5 ms max round trip allowed */
+    if (rtt > max_rtt) {
+        klog("smp: core %d TSC RTT jitter too high (%llu cycles)\n", cpu, (unsigned long long)rtt);
+        g_tsc_sync[cpu].qualified = 0;
+        g_tsc_sync[cpu].error_code = 2;
+        return -1;
+    }
+
+    g_tsc_sync[cpu].qualified = 1;
+    g_tsc_sync[cpu].offset = off;
+    g_tsc_sync[cpu].rtt_min = rtt;
+    g_tsc_sync[cpu].error_code = 0;
+
+    unsigned long long a = (unsigned long long)((off < 0 ? -off : off) / (int64_t)us);
+    if (a > 0) {
+        klog("smp: core %d TSC qualified: offset %s%llu us (rtt %llu cycles)\n",
+             cpu, off < 0 ? "-" : "+", a, (unsigned long long)rtt);
+    } else {
+        klog("smp: core %d TSC agrees with BSP (rtt %llu cycles)\n",
+             cpu, (unsigned long long)rtt);
+    }
+    return 0;
 }
 
 /* n timer interrupts within max_ms (busy: no hlt, they may not come) - bounded by the TSC */
@@ -399,6 +532,7 @@ static void smp_ap_entry(uint32_t cpu) {
     lapic_wr(LAPIC_LVT_ERR, LVT_MASKED);
     lapic_wr(LAPIC_SVR, 0x100u | SMP_VEC_SPURIOUS);
     g_ap_up = 1;
+    tsc_sync_ap();
     task_ap_loop((int)cpu);
 }
 
@@ -622,6 +756,7 @@ void smp_init(void) {
             kfree(stack);
             continue;
         }
+        tsc_sync_bsp(cpu);
         g_cpus = cpu + 1;
     }
     topo_link(g_cpus);

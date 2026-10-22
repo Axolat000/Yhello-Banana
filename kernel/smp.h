@@ -56,6 +56,17 @@ int  smp_phys_cores(void);          /* physical cores among the running processo
 int  smp_threads_per_core(void);    /* the most hardware threads one core runs (2 with Hyper-Threading) */
 int  smp_x2apic(void);              /* the local APICs run in x2APIC mode */
 
+/* TSC cross-core synchronization and qualification state */
+typedef struct {
+    int     qualified;              /* 1: synchronized and within tolerance; 0: unverified or failed */
+    int64_t offset;                 /* cycles to add to this core's TSC to match BSP */
+    uint64_t rtt_min;               /* lowest round-trip time recorded during qualification */
+    int     error_code;             /* 0: OK, 1: timeout, 2: RTT jitter / threshold exceeded */
+} smp_tsc_sync_t;
+
+int64_t smp_tsc_core_offset(int cpu);
+const smp_tsc_sync_t* smp_tsc_status(int cpu);
+
 /* an ACPI table by its 4-letter signature ("FACP", "APIC"...), NULL if none;
  * one at a physical address, if it has that signature (kernel/acpi.c) */
 const void* acpi_find_table(const char* sig);
