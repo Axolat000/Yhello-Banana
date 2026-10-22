@@ -5,7 +5,7 @@
 
 global ex_hello, ex_hello_end, ex_guess, ex_guess_end, ex_paint, ex_paint_end
 global ex_clock, ex_clock_end, ex_tones, ex_tones_end, ex_mandel, ex_mandel_end, ex_threads, ex_threads_end, ex_webview, ex_webview_end, ex_gears, ex_gears_end, ex_cltest, ex_cltest_end
-global ex_systest, ex_systest_end, ex_posixtest, ex_posixtest_end, ex_mousetest, ex_mousetest_end
+global ex_systest, ex_systest_end, ex_posixtest, ex_posixtest_end, ex_mousetest, ex_mousetest_end, ex_shelltest, ex_shelltest_end
 
 section .payload progbits alloc noexec nowrite align=16
 align 16
@@ -47,6 +47,8 @@ ex_posixtest_end:
 align 16
 ex_mousetest: incbin "sdk/examples/mousetest/mousetest.bpk.z"
 ex_mousetest_end:
+ex_shelltest: incbin "sdk/examples/shelltest/shelltest.bpk.z"
+ex_shelltest_end:
 
 align 16
 global ex_gl3test, ex_gl3test_end

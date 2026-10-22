@@ -1,0 +1,18 @@
+int-trap
+in-f
+ret-trap
+not-here
+err-trap 1
+args:2
+[a b]
+[c]
+x,y,z
+exported
+g-gone
+aliased
+sourced
+ret-trap
+evaled
+h () 
+term-caught
+exit-trap

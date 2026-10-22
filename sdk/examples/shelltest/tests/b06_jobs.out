@@ -1,0 +1,12 @@
+wait 0
+status 5
+job1
+job2
+job3
+all-done
+killed 143
+late
+got hi
+timeout 124
+pid-ok
+ppid-ok

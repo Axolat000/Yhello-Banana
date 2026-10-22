@@ -162,13 +162,38 @@ typedef struct {
     int       stopped;
     int       stop_reported;
     int       cont_report;
+    /* its timer (version 30: alarm, setitimer, timer_create): signal alarm_sig
+     * at timer_ms() alarm_at (0: none), then every alarm_every ms */
+    uint32_t  alarm_at, alarm_every;
+    int       alarm_sig;
+    /* for ps (version 30: proc_list): its command line, when it started */
+    char      cmdline[160];
+    uint32_t  start_ms;
 } app_proc_t;
 
 static app_proc_t g_procs[APP_MAX];
+/* the system call each task is in (its slot + 1; 0: none) - ps's WCHAN */
+static uint16_t g_insys[TASK_MAX];
+static uintptr_t g_lastip[TASK_MAX];      /* where in user code it last was (ps -o uip) */
+
+/* argv as one line (ps shows it) */
+static void cmdline_set(app_proc_t* p, int argc, char** argv) {
+    size_t n = 0;
+    for (int i = 0; i < argc && argv && argv[i] && n + 2 < sizeof(p->cmdline); i++) {
+        if (i) p->cmdline[n++] = ' ';
+        for (const char* c = argv[i]; *c && n + 1 < sizeof(p->cmdline); c++) p->cmdline[n++] = *c;
+    }
+    p->cmdline[n] = 0;
+    p->start_ms = timer_ms();
+}
 /* the environment a program the system starts gets (execve passes its own) */
 static const char* const g_default_env[] = {
     "HOME=/home/banana", "USER=banana", "LOGNAME=banana", "PATH=/bin:/usr/bin:/apps",
+#ifdef __x86_64__
+    "LANG=C.UTF-8", "SHELL=/bin/bash", "TMPDIR=/tmp", "TERM=banana", NULL,     /* (GNU bash: ports/bash) */
+#else
     "LANG=C.UTF-8", "SHELL=/bin/sh", "TMPDIR=/tmp", "TERM=banana", NULL,
+#endif
 };
 static int g_seq = 100;                 /* the last pid given (an app slot's seq) */
 #ifdef __x86_64__
@@ -1210,6 +1235,54 @@ static int a_fs_utime(const char* path, int follow, long long mtime) {
     return fs_utime(path, follow, ~0u, t) == 0 ? 0 : fs_errno();
 }
 
+/* ── timers (version 30): a process's alarm, a kernel task sends the signal ── */
+static int g_alarm_task = -1;
+static void proc_signal(app_proc_t* t, int sig);
+
+static void alarm_entry(void) {
+    for (;;) {
+        uint32_t now = timer_ms();
+        int armed = 0;
+        for (int i = 0; i < APP_MAX; i++) {
+            app_proc_t* t = &g_procs[i];
+            if (!t->used || t->zombie || !t->alarm_at) continue;
+            armed = 1;
+            if ((int32_t)(now - t->alarm_at) < 0) continue;
+            int sig = t->alarm_sig;
+            if (t->alarm_every) {
+                t->alarm_at += t->alarm_every;
+                if ((int32_t)(now - t->alarm_at) >= 0) t->alarm_at = now + t->alarm_every;   /* (missed ones: not piled up) */
+                if (!t->alarm_at) t->alarm_at = 1;
+            } else t->alarm_at = 0;
+            proc_signal(t, sig);
+        }
+        task_sleep_ms(armed ? 2 : 50);
+    }
+}
+
+/* value_us: from now (0: disarm, -1: only tell), interval_us: then every (0: once); old: what
+ * was left and its interval (microseconds) */
+static int a_proc_alarm(int sig, long long value_us, long long interval_us, long long* old) {
+    app_proc_t* p = cur();
+    if (!p || sig < 1 || sig > 64 || value_us < -1 || interval_us < 0) return -22;
+    uint32_t now = timer_ms();
+    if (old) {
+        old[0] = p->alarm_at && (int32_t)(p->alarm_at - now) > 0 ? (long long)(p->alarm_at - now) * 1000 : p->alarm_at ? 1 : 0;
+        old[1] = (long long)p->alarm_every * 1000;
+    }
+    if (value_us == -1) return 0;                       /* (only asked) */
+    if (!value_us) { p->alarm_at = 0; p->alarm_every = 0; return 0; }
+    uint64_t ms = (uint64_t)(value_us + 999) / 1000, every = (uint64_t)(interval_us + 999) / 1000;
+    if (ms > 0x7FFFFFFFull) ms = 0x7FFFFFFFull;
+    if (every > 0x7FFFFFFFull) every = 0x7FFFFFFFull;
+    p->alarm_sig = sig;
+    p->alarm_every = (uint32_t)every;
+    p->alarm_at = now + (uint32_t)ms;
+    if (!p->alarm_at) p->alarm_at = 1;
+    if (g_alarm_task < 0) g_alarm_task = task_create("alarms", alarm_entry);
+    return 0;
+}
+
 /* (version 29) -1 now, -2 as it is */
 static uint32_t utime_of(long long t) { return t == -2 ? ~0u : t < 0 ? rtc_now() : (uint32_t)t; }
 
@@ -1990,6 +2063,22 @@ static int a_sig_mask(int how, const unsigned long long* set, unsigned long long
     return 0;
 }
 
+/* sigsuspend (version 30): the mask set and the wait begun at once - no
+ * signal taken between the two (the SDK did them as two calls: a SIGCHLD
+ * handled at the first one's return, then a wait for ever - zsh) */
+static int a_sig_suspend(const unsigned long long* mask) {
+    app_proc_t* p = cur();
+    if (!p || !mask) return -14;
+    sigstate_t* st = sig_state(p);
+    st->blocked = *mask & ~((1ull << 8) | (1ull << 18));         /* (SIGKILL, SIGSTOP) */
+    breathe(p, 1);
+    while (!sig_waiting(p) && !p->exit_req && !p->kill_req) {
+        task_sleep_ms(10);                                        /* (a signal sent wakes it: proc_wake) */
+        breathe(p, 0);
+    }
+    return -4;                                                    /* EINTR: its handler runs now */
+}
+
 /* to thread id (thread_id()'s numbering), or the app (-1); it is
  * delivered when that thread next goes back to its code */
 static int a_sig_send(int thread, int sig) {
@@ -2168,8 +2257,8 @@ void app_preempt(uintptr_t ip, int from_user, void* regs) {
     app_proc_t* p = cur();
 #ifdef __x86_64__
     /* (anything in ring 3 is the app's: its code, and code it made - tcc, OpenCL) */
-    (void)ip;
     if (!p || !from_user) return;
+    { int me = task_current_pid(); if (me >= 0 && me < TASK_MAX) g_lastip[me] = ip; }
 #else
     (void)from_user;
     if (!p || ip < p->code_lo || ip >= p->code_hi) return;
@@ -2229,10 +2318,51 @@ static void a_exit(int code) {
  *   i  a number (or a pointer the call checks itself: x)
  *   s  a string            b / B  a buffer, its size the next argument (int / unsigned long)
  *   I  int*   L  a pointer or unsigned long out   o  a struct of the slot's osize */
-typedef struct { const char* args; uint16_t osize; } sysspec_t;
+typedef struct { const char* args; uint16_t osize; const char* name; } sysspec_t;
 static sysspec_t g_spec[API_SLOTS];
 
-#define SPEC(f, a, o) (g_spec[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (sysspec_t){ a, o })
+#define SPEC(f, a, o) (g_spec[__builtin_offsetof(banana_api_t, f) / sizeof(void*)] = (sysspec_t){ a, o, #f })
+
+/* ── ps (version 30): the processes as the system sees them ── */
+static uint32_t app_mem_bytes(app_proc_t* p);
+static int a_proc_list(banana_procinfo_t* out, int max) {
+    if (!out || max <= 0 || max > 4096) return -22;
+    if (!uok(out, (size_t)max * sizeof(*out))) return -14;
+    int n = 0;
+    for (int i = 0; i < APP_MAX && n < max; i++) {
+        app_proc_t* t = &g_procs[i];
+        if (!t->used) continue;
+        banana_procinfo_t* o = &out[n++];
+        memset(o, 0, sizeof(*o));
+        o->pid = t->seq;
+        o->ppid = t->ppid;
+        o->pgid = t->pgid;
+        o->sid = t->sid;
+        o->tty = t->ctty ? pty_index(t->ctty) : t->has_term ? -2 : -1;
+        o->tpgid = t->ctty ? pty_fg(t->ctty) : 0;
+        int sys = t->pid >= 0 && t->pid < TASK_MAX ? g_insys[t->pid] : 0;
+        o->state = t->zombie ? 'Z' : t->stopped ? 'T' : sys ? 'S' : 'R';
+        int th = 1;
+        for (int k = 0; k < APP_THREADS; k++) if (t->threads[k].used && !t->threads[k].done) th++;
+        o->threads = (unsigned)th;
+        o->mem = t->zombie ? 0 : app_mem_bytes(t);
+        o->start_ms = t->start_ms;
+        o->sigpending = t->sig_pending;
+        int ts = 0;
+        uint32_t cms = 0, pct = 0;
+        if (t->pid >= 0 && !task_query(t->pid, &ts, &cms, &pct)) {
+            o->sched = ts == TASK_RUNNING ? 'R' : ts == TASK_READY ? 'r' : ts == TASK_SLEEPING ? 'S' : ts == TASK_AWAY ? 'A' : '?';
+            o->cpu_ms = cms;
+            o->cpu_pct = pct;
+        }
+        if (t->pid >= 0 && t->pid < TASK_MAX && g_lastip[t->pid]) o->uip = g_lastip[t->pid] - t->base;
+        kstrlcpy(o->name, t->name, sizeof(o->name));
+        if (sys && g_spec[sys - 1].name) kstrlcpy(o->wchan, g_spec[sys - 1].name, sizeof(o->wchan));
+        kstrlcpy(o->cmdline, t->cmdline[0] ? t->cmdline : t->name, sizeof(o->cmdline));
+    }
+    return n;
+}
+
 
 /* Calls that may run on whichever core the app thread makes them on - they
  * touch only the app's own state and what has locks of its own (its
@@ -2354,6 +2484,9 @@ static void spec_init(void) {
     SPEC(fs_fdattr, "iiii", 0);
     SPEC(fs_fdpath, "ibi", 0);
     SPEC(fs_link, "ss", 0); SPEC(fs_utimes, "siii", 0);
+    SPEC(proc_alarm, "iiio", 2 * sizeof(long long));
+    SPEC(proc_list, "ii", 0);
+    SPEC(sig_suspend, "L", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2728,11 +2861,15 @@ void app_syscall(sysframe_t* r) {
         return;
     }
     if (slot >= API_SLOTS || !g_spec[slot].args) bad_call(p, slot, "an unknown system call");
-    { int me = task_current_pid(); if (me >= 0 && me < TASK_MAX) g_sysframe[me] = r; }    /* (fork copies it) */
+    int me = task_current_pid();
+    int mine = me >= 0 && me < TASK_MAX;
+    if (mine) g_sysframe[me] = r;                   /* (fork copies it) */
     uint64_t a[SYS_ARGS];
     if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
     sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
+    if (mine) { g_insys[me] = (uint16_t)(slot + 1); g_lastip[me] = r->rip; }     /* (ps: what it is in, where) */
     r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    if (mine) g_insys[me] = 0;
     sig_check(p, r);                            /* signals sent to it go to their handlers now */
     __asm__ volatile("cli");
 }
@@ -3003,6 +3140,8 @@ static int a_proc_fork(void) {
     ((sysframe_t*)c->fork_frame)->int_no = 0x80;
     c->fork_fs = task_get_fs();
     c->ppid = p->seq;
+    c->alarm_at = c->alarm_every = 0;                  /* (a child's timer starts disarmed) */
+    c->start_ms = timer_ms();
     c->pgid = p->pgid;
     c->sid = p->sid;
     if (p->ctty) ctty_set(c, p->ctty);
@@ -3756,6 +3895,11 @@ static void api_init(void) {
     g_api.fs_fdpath = G(a_fs_fdpath);
     g_api.fs_link = G(a_fs_link);
     g_api.fs_utimes = G(a_fs_utimes);
+    g_api.proc_alarm = G(a_proc_alarm);
+    g_api.sig_suspend = G(a_sig_suspend);
+#ifdef __x86_64__
+    g_api.proc_list = G(a_proc_list);                  /* (the system calls' table: 64-bit) */
+#endif
     kfile_set_pty_hook(pty_closed_hook);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
@@ -4237,6 +4381,7 @@ static int load_program(app_proc_t* p, const uint8_t* f, uint32_t size, int argc
     kfree(blk);
     p->argv = (char**)ua;
     p->argc = argc;
+    cmdline_set(p, argc, argv);
     if (!p->kstack) p->kstack = kstack_new();
     if (!p->stack || !ua || !p->kstack || make_uapi(p) != 0) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
     return 0;
@@ -4304,6 +4449,7 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     }
     p->argv[argc + 1 + envc] = NULL;
     p->argc = argc;
+    cmdline_set(p, argc, argv);
 #endif
     const char* base = strrchr(argc ? argv[0] : path, '/');
     kstrlcpy(p->name, base ? base + 1 : (argc ? argv[0] : path), sizeof(p->name));

@@ -1,0 +1,24 @@
+#!/bin/sh
+# which [-a] NAME... - where in $PATH a command is (procps package, Banana OS)
+all=0
+[ "$1" = -a ] && { all=1; shift; }
+rc=0
+for n in "$@"; do
+    found=0
+    case $n in
+    */*) [ -x "$n" ] && [ ! -d "$n" ] && { echo "$n"; found=1; } ;;
+    *)
+        IFS=:
+        for d in $PATH; do
+            p=${d:-.}/$n
+            if [ -x "$p" ] && [ ! -d "$p" ]; then
+                echo "$p"
+                found=1
+                [ $all = 1 ] || break
+            fi
+        done
+        unset IFS ;;
+    esac
+    [ $found = 1 ] || rc=1
+done
+exit $rc

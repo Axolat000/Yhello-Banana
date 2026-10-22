@@ -260,6 +260,10 @@ a terminal) with `fseeko`, `tmpfile`, `dprintf`, the `*_unlocked` calls and
 `<stdio_ext.h>` (`__fpending`, `__fpurge`... - what gnulib uses). Also GNU
 `getopt_long` (`<getopt.h>`), `<search.h>` (`tsearch`, `hsearch`,
 `lsearch`), glibc's `strerror` texts and `program_invocation_name`.
+API version 30: POSIX regular expressions (`<regex.h>`), timers
+(`alarm`, `ualarm`, `setitimer`, `timer_create`: a signal from the
+system), an atomic `sigsuspend` and `pause`, and the process list
+(`banana_api_t`'s `proc_list`: what `ps` shows).
 
 ### Drivers
 

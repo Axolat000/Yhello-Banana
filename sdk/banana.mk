@@ -16,6 +16,8 @@
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
 #     UNPACK      = java.zip:/usr/java    # optional: a DATA zip pkg install unpacks into a
 #                                         # folder of the app's own under /usr (removed with it)
+#     BIN         = ps,pgrep              # optional: commands in /bin, links to the program
+#                                         # (or to a DATA file of that name)
 #     USE_GL      = 1                     # optional: OpenGL 1.x (#include <GL/bgl.h>)
 #     USE_GL3     = 1                     # optional: OpenGL 3.3 core (#include <GL/gl3.h>, 64-bit)
 #     USE_EGL     = 1                     # optional: EGL + OpenGL ES 1.1 / 2.0 / 3.x (<EGL/egl.h>, <GLES2/gl2.h>, 64-bit)
@@ -43,6 +45,7 @@ CATEGORY    ?=
 DEPENDS     ?=
 ICON        ?=
 UNPACK      ?=
+BIN         ?=
 USE_GL      ?= 0
 USE_GL3     ?= 0
 USE_EGL     ?= 0
@@ -108,7 +111,8 @@ LIBC_SRCS = $(BANANA_SDK)/lib/crt0.c $(BANANA_SDK)/lib/libc.c $(BANANA_SDK)/lib/
             $(BANANA_SDK)/lib/mman.c $(BANANA_SDK)/lib/pthread.c $(BANANA_SDK)/lib/socket.c \
             $(BANANA_SDK)/lib/signal.c $(BANANA_SDK)/lib/dl.c $(BANANA_SDK)/lib/cxxrt.c \
             $(BANANA_SDK)/lib/unix.c $(BANANA_SDK)/lib/utf8.c $(BANANA_SDK)/lib/ufd.c $(BANANA_SDK)/lib/math99.c \
-            $(BANANA_SDK)/lib/proc.c $(BANANA_SDK)/lib/tty.c $(BANANA_SDK)/lib/ufs.c
+            $(BANANA_SDK)/lib/proc.c $(BANANA_SDK)/lib/tty.c $(BANANA_SDK)/lib/ufs.c \
+            $(BANANA_SDK)/lib/regex.c
 LIBC_i686   = $(LIBC_SRCS) $(BANANA_SDK)/lib/divdi3.c
 LIBC_x86_64 = $(LIBC_SRCS)
 
@@ -173,6 +177,7 @@ $(BUILD)/manifest: $(MAKEFILE_LIST)
 	    '$(call sq,$(APP))' '$(call sq,$(TITLE))' '$(call sq,$(VERSION))' '$(call sq,$(TYPE))' \
 	    '$(call sq,$(DESCRIPTION))' '$(call sq,$(AUTHOR))' '$(call sq,$(CATEGORY))' '$(call sq,$(DEPENDS))' > $@
 	@$(if $(UNPACK),printf 'unpack=%s\n' '$(call sq,$(UNPACK))' >> $@,true)
+	@$(if $(BIN),printf 'bin=%s\n' '$(call sq,$(BIN))' >> $@,true)
 
 ICON_FILE = $(if $(ICON),icon.png=$(ICON))
 

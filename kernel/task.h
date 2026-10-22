@@ -138,6 +138,8 @@ void task_set_priority(int prio);
 
 int  task_count(void);
 void task_snapshot(task_info_t* out, int max_count);
+/* task pid's state (task_state_t), processor time used (ms), share now (%): 0, -1 none */
+int  task_query(int pid, int* state, uint32_t* cpu_ms, uint32_t* cpu_pct);
 const char* task_state_str(task_state_t s);
 /* how busy processor core `cpu` was over the last sysmon sample (0-100) */
 uint32_t task_core_pct(int cpu);

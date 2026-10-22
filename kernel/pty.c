@@ -490,7 +490,30 @@ void pty_set_termios(pty_t* t, const pty_termios_t* in, int flush) {
     int was = (t->tio.c_lflag & ICANON) != 0, now = (in->c_lflag & ICANON) != 0;
     t->tio = *in;
     if (flush) flush_input(t);
-    if (was && !now) {                                   /* the line being typed: readable as it is */
+    if (was && !now) {
+        /* the lines typed before: readable as they are - an end of file
+         * among them (^D typed before the program turned line editing off:
+         * readline, as bash comes back to its prompt) becomes the ^D
+         * character itself, as Linux has it, not lost; then the line being
+         * typed */
+        uint8_t eof = t->tio.c_cc[VEOF] ? t->tio.c_cc[VEOF] : 4;
+        int eofs = 0;
+        for (int k = 0; k < t->nrec; k++) if (!t->rec[(t->rec_head + k) % RECS]) eofs++;
+        if (eofs && t->in_len + (uint32_t)eofs <= INQ) {
+            static uint8_t tmp[INQ];                     /* (under g_lock: one user at a time) */
+            {
+                uint32_t n = 0, at = t->in_head;
+                for (int k = 0; k < t->nrec; k++) {
+                    uint32_t len = t->rec[(t->rec_head + k) % RECS];
+                    if (!len) { tmp[n++] = eof; continue; }
+                    for (uint32_t i = 0; i < len; i++) tmp[n++] = t->in[(at + i) % INQ];
+                    at = (at + len) % INQ;
+                }
+                t->in_head = 0;
+                t->in_len = 0;
+                in_put(t, tmp, n);
+            }
+        }
         in_put(t, t->line, t->llen);
         t->llen = 0;
         t->nrec = 0;
@@ -560,6 +583,16 @@ void pty_tests(void (*report)(const char*, int, const char*)) {
     pty_master_write(t, (const uint8_t*)"\x1b[A", 3);
     CHECK(pty_master_read(t, b, sizeof(b)) == -11);
     CHECK(pty_slave_read(t, b, 2) == 2 && pty_slave_read(t, b + 2, 8) == 1 && !memcmp(b, "\x1b[A", 3));
+    /* ^D typed while lines are still edited, then line editing off (bash's
+     * readline taking the terminal back): the lines, then the ^D itself */
+    tio.c_lflag |= ICANON | ECHO;
+    pty_set_termios(t, &tio, 0);
+    pty_master_write(t, (const uint8_t*)"ls\r\x04", 4);
+    pty_master_read(t, b, sizeof(b));
+    tio.c_lflag &= ~(uint32_t)(ICANON | ECHO);
+    pty_set_termios(t, &tio, 0);
+    CHECK(pty_poll(t, 0, KF_POLLIN) & KF_POLLIN);
+    CHECK(pty_slave_read(t, b, sizeof(b)) == 4 && !memcmp(b, "ls\n\x04", 4));
     /* the window size: a SIGWINCH when it changes */
     pty_winsize_t ws = { 50, 132, 0, 0 };
     pty_set_winsize(t, &ws);

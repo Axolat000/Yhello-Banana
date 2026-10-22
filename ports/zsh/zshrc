@@ -8,7 +8,10 @@ setopt hist_ignore_dups share_history
 bindkey -e
 # completion (the function library in /usr/share/zsh, the package's): Tab
 # completes commands, options, files...; a menu to pick from
-autoload -Uz compinit && compinit -d ~/.zcompdump
+# (its index: the one the package made, copied once - then -C: not checked
+# again at every start; `compinit` alone rebuilds it after adding functions)
+[[ -f ~/.zcompdump || ! -f /usr/share/zsh/zcompdump ]] || cp /usr/share/zsh/zcompdump ~/.zcompdump
+autoload -Uz compinit && compinit -C -d ~/.zcompdump
 zstyle ':completion:*' menu select
 zstyle ':completion:*' list-colors ''
 autoload -Uz promptinit && promptinit      # (prompt -l: the themes)

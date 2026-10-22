@@ -298,6 +298,53 @@ static int fixed(char* s, int cap, double v, int prec, int alt) {
     return n;
 }
 
+/* %a: the double in hexadecimal - 0x1.8p+1 (prec < 0: as many digits as it needs) */
+static int fmt_hexfloat(char* out, int cap, double d, int prec, int upper, int plus, int space) {
+    union { double d; unsigned long long u; } v = { d };
+    const char* hx = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char b[64];
+    int n = 0;
+    int neg = (int)(v.u >> 63);
+    int ex = (int)((v.u >> 52) & 0x7FF);
+    unsigned long long m = v.u & 0xFFFFFFFFFFFFFull;
+    if (neg) b[n++] = '-'; else if (plus) b[n++] = '+'; else if (space) b[n++] = ' ';
+    if (ex == 0x7FF) {
+        const char* t = m ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
+        while (*t) b[n++] = *t++;
+    } else {
+        int lead = ex ? 1 : 0, e2 = ex ? ex - 1023 : (m ? -1022 : 0);
+        b[n++] = '0'; b[n++] = upper ? 'X' : 'x'; b[n++] = (char)('0' + lead);
+        int digits = 13;
+        if (prec >= 0 && prec < 13) {
+            /* rounded to prec digits (half to even) */
+            int drop = (13 - prec) * 4;
+            unsigned long long half = 1ull << (drop - 1), rest = m & ((1ull << drop) - 1);
+            m >>= drop;
+            if (rest > half || (rest == half && (m & 1))) m++;
+            if (m >> (prec * 4)) { m &= (1ull << (prec * 4)) - 1; b[n - 1] = (char)(b[n - 1] + 1); }
+            m <<= drop;
+            digits = prec;
+        } else if (prec < 0) {
+            while (digits && !((m >> ((13 - digits) * 4)) & 0xF)) digits--;
+        }
+        if (digits > 0) {
+            b[n++] = '.';
+            for (int i = 0; i < digits; i++) b[n++] = hx[(m >> (48 - 4 * i)) & 0xF];
+        }
+        b[n++] = upper ? 'P' : 'p';
+        b[n++] = e2 < 0 ? '-' : '+';
+        unsigned ae = (unsigned)(e2 < 0 ? -e2 : e2);
+        char t[8];
+        int k = 0;
+        do { t[k++] = (char)('0' + ae % 10); ae /= 10; } while (ae);
+        while (k) b[n++] = t[--k];
+    }
+    if (n >= cap) n = cap - 1;
+    memcpy(out, b, (size_t)n);
+    out[n] = 0;
+    return n;
+}
+
 static int fmt_double(char* s, int cap, double v, int prec, char conv, int alt, int plus, int space) {
     int n = 0;
     if (v < 0 || (v == 0 && 1 / v < 0)) { s[n++] = '-'; v = -v; }
@@ -373,9 +420,11 @@ static int vfmt(out_t* o, const char* fmt, va_list ap) {
             if (*fmt == '*') { prec = va_arg(ap, int); fmt++; }
             else while (isdigit((unsigned char)*fmt)) prec = prec * 10 + (*fmt++ - '0');
         }
-        int lng = 0;                      /* 1 long, 2 long long, 3 size_t */
-        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') {
+        int lng = 0;                      /* 1 long, 2 long long, 3 size_t, 4 long double */
+        while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z' || *fmt == 'j' || *fmt == 't' || *fmt == 'L' || *fmt == 'q') {
             if (*fmt == 'l') lng++;
+            else if (*fmt == 'L') lng = 4;
+            else if (*fmt == 'q') lng = 2;
             else if (*fmt == 'z' || *fmt == 't') lng = 3;
             else if (*fmt == 'j') lng = 2;
             fmt++;
@@ -400,9 +449,12 @@ static int vfmt(out_t* o, const char* fmt, va_list ap) {
             continue;
         }
         if (c == 'n') { int* p = va_arg(ap, int*); if (p) *p = (int)o->n; continue; }
-        if (c == 'f' || c == 'F' || c == 'e' || c == 'E' || c == 'g' || c == 'G') {
+        if (c == 'f' || c == 'F' || c == 'e' || c == 'E' || c == 'g' || c == 'G' || c == 'a' || c == 'A') {
             char num[400];
-            int n = fmt_double(num, sizeof(num), va_arg(ap, double), prec, c, alt, plus, space);
+            /* (%Lf: a long double - bash's printf builtin uses it) */
+            double d = lng == 4 ? (double)va_arg(ap, long double) : va_arg(ap, double);
+            int n = c == 'a' || c == 'A' ? fmt_hexfloat(num, sizeof(num), d, prec, c == 'A', plus, space)
+                                         : fmt_double(num, sizeof(num), d, prec, c, alt, plus, space);
             int pad = width - n;
             if (zero && !left && pad > 0 && (num[0] == '-' || num[0] == '+' || num[0] == ' ')) {
                 out_c(o, num[0]);

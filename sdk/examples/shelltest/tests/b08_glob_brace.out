@@ -1,0 +1,16 @@
+a.txt b.txt sp ace.txt
+a.txt b.txt
+a.txt b.txt
+a.txt b.txt sp ace.txt c.log
+1 2 3 4 5 a b c d e 01 02 03 1 4 7 10 xAy xBy
+none:
+kept: *.zzz
+.hidden
+a.txt b.txt sp ace.txt sub/x.txt
+c.log sub
+a.txt b.txt
+[a.txt]
+[b.txt]
+[sp ace.txt]
+tilde-ok
+5

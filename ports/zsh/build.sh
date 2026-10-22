@@ -38,6 +38,17 @@ make install.fns DESTDIR="$B/fns" >/dev/null
 for d in AIX BSD Cygwin Darwin Solaris Mandriva Redhat openSUSE Debian; do
     for f in "$SRC"/Completion/$d/*/*; do rm -f "fns/usr/share/zsh/$PORT_VER/functions/${f##*/}"; done
 done
+# compinit's dump of all of it, made here by the build machine's zsh (the
+# same 5.9: the dump is version-tagged) - so a first zsh needs not scan the
+# 1100 functions on Banana OS (3 s); the zshrc copies it to ~/.zcompdump
+F=$B/fns/usr/share/zsh
+if command -v zsh >/dev/null && zsh --version | grep -q "zsh $PORT_VER "; then
+    mkdir -p "$F/site-functions"
+    zsh -f -c "fpath=($F/site-functions $F/$PORT_VER/functions); autoload -Uz compinit; compinit -u -d $F/zcompdump" \
+        && sed -i "s|$F|/usr/share/zsh|g" "$F/zcompdump"
+else
+    echo "zsh: no zsh $PORT_VER on the build machine - no prebuilt completion dump (a first zsh is slower)"
+fi
 python3 -c "
 import os, zipfile
 z = zipfile.ZipFile('functions.zip', 'w', zipfile.ZIP_DEFLATED)

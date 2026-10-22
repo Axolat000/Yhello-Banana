@@ -99,6 +99,9 @@ int fstat(int fd, struct stat* st) {
             st->st_uid = st->st_gid = 1000;
             st->st_ino = (ino_t)(fi.id >> 4);
             st->st_dev = chr ? 0x16 : 0xF;
+            /* a device: the same as stat() of its /dev name says (tty.c) -
+             * bash's noclobber compares the two for 2>/dev/null */
+            if (fi.type == BANANA_FD_DEV || fi.type == BANANA_FD_PTS) { st->st_dev = 5; st->st_ino = (ino_t)(1000 + st->st_rdev); }
             return 0;
         }
     }
@@ -395,8 +398,59 @@ struct __dir {
     char          path[PATH_MAX];
     int           index;
     int           fd;                 /* dirfd()'s, -1 until asked for */
+    int           synth;              /* /dev (1), /dev/fd (2), /dev/pts (3): made up here */
+    int           next;               /* (/dev/fd, /dev/pts: the number to try next) */
     struct dirent ent;
 };
+
+/* /dev's devices (kernel/app.c: dev_open), as ls /dev shows them */
+static const char* const g_devnames[] = {
+    "console", "fd", "full", "null", "ptmx", "pts", "random", "stderr", "stdin", "stdout", "tty",
+    "tty1", "tty2", "tty3", "tty4", "tty5", "tty6", "ttyS0", "urandom", "zero",
+};
+
+static int dev_dir(const char* path) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof(p), "%s", path);
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/') p[--n] = 0;
+    return !strcmp(p, "/dev") ? 1 : !strcmp(p, "/dev/fd") ? 2 : !strcmp(p, "/dev/pts") ? 3 : 0;
+}
+
+/* the next of the made-up folders' entries: 0 at the end (errno as it was:
+ * readdir's end must not look like an error) */
+static int synth_next1(DIR* d);
+static int synth_next(DIR* d) {
+    int e = errno;
+    int r = synth_next1(d);
+    errno = e;
+    return r;
+}
+static int synth_next1(DIR* d) {
+    if (d->synth == 1) {
+        int i = d->index - 2;
+        if (i >= (int)(sizeof(g_devnames) / sizeof(g_devnames[0]))) return 0;
+        snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", g_devnames[i]);
+        d->ent.d_type = !strcmp(g_devnames[i], "fd") || !strcmp(g_devnames[i], "pts") ? DT_DIR :
+                        !strncmp(g_devnames[i], "std", 3) ? DT_LNK : DT_CHR;
+        return 1;
+    }
+    char path[32];
+    for (; d->next < 1024; d->next++) {
+        if (d->synth == 2) {
+            if (fcntl(d->next, F_GETFD) < 0 || d->next == d->fd) continue;
+        } else {
+            struct stat st;
+            snprintf(path, sizeof(path), "/dev/pts/%d", d->next);
+            if (d->next >= 256 || __dev_stat(path, &st)) { if (d->next >= 256) return 0; continue; }
+        }
+        snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%d", d->next);
+        d->ent.d_type = d->synth == 2 ? DT_LNK : DT_CHR;
+        d->next++;
+        return 1;
+    }
+    return 0;
+}
 
 DIR* opendir(const char* path) {
     struct stat st;
@@ -406,6 +460,7 @@ DIR* opendir(const char* path) {
     if (!d) { errno = ENOMEM; return NULL; }
     snprintf(d->path, sizeof(d->path), "%s", path);
     d->fd = -1;
+    d->synth = dev_dir(path);
     return d;
 }
 
@@ -427,6 +482,8 @@ struct dirent* readdir(DIR* d) {
     if (d->index < 2) {
         strcpy(d->ent.d_name, d->index ? ".." : ".");
         d->ent.d_type = DT_DIR;
+    } else if (d->synth) {
+        if (!synth_next(d)) return NULL;
     } else {
         banana_dirent_t e;
         if (__banana->readdir(d->path, d->index - 2, &e) != 0) return NULL;
@@ -453,7 +510,7 @@ int closedir(DIR* d) {
     free(d);
     return 0;
 }
-void rewinddir(DIR* d) { d->index = 0; }
+void rewinddir(DIR* d) { d->index = 0; d->next = 0; }
 long telldir(DIR* d) { return d->index; }
 void seekdir(DIR* d, long pos) { d->index = (int)pos; }
 int dirfd(DIR* d) {

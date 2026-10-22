@@ -696,6 +696,20 @@ void task_snapshot(task_info_t* out, int max_count) {
     }
 }
 
+/* one task's state, the processor time it used (ms) and its share now (ps) */
+int task_query(int pid, int* state, uint32_t* cpu_ms, uint32_t* cpu_pct) {
+    uint64_t per_tick = g_counter_per_ms * 10u;
+    for (int i = 0; i < g_count; i++) {
+        task_t* t = &g_tasks[i];
+        if ((int)t->pid != pid || t->state == TASK_UNUSED) continue;
+        if (state) *state = t->state;
+        if (cpu_ms) *cpu_ms = (uint32_t)(t->life_cyc / per_tick) * 10u + t->away_life_ms;
+        if (cpu_pct) *cpu_pct = t->cpu_pct;
+        return 0;
+    }
+    return -1;
+}
+
 const char* task_state_str(task_state_t s) {
     if (s == TASK_RUNNING)  return "running";
     if (s == TASK_READY)    return "ready";

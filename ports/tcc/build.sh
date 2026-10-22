@@ -47,7 +47,7 @@ for CPU in x86_64 i386; do
     TCC=$HERE/src/host/$CPU-tcc
     D=$OUT/$CPU
     mkdir -p "$D/obj"
-    for f in crt0 libc malloc stdio banana math posix setjmp mman pthread socket signal unix utf8 ufd proc tty ufs; do
+    for f in crt0 libc malloc stdio banana math posix setjmp mman pthread socket signal unix utf8 ufd proc tty ufs regex; do
         "$TCC" -nostdinc -I"$SDK/include" -D__BANANA_OS__ -c "$SDK/lib/$f.c" -o "$D/obj/$f.o" 2>&1 | grep -v "warning:" || true
         [ -f "$D/obj/$f.o" ]
     done

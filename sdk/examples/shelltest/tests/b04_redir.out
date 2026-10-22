@@ -1,0 +1,28 @@
+one
+two
+err
+ls failed 2
+out
+err
+err
+out
+ONE
+TWO
+here  12 line
+literal $x
+tabs stripped
+HERE STRING
+via-fd3
+one-two
+procsub-same
+1	x
+2	y
+data
+noclobber-ok
+y
+aX
+
+a
+devfd-ok
+2
+backtick

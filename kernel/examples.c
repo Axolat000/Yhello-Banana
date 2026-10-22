@@ -16,6 +16,7 @@ extern const uint8_t ex_gl3test[], ex_gl3test_end[];
 extern const uint8_t ex_systest[], ex_systest_end[];
 extern const uint8_t ex_posixtest[], ex_posixtest_end[];
 extern const uint8_t ex_mousetest[], ex_mousetest_end[];
+extern const uint8_t ex_shelltest[], ex_shelltest_end[];
 
 static const struct { const char* name; const uint8_t* start; const uint8_t* end; } g_examples[] = {
     { "hello.bpk", ex_hello, ex_hello_end },
@@ -32,6 +33,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "systest.bpk", ex_systest, ex_systest_end },
     { "posixtest.bpk", ex_posixtest, ex_posixtest_end },
     { "mousetest.bpk", ex_mousetest, ex_mousetest_end },
+    { "shelltest.bpk", ex_shelltest, ex_shelltest_end },
 };
 
 void examples_seed(void) {

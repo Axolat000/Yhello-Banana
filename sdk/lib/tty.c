@@ -239,11 +239,24 @@ int __dev_stat(const char* path, struct stat* st) {
         { "null", S_IFCHR | 0666, 1, 3 }, { "zero", S_IFCHR | 0666, 1, 5 }, { "full", S_IFCHR | 0666, 1, 7 },
         { "random", S_IFCHR | 0666, 1, 8 }, { "urandom", S_IFCHR | 0666, 1, 9 }, { "tty", S_IFCHR | 0666, 5, 0 },
         { "console", S_IFCHR | 0600, 5, 1 }, { "ptmx", S_IFCHR | 0666, 5, 2 }, { "pts", S_IFDIR | 0755, 0, 0 },
-        { "stdin", S_IFCHR | 0620, 5, 1 }, { "stdout", S_IFCHR | 0620, 5, 1 }, { "stderr", S_IFCHR | 0620, 5, 1 },
         { "fd", S_IFDIR | 0755, 0, 0 },
     };
     if (strncmp(path, "/dev/", 5)) return -1;
-    const char* n = path + 5;
+    char nb[64];
+    snprintf(nb, sizeof(nb), "%s", path + 5);
+    for (size_t l = strlen(nb); l > 0 && nb[l - 1] == '/'; ) nb[--l] = 0;     /* (ls /dev/fd/) */
+    const char* n = nb;
+    /* /dev/fd/N, /dev/stdin...: what descriptor N is (bash's <(...) hands
+     * programs /dev/fd/63: diff, cmp, paste stat it before they open it) */
+    int fdn = !strcmp(n, "stdin") ? 0 : !strcmp(n, "stdout") ? 1 : !strcmp(n, "stderr") ? 2 : -1;
+    if (fdn < 0 && !strncmp(n, "fd/", 3) && n[3] >= '0' && n[3] <= '9') {
+        fdn = 0;
+        for (const char* c = n + 3; *c; c++) {
+            if (*c < '0' || *c > '9' || fdn > 100000) return -1;
+            fdn = fdn * 10 + (*c - '0');
+        }
+    }
+    if (fdn >= 0) return fstat(fdn, st);
     memset(st, 0, sizeof(*st));
     st->st_nlink = 1;
     st->st_blksize = 4096;
@@ -251,17 +264,21 @@ int __dev_stat(const char* path, struct stat* st) {
         if (strcmp(n, devs[i].name)) continue;
         st->st_mode = devs[i].mode;
         st->st_rdev = (devs[i].major << 8) | devs[i].minor;
-        st->st_ino = 1000 + i;
+        st->st_ino = 1000 + st->st_rdev;                     /* (fstat of an open one says the same: ufs.c) */
+        st->st_dev = 5;
         return 0;
     }
     if (!strncmp(n, "pts/", 4) && n[4] >= '0' && n[4] <= '9') {
-        int fd = open(path, O_RDWR | O_NOCTTY);              /* (there, and not locked) */
+        char pp[64];
+        snprintf(pp, sizeof(pp), "/dev/%s", n);
+        int fd = open(pp, O_RDWR | O_NOCTTY);                /* (there, and not locked) */
         if (fd < 0) return -1;
         close(fd);
         int num = atoi(n + 4);
         st->st_mode = S_IFCHR | 0620;
         st->st_rdev = (136u << 8) | (unsigned)num;
-        st->st_ino = 2000 + (unsigned)num;
+        st->st_ino = 1000 + st->st_rdev;
+        st->st_dev = 5;
         st->st_uid = st->st_gid = 1000;
         return 0;
     }

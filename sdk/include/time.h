@@ -51,6 +51,16 @@ typedef int clockid_t;
 #define CLOCK_BOOTTIME           7
 #define TIMER_ABSTIME            1
 int clock_gettime(clockid_t clk, struct timespec* ts);
+/* POSIX timers (version 30: one a process, ringing with a signal) */
+typedef void* timer_t;
+struct itimerspec { struct timespec it_interval, it_value; };
+struct sigevent;
+int timer_create(clockid_t clk, struct sigevent* ev, timer_t* id);
+int timer_delete(timer_t id);
+int timer_settime(timer_t id, int flags, const struct itimerspec* val, struct itimerspec* old);
+int timer_gettime(timer_t id, struct itimerspec* cur);
+int timer_getoverrun(timer_t id);
+#define TIMER_ABSTIME 1
 int clock_getres(clockid_t clk, struct timespec* ts);
 int clock_nanosleep(clockid_t clk, int flags, const struct timespec* req, struct timespec* rem);
 int nanosleep(const struct timespec* req, struct timespec* rem);

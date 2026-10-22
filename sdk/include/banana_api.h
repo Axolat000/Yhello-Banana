@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 29u
+#define BANANA_API_VERSION 30u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -167,6 +167,27 @@ typedef struct {
     unsigned int size;
     int          is_dir;
 } banana_dirent_t;
+
+/* proc_list (version 30): a process as ps shows it */
+typedef struct {
+    int  pid, ppid, pgid, sid;
+    int  tty;                    /* its terminal: /dev/pts/N (N), -2 the console, -1 none */
+    int  tpgid;                  /* that terminal's foreground group */
+    char state;                  /* R running, S in a system call, T stopped, Z a zombie */
+    char __pad[3];
+    unsigned int threads;
+    unsigned long long mem;      /* bytes of memory it holds */
+    unsigned long long start_ms; /* when it started (milliseconds since boot) */
+    unsigned long long sigpending;
+    unsigned long long cpu_ms;   /* processor time used */
+    unsigned long long uip;      /* where in its program it last ran (an offset) */
+    unsigned int cpu_pct;        /* its share of a processor now */
+    char sched;                  /* the scheduler's view: R running, r ready, S sleeping, A on another core */
+    char __pad2[3];
+    char name[32];
+    char wchan[32];              /* the system call it is in */
+    char cmdline[160];           /* its arguments */
+} banana_procinfo_t;
 
 typedef struct {
     int year, month, day;     /* 2026, 1..12, 1..31 */
@@ -587,6 +608,18 @@ typedef struct banana_api {
      * fs_fdattr also takes what 4: the two times (a, b - the same way). */
     int (*fs_link)(const char* oldpath, const char* newpath);
     int (*fs_utimes)(const char* path, int follow, long long atime, long long mtime);
+
+    /* ── version 30: a timer ──────────────────────────────────────────
+     * proc_alarm: signal sig to the process value_us microseconds from now
+     * (0: none; -1: only old is filled in), then every interval_us (0: once) - alarm(), setitimer(),
+     * timer_create(); old (optional): what was left and its interval */
+    int (*proc_alarm)(int sig, long long value_us, long long interval_us, long long* old);
+    /* proc_list: the processes (as many as fit in max): how many */
+    int (*proc_list)(banana_procinfo_t* out, int max);
+    /* sig_suspend: the calling thread's mask becomes *mask and it waits
+     * until a signal it does not block comes (at once: none can slip in
+     * between); -EINTR - the signal's handler runs as it returns */
+    int (*sig_suspend)(const unsigned long long* mask);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

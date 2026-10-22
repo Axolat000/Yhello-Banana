@@ -228,20 +228,97 @@ int __aligned_block(void* p, void** raw, size_t* size, int remove) {
 intmax_t strtoimax(const char* s, char** end, int base) { return strtoll(s, end, base); }
 uintmax_t strtoumax(const char* s, char** end, int base) { return strtoull(s, end, base); }
 
-/* interval timers (SIGALRM and the like): none here - getitimer says none
- * is armed, setitimer only disarms (OpenJDK's awt asks, for a debug option) */
+/* the process's timer (version 30): alarm(), setitimer(ITIMER_REAL) and
+ * one POSIX timer (timer_create) - the system sends the signal. Before
+ * version 30: none (getitimer says none is armed, setitimer only disarms). */
+#define TIMERS BANANA_HAS(__banana, proc_alarm)
+#include <signal.h>
+
+static long long tv_us(const struct timeval* t) { return (long long)t->tv_sec * 1000000 + t->tv_usec; }
+static void us_tv(long long us, struct timeval* t) { t->tv_sec = (long)(us / 1000000); t->tv_usec = (long)(us % 1000000); }
+
 int getitimer(int which, struct itimerval* cur) {
-    (void)which;
     if (cur) memset(cur, 0, sizeof(*cur));
+    if (which != ITIMER_REAL || !TIMERS || !cur) return 0;
+    long long old[2] = { 0, 0 };
+    __banana->proc_alarm(SIGALRM, -1, 0, old);
+    us_tv(old[0], &cur->it_value);
+    us_tv(old[1], &cur->it_interval);
     return 0;
 }
 
 int setitimer(int which, const struct itimerval* val, struct itimerval* old) {
-    (void)which;
     if (old) memset(old, 0, sizeof(*old));
-    if (val && (val->it_value.tv_sec || val->it_value.tv_usec)) { errno = ENOSYS; return -1; }
+    if (which != ITIMER_REAL || !TIMERS) {
+        if (val && (val->it_value.tv_sec || val->it_value.tv_usec)) { errno = ENOSYS; return -1; }
+        return 0;
+    }
+    long long o[2];
+    int r = __banana->proc_alarm(SIGALRM, val ? tv_us(&val->it_value) : 0, val ? tv_us(&val->it_interval) : 0, o);
+    if (r < 0) { errno = -r; return -1; }
+    if (old) { us_tv(o[0], &old->it_value); us_tv(o[1], &old->it_interval); }
     return 0;
 }
+
+unsigned alarm(unsigned s) {
+    if (!TIMERS) return 0;
+    long long o[2];
+    if (__banana->proc_alarm(SIGALRM, (long long)s * 1000000, 0, o) < 0) return 0;
+    return (unsigned)((o[0] + 999999) / 1000000);
+}
+
+unsigned ualarm(unsigned us, unsigned every) {
+    if (!TIMERS) return 0;
+    long long o[2];
+    if (__banana->proc_alarm(SIGALRM, us, every, o) < 0) return 0;
+    return (unsigned)o[0];
+}
+
+/* one POSIX timer (the same timer as alarm's, as on systems that have one) */
+static int g_timer_sig = SIGALRM, g_timer_made;
+int timer_create(clockid_t clk, struct sigevent* ev, timer_t* id) {
+    (void)clk;
+    if (!TIMERS || g_timer_made) { errno = EAGAIN; return -1; }
+    if (ev && ev->sigev_notify == SIGEV_THREAD) { errno = ENOTSUP; return -1; }
+    g_timer_sig = ev && ev->sigev_notify == SIGEV_SIGNAL ? ev->sigev_signo : ev ? 0 : SIGALRM;
+    g_timer_made = 1;
+    *id = (timer_t)(uintptr_t)1;
+    return 0;
+}
+int timer_delete(timer_t id) {
+    (void)id;
+    if (g_timer_made && TIMERS) __banana->proc_alarm(SIGALRM, 0, 0, NULL);
+    g_timer_made = 0;
+    return 0;
+}
+static long long ts_us(const struct timespec* t) { return (long long)t->tv_sec * 1000000 + (t->tv_nsec + 999) / 1000; }
+static void us_ts(long long us, struct timespec* t) { t->tv_sec = (time_t)(us / 1000000); t->tv_nsec = (long)(us % 1000000) * 1000; }
+int timer_settime(timer_t id, int flags, const struct itimerspec* val, struct itimerspec* old) {
+    (void)id;
+    if (!g_timer_made || !val) { errno = EINVAL; return -1; }
+    long long v = ts_us(&val->it_value);
+    if ((flags & TIMER_ABSTIME) && v) {
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        v -= ts_us(&now);
+        if (v <= 0) v = 1;
+    }
+    long long o[2];
+    /* (SIGEV_NONE: nothing to send - the timer still runs, for timer_gettime) */
+    int r = __banana->proc_alarm(g_timer_sig ? g_timer_sig : SIGALRM, g_timer_sig ? v : 0, ts_us(&val->it_interval), o);
+    if (r < 0) { errno = -r; return -1; }
+    if (old) { us_ts(o[0], &old->it_value); us_ts(o[1], &old->it_interval); }
+    return 0;
+}
+int timer_gettime(timer_t id, struct itimerspec* cur) {
+    (void)id;
+    struct itimerval v;
+    getitimer(ITIMER_REAL, &v);
+    us_ts(tv_us(&v.it_value), &cur->it_value);
+    us_ts(tv_us(&v.it_interval), &cur->it_interval);
+    return 0;
+}
+int timer_getoverrun(timer_t id) { (void)id; return 0; }
 
 /* the wall clock (libc.c: __realtime_ms - it never runs backwards) */
 long long __realtime_ms(void);                  /* (libc.c: never runs backwards) */

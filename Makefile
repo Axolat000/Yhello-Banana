@@ -214,7 +214,7 @@ run-tap: Banana_OS.iso
 clean:
 	for e in $(EXAMPLES); do $(MAKE) -s -C sdk/examples/$$e clean; done
 	rm -f $(EXAMPLE_BPKZ)
-	for a in $(APPS) terminal; do $(MAKE) -s -C apps/$$a clean; done
+	for a in $(APPS) $(APPS64) terminal; do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
 	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
@@ -224,13 +224,13 @@ clean:
 
 
 # ── SDK: example apps (embedded in the kernel: ~/Examples) and the tarball ──
-EXAMPLES     = gl3test glinfo gles2 hello languages guess paint clock tones mandel threads webview gears cltest systest posixtest mousetest
+EXAMPLES     = gl3test glinfo gles2 hello languages guess paint clock tones mandel threads webview gears cltest systest posixtest mousetest shelltest
 EXAMPLE_BPKS = $(foreach e,$(EXAMPLES),sdk/examples/$(e)/$(e).bpk)
 EXAMPLE_BPKZ = $(EXAMPLE_BPKS:.bpk=.bpk.z)
 SDK_DEPS     = $(wildcard sdk/lib/*.c sdk/lib/*.h sdk/lib/*.py sdk/include/*.h sdk/include/*/*.h) sdk/banana.mk sdk/tools/bpkg sdk/tools/mkexports
 
 define EXAMPLE_RULE
-sdk/examples/$(1)/$(1).bpk: $$(wildcard sdk/examples/$(1)/*.c sdk/examples/$(1)/*.h) sdk/examples/$(1)/Makefile $$(SDK_DEPS)
+sdk/examples/$(1)/$(1).bpk: $$(wildcard sdk/examples/$(1)/*.c sdk/examples/$(1)/*.h sdk/examples/$(1)/*.sh sdk/examples/$(1)/tests/*) sdk/examples/$(1)/Makefile $$(SDK_DEPS)
 	$$(MAKE) -s -C sdk/examples/$(1)
 # (in the kernel compressed, as the apps: 6.7 MB of the kernel's 19 were the
 # examples, and the loader reads it through the BIOS)
@@ -273,12 +273,24 @@ endef
 $(foreach p,$(PORTS64),$(eval $(call PORT_RULE,$(p))))
 # (less and zsh are linked with ncurses' library)
 ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
+# Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built
+# in the same way: ps & co. (apps/procps)
+APPS64      = procps
+APPS64_BPKZ = $(foreach a,$(APPS64),apps/$(a)/$(a)-x86_64.bpk.z)
+define APP64_RULE
+apps/$(1)/$(1)-x86_64.bpk.z: $$(filter-out %.bpk %.bpk.z %/build,$$(wildcard apps/$(1)/*)) $$(SDK_DEPS)
+	$$(MAKE) -s -C apps/$(1) $(1)-x86_64.bpk.z
+endef
+$(foreach a,$(APPS64),$(eval $(call APP64_RULE,$(a))))
+kernel/appbin.o64: $(APPS64_BPKZ)
+build/builtin-meta-x86_64.bin: $(APPS64_BPKZ)
 build/ports64.inc: Makefile
 	mkdir -p build
-	{ $(foreach p,$(PORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) } > $@
+	{ $(foreach p,$(PORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) \
+	  $(foreach a,$(APPS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "apps/%s/%s-x86_64.bpk.z"\nport_%s_end:\n' $(a) $(a) $(a) $(a) $(a) $(a);) } > $@
 build/ports64.h: Makefile
 	mkdir -p build
-	{ $(foreach p,$(PORTS64),echo 'PORT($(p))';) } > $@
+	{ $(foreach p,$(PORTS64) $(APPS64),echo 'PORT($(p))';) } > $@
 kernel/builtin_apps.o64: build/ports64.h
 
 # the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
@@ -293,7 +305,8 @@ kernel/appbin.o64: $(TERMINAL_BPKZ)
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z)) \
+	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
+	      $(foreach a,$(APPS64),$(a).bpk=apps/$(a)/$(a)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
 # the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel

@@ -75,6 +75,18 @@ typedef void (*sighandler_t)(int);
 #define SIG_ERR ((sighandler_t)-1)
 
 union sigval { int sival_int; void* sival_ptr; };
+/* how a timer tells (timer_create): a signal, or nothing (no SIGEV_THREAD) */
+#define SIGEV_SIGNAL 0
+#define SIGEV_NONE   1
+#define SIGEV_THREAD 2
+struct sigevent {
+    union sigval sigev_value;
+    int  sigev_signo;
+    int  sigev_notify;
+    void (*sigev_notify_function)(union sigval);
+    void* sigev_notify_attributes;
+    char __pad[32];
+};
 
 /* (the same layout as the system's banana_siginfo_t) */
 typedef struct {

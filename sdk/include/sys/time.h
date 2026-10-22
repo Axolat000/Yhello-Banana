@@ -11,7 +11,7 @@ int utimes(const char* path, const struct timeval times[2]);
 int futimes(int fd, const struct timeval times[2]);
 int lutimes(const char* path, const struct timeval times[2]);
 int futimesat(int dirfd, const char* path, const struct timeval times[2]);
-/* interval timers: none run here (getitimer: disarmed; setitimer: ENOSYS but to disarm) */
+/* interval timers: ITIMER_REAL (SIGALRM, version 30) - the other two: ENOSYS but to disarm */
 struct itimerval { struct timeval it_interval, it_value; };
 #define ITIMER_REAL    0
 #define ITIMER_VIRTUAL 1

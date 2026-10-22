@@ -1,0 +1,20 @@
+0022
+/tmp
+3
+/tmp
+builtin builtin file 
+cmd-v
+hashed
+nounset-ok
+extglob-off
+5
+h-on
+ulimit-ok
+times-ok
+3
+3
+hostname-file
+shell-bash
+not-a-tty
+id-ok
+whoami-ok

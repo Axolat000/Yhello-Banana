@@ -117,6 +117,8 @@ pid_t   setsid(void);
 pid_t   getpgrp(void);
 int     setpgid(pid_t pid, pid_t pgid);
 unsigned alarm(unsigned seconds);
+int     pause(void);
+unsigned ualarm(unsigned usecs, unsigned interval);
 char*   getlogin(void);
 char*   ttyname(int fd);
 int     ttyname_r(int fd, char* buf, size_t len);

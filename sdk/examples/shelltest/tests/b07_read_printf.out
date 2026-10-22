@@ -1,0 +1,20 @@
+1|2|3 4
+u|v:w
+3 r
+abc
+<line>
+<line2>
+3 b
+   ab|cd   |00042|ff|10|1.234500e+03|3.14|x|%
+007
+p
+q
+r
+a	b
+a\ b\'c
+esc!
+no-nl
+opt a 
+opt b val
+opt c 
+rest file

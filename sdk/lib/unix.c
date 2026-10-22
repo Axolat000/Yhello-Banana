@@ -240,7 +240,6 @@ ssize_t getline(char** line, size_t* cap, FILE* f) { return getdelim(line, cap, 
 
 /* ── processes: fork, exec, wait, groups (proc.c) ─────────────────── */
 
-unsigned alarm(unsigned s) { (void)s; return 0; }
 char* getlogin(void) { return "banana"; }
 long pathconf(const char* p, int n) { (void)p; (void)n; return 255; }
 long fpathconf(int fd, int n) { (void)fd; (void)n; return 255; }

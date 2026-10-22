@@ -117,14 +117,32 @@ int sigpending(sigset_t* s) {
     return 0;
 }
 
-/* the mask set to `mask` until a signal is handled, then back: EINTR */
+/* the mask set to `mask` until a signal is handled, then back: EINTR.
+ * Version 30: one call does both, so a signal that comes as the mask
+ * changes is not lost (it would be taken before the wait, which then never
+ * ended); before: the two calls */
 int sigsuspend(const sigset_t* mask) {
     sigset_t old;
+    if (has_sig() && BANANA_HAS(__banana, sig_suspend)) {
+        unsigned long long o = 0, n = low(mask);
+        __banana->sig_mask(0, NULL, &o);
+        __banana->sig_suspend(&n);                     /* (the handler has run when it returns) */
+        __banana->sig_mask(2, &o, NULL);
+        errno = EINTR;
+        return -1;
+    }
     pthread_sigmask(SIG_SETMASK, mask, &old);
     if (has_sig()) __banana->sleep_ms(0x7FFFFFFF);    /* (a signal ends the sleep, its handler runs) */
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     errno = EINTR;
     return -1;
+}
+
+/* until a signal is handled (its mask as it is) */
+int pause(void) {
+    sigset_t cur;
+    pthread_sigmask(SIG_BLOCK, NULL, &cur);
+    return sigsuspend(&cur);
 }
 
 int sigaltstack(const stack_t* ss, stack_t* old) {
