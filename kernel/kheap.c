@@ -382,3 +382,90 @@ void kheap_add_region(uintptr_t lo, uintptr_t hi) {
     g_total += b->size;
     spin_unlock_irq(&g_lock, f);
 }
+
+/* Explicit diagnostic, not an allocation fast path. The physical chain must
+ * remain readable: this is not a recovery mechanism for arbitrary bad addresses.
+ * Validate it first, then prove bin pointers belong to it before dereferencing
+ * them. No allocation or heap mutation is needed. With B blocks and F free
+ * blocks this costs O(B * F), under the heap lock with interrupts disabled. */
+int kheap_check(char* err, int cap) {
+    const char* why = NULL;
+    uintptr_t irq = spin_lock_irq(&g_lock);
+    block_t* prev = NULL;
+    uint32_t blocks = 0, nfree = 0, inbins = 0;
+    uint64_t total = 0, used = 0;
+    /* Each body has at least ALIGN payload bytes; added regions have at least
+     * MIN_SPLIT bytes for their body and two sentinels. This bounds even a
+     * corrupted physical cycle. Back-link checks normally reject it sooner. */
+    uint32_t limit = g_total / ALIGN + 1;
+    enum { INITIAL, LEAD, BODY, TAIL } region = INITIAL;
+#define HEAP_FAIL(message) do { why = (message); goto done; } while (0)
+
+    if (!g_head) HEAP_FAIL("heap is not initialized");
+    for (block_t* b = g_head; b; prev = b, b = b->next) {
+        if (++blocks > limit) HEAP_FAIL("physical list cycle or block limit");
+        if ((uintptr_t)b & (ALIGN - 1)) HEAP_FAIL("unaligned block header");
+        if (b->used != 0 && b->used != HEAP_MAGIC)
+            HEAP_FAIL("overwritten block header");
+        if (b->prev != prev) HEAP_FAIL("physical back link or cycle");
+        if (b->size & (ALIGN - 1)) HEAP_FAIL("unaligned block size");
+        if ((uintptr_t)b > (uintptr_t)-1 - HDR ||
+            b->size > (uintptr_t)-1 - (uintptr_t)b - HDR)
+            HEAP_FAIL("block address overflow");
+
+        if (!b->size) {
+            if (b == g_head || b->used != HEAP_MAGIC)
+                HEAP_FAIL("invalid region sentinel");
+            if (region == INITIAL || region == TAIL) {
+                /* A lead may be below the preceding region in memory. */
+                region = LEAD;
+            } else if (region == BODY) {
+                if ((uintptr_t)b != (uintptr_t)prev + HDR + prev->size)
+                    HEAP_FAIL("noncontiguous region tail");
+                region = TAIL;
+            } else {
+                HEAP_FAIL("empty region between sentinels");
+            }
+        } else {
+            if (region == TAIL) HEAP_FAIL("missing region lead");
+            if (prev && (uintptr_t)b != (uintptr_t)prev + HDR + prev->size)
+                HEAP_FAIL("noncontiguous blocks within region");
+            if (prev && !prev->used && !b->used)
+                HEAP_FAIL("adjacent free blocks");
+            /* g_total excludes the original body header in each region and
+             * the sentinels, but includes headers created by splitting. */
+            if (prev && region != LEAD) total += HDR;
+            total += b->size;
+            if (b->used) used += b->size;
+            else nfree++;
+            if (region == LEAD) region = BODY;
+        }
+    }
+    if (region == LEAD || region == BODY) HEAP_FAIL("missing region body or tail");
+    if (total != g_total) HEAP_FAIL("total byte accounting mismatch");
+    if (used != g_used) HEAP_FAIL("used byte accounting mismatch");
+
+    for (int i = 0; i < NBINS; i++) {
+        block_t* bin_prev = NULL;
+        for (block_t* x = g_bins[i]; x; bin_prev = x, x = L(x)->next) {
+            if (++inbins > nfree) HEAP_FAIL("bin cycle or duplicate membership");
+            /* The physical list is already proven finite and stable under
+             * g_lock. Compare addresses before reading any bin pointer. */
+            block_t* b = g_head;
+            uint32_t steps = 0;
+            while (b && b != x && steps++ < blocks) b = b->next;
+            if (!b) HEAP_FAIL("bin pointer is not a physical block");
+            if (b->used || !b->size) HEAP_FAIL("used block in bin");
+            if (bin_of(b->size) != i) HEAP_FAIL("wrong bin class");
+            if (L(b)->prev != bin_prev) HEAP_FAIL("bin back link or cycle");
+        }
+    }
+    /* Class and back links forbid duplicate membership without a cycle;
+     * equal counts therefore prove every free block occurs exactly once. */
+    if (inbins != nfree) HEAP_FAIL("free block missing from bins");
+done:
+    spin_unlock_irq(&g_lock, irq);
+    if (err && cap > 0) ksnprintf(err, (size_t)cap, "%s", why ? why : "");
+    return why ? 1 : 0;
+#undef HEAP_FAIL
+}

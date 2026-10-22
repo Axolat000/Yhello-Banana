@@ -82,7 +82,7 @@ def main():
         text += ANSI.sub("", t).replace("\r", "")
         return True
 
-    def wait_prompt(since, timeout):
+    def wait_prompt(since, timeout, boot_reprompt=False):
         """the shell's prompt ("...$ " at the end, nothing more coming): True"""
         end = time.time() + timeout
         quiet = None
@@ -91,10 +91,17 @@ def main():
             if got:
                 quiet = None
                 continue
-            if text[since:].rstrip(" ").endswith("$") and text.endswith("$ "):
-                quiet = quiet or time.time()
-                if time.time() - quiet > 0.7:
+            quiet = quiet or time.time()
+            if time.time() - quiet > 0.7:
+                if text[since:].rstrip(" ").endswith("$") and text.endswith("$ "):
                     return True
+                # DHCP/mount notifications can arrive after the initial shell
+                # prompt. Once we have seen that prompt, request a fresh one
+                # exactly once; never send input before the shell is ready.
+                if boot_reprompt and re.search(r"(?:^|\n)[^\n]*\$ ", text[since:]):
+                    sock.sendall(b"\r")
+                    boot_reprompt = False
+                    quiet = None
             if proc.poll() is not None:
                 return False
         return False
@@ -102,7 +109,7 @@ def main():
     results = []
     try:
         print("booting...", flush=True)
-        if not wait_prompt(0, a.boot_timeout):
+        if not wait_prompt(0, a.boot_timeout, boot_reprompt=True):
             print("no shell prompt on the serial console (log: %s)" % a.log)
             print(text[-1500:])
             return 1
