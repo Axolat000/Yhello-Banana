@@ -1,0 +1,25 @@
+name: DNS host tests
+on:
+  push:
+    branches: ['upstream/dns-tcp-fallback']
+  pull_request:
+    paths:
+      - 'net/**'
+      - 'kernel/*.h'
+      - 'tools/tests/dns_tcp.c'
+      - 'tools/test_dns_tcp.py'
+      - '.github/workflows/dns-host.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 32-bit host compiler support
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Host tests with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: python3 tools/test_dns_tcp.py --sanitize
+      - name: Host tests (32 bit)
+        run: python3 tools/test_dns_tcp.py --32
