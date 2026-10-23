@@ -400,6 +400,9 @@ static const page_t PAGES[] = {
     { "files", "desktop", "files [folder]", "open Files, the file explorer", NULL, NULL, NULL, "ls" },
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
+    { "notify", "system", "notify TITLE [BODY]", "post a desktop notification",
+      "Show a native toast; Win+N opens the last 16 notifications. Use quoted text for multi-word titles and bodies. "
+      "The shell is limited to three alerts per two seconds.", "", "notify Test \"Hello world\"", "startx" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
     { "settings", "desktop", "settings [apps [name] | time | keyboard | about]", "open Settings (or its Apps, Date & time or Keyboard page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
