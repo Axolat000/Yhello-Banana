@@ -19,7 +19,9 @@ echo "== made, used, mounted again (${1:-300} MB)"
 "$E2FSCK" -fn "$T/fs.img"
 
 echo "== a cut after the commit block (stage 4): replayed by the mount"
-"$T/crash" "$T/c.img" 0 4 && "$T/crash" "$T/c.img" 1 4 && "$E2FSCK" -fn "$T/c.img"
+"$T/crash" "$T/c.img" 0 4
+"$T/crash" "$T/c.img" 1 4
+"$E2FSCK" -fn "$T/c.img"
 
 echo "== the same, replayed by e2fsck"
 "$T/crash" "$T/c.img" 0 4
@@ -27,19 +29,26 @@ rc=0
 "$E2FSCK" -fy "$T/c.img" >"$T/replay.log" 2>&1 || rc=$?
 cat "$T/replay.log"
 test "$rc" -le 1
-"$E2FSCK" -fn "$T/c.img" && "$T/crash" "$T/c.img" 1 4
+"$E2FSCK" -fn "$T/c.img"
+"$T/crash" "$T/c.img" 1 4
 
 echo "== a cut before descriptor (stage 1): as if it never began"
-"$T/crash" "$T/c.img" 0 1 && "$T/crash" "$T/c.img" 1 1 && "$E2FSCK" -fn "$T/c.img"
+"$T/crash" "$T/c.img" 0 1
+"$T/crash" "$T/c.img" 1 1
+"$E2FSCK" -fn "$T/c.img"
 
 echo "== a cut before the commit block (stage 3): uncommitted transaction dropped"
-"$T/crash" "$T/c.img" 0 3 && "$T/crash" "$T/c.img" 1 3 && "$E2FSCK" -fn "$T/c.img"
+"$T/crash" "$T/c.img" 0 3
+"$T/crash" "$T/c.img" 1 3
+"$E2FSCK" -fn "$T/c.img"
 
 echo "== I/O error injection: device read, write, and flush errors"
-"$T/crash" "$T/io.img" 3 && "$E2FSCK" -fn "$T/io.img"
+"$T/crash" "$T/io.img" 3
+"$E2FSCK" -fn "$T/io.img"
 
 echo "== ENOSPC condition: fill disk, verify anchor intact, free space, verify write succeeds"
-"$T/crash" "$T/spc.img" 2 && "$E2FSCK" -fn "$T/spc.img"
+"$T/crash" "$T/spc.img" 2
+"$E2FSCK" -fn "$T/spc.img"
 
 rm -rf "$T"
 echo "ext4test: all passed"
