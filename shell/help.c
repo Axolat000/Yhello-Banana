@@ -328,6 +328,11 @@ static const page_t PAGES[] = {
       "crashtest\ncrashtest report", "selftest" },
     { "kptest", "system", "kptest <picture> <drawing.svg> [seconds]", "check kernel preemption", NULL, NULL, NULL, "selftest" },
     /* ── network ── */
+    { "ntp", "network", "ntp [--set] [server]", "query network UTC, optionally set the clock",
+      "Query SNTP using the native UDP stack (default pool.ntp.org). Without --set the clock is unchanged. "
+      "--set changes UTC explicitly; this is a step, not gradual discipline. Ordinary NTP is unauthenticated; "
+      "the local whole-second clock makes the offset approximate.", "--set|set UTC after a validated reply",
+      "ntp\nntp --set pool.ntp.org", "date" },
     { "ifconfig", "network", "ifconfig [<if> <ip> [netmask m] [gw g] [dns d] | <if> up | reset]", "network settings",
       "Shows the interfaces, or sets one up with a fixed address (saved in /etc/network.conf). "
       "ifconfig eth1 up makes another card the active one; ifconfig reset goes back to DHCP.", NULL,

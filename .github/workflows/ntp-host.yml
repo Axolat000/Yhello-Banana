@@ -1,0 +1,22 @@
+name: ntp-host regressions
+on:
+  push:
+    branches: ['upstream/sntp-client']
+  pull_request:
+    paths: ['kernel/**', 'net/**', 'sdk/**', 'shell/**', 'tools/**', '.github/workflows/ntp-host.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Run regressions
+        run: |
+          python3 tools/test_ntp.py --sanitize
+          python3 tools/test_ntp.py --32
+          gcc -m64 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include net/ntp.c shell/netcmds.c shell/help.c
+          gcc -m32 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include net/ntp.c shell/netcmds.c shell/help.c
