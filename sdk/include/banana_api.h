@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 30u
+#define BANANA_API_VERSION 31u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -629,6 +629,9 @@ typedef struct banana_api {
     /* poll_mask: poll with the calling thread's mask *mask while it waits
      * (set at once: pselect, ppoll); the caller sets its mask back after */
     int (*poll_mask)(void* fds, int n, int timeout_ms, const unsigned long long* mask);
+    /* version 31: completed file/directory synchronization. 0 or -errno;
+     * installed disk only for now; EBUSY while frozen for a backup. */
+    int (*fd_sync)(int fd);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

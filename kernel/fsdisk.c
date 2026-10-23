@@ -2009,10 +2009,12 @@ int fsdisk_freeze(int on) {
 
 int fsdisk_frozen(void) { return g_frozen; }
 
-int fsdisk_sync(void) {
+static int sync_disk(int durable) {
     if (!g_have_target) return FSDISK_ERR_NO_TARGET;
-    if (g_frozen) return FSDISK_OK;           /* (frozen for a backup: written once thawed) */
+    if (g_frozen) return durable ? FSDISK_ERR_FROZEN : FSDISK_OK;
     while (g_busy) task_sleep_ms(10);        /* the autosave task and `sync` take turns */
+    /* A backup may have frozen the disk while we waited for another flush. */
+    if (g_frozen) return durable ? FSDISK_ERR_FROZEN : FSDISK_OK;
     g_busy = 1;
     int rc = g_e4 ? (ext4_flush() == 0 ? FSDISK_OK : FSDISK_ERR_IO)
            : g_v5 ? v5_sync(&g_target) : write_snapshot_to(&g_target);
@@ -2020,6 +2022,9 @@ int fsdisk_sync(void) {
     g_last_err = rc;
     return rc;
 }
+
+int fsdisk_sync(void) { return sync_disk(0); }
+int fsdisk_sync_durable(void) { return sync_disk(1); }
 
 /* a layout-5 disk just loaded: made ext4 (it stays layout 5 if that fails) */
 static void e4_move_over(const ata_disk_t* d) {
