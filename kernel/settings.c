@@ -1054,8 +1054,16 @@ static void draw_network(void) {
     if (g_net_manual < 0) { g_net_manual = !nf->dhcp; ipf_fill(nf); }
     ksnprintf(line, sizeof(line), "Card: %s (%s)", nf->dev->ifname, nf->dev->model ? nf->dev->model : nf->dev->name);
     label(x, y + 24, line, C_TEXT);
-    ksnprintf(line, sizeof(line), "Status: %s", nf->configured ? "connected" : "not connected");
-    label(x, y + 42, line, nf->configured ? TC(0x80E080) : TC(0xE0A060));
+    /* A static address or an unexpired lease says nothing about the cable.
+     * Drivers without a carrier callback cannot establish physical link. */
+    int link = nf->dev->link_up ? nf->dev->link_up(nf->dev) != 0 : -1;
+    ksnprintf(line, sizeof(line), "Link: %s; IP: %s",
+              link < 0 ? "unknown" : link ? "up" : "down",
+              nf->configured ? "configured" : "not configured");
+    label(x, y + 42, line, link == 1 && nf->configured ? TC(0x80E080) : TC(0xE0A060));
+    if (nf->dhcp) ksnprintf(line, sizeof(line), "Mode: DHCP (%s)", dhcp_state_str());
+    else kstrlcpy(line, "Mode: manual (static address)", sizeof(line));
+    label(x, y + 56, line, C_DIM);
     /* the address: automatic or manual */
     label(x, y + 70, _("Get an address:"), C_TEXT);
     button(x + NET_FX, y + 66, 150, _("Automatic (DHCP)"), g_net_manual == 0);
