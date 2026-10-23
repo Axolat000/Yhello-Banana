@@ -8,7 +8,8 @@ crashed counts as failed.
 
 usage: serialtest.py [--qemu BIN] [--log FILE] [--timeout S] -- <qemu args...>
        (the commands: --cmd "..." repeated, --cmds-file FILE, or the default
-       app tests). In a commands file: one command a line; "cmd ## text"
+       app tests). "cmd ##? text" waits for an interactive confirmation before
+       sending the next command. In a commands file: one command a line; "cmd ## text"
        also fails unless text is in its output; "#wait N" waits N seconds;
        other lines starting with # are comments.
 """
@@ -100,6 +101,15 @@ def main():
         text += ANSI.sub("", t).replace("\r", "")
         return True
 
+    def wait_text(since, expected, timeout):
+        # A confirmation does not return to the shell until the next answer.
+        end = time.time() + timeout
+        while time.time() < end:
+            if expected in text[since:]: return True
+            if proc.poll() is not None: return False
+            pump()
+        return expected in text[since:]
+
     def wait_prompt(since, timeout):
         """the shell's prompt ("...$ " at the end, nothing more coming): True"""
         end = time.time() + timeout
@@ -134,12 +144,15 @@ def main():
                     pump()
                 continue
             c, _, expect = line.partition(" ## ")
+            interactive = " ##? " in line
+            if interactive: c, expect = line.split(" ##? ", 1)
             mark = len(text)
             print(f"$ {c}", flush=True)
             for b in c.encode("utf-8") + b"\r":
                 sock.sendall(bytes([b]))
                 time.sleep(0.01)
-            ok = wait_prompt(mark + len(c), a.timeout)
+            ok = (wait_text(mark + len(c), expect, a.timeout) if interactive
+                  else wait_prompt(mark + len(c), a.timeout))
             out = text[mark:]
             failure = command_failure(out)
             for l in out.splitlines()[1:-1]:

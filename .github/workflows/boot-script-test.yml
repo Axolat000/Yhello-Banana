@@ -1,0 +1,45 @@
+name: Boot validation script regressions
+on:
+  push:
+    branches: ['upstream/boot-validation']
+  pull_request:
+    paths: ['tools/ci-*.sh', 'tools/serialtest.py', 'tools/test_serialtest.py', '.github/workflows/boot-script-test.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc e2fsprogs
+      - name: Download current boot fixture (build 219)
+        run: |
+          curl -fL --retry 3 -o Banana_OS.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-219/Banana_OS.iso
+          echo '3f8580847292a99f01a635e0baec9a537026162d4378f27ab2514888146cd4a7  Banana_OS.iso' | sha256sum -c -
+      - name: Download previous installation fixture (build 218)
+        run: |
+          curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-218/Banana_OS.iso
+          echo '0adf9de2ae15764454634825c04515769bb1f0650e2c52d967f2c0927e788bde  previous.iso' | sha256sum -c -
+      - name: Boot, install, update and verify persistence
+        env:
+          BASE_ISO: previous.iso
+        run: |
+          python3 tools/test_serialtest.py
+          bash tools/ci-boot.sh "${{ matrix.firmware }}"
+          bash tools/ci-install-test.sh "${{ matrix.firmware }}"
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.firmware }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            build/logs/**/*.log
+            build/logs/**/provenance.txt
+          retention-days: 14
