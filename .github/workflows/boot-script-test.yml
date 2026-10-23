@@ -10,7 +10,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -18,11 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install validation dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc e2fsprogs
+        run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc-multilib e2fsprogs binutils nasm xorriso mtools sbsigntool efitools ncurses-bin zsh cmake git
       - name: Download current boot fixture (build 219)
         run: |
           curl -fL --retry 3 -o Banana_OS.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-219/Banana_OS.iso
           echo '3f8580847292a99f01a635e0baec9a537026162d4378f27ab2514888146cd4a7  Banana_OS.iso' | sha256sum -c -
+      - name: Rebuild kernel and loaders from this checkout with release application payloads
+        run: |
+          mv Banana_OS.iso seed.iso
+          python3 tools/ci-seed-packages.py seed.iso
+          make -j2
       - name: Download previous installation fixture (build 218)
         run: |
           curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-218/Banana_OS.iso

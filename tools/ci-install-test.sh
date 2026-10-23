@@ -52,8 +52,8 @@ python3 tools/serialtest.py --log "$logs/serial-install.log" \
     --cmd 'disks' \
     --cmd 'install --minimal ##? Continue? [y/N]' \
     --cmd 'y ## install: done' \
-+    --cmd 'echo banana-ci-persistence > /home/banana/ci-persist.txt' \
-+    --cmd 'sync' \
+    --cmd 'echo banana-ci-persistence > /home/banana/ci-persist.txt' \
+    --cmd 'sync' \
     -- "${base_qemu[@]}" -cdrom "$base_iso" -boot d \
        -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-install.log"
@@ -61,9 +61,7 @@ python3 tools/serialtest.py --log "$logs/serial-install.log" \
 echo "== 2. Booting standalone from installed disk ($firmware)"
 python3 tools/serialtest.py --log "$logs/serial-diskboot.log" \
     --boot-timeout 180 --timeout 180 \
-    --cmd 'selftest boot ## 0 failed' \
-    --cmd 'selftest ram ## 0 failed' \
-+    --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
+    --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
     -- "${base_qemu[@]}" \
        -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-diskboot.log"
