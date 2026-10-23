@@ -39,6 +39,7 @@
 #include "app.h"
 #include "task.h"
 #include "tz.h"
+#include "session.h"
 
 void shell_power(int reboot);
 
@@ -654,7 +655,7 @@ static void checkbox(int x, int y, int on) {
     if (on) { gfx_fill_rect(x + 3, y + 3, 8, 8, C_ACCENT); }
 }
 
-#define SU_ROWS 5
+#define SU_ROWS 6
 static void su_rows(int y, int* ry) { for (int i = 0; i < SU_ROWS; i++) ry[i] = y + 44 + i * SU_ROW_H; }
 static int  su_pw_y(int y) { return y + 44 + SU_ROWS * SU_ROW_H + 14; }
 
@@ -670,6 +671,10 @@ static void draw_startup(void) {
     checkbox(x, ry[4], !login_required());
     label(x + 24, ry[4] + 3, passwd_is_set(PASSWD_USER) ? "Log in automatically (no password asked at boot)"
                                                         : "Log in automatically (always: no password is set)", C_TEXT);
+
+    /* session restore */
+    checkbox(x, ry[5], session_restore_is_enabled());
+    label(x + 24, ry[5] + 3, "Restore open windows, apps and documents on startup", C_TEXT);
 
     checkbox(x, ry[0], rc_on("desktop"));
     label(x + 24, ry[0] + 3, "Desktop (start the GUI instead of the text console)", C_TEXT);
@@ -691,6 +696,7 @@ static void draw_startup(void) {
     label(x + 24, ry[3] + 3, line, C_TEXT);
     label(x + w - 170, ry[3] + 3, rdpd_running() ? "running" : "stopped", rdpd_running() ? 0x0080E080u : C_DIM);
     button(x + w - 90, ry[3] - 3, 86, rdpd_running() ? "Stop" : "Start now", 0);
+
 
     /* the password */
     int py = su_pw_y(y);
@@ -801,6 +807,13 @@ static void click_startup(int mx, int my) {
                  sizeof(g_status));
         return;
     }
+    if (inside(mx, my, x, ry[5] - 4, w - 100, 24)) {
+        int on = !session_restore_is_enabled();
+        session_restore_set_enabled(on);
+        kstrlcpy(g_status, on ? "Session restore enabled" : "Session restore disabled", sizeof(g_status));
+        return;
+    }
+
     /* the password fields and button */
     int py = su_pw_y(y);
     g_pw_focus = -1;

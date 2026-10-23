@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "smp.h"
 #include "latency.h"
 #include "types.h"
 #include "idt.h"
@@ -35,7 +36,7 @@
 #define PIT_HZ    1000
 #define PIT_BASE  1193182u
 
-static volatile uint32_t g_ms = 0;          /* timer interrupts so far */
+static volatile uint64_t g_ms = 0;          /* timer interrupts so far */
 static uint64_t g_tsc0, g_tsc_per_ms;       /* 0: no usable TSC, g_ms is the clock */
 
 static inline uint64_t tsc_now(void) {
@@ -115,10 +116,27 @@ void timer_init(void) {
     irq_install(0, timer_irq);
 }
 
-uint32_t timer_ms(void) {
-    if (g_tsc_clock) return (uint32_t)((tsc_now() - g_tsc0) / g_tsc_per_ms);
-    return g_ms;
+uint64_t timer_ms64(void) {
+    if (g_tsc_clock) return (tsc_now() - g_tsc0) / g_tsc_per_ms;
+    /* IRQ0 updates the fallback on the kernel CPU; prevent a torn i386 read. */
+    uint32_t flags = irq_save();
+    uint64_t ms = g_ms;
+    irq_restore(flags);
+    return ms;
 }
+
+uint64_t timer_core_now_ms(void) {
+    if (g_tsc_clock) {
+        int cpu = cpu_id();
+        int64_t off = smp_tsc_core_offset(cpu);
+        int64_t adj = (int64_t)(tsc_now() - g_tsc0) + off;
+        if (adj < 0) adj = 0;
+        return (uint64_t)adj / g_tsc_per_ms;
+    }
+    return timer_ms64();
+}
+
+uint32_t timer_ms(void) { return (uint32_t)timer_core_now_ms(); }
 
 uint32_t timer_ticks(void) {
     return timer_ms() / 10u;

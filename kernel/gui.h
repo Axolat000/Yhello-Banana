@@ -72,5 +72,11 @@ int  gui_windows(gui_win_info_t* out, int max);
 void gui_window_close(int handle);
 void gui_window_activate(int handle);   /* restore + bring to front */
 
+/* session state inspection and restoration */
+int  gui_terminal_open_count(void);
+int  gui_open_terminal(void);
+int  gui_settings_is_open(void);
+int  gui_taskmgr_is_open(void);
+
 #endif
 

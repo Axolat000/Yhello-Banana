@@ -2105,3 +2105,8 @@ void explorer_refresh(void) { if (g_open) { scan(); g_gen++; } }
 
 /* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
 win_geom_t* explorer_geom(void) { return &g_win; }
+
+const char* explorer_get_path(char* out, int cap) {
+    if (out && cap > 0) kstrlcpy(out, g_path, (size_t)cap);
+    return g_path;
+}

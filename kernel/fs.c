@@ -1,4 +1,5 @@
 #include "fs.h"
+#include "certs.h"
 #include "rtc.h"
 #include "terminal.h"
 #include "types.h"
@@ -863,6 +864,7 @@ void fs_init(void) {
 
     /* real shells start in $HOME, not / */
     cwd = home_dir;
+    certs_init();
     g_ready = 1;
 }
 
