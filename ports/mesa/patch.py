@@ -122,7 +122,25 @@ write(p,s)
 # control fifo: a debugging aid; memmem in the shader validator)
 p=root/'src/intel/common/intel_measure.c';s=p.read_text()
 if 'Banana: no fifos' not in s:
- s=s.replace('#include "intel_measure.h"\n', '#include "intel_measure.h"\n#ifdef __BANANA_OS__ /* Banana: no fifos */\n#define mkfifoat(dir, path, mode) (errno = ENOSYS, -1)\n#define openat(dir, path, flags) open((path), (flags))\n#endif\n', 1)
+ s=s.replace('#include "intel_measure.h"\n', '#include "intel_measure.h"\n#ifdef __BANANA_OS__ /* Banana: no fifos */\n#define mkfifoat(dir, path, mode) (errno = ENOSYS, -1)\n#endif\n', 1)
+# (openat is the SDK's since API version 28: a source patched before keeps it no more)
+s=s.replace('#define openat(dir, path, flags) open((path), (flags))\n', '')
+write(p, s)
+# iris's shader validator too; Mesa's sync_file.h wants <linux/ioctl.h> (ports/mesa/include)
+memmem_c = """#ifdef __BANANA_OS__ /* Banana: memmem */
+static void *banana_memmem(const void *h, size_t hl, const void *n, size_t nl)
+{
+   if (!nl) return (void *)h;
+   for (size_t i = 0; i + nl <= hl; i++)
+      if (!memcmp((const char *)h + i, n, nl)) return (char *)h + i;
+   return NULL;
+}
+#define memmem banana_memmem
+#endif
+"""
+p=root/'src/intel/compiler/brw_eu_validate.c';s=p.read_text()
+if 'Banana: memmem' not in s:
+ s=s.replace('#include "brw_eu.h"\n', '#include "brw_eu.h"\n' + memmem_c, 1)
 write(p, s)
 p=root/'src/intel/compiler/elk/elk_eu_validate.c';s=p.read_text()
 if 'Banana: memmem' not in s:
