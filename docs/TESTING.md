@@ -436,3 +436,54 @@ Validation on this host (scratch kernels and ISO):
 | Clock multicore coverage regression, 512 MiB/4 cores | Old test failed 3/3 TCG runs; corrected test passed 5/5 TCG and 3/3 KVM runs, all on 4 cores; i686 passed |
 | BIOS 64-bit/ACPI PM resume | Three real suspend/wake cycles; clock checks before/after, FAT I/O, ping and POSIX passed |
 | BIOS 32-bit/HPET resume | Three real suspend/wake cycles; 31 cycle checks, FAT I/O, ping and POSIX passed |
+
+
+## Networking, desktop and descriptor-sync regressions
+
+Run these from the repository root on the Linux build host. Each runner in
+the table accepts `--sanitize` for ASan/UBSan and `--32` for a 32-bit host
+executable (requires gcc-multilib).
+
+| Runner | Coverage |
+|---|---|
+| `python3 tools/test_dhcp_state.py` | Acquisition/retry, renewal, rebinding, expiry, NAK, hostname and clock wrap |
+| `python3 tools/test_dns_tcp.py` | Truncated UDP replies and native DNS-over-TCP fallback |
+| `python3 tools/test_fd_sync.py` | RAM-root sync, installed-volume flushing, descriptor lifetime, unsupported mounts, I/O failures and backup freeze |
+| `python3 tools/test_screenshot.py` | PNG capture, allocation failures, paths and unique filenames |
+| `python3 tools/test_notification.py` | Notification history, expiry, rate limiting, actions and drawing |
+| `python3 tools/test_ntp.py` | Reply validation, request correlation, deadlines and NTP era rollover |
+| `python3 tools/test_kcmd_output.py` | Complete output-ring draining, partial writes, EAGAIN, cancellation and broken pipes |
+| `python3 tools/test_latency.py` | Boot-core filtering, IRQ nesting, histograms, timer wrapping and disabled collection |
+
+After the screenshot runner, `python3 tools/check_screenshot_png.py`
+independently decodes its output and checks chunk CRCs, dimensions and pixels.
+`sh tools/ext4test/run.sh` exercises ENOSPC/reclaim, device errors and journal
+cut/replay cases, then checks disposable filesystems with `e2fsck`; any failed
+subtest stops the run.
+
+### Live editor saves and exact-ISO boot checks
+
+Inside a 64-bit live session, run:
+
+```sh
+pkg install /home/banana/Examples/shelltest.bpk
+apt install neovim
+shelltest -e
+```
+
+This checks typing, saving and quitting Nano, Vim, vi and Neovim, plus Vim
+syntax/help and Neovim Lua, tree-sitter, help and terminal support. It catches
+the regression where live-root `fsync` returned ENOSYS and editors reported
+save failures. A successful RAM-root sync does not add persistence after
+shutdown; installed-root sync still flushes the backing volume.
+
+`bash tools/ci-boot.sh bios` and `bash tools/ci-boot.sh uefi` boot the
+already-built ISO without networking, run boot/RAM selftests and the editor
+checks above, and retain serial logs and ISO provenance under `build/logs`.
+The ordinary ISO workflow runs both against its exact build artifact.
+`BASE_ISO=/path/to/previous.iso bash tools/ci-install-test.sh bios` (or
+`uefi`) additionally checks installation, standalone disk boot, upgrade to
+the current ISO and user-file persistence on disposable disk images.
+
+Host shims and QEMU checks do not establish physical-controller power-loss,
+GPU, network-adapter or hardware RTC behavior.
