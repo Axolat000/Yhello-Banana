@@ -1,0 +1,23 @@
+name: screenshot-host regressions
+on:
+  push:
+    branches: ['upstream/png-screenshots']
+  pull_request:
+    paths: ['kernel/**', 'net/**', 'sdk/**', 'shell/**', 'tools/**', '.github/workflows/screenshot-host.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Run regressions
+        run: |
+          python3 tools/test_screenshot.py --sanitize
+          python3 tools/test_screenshot.py --32
+          python3 tools/check_screenshot_png.py
+          gcc -m64 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include kernel/gui.c kernel/screenshot.c shell/fscmds.c shell/help.c
+          gcc -m32 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include kernel/gui.c kernel/screenshot.c shell/fscmds.c shell/help.c

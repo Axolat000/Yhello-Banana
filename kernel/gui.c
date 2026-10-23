@@ -36,6 +36,8 @@
 #include "kbnav.h"
 #include "fileops.h"
 #include "fileicons.h"
+#include "screenshot.h"
+static int g_screenshot_requested;
 #include "settings.h"
 #include "nettray.h"
 #include "shortcut.h"
@@ -3548,6 +3550,15 @@ static void gui_poll_body(void) {
         last_frame_ms = now;
 
         render_desktop(fi, mx, my);
+        if (g_screenshot_requested) {
+            g_screenshot_requested = 0;
+            char path[FS_PATH_LEN];
+            int rc = screenshot_take(NULL, path, sizeof(path));
+            kstrlcpy(g_osd_text, rc == 0 ? "Screenshot saved to Pictures" : "Screenshot failed", sizeof(g_osd_text));
+            g_desk_osd = 1;
+            g_desk_osd_until = timer_ms() + 2000;
+            g_force_redraw = 1;
+        }
         g_ptr_drawn_x = mx;
         g_ptr_drawn_y = my;
         g_last_view = view;
@@ -4159,6 +4170,9 @@ static int kb_global(int k) {
         else if (g_desk_sel < 0 && g_ndesk) g_desk_sel = 0;
         break;
     }
+    case 's':
+        if (keyboard_mods() & 1) g_screenshot_requested = 1; /* Win+Shift+S */
+        break;
     case 'v': ep_close(); cb_toggle(); break;
     case ' ': {                                      /* Win+Space: English (US) and back */
         kstrlcpy(g_osd_text, keyboard_toggle_layout(), sizeof(g_osd_text));

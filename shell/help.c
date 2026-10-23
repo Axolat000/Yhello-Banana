@@ -122,6 +122,10 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
+    { "screenshot", "files", "screenshot [directory]", "save the screen as PNG",
+      "Capture the current graphical screen. Win+Shift+S captures the completed desktop frame. "
+      "Names are numbered without replacing existing captures; the default folder is /home/banana/Pictures.",
+      "directory|absolute output directory", "screenshot\nscreenshot /home/banana/Pictures", "startx" },
     { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
       "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
       "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "
