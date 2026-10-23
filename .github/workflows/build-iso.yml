@@ -87,6 +87,14 @@ jobs:
           make
           rm -f ~/.banana-secureboot/banana-sb.key
 
+      - name: Retain the exact ISO for boot validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-iso-${{ github.sha }}
+          path: Banana_OS.iso
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Set release tag
         id: tag
         run: echo "tag=build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
@@ -103,6 +111,45 @@ jobs:
   # Java for Banana OS (64-bit): java.bpk (ports/openjdk/package.sh) - the java
   # app, and /usr/java, which `pkg install java.bpk` unpacks: jdk/ (ports/openjdk),
   # lib/libOSMesa.so (ports/mesa: OpenGL 3.3) and lwjgl/ (ports/lwjgl)
+  boot:
+    name: Validate ${{ matrix.firmware }} boot and installed disk
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc e2fsprogs
+      - uses: actions/download-artifact@v4
+        with:
+          name: boot-iso-${{ github.sha }}
+      - name: Download previous installation fixture (build 218)
+        run: |
+          curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-218/Banana_OS.iso
+          echo '0adf9de2ae15764454634825c04515769bb1f0650e2c52d967f2c0927e788bde  previous.iso' | sha256sum -c -
+      - name: Boot, install, update and verify persistence
+        env:
+          BASE_ISO: previous.iso
+        run: |
+          python3 tools/test_serialtest.py
+          bash tools/ci-boot.sh "${{ matrix.firmware }}"
+          bash tools/ci-install-test.sh "${{ matrix.firmware }}"
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.firmware }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            build/logs/**/*.log
+            build/logs/**/provenance.txt
+          retention-days: 14
+
   java:
     runs-on: ubuntu-latest
     timeout-minutes: 300

@@ -3,6 +3,7 @@
 #define SPINLOCK_H
 
 #include "types.h"
+#include "latency.h"
 
 /*
  * Spinlocks, for the few kernel structures code on other processor cores
@@ -29,12 +30,14 @@ static inline void spin_unlock(spinlock_t* l) { __sync_lock_release(&l->v); }
 static inline uintptr_t spin_lock_irq(spinlock_t* l) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    if (latency_enabled) latency_irq_begin(f);
     spin_lock(l);
     return f;
 }
 
 static inline void spin_unlock_irq(spinlock_t* l, uintptr_t flags) {
     spin_unlock(l);
+    if (latency_enabled) latency_irq_end(flags);
     if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 

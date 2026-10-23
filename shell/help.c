@@ -122,6 +122,10 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
+    { "screenshot", "files", "screenshot [directory]", "save the screen as PNG",
+      "Capture the current graphical screen. Win+Shift+S captures the completed desktop frame. "
+      "Names are numbered without replacing existing captures; the default folder is /home/banana/Pictures.",
+      "directory|absolute output directory", "screenshot\nscreenshot /home/banana/Pictures", "startx" },
     { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
       "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
       "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "
@@ -294,6 +298,11 @@ static const page_t PAGES[] = {
       "default); now compresses every page not in use right now; disk writes the compressed pages out.",
       "on|swap when RAM runs low (the default)\noff|nothing more compressed or written\nnow|compress what can be, now\n"
       "disk|write the compressed pages to the swap area now", "swap\nswap now", "free" },
+    { "latency", "system", "latency [on|off|status]", "measure boot-core input and IRQ latency",
+      "Opt-in diagnostics written to the serial log. Measures IRQ-disabled sections, handler time, "
+      "timer intervals, keyboard queue delay and drops. Uses the shared hardware clock; timing samples "
+      "are unavailable with the IRQ-only fallback. p95 values are histogram upper bounds.",
+      "on|start a fresh session\noff|stop and report\nstatus|report current sample", "latency on\nlatency status\nlatency off", "sched" },
     { "sched", "system", "sched", "the scheduler's view of the tasks", NULL, NULL, NULL, "nice, renice" },
     { "nice", "system", "nice [-n N] <command>", "run a command at another priority",
       "Runs command with its nice value raised by N (10 by default; negative gets more processor time). "
@@ -324,6 +333,11 @@ static const page_t PAGES[] = {
       "crashtest\ncrashtest report", "selftest" },
     { "kptest", "system", "kptest <picture> <drawing.svg> [seconds]", "check kernel preemption", NULL, NULL, NULL, "selftest" },
     /* ── network ── */
+    { "ntp", "network", "ntp [--set] [server]", "query network UTC, optionally set the clock",
+      "Query SNTP using the native UDP stack (default pool.ntp.org). Without --set the clock is unchanged. "
+      "--set changes UTC explicitly; this is a step, not gradual discipline. Ordinary NTP is unauthenticated; "
+      "the local whole-second clock makes the offset approximate.", "--set|set UTC after a validated reply",
+      "ntp\nntp --set pool.ntp.org", "date" },
     { "ifconfig", "network", "ifconfig [<if> <ip> [netmask m] [gw g] [dns d] | <if> up | reset]", "network settings",
       "Shows the interfaces, or sets one up with a fixed address (saved in /etc/network.conf). "
       "ifconfig eth1 up makes another card the active one; ifconfig reset goes back to DHCP.", NULL,
@@ -396,6 +410,9 @@ static const page_t PAGES[] = {
     { "files", "desktop", "files [folder]", "open Files, the file explorer", NULL, NULL, NULL, "ls" },
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
+    { "notify", "system", "notify TITLE [BODY]", "post a desktop notification",
+      "Show a native toast; Win+N opens the last 16 notifications. Use quoted text for multi-word titles and bodies. "
+      "The shell is limited to three alerts per two seconds.", "", "notify Test \"Hello world\"", "startx" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
     { "settings", "desktop", "settings [apps [name] | time | keyboard | about]", "open Settings (or its Apps, Date & time or Keyboard page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "

@@ -9,6 +9,7 @@
 #include "../kernel/rtc.h"
 #include "../kernel/zip.h"
 #include "../kernel/clipboard.h"
+#include "../kernel/screenshot.h"
 
 static void err(const char* cmd, const char* what, const char* path) {
     char b[FS_PATH_LEN + 64];
@@ -419,6 +420,17 @@ static void cmd_clip(int argc, char** argv, const char* line) {
     clipboard_set(t, (uint32_t)n);
 }
 
+static void cmd_screenshot(int argc, char** argv) {
+    if (argc > 2 || (argc == 2 && argv[1][0] == '-')) {
+        terminal_writeln("usage: screenshot [absolute destination directory]");
+        return;
+    }
+    char path[FS_PATH_LEN];
+    if (screenshot_take(argc == 2 ? argv[1] : NULL, path, sizeof(path)) == 0) {
+        terminal_write("Screenshot saved: "); terminal_writeln(path);
+    } else terminal_writeln("screenshot: capture or file write failed");
+}
+
 int fscmd_dispatch(const char* line) {
     char* buf = (char*)kmalloc(1024);
     if (!buf) return 0;
@@ -435,6 +447,7 @@ int fscmd_dispatch(const char* line) {
     else if (strcmp(argv[0], "fsck") == 0 || strcmp(argv[0], "e2fsck") == 0) cmd_fsck(argc, argv);
     else if (strcmp(argv[0], "zip") == 0) cmd_zip(argc, argv);
     else if (strcmp(argv[0], "unzip") == 0) cmd_unzip(argc, argv);
+    else if (strcmp(argv[0], "screenshot") == 0) cmd_screenshot(argc, argv);
     else if (strcmp(argv[0], "clip") == 0) cmd_clip(argc, argv, line);
     else done = 0;
     kfree(buf);
