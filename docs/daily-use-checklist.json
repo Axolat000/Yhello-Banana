@@ -2412,5 +2412,38 @@
       "tools/test_tcp.py",
       "tools/tests/tcp_sim.c"
     ]
+  },
+  {
+    "id": "base-17-cross-core-clock",
+    "priority": "P1",
+    "domain": "Système",
+    "title": "Qualify cross-core TSC clock synchronization and per-AP offset tracking",
+    "evidence": "Adaptation of upstream commit 1b842a643383 established serialized boot-time AP TSC sampling, minimum-round-trip offset qualification, per-AP synchronization state, and timer_core_now_ms() in kernel/smp.c and kernel/timer.c. Long-term qualification under hardware drift and physical hardware validation remain to be tracked.",
+    "planningReason": "Following adaptation of upstream commit 1b842a643383 with the alternative design (software offset tracking and bounded qualification without raw TSC writes), this task formalizes continuous qualification of cross-core clock monotonicity under extended drift and physical hardware qualification without modifying started base-17 tasks.",
+    "goal": "Ensure all logical processor cores share a monotonic, drift-bounded clock timeline across long-running workloads, task migration, and hypervisors.",
+    "acceptance": "Cross-core clock reads remain monotonically nondecreasing across thread migration; drift over time is bounded within qualification thresholds; failed AP cores gracefully fall back to PIT/IRQ monotonic clocking.",
+    "deliverable": "Cross-core clock calibration and drift monitoring reports, regression test suites in tools/test_cross_core_clock.py, and documentation in docs/CROSS-CORE-CLOCK.md.",
+    "depends": [
+      "base-17"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "kernel/smp.c",
+      "kernel/smp.h",
+      "kernel/timer.c",
+      "kernel/timer.h",
+      "tools/test_cross_core_clock.py",
+      "docs/CROSS-CORE-CLOCK.md"
+    ],
+    "steps": [
+      "Validate serialized boot-time TSC qualification across QEMU SMP configurations (2 to 8 cores) and physical multi-socket hardware.",
+      "Implement continuous drift monitoring and recalibration thresholds for AP cores running high-frequency workloads.",
+      "Demonstrate graceful fallback to PIT/IRQ monotonic clocking when qualification thresholds fail or counters become desynchronized."
+    ],
+    "tests": [
+      "Run tools/test_cross_core_clock.py across simulated AP offsets and jitter.",
+      "Execute QEMU multi-core selftest suites and verify monotonic timestamps across migrating worker threads.",
+      "Measure sampling error and drift over time and verify fallback when qualification thresholds are exceeded."
+    ]
   }
 ]

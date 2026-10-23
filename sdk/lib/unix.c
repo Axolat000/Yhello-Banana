@@ -208,9 +208,26 @@ int mkfifo(const char* path, mode_t mode) { (void)path; (void)mode; errno = ENOT
 ssize_t readlink(const char* path, char* buf, size_t len) { (void)buf; (void)len; errno = access(path, 0) ? ENOENT : EINVAL; return -1; }
 int symlink(const char* a, const char* b) { (void)a; (void)b; errno = EPERM; return -1; }
 int link(const char* a, const char* b) { (void)a; (void)b; errno = EPERM; return -1; }
-int fsync(int fd) { (void)fd; return 0; }
-int fdatasync(int fd) { (void)fd; return 0; }
-void sync(void) {}
+int fsync(int fd) {
+    if (!__banana || !BANANA_HAS(__banana, fd_sync) || !__banana->fd_sync) {
+        errno = ENOSYS;
+        return -1;
+    }
+    int rc = __banana->fd_sync(fd);
+    if (rc < 0) {
+        errno = -rc;
+        return -1;
+    }
+    return 0;
+}
+
+int fdatasync(int fd) {
+    return fsync(fd);
+}
+
+void sync(void) {
+    /* POSIX sync() is fire-and-forget advisory flush across filesystems */
+}
 int flock(int fd, int op) { (void)fd; (void)op; return 0; }
 
 int ftruncate(int fd, off_t len) {

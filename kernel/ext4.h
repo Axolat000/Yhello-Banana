@@ -14,8 +14,10 @@
  *
  * Features: filetype, extents, flex_bg (incompat); sparse_super, large_file,
  * dir_nlink, extra_isize, uninit_bg (ro_compat); sparse_super2 with no
- * backup superblock (compat). Not (yet): a journal, htree directories,
- * metadata checksums, inline data, extended attributes.
+ * backup superblock, has_journal (compat). JBD2 journaling is supported
+ * (v2 superblock, descriptor and commit blocks, revokes). Not (yet): htree
+ * directories, metadata checksums, 64-bit block numbers, inline data,
+ * extended attributes.
  */
 
 #define EXT4_ROOT_INO   2u

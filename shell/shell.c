@@ -4,6 +4,7 @@
 #include "../kernel/keyboard.h"
 #include "../kernel/utf8.h"
 #include "../kernel/fs.h"
+#include "../kernel/certs.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/timer.h"
 #include "../kernel/daemon.h"
@@ -2697,6 +2698,8 @@ void shell_run(void) {
     if (loaded <= 0) {
         fs_init();
         examples_seed();          /* the SDK example apps in ~/Examples */
+    } else {
+        certs_init();             /* ensure system CA bundle is present on existing installs */
     }
     if (loaded < 0)
         terminal_write_color(
