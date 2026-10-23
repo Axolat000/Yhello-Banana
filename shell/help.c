@@ -122,9 +122,6 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
-    { "notify", "system", "notify TITLE [BODY]", "post a desktop notification",
-      "Show a native toast; Win+N opens the last 16 notifications. Use quoted text for multi-word titles and bodies. "
-      "The shell is limited to three alerts per two seconds.", "", "notify Test \"Hello world\"", "startx" },
     { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
       "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
       "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "
@@ -399,6 +396,9 @@ static const page_t PAGES[] = {
     { "files", "desktop", "files [folder]", "open Files, the file explorer", NULL, NULL, NULL, "ls" },
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
+    { "notify", "system", "notify TITLE [BODY]", "post a desktop notification",
+      "Show a native toast; Win+N opens the last 16 notifications. Use quoted text for multi-word titles and bodies. "
+      "The shell is limited to three alerts per two seconds.", "", "notify Test \"Hello world\"", "startx" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
     { "settings", "desktop", "settings [apps [name] | time | keyboard | about]", "open Settings (or its Apps, Date & time or Keyboard page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
