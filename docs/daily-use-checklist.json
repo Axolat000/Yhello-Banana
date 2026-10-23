@@ -2364,12 +2364,12 @@
     "kind": "Consolidate",
     "goal": "Verify that moving SDK allocation into each process improves daily-use responsiveness without losing memory or thread-lifecycle correctness.",
     "depends": [
-      "upstream-46446439da13f6664de67d9314b212544559a0b3"
+      "base-18"
     ],
     "relatedTasks": [
       "base-18"
     ],
-    "planningReason": "The adaptation of upstream 46446439da13 replaces kernel malloc calls with a single-lock process-local heap. Host mapping and thread substitutes cannot qualify Banana pthread lifecycle, demand paging, swap, or desktop latency. Keep base-18 history intact and schedule this linked qualification only after independent review and controller validation.",
+    "planningReason": "The adaptation of upstream 46446439da13 replaces kernel malloc calls with a single-lock process-local heap. Host mapping and thread substitutes cannot qualify Banana pthread lifecycle, demand paging, swap, or desktop latency. The prior dependency named a controller execution task absent from this versioned checklist and failed integration link validation. Depend on the existing base-18 task for load instrumentation and memory-pressure policy; retain the pinned upstream commit as provenance, not as a checklist ID. Keep base-18 history intact and schedule this linked qualification only after the allocator adaptation is integrated, independent review, and controller validation. Validation must resolve every checklist link to a distinct existing task and find no dependency cycles; all lifecycle and before/after measurement criteria remain required.",
     "evidence": "sdk/lib/malloc.c uses anonymous mappings and one lock; kernel/uspace.c reserves addresses before first-touch physical allocation. Resident mappings were previously absent from app_snapshot accounting.",
     "acceptance": "Repeat identical workloads on the parent kernel-allocator baseline and adapted SDK, with pinned VM configuration and application rebuilds. Record syscall counts, allocations/second, resident and reserved bytes, swap use, and input latency p50/p95/max; explain regressions and retain logs. No corruption, leaked mappings after process teardown, or deadlock across pthread startup, destructors, the existing ENOSYS cancellation contract/exit, cross-thread frees, pressure, and swap. Verify kernel-owned HTTP and decoded-image buffers.",
     "deliverable": "Reproducible Banana VM qualification and before/after performance report, with measured follow-up fixes if needed.",
