@@ -2177,6 +2177,12 @@ static int kcmd_out(app_proc_t* p, kjob_t* j) {
     return n != 0;
 }
 
+/* Once the producer is done, drain every remaining chunk before freeing
+ * its job. One kcmd_out call moves at most 512 of the ring's 4095 bytes. */
+static void kcmd_drain(app_proc_t* p, kjob_t* j) {
+    while (!j->cancel && kcmd_out(p, j)) {}
+}
+
 /* ... and keys from stdin, while it wants some */
 static int kcmd_in(app_proc_t* p, kjob_t* j) {
     int got = 0;
@@ -2240,7 +2246,7 @@ static int a_kcmd(const char* line) {
         if (!j->cancel && (p->kill_req || p->exit_req || kcmd_stopping(p))) j->cancel = 1;
         if (!busy) task_sleep_ms(2);
     }
-    kcmd_out(p, j);
+    kcmd_drain(p, j);
     int rc = j->rc;
     kfree(l);
     kfree(j);
