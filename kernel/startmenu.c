@@ -198,8 +198,8 @@ static void build(void) {
         add_prog(SM_NOTEPAD, NULL, "Notepad");
         add_prog(SM_TASKMGR, NULL, "Task Manager");
         int np = pkg_list(g_pkgs, 48);
-        for (int i = 0; i < np && i < 48; i++)
-            add_prog(0, g_pkgs[i].name, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name);
+        for (int i = 0; i < np && i < 48; i++)               /* (the desktop apps: the command-line ones are in All Programs) */
+            if (!strcmp(g_pkgs[i].type, "gui")) add_prog(0, g_pkgs[i].name, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name);
     }
     if (g_sel >= g_ne) g_sel = -1;
 }
@@ -578,6 +578,16 @@ static int left_at(const fb_info_t* fi, int mx, int my) {
         if (my >= y + ey && my < y + ey + row_h(&g_e[i]) && (g_e[i].kind == E_PROG || g_e[i].kind == E_FILE)) return i;
     }
     return -1;
+}
+
+int startmenu_program_at(const fb_info_t* fi, int mx, int my, int* sm, char* app, int acap, char* label, int lcap) {
+    if (!startmenu_contains(fi, mx, my)) return 0;
+    int i = left_at(fi, mx, my);
+    if (i < 0 || g_e[i].kind != E_PROG || g_e[i].sm == SM_INSTALL) return 0;
+    *sm = g_e[i].sm;
+    kstrlcpy(app, g_e[i].app, (size_t)acap);
+    kstrlcpy(label, g_e[i].label, (size_t)lcap);
+    return 1;
 }
 
 static int right_at(const fb_info_t* fi, int mx, int my) {

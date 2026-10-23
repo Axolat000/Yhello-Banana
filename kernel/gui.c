@@ -1970,6 +1970,7 @@ static int is_hidden(const char* key) {
 }
 
 static void desk_refresh(int force);
+static int  builtin_act(const char* name);
 
 /* every icon keeps the cell it has now (an icon going away must not move
  * the others: those never dragged would fill its place) */
@@ -1996,23 +1997,100 @@ static void desk_hide(int i) {
     desk_refresh(1);
 }
 
-/* the desktop's items: programs (but the ones taken off), the Recycle Bin,
- * the Desktop folder's folders and files - shortcuts among them */
+/* ── the programs on the desktop are shortcuts (.link files in ~/Desktop),
+ * as on Windows: deleting one deletes the shortcut, never the program.
+ * ~/.config/desktop-apps lists the desktop (graphical) apps already given
+ * one: an app installed later gets its shortcut once (as a Windows
+ * installer makes one); an app removed takes its shortcuts along. ── */
+#define DESK_APPS_FILE "/home/banana/.config/desktop-apps"
+
+static int listed(const char* file, const char* name) {
+    int fi = fs_find_file(file);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (!f || !f->content) return 0;
+    size_t n = strlen(name);
+    for (const char* p = f->content; (p = strstr(p, name)); p++)
+        if ((p == f->content || p[-1] == '\n') && p[n] == '\n') return 1;
+    return 0;
+}
+static void list_add(const char* file, const char* name) {
+    char line[PKG_NAME_MAX + 2];
+    ksnprintf(line, sizeof(line), "%s\n", name);
+    int fi = fs_find_file(file);
+    if (fi < 0) { fs_mkdir_p("/home/banana/.config"); fi = fs_create(file); }
+    if (fi >= 0) fs_append(fi, line, (uint32_t)strlen(line));
+}
+
+/* a shortcut on the desktop to target, named name; its icon takes the cell
+ * key had (the program icons of before build 249) */
+static void desk_make_link(const char* name, const char* target, const char* key) {
+    char p[FS_PATH_LEN];
+    if (shortcut_create(DESKTOP_DIR, name, target, p, sizeof(p)) != 0) return;
+    if (!key) return;
+    if (g_nlay < 0) layout_load();
+    for (int k = 0; k < g_nlay; k++)
+        if (!strcmp(g_lay[k].key, key)) {
+            ksnprintf(g_lay[k].key, sizeof(g_lay[0].key), "file:%s", strrchr(p, '/') + 1);
+            layout_save();
+            break;
+        }
+}
+
+/* the shortcuts the desktop's programs need: the first time (the built-in
+ * programs and the desktop apps - not the ones taken off it before), then
+ * each desktop app installed since; the shortcuts of apps removed go */
+static void desk_sync_links(void) {
+    static uint32_t last;
+    if (last && timer_ms() - last < 2000) return;
+    last = timer_ms();
+    int first = fs_find_file(DESK_APPS_FILE) < 0;
+    if (first) {
+        static const char* const PROGS[] = { "Terminal", "Files", "Browser", "Notepad", "Apps", "Task Manager", "Settings" };
+        for (int i = 0; i < (int)(sizeof(PROGS) / sizeof(PROGS[0])); i++) {
+            char key[56], target[64];
+            ksnprintf(key, sizeof(key), "app:%s", _(PROGS[i]));
+            if (is_hidden(key)) continue;
+            ksnprintf(target, sizeof(target), "app:%s", PROGS[i]);
+            desk_make_link(_(PROGS[i]), target, key);
+        }
+        fs_mkdir_p("/home/banana/.config");
+        if (fs_find_file(DESK_APPS_FILE) < 0) fs_create(DESK_APPS_FILE);
+    }
+    int n = pkg_list(g_pkgs, DESK_MAX);
+    for (int i = 0; i < n && i < DESK_MAX; i++) {
+        if (strcmp(g_pkgs[i].type, "gui") != 0 || listed(DESK_APPS_FILE, g_pkgs[i].name)) continue;
+        if (!strcmp(g_pkgs[i].name, "terminal")) continue;          /* (the Terminal program is it) */
+        const char* label = g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name;
+        char key[56], target[PKG_NAME_MAX + 8];
+        ksnprintf(key, sizeof(key), "app:%s", label);
+        ksnprintf(target, sizeof(target), "app:%s", g_pkgs[i].name);
+        if (!(first && is_hidden(key))) desk_make_link(label, target, key);
+        list_add(DESK_APPS_FILE, g_pkgs[i].name);
+    }
+    /* an app gone: its shortcuts too */
+    static int fi2[DESK_MAX];
+    int nf = fs_list_files(DESKTOP_DIR, fi2, DESK_MAX);
+    for (int i = 0; i < nf && i < DESK_MAX; i++) {
+        fs_file_t* f = fs_file_info(fi2[i]);
+        if (!f || !shortcut_is(f->name)) continue;
+        char p[FS_PATH_LEN], target[FS_PATH_LEN];
+        ksnprintf(p, sizeof(p), "%s/%s", DESKTOP_DIR, f->name);
+        if (shortcut_read(p, target, sizeof(target)) != SC_APP || builtin_act(target + 4) >= 0) continue;
+        pkg_info_t have;
+        if (pkg_get(target + 4, &have) != 0 && listed(DESK_APPS_FILE, target + 4)) fs_delete(p, 0);
+    }
+}
+
+/* the desktop's items: the Recycle Bin, the Desktop folder's folders and
+ * files - the programs' shortcuts among them ("Install Banana OS" on the
+ * live CD is the one program shown as itself) */
 static void desk_refresh(int force) {
     if (!force && g_ndesk && timer_ms() - g_desk_checked < 2000) return;
     g_desk_checked = timer_ms();
+    if (fs_find_dir(DESKTOP_DIR) < 0) fs_mkdir_p(DESKTOP_DIR);
+    desk_sync_links();
     g_ndesk = 0;
-    desk_add(ACT_TERMINAL, _("Terminal"), NULL);
-    desk_add(ACT_FILES, _("Files"), NULL);
-    desk_add(ACT_BROWSER, _("Browser"), NULL);
-    desk_add(ACT_NOTEPAD, _("Notepad"), NULL);
-    desk_add(ACT_APPS, _("Apps"), NULL);
-    desk_add(ACT_TASKMGR, _("Task Manager"), NULL);
-    desk_add(ACT_SETTINGS, _("Settings"), NULL);
     if (installer_available()) desk_add(ACT_INSTALL, _("Install Banana OS"), NULL);
-    int n = pkg_list(g_pkgs, DESK_MAX);
-    for (int i = 0; i < n && i < DESK_MAX; i++)
-        desk_add(ACT_RUN_APP, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name, g_pkgs[i].name);
     desk_add_path(DK_TRASH, "Recycle Bin", TRASH_FILES);
     /* the Desktop folder: its folders, then its files */
     if (fs_find_dir(DESKTOP_DIR) < 0) fs_mkdir_p(DESKTOP_DIR);
@@ -2085,6 +2163,7 @@ static int builtin_act(const char* name) {
     static const struct { const char* n; int act; } B[] = {
         { "Terminal", ACT_TERMINAL }, { "Files", ACT_FILES }, { "Browser", ACT_BROWSER }, { "Notepad", ACT_NOTEPAD },
         { "Apps", ACT_APPS }, { "Task Manager", ACT_TASKMGR }, { "Settings", ACT_SETTINGS },
+        { "Device Manager", ACT_DEVMGR }, { "Disk Management", ACT_DISKMGR },
     };
     for (int i = 0; i < (int)(sizeof(B) / sizeof(B[0])); i++) if (!strcasecmp(name, B[i].n)) return B[i].act;
     return -1;
@@ -2175,6 +2254,57 @@ static void sm_action(int sm) {
 }
 
 static void sm_run_app(const char* name) { g_force_redraw = 1; run_app(name); }
+
+/* a right-click on a program in the Start menu: open it, a shortcut to it
+ * on the desktop, pin it to the taskbar */
+enum { SMM_OPEN = 1, SMM_DESKTOP, SMM_PIN, SMM_UNPIN };
+static struct { int sm, act; char app[PKG_NAME_MAX], label[48]; } g_smm;
+static int sm_act(int sm) {
+    switch (sm) {
+    case SM_TERMINAL: return ACT_TERMINAL;
+    case SM_FILES:    return ACT_FILES;
+    case SM_BROWSER:  return ACT_BROWSER;
+    case SM_NOTEPAD:  return ACT_NOTEPAD;
+    case SM_APPS:     return ACT_APPS;
+    case SM_TASKMGR:  return ACT_TASKMGR;
+    case SM_DEVMGR:   return ACT_DEVMGR;
+    case SM_DISKMGR:  return ACT_DISKMGR;
+    case SM_SETTINGS: return ACT_SETTINGS;
+    }
+    return ACT_RUN_APP;
+}
+static void sm_menu_cb(int id, void* arg) {
+    (void)arg;
+    if (id == SMM_OPEN) {
+        g_menu_open = 0;
+        if (g_smm.sm) sm_action(g_smm.sm); else sm_run_app(g_smm.app);
+    } else if (id == SMM_DESKTOP) {
+        char target[PKG_NAME_MAX + 24];
+        static const char* const NAMES[] = { [SM_TERMINAL] = "Terminal", [SM_FILES] = "Files", [SM_BROWSER] = "Browser",
+            [SM_NOTEPAD] = "Notepad", [SM_APPS] = "Apps", [SM_TASKMGR] = "Task Manager", [SM_SETTINGS] = "Settings",
+            [SM_DEVMGR] = "Device Manager", [SM_DISKMGR] = "Disk Management" };
+        const char* n = g_smm.sm > 0 && g_smm.sm < (int)(sizeof(NAMES) / sizeof(NAMES[0])) ? NAMES[g_smm.sm] : NULL;
+        if (g_smm.sm && !n) return;
+        ksnprintf(target, sizeof(target), "app:%s", g_smm.sm ? n : g_smm.app);
+        gui_desktop_shortcut(g_smm.label, target);
+    } else if (id == SMM_PIN) pin_add(g_smm.act, g_smm.app);
+    else if (id == SMM_UNPIN) { int p = pin_find(g_smm.act, g_smm.app); if (p >= 0) pin_remove(p); }
+    g_force_redraw = 1;
+}
+static int sm_rclick(const fb_info_t* fi, int mx, int my) {
+    if (!startmenu_program_at(fi, mx, my, &g_smm.sm, g_smm.app, sizeof(g_smm.app), g_smm.label, sizeof(g_smm.label))) return 0;
+    g_smm.act = sm_act(g_smm.sm);
+    if (g_smm.act != ACT_RUN_APP) g_smm.app[0] = 0;
+    int pinned = pin_find(g_smm.act, g_smm.app) >= 0;
+    ctx_item_t items[] = {
+        { _("Open"), SMM_OPEN, 0 },
+        { CTX_SEP, 0, 0 },
+        { _("Add to desktop"), SMM_DESKTOP, 0 },
+        { pinned ? _("Unpin from taskbar") : _("Pin to taskbar"), pinned ? SMM_UNPIN : SMM_PIN, 0 },
+    };
+    ctxmenu_open(mx, my, items, 4, sm_menu_cb, NULL);
+    return 1;
+}
 
 /* a folder opens in Files; a file: its folder, with it selected */
 static void sm_open_path(const char* path) {
@@ -2616,7 +2746,19 @@ static void open_desktop_menu(int mx, int my) {
 
 /* a desktop icon: open it (an installed app: also remove it) */
 static int g_icon_menu_i;
-enum { ICM_OPEN = 1, ICM_REMOVE };
+enum { ICM_OPEN = 1 };
+
+/* the program an icon opens - itself, or a shortcut's (app:...): 1, its
+ * ACT_* and (ACT_RUN_APP) its app's name */
+static int desk_program(int i, int* act, char* app, int cap) {
+    desk_item_t* d = &g_desk[i];
+    app[0] = 0;
+    if (d->kind == DK_APP) { *act = d->act; if (d->act == ACT_RUN_APP) kstrlcpy(app, d->app, (size_t)cap); return 1; }
+    if (d->link != SC_APP) return 0;
+    *act = builtin_act(d->target + 4);
+    if (*act < 0) { *act = ACT_RUN_APP; kstrlcpy(app, d->target + 4, (size_t)cap); }
+    return 1;
+}
 enum { ICM_PIN = 10, ICM_UNPIN, ICM_SHOW, ICM_COPY, ICM_CUT, ICM_DELETE, ICM_RENAME, ICM_EMPTY, ICM_HIDE, ICM_TARGET };
 static void icon_menu_cb(int id, void* arg) {
     (void)arg;
@@ -2624,9 +2766,13 @@ static void icon_menu_cb(int id, void* arg) {
     if (i < 0 || i >= g_ndesk) return;
     desk_item_t* d = &g_desk[i];
     const char* fname = strrchr(d->path, '/') ? strrchr(d->path, '/') + 1 : d->label;   /* (a shortcut's .link file) */
+    int act;
+    char app[PKG_NAME_MAX];
     if (id == ICM_OPEN) desk_open(i);
-    else if (id == ICM_PIN) pin_add(d->act, d->act == ACT_RUN_APP ? d->app : "");
-    else if (id == ICM_UNPIN) { int p = pin_find(d->act, d->app); if (p >= 0) pin_remove(p); }
+    else if ((id == ICM_PIN || id == ICM_UNPIN) && desk_program(i, &act, app, sizeof(app))) {
+        if (id == ICM_PIN) pin_add(act, app);
+        else { int p = pin_find(act, app); if (p >= 0) pin_remove(p); }
+    }
     else if (id == ICM_SHOW) { explorer_open(DESKTOP_DIR); explorer_select(fname); gui_raise_files(); }
     else if (id == ICM_COPY || id == ICM_CUT) desk_clip_marked(id == ICM_CUT);
     else if (id == ICM_DELETE) desk_trash_marked();
@@ -2641,12 +2787,6 @@ static void icon_menu_cb(int id, void* arg) {
         gui_raise_files();
     }
     else if (id == ICM_EMPTY) { trash_empty(); explorer_refresh(); desk_refresh(1); }
-    else if (id == ICM_REMOVE && d->act == ACT_RUN_APP) {
-        char msg[96];
-        pkg_remove(g_desk[i].app, msg, sizeof(msg));
-        g_desk_sel = -1;
-        desk_refresh(1);
-    }
 }
 
 static void open_icon_menu(int i, int mx, int my) {
@@ -2665,7 +2805,6 @@ static void open_icon_menu(int i, int mx, int my) {
             items[n++] = (ctx_item_t){ pinned ? "Unpin from taskbar" : "Pin to taskbar", pinned ? ICM_UNPIN : ICM_PIN, 0 };
         }
         items[n++] = (ctx_item_t){ "Remove from desktop", ICM_HIDE, 0 };
-        if (d->act == ACT_RUN_APP) items[n++] = (ctx_item_t){ "Uninstall this app", ICM_REMOVE, 0 };
     } else if (d->kind == DK_TRASH) {
         items[n++] = (ctx_item_t){ "Open", ICM_OPEN, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
@@ -2674,6 +2813,12 @@ static void open_icon_menu(int i, int mx, int my) {
     } else {
         items[n++] = (ctx_item_t){ "Open", ICM_OPEN, 0 };
         if (d->link == SC_FILE || d->link == SC_DIR) items[n++] = (ctx_item_t){ "Open file location", ICM_TARGET, 0 };
+        int act;
+        char app[PKG_NAME_MAX];
+        if (d->link == SC_APP && desk_program(i, &act, app, sizeof(app))) {
+            int pinned = pin_find(act, app) >= 0;
+            items[n++] = (ctx_item_t){ pinned ? "Unpin from taskbar" : "Pin to taskbar", pinned ? ICM_UNPIN : ICM_PIN, 0 };
+        }
         items[n++] = (ctx_item_t){ "Show in Files", ICM_SHOW, 0 };
         items[n++] = (ctx_item_t){ CTX_SEP, 0, 0 };
         items[n++] = (ctx_item_t){ "Cut", ICM_CUT, 0 };
@@ -3111,6 +3256,12 @@ static void gui_poll_body(void) {
             click = rclick = 0;
         }
 
+        if (rclick && g_menu_open && startmenu_contains(fi, mx, my)) {
+            /* in the Start menu: a program's menu (the Start menu stays open), else nothing */
+            ctxmenu_close();
+            sm_rclick(fi, mx, my);
+            rclick = 0;
+        }
         if (rclick) {
             /* right-click: the menu of whatever is under the mouse */
             ctxmenu_close();
@@ -4339,6 +4490,7 @@ static void desk_trash_marked(void) {
     for (int i = 0; i < g_ndesk && nk < 16; i++)
         if (desk_marked(i) && g_desk[i].kind == DK_APP) desk_key(&g_desk[i], keys[nk++], sizeof(keys[0]));
     int n = desk_marked_paths(p, 64);
+    if (n || nk) layout_pin_all();                   /* (the other icons stay where they are, as on Windows) */
     for (int i = 0; i < n; i++) trash_put(p[i]);
     for (int k = 0; k < nk; k++) {
         if (is_hidden(keys[k]) || g_nhidden >= HIDDEN_MAX) continue;
@@ -4486,14 +4638,17 @@ static void dnd_drop(const fb_info_t* fi, int mx, int my) {
         } else if (i >= 0 && !self && g_desk[i].kind == DK_DIR) {
             char err[64];
             for (int k = 0; k < g_ndnd; k++) fileops_transfer(g_dnd[k], g_desk[i].path, copy, NULL, 0, err, sizeof(err));
-        } else if (i >= 0 && !self && g_desk[i].kind == DK_APP && g_ndnd) {
-            /* a file dropped on a program: it opens it (Banana Code, Photos...) */
-            if (g_desk[i].act == ACT_RUN_APP) {
+        } else if (i >= 0 && !self && (g_desk[i].kind == DK_APP || g_desk[i].link == SC_APP) && g_ndnd) {
+            /* a file dropped on a program (or its shortcut): it opens it (Banana Code, Photos...) */
+            int act;
+            char app[PKG_NAME_MAX];
+            desk_program(i, &act, app, sizeof(app));
+            if (act == ACT_RUN_APP) {
                 char err[96];
-                char* argv[2] = { g_desk[i].app, g_dnd[0] };
-                pkg_run(g_desk[i].app, 2, argv, 1, err, sizeof(err));
-            } else if (g_desk[i].act == ACT_NOTEPAD) gui_open_notepad(g_dnd[0]);
-            else if (g_desk[i].act == ACT_BROWSER) gui_open_browser(g_dnd[0]);
+                char* argv[2] = { app, g_dnd[0] };
+                pkg_run(app, 2, argv, 1, err, sizeof(err));
+            } else if (act == ACT_NOTEPAD) gui_open_notepad(g_dnd[0]);
+            else if (act == ACT_BROWSER) gui_open_browser(g_dnd[0]);
         } else {
             int col, row;
             desk_cell_at(fi, mx, my, &col, &row);
@@ -4564,7 +4719,7 @@ static void desk_mouse(const fb_info_t* fi, int mx, int my, int left) {
         int d = -1;
         if (!over_window(mx, my)) {
             int i = icon_at(mx, my);
-            if (i >= 0 && (g_desk[i].kind == DK_TRASH || g_desk[i].kind == DK_DIR || (g_desk[i].kind == DK_APP && g_dnd_src == GUI_DRAG_FILES))) d = i;
+            if (i >= 0 && (g_desk[i].kind == DK_TRASH || g_desk[i].kind == DK_DIR || ((g_desk[i].kind == DK_APP || g_desk[i].link == SC_APP) && g_dnd_src == GUI_DRAG_FILES))) d = i;
             for (int k = 0; k < g_ndnd_icons; k++) if (g_dnd_icons[k] == d) d = -1;
         }
         if (d != g_desk_drop) g_desk_drop = d;

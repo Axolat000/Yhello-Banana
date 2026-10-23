@@ -39,6 +39,9 @@ void startmenu_key(char c);                     /* typing searches, Enter opens 
 void startmenu_escape(void);                    /* Esc: clears the search, else closes */
 void startmenu_arrow(char code);                /* ESC [ A/B/C/D: up, down, right, left */
 void startmenu_wheel(int dz);
+/* the program under the pointer (a right-click): 1, its SM_* (0: an
+ * installed app, then app), and its name as the menu shows it */
+int  startmenu_program_at(const fb_info_t* fi, int mx, int my, int* sm, char* app, int acap, char* label, int lcap);
 uint32_t startmenu_signature(void);
 /* the Start button (a round orb) at x, y in a bar of height h */
 void startmenu_draw_orb(int x, int y, int h, int pressed, int hover);

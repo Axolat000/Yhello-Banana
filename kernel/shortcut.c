@@ -6,7 +6,8 @@
 #include "pkg.h"
 
 /* the programs a shortcut can open by name (besides the installed apps) */
-static const char* const BUILTIN[] = { "Terminal", "Files", "Browser", "Notepad", "Apps", "Task Manager", "Settings" };
+static const char* const BUILTIN[] = { "Terminal", "Files", "Browser", "Notepad", "Apps", "Task Manager", "Settings",
+                                       "Device Manager", "Disk Management" };
 #define NBUILTIN ((int)(sizeof(BUILTIN) / sizeof(BUILTIN[0])))
 
 int shortcut_is(const char* name) {
