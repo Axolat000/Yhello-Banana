@@ -783,8 +783,15 @@ static int do_write(raw_inode_t* in, emap_t* m, uint32_t ino, uint64_t off, cons
             if (!goal) goal = ((ino - 1) / g_ipg) * BPG;
             uint32_t got;
             pblk = balloc(goal, need, &got);
-            if (!got) return -1;
-            if (emap_add(m, lblk, pblk, got, 0) != 0) { bfree(pblk, got); return -1; }
+            if (!got) {
+                if (done && off + done > old_size) set_size(in, off + done);
+                return -1;
+            }
+            if (emap_add(m, lblk, pblk, got, 0) != 0) {
+                bfree(pblk, got);
+                if (done && off + done > old_size) set_size(in, off + done);
+                return -1;
+            }
             *changed = 1;
             run = got;
             fresh_blk = 1;
