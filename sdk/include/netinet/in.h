@@ -45,10 +45,14 @@ extern const struct in6_addr in6addr_any, in6addr_loopback;
 #define IPPROTO_TCP  6
 #define IPPROTO_UDP  17
 #define IPPROTO_IPV6 41
+#define SOL_IP       0
+#define SOL_IPV6     41
 #define IPPROTO_RAW  255
 
 #define IP_TOS             1
 #define IP_TTL             2
+#define IP_RECVERR         11
+#define IPV6_RECVERR       25
 #define IP_MULTICAST_IF    32
 #define IP_MULTICAST_TTL   33
 #define IP_MULTICAST_LOOP  34

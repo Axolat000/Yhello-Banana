@@ -88,6 +88,7 @@ int     fsync(int fd);
 int     fdatasync(int fd);
 void    sync(void);
 int     ftruncate(int fd, off_t len);
+int     truncate(const char* path, off_t len);
 ssize_t pread(int fd, void* buf, size_t n, off_t off);
 ssize_t pwrite(int fd, const void* buf, size_t n, off_t off);
 /* (off_t is 64-bit already: the *64 names are the same calls) */
@@ -127,8 +128,15 @@ int     tcsetpgrp(int fd, pid_t pgrp);
 long    pathconf(const char* path, int name);
 long    fpathconf(int fd, int name);
 int     getdtablesize(void);
-#define _PC_NAME_MAX 3
-#define _PC_PATH_MAX 4
+#define _PC_LINK_MAX         0       /* (Linux's numbers) */
+#define _PC_MAX_CANON        1
+#define _PC_MAX_INPUT        2
+#define _PC_NAME_MAX         3
+#define _PC_PATH_MAX         4
+#define _PC_PIPE_BUF         5
+#define _PC_CHOWN_RESTRICTED 6
+#define _PC_NO_TRUNC         7
+#define _PC_VDISABLE         8
 void    _exit(int code) __attribute__((noreturn));      /* at once: no stdio flush */
 
 /* sysconf() names (Linux's values) */

@@ -605,7 +605,9 @@ typedef struct banana_api {
      * there is not followed; -EPERM for a folder or on FAT / exFAT,
      * -EXDEV across volumes, -EEXIST); fs_utimes: the last access's and
      * last change's times, seconds since 1970, -1 now, -2 as it is.
-     * fs_fdattr also takes what 4: the two times (a, b - the same way). */
+     * fs_fdattr also takes what 4: the two times (a, b - the same way);
+     * and (build 247) what 5: the file cut to - or grown to - a bytes
+     * (ftruncate; -EINVAL from older kernels). */
     int (*fs_link)(const char* oldpath, const char* newpath);
     int (*fs_utimes)(const char* path, int follow, long long atime, long long mtime);
 

@@ -262,7 +262,10 @@ kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builti
 # kernel/appbin.asm and kernel/builtin_apps.c take the list from
 # build/ports64.inc and build/ports64.h, made from PORTS64.
 PORTS64    = bash coreutils grep sed findutils diffutils gawk ncurses less zsh
-PORT_BPKZ  = $(foreach p,$(PORTS64),ports/$(p)/build/$(p)-x86_64.bpk.z)
+# optional ones: built in the same way, but installed only when asked for
+# (`apt install nano`, the App Store: the builtin: source) - the editors
+OPTPORTS64 = nano vim vi neovim
+PORT_BPKZ  = $(foreach p,$(PORTS64) $(OPTPORTS64),ports/$(p)/build/$(p)-x86_64.bpk.z)
 CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site ports/port.sh
 define PORT_RULE
 ports/$(1)/build/$(1)-x86_64.bpk: $$(filter-out %/src %/build,$$(wildcard ports/$(1)/*)) $$(SDK_DEPS) $$(CROSS_DEPS)
@@ -270,9 +273,11 @@ ports/$(1)/build/$(1)-x86_64.bpk: $$(filter-out %/src %/build,$$(wildcard ports/
 ports/$(1)/build/$(1)-x86_64.bpk.z: ports/$(1)/build/$(1)-x86_64.bpk
 	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $$< $$@
 endef
-$(foreach p,$(PORTS64),$(eval $(call PORT_RULE,$(p))))
-# (less and zsh are linked with ncurses' library)
-ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
+$(foreach p,$(PORTS64) $(OPTPORTS64),$(eval $(call PORT_RULE,$(p))))
+# (vi is Vim's tiny build, from ports/vim's source and script)
+ports/vi/build/vi-x86_64.bpk: ports/vim/build.sh
+# (less, zsh and the editors are linked with ncurses' library)
+ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk $(foreach p,$(OPTPORTS64),ports/$(p)/build/$(p)-x86_64.bpk): ports/ncurses/build/ncurses-x86_64.bpk
 # Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built
 # in the same way: ps & co. (apps/procps)
 APPS64      = procps kcmd
@@ -286,11 +291,11 @@ kernel/appbin.o64: $(APPS64_BPKZ)
 build/builtin-meta-x86_64.bin: $(APPS64_BPKZ)
 build/ports64.inc: Makefile
 	mkdir -p build
-	{ $(foreach p,$(PORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) \
+	{ $(foreach p,$(PORTS64) $(OPTPORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) \
 	  $(foreach a,$(APPS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "apps/%s/%s-x86_64.bpk.z"\nport_%s_end:\n' $(a) $(a) $(a) $(a) $(a) $(a);) } > $@
 build/ports64.h: Makefile
 	mkdir -p build
-	{ $(foreach p,$(PORTS64) $(APPS64),echo 'PORT($(p))';) } > $@
+	{ $(foreach p,$(PORTS64) $(APPS64),echo 'PORT($(p))';) $(foreach p,$(OPTPORTS64),echo 'OPTPORT($(p))';) } > $@
 kernel/builtin_apps.o64: build/ports64.h
 
 # the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
@@ -305,7 +310,7 @@ kernel/appbin.o64: $(TERMINAL_BPKZ)
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
+	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64) $(OPTPORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
 	      $(foreach a,$(APPS64),$(a).bpk=apps/$(a)/$(a)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 

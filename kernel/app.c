@@ -1357,6 +1357,11 @@ static int a_fs_fdattr(int fd, int what, long long a, long long b) {
     if (what == 2) return fs_file_setattr(h->fidx, ~0u, a < 0 ? ~0u : (uint32_t)a, b < 0 ? ~0u : (uint32_t)b) == 0 ? 0 : -1;
     if (what == 3) { fs_file_utime(h->fidx, ~0u, a < 0 ? rtc_now() : (uint32_t)a); return 0; }
     if (what == 4) { fs_file_utime(h->fidx, utime_of(a), utime_of(b)); return 0; }
+    if (what == 5) {                                                      /* ftruncate: the length a */
+        if (!(h->flags & KF_WRITE)) return -22;                           /* EINVAL (Linux's) */
+        if (a < 0 || a > 0xFFFFFFFFll) return a < 0 ? -22 : -27;          /* EFBIG */
+        return fs_truncate(h->fidx, (uint32_t)a) == 0 ? 0 : -5;           /* EIO */
+    }
     return -22;
 }
 

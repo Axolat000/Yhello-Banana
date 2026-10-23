@@ -12,6 +12,7 @@
 #include <ifaddrs.h>
 #include <langinfo.h>
 #include <libgen.h>
+#include <limits.h>
 #include <locale.h>
 #include <malloc.h>
 #include <pwd.h>
@@ -156,6 +157,10 @@ void sync(void) {}
 int flock(int fd, int op) { (void)fd; (void)op; return 0; }
 
 int ftruncate(int fd, off_t len) {
+    int k = __banana->fs_fdattr(fd, 5, len, 0);
+    if (k == 0) return 0;
+    if (k != -22 || len < 0) { errno = -k; return -1; }
+    /* (a kernel from before build 247: by writing, and it cannot shrink) */
     off_t cur = lseek(fd, 0, SEEK_CUR), end = lseek(fd, 0, SEEK_END);
     if (cur < 0 || end < 0) { errno = EBADF; return -1; }
     int rc = 0;
@@ -169,6 +174,28 @@ int ftruncate(int fd, off_t len) {
     }
     lseek(fd, cur, SEEK_SET);
     return rc;
+}
+
+int truncate(const char* path, off_t len) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return -1;
+    int rc = ftruncate(fd, len), e = errno;
+    close(fd);
+    errno = e;
+    return rc;
+}
+
+char* mkdtemp(char* tmpl) {
+    size_t n = strlen(tmpl);
+    if (n < 6 || strcmp(tmpl + n - 6, "XXXXXX")) { errno = EINVAL; return NULL; }
+    for (int tries = 0; tries < 100; tries++) {
+        unsigned r = __banana->random();
+        for (int i = 0; i < 6; i++) tmpl[n - 6 + i] = "abcdefghijklmnopqrstuvwxyz0123456789"[(r >> (i * 5)) % 36];
+        if (mkdir(tmpl, 0700) == 0) return tmpl;
+        if (errno != EEXIST) return NULL;
+    }
+    errno = EEXIST;
+    return NULL;
 }
 
 ssize_t pread(int fd, void* buf, size_t n, off_t off) {
@@ -241,8 +268,21 @@ ssize_t getline(char** line, size_t* cap, FILE* f) { return getdelim(line, cap, 
 /* ── processes: fork, exec, wait, groups (proc.c) ─────────────────── */
 
 char* getlogin(void) { return "banana"; }
-long pathconf(const char* p, int n) { (void)p; (void)n; return 255; }
-long fpathconf(int fd, int n) { (void)fd; (void)n; return 255; }
+static long pc_value(int n) {
+    switch (n) {
+    case _PC_LINK_MAX: return 65000;
+    case _PC_MAX_CANON: case _PC_MAX_INPUT: return 255;
+    case _PC_NAME_MAX: return NAME_MAX;
+    case _PC_PATH_MAX: return PATH_MAX;
+    case _PC_PIPE_BUF: return PIPE_BUF;
+    case _PC_CHOWN_RESTRICTED: case _PC_NO_TRUNC: return 1;
+    case _PC_VDISABLE: return 0;
+    }
+    errno = EINVAL;
+    return -1;
+}
+long pathconf(const char* p, int n) { (void)p; return pc_value(n); }
+long fpathconf(int fd, int n) { (void)fd; return pc_value(n); }
 int getdtablesize(void) { return 64 + 3; }
 
 /* ── the user ─────────────────────────────────────────────────────── */
@@ -308,6 +348,14 @@ int seteuid(uid_t uid) { return same_id(uid); }
 int setegid(gid_t gid) { return same_id(gid); }
 int setreuid(uid_t r, uid_t e) { return same_id(r) || same_id(e) ? -1 : 0; }
 int setregid(gid_t r, gid_t e) { return same_id(r) || same_id(e) ? -1 : 0; }
+/* supplementary groups: an app has only its own (getgroups) - setting them
+ * is accepted and changes nothing */
+int setgroups(size_t n, const gid_t* list) {
+    (void)list;
+    if (n > 65536) { errno = EINVAL; return -1; }
+    return 0;
+}
+
 int getgroups(int n, gid_t* list) {
     if (n == 0) return 1;
     if (n < 1) { errno = EINVAL; return -1; }
@@ -389,6 +437,7 @@ long syscall(long nr, ...) {
     va_end(ap);
     switch (nr) {
     case SYS_gettid: return gettid();
+    case SYS_close: return close((int)a1);
     case SYS_getpid: return getpid();
     case SYS_futex: {
         volatile int* addr = (volatile int*)a1;

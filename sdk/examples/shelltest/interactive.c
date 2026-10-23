@@ -349,3 +349,105 @@ int shelltest_interactive(int verbose) {
     printf("shelltest -i: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;
 }
+
+/* ── shelltest -e: the editors (the optional packages: apt install nano vim
+ * vi neovim) - each one that is installed is started on a file, typed at,
+ * saved and quit; then the file must hold what was typed. ─────────────── */
+static char* slurp(const char* path) {
+    static char b[4096];
+    int fd = open(path, O_RDONLY), n = fd < 0 ? -1 : (int)read(fd, b, sizeof b - 1);
+    if (fd >= 0) close(fd);
+    b[n < 0 ? 0 : n] = 0;
+    return b;
+}
+static void put(const char* path, const char* text) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, text, strlen(text)); close(fd); }
+}
+
+/* the editor at path on file: keys typed after it shows ready; 1 if it ended */
+static int edit(const char* path, const char* file, const char* ready, const char* keys) {
+    const char* name = strrchr(path, '/') + 1;
+    char* av[] = { (char*)name, (char*)file, NULL };
+    if (start(path, av)) return 0;
+    int up = wait_for(ready, 20000);
+    check("starts and draws its screen", up);
+    type(keys);
+    int st = finish();
+    return up && st == 0;
+}
+
+/* a command line typed in vim / nvim: what it shows must have want */
+static void ex_shows(const char* what, const char* cmd, const char* want) {
+    mark();
+    type(cmd);
+    check(what, wait_for(want, 8000));
+}
+
+int shelltest_editors(void) {
+    signal(SIGPIPE, SIG_IGN);
+    int any = 0;
+    if (access("/bin/nano", X_OK) == 0) {
+        any = 1;
+        printf("nano\n");
+        unlink("/tmp/ed-nano.txt");
+        char* av[] = { "nano", "/tmp/ed-nano.txt", NULL };
+        if (!start("/bin/nano", av)) {
+            check("starts and draws its screen", wait_for("GNU nano", 20000));
+            type("hello nano");
+            mark();
+            type("\x0f");
+            check("^O asks for the file name", wait_for("Write to File", 5000));
+            type("\r");
+            check("it wrote the file", wait_for("Wrote", 5000));
+            type("\x18");
+            check("^X quits", finish() == 0);
+        }
+        check("the file has the text", !strcmp(slurp("/tmp/ed-nano.txt"), "hello nano\n"));
+    }
+    if (access("/bin/vim", X_OK) == 0) {
+        any = 1;
+        printf("vim\n");
+        unlink("/tmp/ed-vim.txt");
+        check("i, text, Esc, :wq", edit("/bin/vim", "/tmp/ed-vim.txt", "ed-vim.txt", "ihello vim\x1b:wq\r"));
+        check("the file has the text", !strcmp(slurp("/tmp/ed-vim.txt"), "hello vim\n"));
+        put("/tmp/ed-vim.c", "int main(void) { return 0; }\n");
+        char* av[] = { "vim", "/tmp/ed-vim.c", NULL };
+        if (!start("/bin/vim", av)) {
+            wait_for("ed-vim.c", 20000);
+            ex_shows("syntax colouring for C", ":echo 'syn=' . get(b:, 'current_syntax', 'none')\r", "syn=c");
+            ex_shows(":help opens", ":help\r", "VIM - main help file");
+            type(":qa!\r");
+            check(":qa! quits", finish() == 0);
+        }
+    }
+    if (access("/bin/vi", X_OK) == 0) {
+        any = 1;
+        printf("vi\n");
+        put("/tmp/ed-vi.txt", "one\ntwo\nthree\n");
+        check("dd, :wq", edit("/bin/vi", "/tmp/ed-vi.txt", "ed-vi.txt", "dd:wq\r"));
+        check("the file is a line shorter (cut, not left over)", !strcmp(slurp("/tmp/ed-vi.txt"), "two\nthree\n"));
+    }
+    if (access("/bin/nvim", X_OK) == 0) {
+        any = 1;
+        printf("nvim\n");
+        unlink("/tmp/ed-nvim.txt");
+        check("i, text, Esc, :wq", edit("/bin/nvim", "/tmp/ed-nvim.txt", "ed-nvim.txt", "ihello nvim\x1b:wq\r"));
+        check("the file has the text", !strcmp(slurp("/tmp/ed-nvim.txt"), "hello nvim\n"));
+        put("/tmp/ed-nvim.lua", "local x = 1\nprint(x)\n");
+        char* av[] = { "nvim", "/tmp/ed-nvim.lua", NULL };
+        if (!start("/bin/nvim", av)) {
+            wait_for("ed-nvim.lua", 20000);
+            ex_shows("Lua runs", ":lua print('lua=' .. (1 + 1))\r", "lua=2");
+            ex_shows("a tree-sitter parser (Lua, built in)", ":lua print('ts=' .. tostring(pcall(vim.treesitter.get_parser, 0, 'lua')))\r", "ts=true");
+            ex_shows(":help opens", ":help\r", "help.txt [Help]");
+            ex_shows("the help's file type", ":lua print('ft=' .. vim.bo.filetype)\r", "ft=help");
+            ex_shows(":terminal runs a program on a pty", ":terminal echo term-$((6*7))\r", "term-42");
+            type(":qa!\r");
+            check(":qa! quits", finish() == 0);
+        }
+    }
+    if (!any) printf("no editor installed (apt install nano vim vi neovim)\n");
+    printf("shelltest -e: %d passed, %d failed\n", g_pass, g_fail);
+    return g_fail;
+}

@@ -8,6 +8,7 @@ extern "C" {
  * answers the few it knows (gettid, futex...), the rest fail with ENOSYS */
 #define SYS_read              0
 #define SYS_write             1
+#define SYS_close             3
 #define SYS_mmap              9
 #define SYS_getpid            39
 #define SYS_gettid            186

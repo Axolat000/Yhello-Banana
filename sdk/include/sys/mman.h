@@ -27,6 +27,7 @@ extern "C" {
 #define MAP_ANONYMOUS 0x20
 #define MAP_ANON      MAP_ANONYMOUS
 #define MAP_NORESERVE 0x4000      /* (every mapping is like that here) */
+#define MAP_POPULATE  0x8000      /* (pages come when touched, as always here) */
 #define MAP_FIXED_NOREPLACE 0x100000
 #define MAP_FAILED    ((void*)-1)
 

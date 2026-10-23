@@ -35,6 +35,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <iconv.h>
 #include <poll.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -1104,6 +1105,38 @@ static void t_files(void) {
     int od = open(file, O_RDONLY | O_DIRECTORY);
     check("open(a file, O_DIRECTORY): ENOTDIR", od == -1 && errno == ENOTDIR, "");
     if (od >= 0) close(od);
+
+    /* ftruncate / truncate shrink a file (build 247: editors save that way) */
+    f = fopen(file, "w");
+    if (f) { fputs("0123456789", f); fclose(f); }
+    int tf = open(file, O_RDWR);
+    struct stat ts1, ts2, ts3;
+    char tb[16] = "";
+    int t1 = tf >= 0 && ftruncate(tf, 4) == 0 && fstat(tf, &ts1) == 0 && pread(tf, tb, sizeof tb, 0) == 4;
+    int t2 = tf >= 0 && ftruncate(tf, 8) == 0 && fstat(tf, &ts2) == 0;
+    char tz[8] = { 1 };
+    int t3 = tf >= 0 && pread(tf, tz, 8, 0) == 8 && !memcmp(tz, "0123\0\0\0\0", 8);
+    if (tf >= 0) close(tf);
+    int t4 = truncate(file, 2) == 0 && stat(file, &ts3) == 0 && ts3.st_size == 2;
+    check("ftruncate shorter, longer (zeros); truncate", t1 && ts1.st_size == 4 && !memcmp(tb, "0123", 4) && t2 && ts2.st_size == 8 && t3 && t4, "");
+    char dt[] = "/tmp/posixtest-XXXXXX";
+    struct stat ds;
+    char* md = mkdtemp(dt);
+    check("mkdtemp makes a new folder", md && stat(md, &ds) == 0 && S_ISDIR(ds.st_mode) && rmdir(md) == 0, md ? md : strerror(errno));
+    iconv_t ic = iconv_open("UTF-16LE", "UTF-8");
+    char icin[] = "a\xc3\xa9", icout[8], *ip = icin, *op = icout;
+    size_t il = 3, ol = sizeof icout;
+    int iok = ic != (iconv_t)-1 && iconv(ic, &ip, &il, &op, &ol) == 0 && op - icout == 4 && !memcmp(icout, "a\0\xe9\0", 4);
+    if (ic != (iconv_t)-1) iconv_close(ic);
+    ic = iconv_open("ASCII", "UTF-8");
+    ip = icin + 1; il = 2; op = icout; ol = sizeof icout;
+    int ibad = ic != (iconv_t)-1 && iconv(ic, &ip, &il, &op, &ol) == (size_t)-1 && errno == EILSEQ;
+    if (ic != (iconv_t)-1) iconv_close(ic);
+    check("iconv: UTF-8 to UTF-16LE; to ASCII: EILSEQ", iok && ibad, "");
+    struct protoent* pe = getprotobyname("tcp");
+    int tcp = pe ? pe->p_proto : -1;                    /* (both answer in one static struct) */
+    struct protoent* pn = getprotobynumber(17);
+    check("getprotobyname / getprotobynumber", tcp == 6 && pn && !strcmp(pn->p_name, "udp"), "");
 
     /* hard links (API version 29): two names, one file */
     char other[340], sub2[340];

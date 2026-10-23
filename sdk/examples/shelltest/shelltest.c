@@ -10,6 +10,7 @@
  *   shelltest            both
  *   shelltest -s [name]  the scripts (those whose names have name)
  *   shelltest -i         the interactive checks
+ *   shelltest -e         the editors that are installed (nano, vim, vi, nvim), typed at
  *   shelltest -k SHELL KEYS [MS]   keys typed at bash / zsh: what it shows
  *   shelltest -b N       the first N steps of the bash session, then ^D */
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 
 int shelltest_interactive(int verbose);
+int shelltest_editors(void);
 int shelltest_keys(const char* shell, const char* keys, int ms);
 int shelltest_bash_steps(int n);
 
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
     if (argc > 3 && !strcmp(argv[1], "-k")) return shelltest_keys(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 3000);
     if (argc > 2 && !strcmp(argv[1], "-b")) return shelltest_bash_steps(atoi(argv[2]));
     if (argc > 1 && !strcmp(argv[1], "-i")) failed = shelltest_interactive(0);
+    else if (argc > 1 && !strcmp(argv[1], "-e")) failed = shelltest_editors();
     else if (argc > 1 && !strcmp(argv[1], "-s")) failed = scripts(argc - 2, argv + 2);
     else {
         failed = scripts(0, NULL);

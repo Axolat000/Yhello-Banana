@@ -30,6 +30,9 @@ struct msghdr {
     int           msg_flags;
 };
 struct linger { int l_onoff; int l_linger; };
+/* recvmmsg / sendmmsg: several messages a call (one after the other here) */
+struct mmsghdr { struct msghdr msg_hdr; unsigned int msg_len; };
+struct timespec;
 
 #define AF_UNSPEC 0
 #define AF_UNIX   1
@@ -42,6 +45,8 @@ struct linger { int l_onoff; int l_linger; };
 #define PF_UNIX   AF_UNIX
 #define PF_INET   AF_INET
 #define PF_INET6  AF_INET6
+#define PF_PACKET AF_PACKET
+#define PF_NETLINK AF_NETLINK
 
 #define SOCK_STREAM    1
 #define SOCK_DGRAM     2
@@ -78,6 +83,26 @@ struct ucred { pid_t pid; uid_t uid; gid_t gid; };
 #define MSG_DONTWAIT  0x40
 #define MSG_WAITALL   0x100
 #define MSG_NOSIGNAL  0x4000
+#define MSG_CTRUNC    0x8
+#define MSG_EOR       0x80
+#define MSG_ERRQUEUE  0x2000
+#define MSG_CMSG_CLOEXEC 0x40000000
+
+/* control messages (sendmsg / recvmsg's msg_control): Linux's layout - Banana
+ * OS sends none (SCM_RIGHTS: no descriptors passed; recvmsg sets
+ * msg_controllen to 0) */
+struct cmsghdr { size_t cmsg_len; int cmsg_level; int cmsg_type; };
+#define SCM_RIGHTS      1
+#define SCM_CREDENTIALS 2
+#define CMSG_ALIGN(n)   (((n) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define CMSG_SPACE(n)   (CMSG_ALIGN(n) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_LEN(n)     (CMSG_ALIGN(sizeof(struct cmsghdr)) + (n))
+#define CMSG_DATA(c)    ((unsigned char*)(c) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_FIRSTHDR(m) ((m)->msg_controllen >= sizeof(struct cmsghdr) ? (struct cmsghdr*)(m)->msg_control : (struct cmsghdr*)0)
+#define CMSG_NXTHDR(m, c) \
+    ((c)->cmsg_len < sizeof(struct cmsghdr) || \
+     (unsigned char*)(c) + CMSG_ALIGN((c)->cmsg_len) + sizeof(struct cmsghdr) > (unsigned char*)(m)->msg_control + (m)->msg_controllen \
+     ? (struct cmsghdr*)0 : (struct cmsghdr*)((unsigned char*)(c) + CMSG_ALIGN((c)->cmsg_len)))
 
 #define SHUT_RD   0
 #define SHUT_WR   1
@@ -97,6 +122,8 @@ ssize_t sendto(int fd, const void* buf, size_t len, int flags, const struct sock
 ssize_t recvfrom(int fd, void* buf, size_t len, int flags, struct sockaddr* sa, socklen_t* salen);
 ssize_t sendmsg(int fd, const struct msghdr* m, int flags);
 ssize_t recvmsg(int fd, struct msghdr* m, int flags);
+int     recvmmsg(int fd, struct mmsghdr* v, unsigned int n, int flags, struct timespec* timeout);
+int     sendmmsg(int fd, struct mmsghdr* v, unsigned int n, int flags);
 int     shutdown(int fd, int how);
 int     getsockopt(int fd, int level, int name, void* val, socklen_t* len);
 int     setsockopt(int fd, int level, int name, const void* val, socklen_t len);

@@ -29,6 +29,7 @@ extern "C" {
 #define TIOCGWINSZ 0x5413
 #define TIOCSWINSZ 0x5414
 #define FIONREAD   0x541B
+#define TIOCLINUX  0x541C      /* (the Linux console's: not here - fails with EINVAL) */
 #define TIOCINQ    FIONREAD
 #define TIOCNOTTY  0x5422
 #define FIONBIO    0x5421

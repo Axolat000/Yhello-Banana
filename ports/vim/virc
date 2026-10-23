@@ -1,0 +1,8 @@
+" /apps/vi/virc - the system vimrc of vi (Vim's tiny build, no runtime files):
+" a few of Vim's defaults - without it vi would look for defaults.vim
+set nocompatible
+set backspace=indent,eol,start
+set ruler
+set showmode
+set showcmd
+set encoding=utf-8

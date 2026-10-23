@@ -106,6 +106,7 @@ ssize_t recvmsg(int fd, struct msghdr* m, int flags) {
     char* b = malloc(total ? total : 1);
     if (!b) { errno = ENOMEM; return -1; }
     socklen_t nl = m->msg_namelen;
+    flags &= ~MSG_CMSG_CLOEXEC;                         /* (no descriptors come with a message here) */
     ssize_t r = recvfrom(fd, b, total, flags, m->msg_name, m->msg_name ? &nl : NULL);
     if (r >= 0) {
         size_t at = 0;
@@ -120,6 +121,28 @@ ssize_t recvmsg(int fd, struct msghdr* m, int flags) {
     }
     free(b);
     return r;
+}
+
+/* several messages: one recvmsg / sendmsg each - stops at the first that
+ * would block (after one at least) or fails */
+int recvmmsg(int fd, struct mmsghdr* v, unsigned int n, int flags, struct timespec* timeout) {
+    (void)timeout;
+    unsigned int i;
+    for (i = 0; i < n; i++) {
+        ssize_t r = recvmsg(fd, &v[i].msg_hdr, i ? flags | MSG_DONTWAIT : flags);
+        if (r < 0) { if (i) break; return -1; }
+        v[i].msg_len = (unsigned int)r;
+    }
+    return (int)i;
+}
+int sendmmsg(int fd, struct mmsghdr* v, unsigned int n, int flags) {
+    unsigned int i;
+    for (i = 0; i < n; i++) {
+        ssize_t r = sendmsg(fd, &v[i].msg_hdr, flags);
+        if (r < 0) { if (i) break; return -1; }
+        v[i].msg_len = (unsigned int)r;
+    }
+    return (int)i;
 }
 
 int getsockopt(int fd, int level, int name, void* val, socklen_t* len) {
@@ -544,6 +567,30 @@ struct servent* getservbyname(const char* name, const char* proto) {
     s.s_port = htons((uint16_t)port);
     s.s_proto = (char*)(proto ? proto : "tcp");
     return &s;
+}
+
+static const struct { const char* name; const char* alias; int proto; } PROTOS[] = {
+    { "ip", "IP", 0 }, { "icmp", "ICMP", 1 }, { "tcp", "TCP", 6 }, { "udp", "UDP", 17 },
+    { "ipv6", "IPv6", 41 }, { "ipv6-icmp", "IPv6-ICMP", 58 }, { "raw", "RAW", 255 },
+};
+static struct protoent* proto_of(int i) {
+    static struct protoent p;
+    static char* aliases[2];
+    aliases[0] = (char*)PROTOS[i].alias;
+    p.p_name = (char*)PROTOS[i].name;
+    p.p_aliases = aliases;
+    p.p_proto = PROTOS[i].proto;
+    return &p;
+}
+struct protoent* getprotobyname(const char* name) {
+    for (int i = 0; i < (int)(sizeof(PROTOS) / sizeof(PROTOS[0])); i++)
+        if (!strcmp(name, PROTOS[i].name) || !strcmp(name, PROTOS[i].alias)) return proto_of(i);
+    return NULL;
+}
+struct protoent* getprotobynumber(int proto) {
+    for (int i = 0; i < (int)(sizeof(PROTOS) / sizeof(PROTOS[0])); i++)
+        if (PROTOS[i].proto == proto) return proto_of(i);
+    return NULL;
 }
 
 int gethostname(char* name, size_t len) {

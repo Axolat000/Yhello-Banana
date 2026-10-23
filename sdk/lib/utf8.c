@@ -301,3 +301,179 @@ int wcsncasecmp(const wchar_t* a, const wchar_t* b, size_t n) {
     return 0;
 }
 int wcscasecmp(const wchar_t* a, const wchar_t* b) { return wcsncasecmp(a, b, (size_t)-1); }
+
+/* ── iconv: UTF-8, ASCII, Latin-1, UTF-16, UTF-32 (<iconv.h>) ───────── */
+#include <iconv.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+enum { E_UTF8, E_ASCII, E_LATIN1, E_UTF16, E_UTF16LE, E_UTF16BE, E_UTF32, E_UTF32LE, E_UTF32BE };
+typedef struct { int from, to, ignore, translit, bom_done, in_le; } ic_t;
+
+static int ic_enc(const char* name, int* ignore, int* translit) {
+    char n[32];
+    size_t k = 0;
+    for (const char* p = name; *p && k + 1 < sizeof(n); p++) {
+        if (p[0] == '/' && p[1] == '/') {
+            if (!strncasecmp(p + 2, "IGNORE", 6)) *ignore = 1;
+            if (!strncasecmp(p + 2, "TRANSLIT", 8)) *translit = 1;
+            break;
+        }
+        if (*p != '-' && *p != '_') n[k++] = (char)toupper((unsigned char)*p);
+    }
+    n[k] = 0;
+    if (!k || !strcmp(n, "UTF8")) return E_UTF8;                   /* ("": the locale's - UTF-8) */
+    if (!strcmp(n, "ASCII") || !strcmp(n, "USASCII") || !strcmp(n, "ANSIX3.41968") || !strcmp(n, "646")) return E_ASCII;
+    if (!strcmp(n, "ISO88591") || !strcmp(n, "LATIN1") || !strcmp(n, "L1") || !strcmp(n, "ISO885911987")) return E_LATIN1;
+    if (!strcmp(n, "UTF16") || !strcmp(n, "UCS2")) return E_UTF16;
+    if (!strcmp(n, "UTF16LE") || !strcmp(n, "UCS2LE")) return E_UTF16LE;
+    if (!strcmp(n, "UTF16BE") || !strcmp(n, "UCS2BE")) return E_UTF16BE;
+    if (!strcmp(n, "UTF32") || !strcmp(n, "UCS4")) return E_UTF32;
+    if (!strcmp(n, "UTF32LE") || !strcmp(n, "UCS4LE") || !strcmp(n, "WCHART")) return E_UTF32LE;
+    if (!strcmp(n, "UTF32BE") || !strcmp(n, "UCS4BE")) return E_UTF32BE;
+    return -1;
+}
+
+iconv_t iconv_open(const char* tocode, const char* fromcode) {
+    int ig = 0, tr = 0, dummy = 0;
+    int to = ic_enc(tocode, &ig, &tr), from = ic_enc(fromcode, &dummy, &dummy);
+    if (to < 0 || from < 0) { errno = EINVAL; return (iconv_t)-1; }
+    ic_t* c = (ic_t*)calloc(1, sizeof(ic_t));
+    if (!c) { errno = ENOMEM; return (iconv_t)-1; }
+    c->from = from; c->to = to; c->ignore = ig; c->translit = tr;
+    c->in_le = from == E_UTF16LE || from == E_UTF32LE;
+    return (iconv_t)c;
+}
+
+int iconv_close(iconv_t cd) {
+    if (cd == (iconv_t)-1 || !cd) { errno = EBADF; return -1; }
+    free(cd);
+    return 0;
+}
+
+static unsigned rd16(const unsigned char* p, int le) { return le ? p[0] | p[1] << 8 : p[0] << 8 | p[1]; }
+static unsigned long rd32(const unsigned char* p, int le) {
+    return le ? (unsigned long)p[0] | (unsigned long)p[1] << 8 | (unsigned long)p[2] << 16 | (unsigned long)p[3] << 24
+              : (unsigned long)p[0] << 24 | (unsigned long)p[1] << 16 | (unsigned long)p[2] << 8 | p[3];
+}
+
+/* one character from in: its length (0: incomplete; -1: invalid) */
+static int ic_get(ic_t* c, const unsigned char* s, size_t n, unsigned long* cp) {
+    switch (c->from) {
+    case E_ASCII: if (s[0] > 0x7F) return -1; *cp = s[0]; return 1;
+    case E_LATIN1: *cp = s[0]; return 1;
+    case E_UTF8: {
+        mbstate_t st;
+        wchar_t w;
+        memset(&st, 0, sizeof(st));
+        size_t r = mbrtowc(&w, (const char*)s, n, &st);
+        if (r == (size_t)-2) return 0;
+        if (r == (size_t)-1) return -1;
+        *cp = (unsigned long)w;
+        return r ? (int)r : 1;
+    }
+    case E_UTF16: case E_UTF16LE: case E_UTF16BE: {
+        if (n < 2) return 0;
+        int le = c->in_le;
+        if (c->from == E_UTF16 && !c->bom_done) {
+            c->bom_done = 1;
+            if (s[0] == 0xFF && s[1] == 0xFE) { c->in_le = 1; return -2; }
+            if (s[0] == 0xFE && s[1] == 0xFF) { c->in_le = 0; return -2; }
+        }
+        unsigned u = rd16(s, le);
+        if (u >= 0xDC00 && u <= 0xDFFF) return -1;
+        if (u >= 0xD800 && u <= 0xDBFF) {
+            if (n < 4) return 0;
+            unsigned v = rd16(s + 2, le);
+            if (v < 0xDC00 || v > 0xDFFF) return -1;
+            *cp = 0x10000 + ((unsigned long)(u - 0xD800) << 10) + (v - 0xDC00);
+            return 4;
+        }
+        *cp = u;
+        return 2;
+    }
+    default: {
+        if (n < 4) return 0;
+        if (c->from == E_UTF32 && !c->bom_done) {
+            c->bom_done = 1;
+            if (s[0] == 0xFF && s[1] == 0xFE && !s[2] && !s[3]) { c->in_le = 1; return -2; }
+            if (!s[0] && !s[1] && s[2] == 0xFE && s[3] == 0xFF) { c->in_le = 0; return -2; }
+        }
+        unsigned long u = rd32(s, c->in_le);
+        if (u > 0x10FFFF || (u >= 0xD800 && u <= 0xDFFF)) return -1;
+        *cp = u;
+        return 4;
+    }
+    }
+}
+
+/* one character to out: its length (0: no room; -1: not in that encoding) */
+static int ic_put(ic_t* c, unsigned long cp, unsigned char* o, size_t n) {
+    switch (c->to) {
+    case E_ASCII: if (cp > 0x7F) return -1; if (!n) return 0; o[0] = (unsigned char)cp; return 1;
+    case E_LATIN1: if (cp > 0xFF) return -1; if (!n) return 0; o[0] = (unsigned char)cp; return 1;
+    case E_UTF8: {
+        char b[4];
+        mbstate_t st;
+        memset(&st, 0, sizeof(st));
+        size_t r = wcrtomb(b, (wchar_t)cp, &st);
+        if (r == (size_t)-1) return -1;
+        if (n < r) return 0;
+        memcpy(o, b, r);
+        return (int)r;
+    }
+    case E_UTF16: case E_UTF16LE: case E_UTF16BE: {
+        int le = c->to == E_UTF16LE, len = cp >= 0x10000 ? 4 : 2, bom = c->to == E_UTF16 && !c->bom_done;
+        if (n < (size_t)(len + (bom ? 2 : 0))) return 0;
+        if (bom) { o[0] = 0xFE; o[1] = 0xFF; o += 2; c->bom_done = 1; }
+        unsigned u[2] = { (unsigned)cp, 0 };
+        if (cp >= 0x10000) { u[0] = 0xD800 + ((cp - 0x10000) >> 10); u[1] = 0xDC00 + ((cp - 0x10000) & 0x3FF); }
+        for (int i = 0; i < len / 2; i++) {
+            o[2 * i] = le ? (unsigned char)u[i] : (unsigned char)(u[i] >> 8);
+            o[2 * i + 1] = le ? (unsigned char)(u[i] >> 8) : (unsigned char)u[i];
+        }
+        return len + (bom ? 2 : 0);
+    }
+    default: {
+        int le = c->to == E_UTF32LE, bom = c->to == E_UTF32 && !c->bom_done;
+        if (n < (size_t)(4 + (bom ? 4 : 0))) return 0;
+        if (bom) { o[0] = 0; o[1] = 0; o[2] = 0xFE; o[3] = 0xFF; o += 4; c->bom_done = 1; }
+        for (int i = 0; i < 4; i++) o[i] = (unsigned char)(le ? cp >> (8 * i) : cp >> (8 * (3 - i)));
+        return 4 + (bom ? 4 : 0);
+    }
+    }
+}
+
+size_t iconv(iconv_t cd, char** in, size_t* inleft, char** out, size_t* outleft) {
+    ic_t* c = (ic_t*)cd;
+    if (cd == (iconv_t)-1 || !c) { errno = EBADF; return (size_t)-1; }
+    if (!in || !*in) {                                     /* back to the initial state */
+        c->bom_done = 0;
+        c->in_le = c->from == E_UTF16LE || c->from == E_UTF32LE;
+        return 0;
+    }
+    size_t irreversible = 0;
+    while (*inleft) {
+        unsigned long cp;
+        int k = ic_get(c, (const unsigned char*)*in, *inleft, &cp);
+        if (k == -2) { int b = c->from == E_UTF16 ? 2 : 4; *in += b; *inleft -= b; continue; }   /* (a BOM) */
+        if (k == 0) { errno = EINVAL; return (size_t)-1; }
+        if (k < 0) {
+            if (c->ignore) { (*in)++; (*inleft)--; irreversible++; continue; }
+            errno = EILSEQ;
+            return (size_t)-1;
+        }
+        int w = ic_put(c, cp, (unsigned char*)*out, *outleft);
+        if (w < 0) {
+            if (c->ignore) { *in += k; *inleft -= k; irreversible++; continue; }
+            if (!c->translit) { errno = EILSEQ; return (size_t)-1; }
+            w = ic_put(c, '?', (unsigned char*)*out, *outleft);
+            if (w > 0) irreversible++;
+        }
+        if (w == 0) { errno = E2BIG; return (size_t)-1; }
+        *in += k; *inleft -= k;
+        *out += w; *outleft -= w;
+    }
+    return irreversible;
+}

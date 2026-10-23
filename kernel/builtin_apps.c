@@ -16,25 +16,31 @@ extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_
 #ifdef __x86_64__
 /* the ports (the Makefile's PORTS64: build/ports64.h) */
 #define PORT(n) extern const uint8_t port_##n[], port_##n##_end[];
+#define OPTPORT PORT
 #include "../build/ports64.h"
 #undef PORT
+#undef OPTPORT
 #endif
 
 /* (stb_image's zlib inflater, third_party/stb) */
 char* stbi_zlib_decode_malloc(const char* buffer, int len, int* outlen);
 
-static const struct { const char* name; const uint8_t* start; const uint8_t* end; } APPS[] = {
-    { "mediaplayer", app_mediaplayer, app_mediaplayer_end },
-    { "music", app_music, app_music_end },
-    { "amethyst", app_amethyst, app_amethyst_end },
-    { "photos", app_photos, app_photos_end },
-    { "code", app_code, app_code_end },
-    { "store", app_store, app_store_end },
+/* optional: in the App Store (builtin:), installed only when asked for -
+ * then kept up to date as the others */
+static const struct { const char* name; const uint8_t* start; const uint8_t* end; int optional; } APPS[] = {
+    { "mediaplayer", app_mediaplayer, app_mediaplayer_end, 0 },
+    { "music", app_music, app_music_end, 0 },
+    { "amethyst", app_amethyst, app_amethyst_end, 0 },
+    { "photos", app_photos, app_photos_end, 0 },
+    { "code", app_code, app_code_end, 0 },
+    { "store", app_store, app_store_end, 0 },
 #ifdef __x86_64__
-    { "terminal", app_terminal, app_terminal_end }, /* (apps/terminal: bash in windows and tabs) */
-#define PORT(n) { #n, port_##n, port_##n##_end },
+    { "terminal", app_terminal, app_terminal_end, 0 }, /* (apps/terminal: bash in windows and tabs) */
+#define PORT(n) { #n, port_##n, port_##n##_end, 0 },
+#define OPTPORT(n) { #n, port_##n, port_##n##_end, 1 },  /* (the Makefile's OPTPORTS64: the editors) */
 #include "../build/ports64.h"
 #undef PORT
+#undef OPTPORT
 #endif
 };
 
@@ -118,10 +124,12 @@ void builtin_apps_install(void) {
         /* the package this system already has (or left out on purpose): not unpacked again */
         uint32_t zcrc = crc32c(0, APPS[i].start, (uint32_t)zlen);
         if (marked_z(APPS[i].name, zcrc)) continue;
+        pkg_info_t have;
+        if (APPS[i].optional && pkg_get(APPS[i].name, &have) != 0) continue;   /* (not asked for) */
         unpacked++;
         uint8_t* bpk = (uint8_t*)stbi_zlib_decode_malloc((const char*)APPS[i].start, zlen, &len);
         if (!bpk || len <= 0) { klog("apps: %s: the built-in package is damaged\n", APPS[i].name); continue; }
-        pkg_info_t mine, have;
+        pkg_info_t mine;
         char err[96];
         if (pkg_inspect_mem(bpk, (uint32_t)len, &mine, err, sizeof(err)) == 0) {
             int installed = pkg_get(mine.name, &have) == 0;

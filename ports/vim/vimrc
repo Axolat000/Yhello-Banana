@@ -1,0 +1,10 @@
+" /apps/vim/vimrc - Banana OS's system vimrc (read before ~/.vimrc):
+" Vim's own defaults, syntax colouring and filetype plugins.
+unlet! skip_defaults_vim
+source $VIMRUNTIME/defaults.vim
+set nocompatible
+syntax on
+filetype plugin indent on
+set number
+set mouse=a
+set encoding=utf-8

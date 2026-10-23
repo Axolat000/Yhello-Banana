@@ -134,7 +134,23 @@ static const page_t PAGES[] = {
     { "edit", "text", "edit <file>", "the text editor",
       "A nano-like editor in the terminal: the arrows move, Ctrl+O or Ctrl+S saves, Ctrl+X quits, "
       "Ctrl+K cuts a line and Ctrl+U pastes it. On the desktop, Notepad does the same with the mouse.",
-      NULL, "edit ~/notes.txt", "notepad, cat" },
+      NULL, "edit ~/notes.txt", "notepad, cat, nano" },
+    { "nano", "text", "nano [file]", "GNU nano (optional: apt install nano)",
+      "GNU nano 8.7, the friendly terminal editor, with syntax colouring for many languages: Ctrl+O saves, Ctrl+X "
+      "quits, Ctrl+W searches, Ctrl+K / Ctrl+U cut and paste. It comes with the 64-bit system but is installed only "
+      "when asked for: apt install nano (or the App Store); apt remove nano takes it away. Settings: ~/.nanorc.",
+      NULL, "apt install nano\nnano ~/notes.txt", "vim, vi, nvim, edit" },
+    { "vim", "text", "vim [file]", "Vim (optional: apt install vim)",
+      "Vim 9.2 with its whole runtime: syntax colouring, file type plugins and indenting, colour schemes, :help. "
+      "Also vimdiff and view. Installed when asked for: apt install vim. Settings: ~/.vimrc.",
+      NULL, "apt install vim\nvim ~/main.c", "vi, nvim, nano" },
+    { "vi", "text", "vi [file]", "vi (optional: apt install vi)",
+      "The classic Unix editor: Vim's tiny build, no runtime files (as Debian's vim-tiny) - also ex. Installed when "
+      "asked for: apt install vi.", NULL, "apt install vi\nvi /etc/motd", "vim, nvim, nano" },
+    { "nvim", "text", "nvim [file]", "Neovim (optional: apt install neovim)",
+      "Neovim 0.12: Lua configuration and plugins (~/.config/nvim/init.lua), tree-sitter (its parsers for C, Lua, "
+      "Vim script, help, queries and Markdown built in), :help, a terminal in a window (:terminal). Installed when "
+      "asked for: apt install neovim.", NULL, "apt install neovim\nnvim ~/init.lua", "vim, vi, nano" },
     { "grep", "text", "grep [-n] <text> <file>", "print the lines holding a text",
       "Prints the lines of file that contain text (a plain substring). -n puts the line number in front.",
       "-n|line numbers", "grep -n banana /etc/passwd", "find, wc" },

@@ -1,0 +1,8 @@
+## /apps/nano/nanorc - read by nano (its sysconfdir: ports/nano/build.sh),
+## then ~/.nanorc. Syntax colouring for the languages nano knows.
+include "/usr/share/nano/*.nanorc"
+set linenumbers
+set mouse
+set autoindent
+set tabsize 4
+set historylog

@@ -4,6 +4,7 @@
 #
 #     . "$(dirname "$0")/../port.sh"
 #     port_fetch NAME VERSION SHA256 URL      the source, once, into ports/<name>/src
+#     port_fetch_git NAME VERSION REPO TAG COMMIT   (or from a git tag)
 #     port_configure [configure options]      ports/<name>/build/x86_64, configured
 #     make ...                                (there)
 #     port_package OUT.bpk name=... title=... (the manifest's lines) -- FILES
@@ -34,6 +35,25 @@ port_fetch() {
         [ -f "$file" ] || curl -fsSL -o "$file" "$url"
         echo "$sha  $file" | sha256sum -c - >/dev/null
         tar -C "$PORT_DIR/src" -xf "$file"
+    fi
+    port_fixups
+}
+
+# port_fetch_git name version repo tag commit: the same from a git tag (a
+# shallow clone; the tag must name that commit) - for sources only on GitHub
+port_fetch_git() {
+    PORT_NAME=$1
+    PORT_VER=$2
+    local repo=$3 tag=$4 commit=$5 got
+    SRC=$PORT_DIR/src/$PORT_NAME-$PORT_VER
+    if [ ! -d "$SRC" ]; then
+        mkdir -p "$PORT_DIR/src"
+        rm -rf "$SRC.git"
+        git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$repo" "$SRC.git"
+        got=$(git -C "$SRC.git" rev-parse HEAD)
+        [ "$got" = "$commit" ] || { echo "port.sh: $repo $tag is $got, not $commit"; rm -rf "$SRC.git"; exit 1; }
+        rm -rf "$SRC.git/.git"
+        mv "$SRC.git" "$SRC"
     fi
     port_fixups
 }
@@ -87,7 +107,7 @@ port_relink() {
 # port_make targets...: make, its errors shown if it fails
 port_make() {
     port_relink
-    make -j"$(nproc)" "$@" >make.log 2>&1 || { grep -E "error|Error" make.log | head -40; exit 1; }
+    make -j"$(nproc)" "$@" >make.log 2>&1 || { grep -E "error:|Error [0-9]|undefined reference|cannot find" make.log | head -40; exit 1; }
 }
 
 # port_package out.bpk "key=value"... -- program [name=file...]: a package
