@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "task.h"
+#include "latency.h"
 #include "idt.h"
 #include "kstring.h"
 #include "timer.h"
@@ -108,9 +109,11 @@ extern void task_switch(uintptr_t** old_sp_store, uintptr_t* new_sp);
 static inline uintptr_t irq_save(void) {
     uintptr_t f;
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    if (latency_enabled) latency_irq_begin(f);
     return f;
 }
 static inline void irq_restore(uintptr_t f) {
+    if (latency_enabled) latency_irq_end(f);
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
@@ -802,6 +805,7 @@ static void sysmon_entry(void) {
     for (;;) {
         recompute_cpu_window();
         sample_load();
+        latency_poll();
         if (timer_ms() > 15000) report_long_runs();     /* (after the boot) */
         for (int c = 1; c < cpu_count(); c++)
             if (g_ap[c].used == 1) {

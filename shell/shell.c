@@ -1261,7 +1261,7 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "notify", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "swap", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "gpubench", "brightness", "resolution", "drivers", "driver",
+    "free", "swap", "latency", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "gpubench", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
     "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
     /* kernel/vmtools.c */

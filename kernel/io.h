@@ -3,6 +3,7 @@
 #define IO_H
 
 #include "types.h"
+#include "latency.h"
 
 /* x86 port I/O + interrupt-flag helpers shared by drivers. */
 
@@ -17,9 +18,11 @@ static inline void io_wait(void) { outb(0x80, 0); }
 static inline uint32_t irq_save(void) {
     uintptr_t f;                        /* pushf pushes a full-width word */
     __asm__ volatile("pushf; pop %0; cli" : "=r"(f) :: "memory");
+    if (latency_enabled) latency_irq_begin(f);
     return (uint32_t)f;
 }
 static inline void irq_restore(uint32_t f) {
+    if (latency_enabled) latency_irq_end(f);
     if (f & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 

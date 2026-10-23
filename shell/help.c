@@ -298,6 +298,11 @@ static const page_t PAGES[] = {
       "default); now compresses every page not in use right now; disk writes the compressed pages out.",
       "on|swap when RAM runs low (the default)\noff|nothing more compressed or written\nnow|compress what can be, now\n"
       "disk|write the compressed pages to the swap area now", "swap\nswap now", "free" },
+    { "latency", "system", "latency [on|off|status]", "measure boot-core input and IRQ latency",
+      "Opt-in diagnostics written to the serial log. Measures IRQ-disabled sections, handler time, "
+      "timer intervals, keyboard queue delay and drops. Uses the shared hardware clock; timing samples "
+      "are unavailable with the IRQ-only fallback. p95 values are histogram upper bounds.",
+      "on|start a fresh session\noff|stop and report\nstatus|report current sample", "latency on\nlatency status\nlatency off", "sched" },
     { "sched", "system", "sched", "the scheduler's view of the tasks", NULL, NULL, NULL, "nice, renice" },
     { "nice", "system", "nice [-n N] <command>", "run a command at another priority",
       "Runs command with its nice value raised by N (10 by default; negative gets more processor time). "
