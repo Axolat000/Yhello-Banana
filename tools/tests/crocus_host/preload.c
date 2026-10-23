@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Mesa's crocus, built for Linux (the reference build of ports/mesa with
- * CROCUS=1), driven on the hosted kernel i915 interface (kernel/gpu_i915.c,
- * kernel/gpu_gem.c) and the GPU model of tools/tests/i915/model.h - as an
+/* Mesa's crocus or iris, built for Linux (the reference build of ports/mesa
+ * with CROCUS=1 or IRIS=1), driven on the hosted kernel i915 interface (kernel/gpu_i915.c,
+ * gpu_i915_lrc.c, gpu_gem.c) and the GPU model of tools/tests/i915/model.h - as an
  * LD_PRELOAD library: /dev/dri/card0 and its ioctls, libdrm's device query
  * and the buffers' maps are answered here. The model runs every command
- * stream crocus builds (it skips what it does not execute by its length,
- * keeps PIPE_CONTROL and MI writes - crocus's fences and queries) - so the
+ * stream the driver builds (it skips what it does not execute by its length,
+ * keeps PIPE_CONTROL and MI writes - the driver's fences and queries) - so the
  * whole path is checked, from glClear to the read-back, but not the pixels.
- *   see tools/tests/crocus_host/run.sh */
+ *   see tools/tests/crocus_host/run.sh and tools/tests/iris_host/run.sh */
 #define MODEL_NO_REUSE 1
 #define MODEL_ARENA_MB 768                  /* (MAP_32BIT: the first 2 GiB) */
 #include "i915/model.h"
@@ -59,13 +59,16 @@ static void boot(void) {
     const char* g = getenv("MODEL_GEN");
     int which = g ? atoi(g) : 7;
     gen = which == 75 ? 7 : which; hsw = which == 75;
-    uint16_t id = gen == 5 ? 0x0046 : gen == 6 ? 0x0116 : hsw ? 0x0416 : 0x0166;
-    bar = (uint8_t*)arena_take(4u << 20, 4096);
-    memset(bar, 0, 4u << 20);
+    /* 9: Skylake, 95: Coffee Lake (gen 9.5) */
+    uint16_t id = gen == 5 ? 0x0046 : gen == 6 ? 0x0116 : hsw ? 0x0416 : gen == 7 ? 0x0166 : gen == 8 ? 0x1616 :
+                  gen == 9 ? 0x1912 : gen == 95 ? 0x3E92 : 0x8A52;
+    if (gen == 95) gen = 9;
+    bar = (uint8_t*)arena_take(bar_size(), 4096);
+    memset(bar, 0, bar_size());
     i915_hw_t hw;
     memset(&hw, 0, sizeof hw);
-    hw.mmio = bar; hw.mmio_size = 4u << 20; hw.devid = id; hw.revision = 9; hw.gen = gen; hw.hsw = hsw;
-    hw.gtt_entries = gen == 5 ? 256u * 1024u : 512u * 1024u;
+    hw.mmio = bar; hw.mmio_size = bar_size(); hw.devid = id; hw.revision = 9; hw.gen = gen; hw.hsw = hsw;
+    hw.gtt_entries = gen == 5 ? 256u * 1024u : gen >= 8 ? 1024u * 1024u : 512u * 1024u;
     hw.reserved_lo = 8192; hw.reserved_hi = 16;
     quiet = getenv("MODEL_QUIET") != NULL;
     model_regs();

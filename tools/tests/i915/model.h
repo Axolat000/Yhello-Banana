@@ -214,6 +214,8 @@ static int exec_cmd(uint32_t* c, uint32_t* len, int ppgtt, int depth) {
     }
     if (client == 3) {                                   /* render: PIPE_CONTROL and the rest */
         *len = (h & 0xFF) + 2;
+        /* single dwords: 3DSTATE_VF_STATISTICS (3,1,0,0Bh), PIPELINE_SELECT (3,1,1,04h) */
+        if ((h >> 16) == 0x680B || (h >> 16) == 0x6904) *len = 1;
         if (((h >> 24) & 0x1F) == 0x1A) {                /* 3,3,2: PIPE_CONTROL */
             if (gen >= 8) {
                 if (*len != 6) { printf("    model: a gen 8 PIPE_CONTROL of %u dwords\n", *len); bad_writes++; }
