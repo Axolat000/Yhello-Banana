@@ -45,6 +45,7 @@ jobs:
           python3 tools/test_serialtest.py
           bash tools/ci-boot.sh "${{ matrix.firmware }}"
           bash tools/ci-install-test.sh "${{ matrix.firmware }}"
+          bash tools/ci-native-desktop-smoke.sh "${{ matrix.firmware }}"
       - name: Preserve validation evidence
         if: always()
         uses: actions/upload-artifact@v4
