@@ -4199,9 +4199,6 @@ static int kb_global(int k) {
         else if (g_desk_sel < 0 && g_ndesk) g_desk_sel = 0;
         break;
     }
-    case 's':
-        if (keyboard_mods() & 1) g_screenshot_requested = 1; /* Win+Shift+S */
-        break;
     case 'n': np_toggle(); break;
     case 'v': g_np_open = 0; ep_close(); cb_toggle(); break;
     case ' ': {                                      /* Win+Space: English (US) and back */
@@ -4214,6 +4211,9 @@ static int kb_global(int k) {
     case ';':
         g_cb_open = g_tv_open = g_sw_open = g_bar_kb = 0;
         ep_toggle();
+        break;
+    case 's':
+        if (keyboard_mods() & 1) g_screenshot_requested = 1; /* Win+Shift+S */
         break;
     case 'm': for (int j = 0; j < g_ntb; j++) win_minimize(g_tb[j]); g_front_app = -1; break;
     case 'e': do_action(ACT_FILES); break;
