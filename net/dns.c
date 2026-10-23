@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "net.h"
 #include "ipv6.h"
+#include "tcp.h"
+#include "kheap.h"
 #include "kstring.h"
 #include "timer.h"
 #include "random.h"
 
 /* Stub DNS resolver (RFC 1035): recursive A/AAAA-record queries over UDP to
  * the DHCP-provided server, following CNAMEs inside the answer, with a
- * small TTL-respecting cache. */
+ * small TTL-respecting cache. Falls back to TCP when the UDP reply is truncated (TC=1). */
 
 #define DNS_CACHE 16
 
@@ -26,6 +28,7 @@ static dns_cache_t g_cache[DNS_CACHE];
 typedef struct {
     uint16_t id;
     int      done;
+    int      tc;
     int      rcode;
     ip4_t    ip;
     uint32_t ttl;
@@ -78,10 +81,15 @@ static uint32_t skip_name(const uint8_t* p, uint32_t len, uint32_t off) {
 }
 
 static void parse_reply(dns_query_t* q, const uint8_t* p, uint32_t len) {
-    if (len < 12 || rd16(p) != q->id || (p[2] & 0xFA) != 0x80 || rd16(p + 4) != 1) return;
+    if (len < 12 || rd16(p) != q->id || (p[2] & 0xF8) != 0x80 || rd16(p + 4) != 1) return;
     if (12u + q->qlen + 4u > len || memcmp(p + 12, q->question, q->qlen) ||
         rd16(p + 12 + q->qlen) != q->type || rd16(p + 14 + q->qlen) != 1) return;
     q->rcode = p[3] & 0x0F;
+    if (p[2] & 0x02) {
+        q->tc = 1;
+        q->done = 1;
+        return;
+    }
     uint16_t qd = rd16(p + 4), an = rd16(p + 6);
     uint32_t off = 12;
     for (uint16_t i = 0; i < qd; i++) {
@@ -90,8 +98,8 @@ static void parse_reply(dns_query_t* q, const uint8_t* p, uint32_t len) {
         off += 4;
     }
     /* A recursive server normally includes the final A/AAAA record after
-     * a CNAME in the same answer section. Separate CNAME queries and DNS
-     * TCP fallback for truncated replies are not implemented here. */
+     * a CNAME in the same answer section. Separate CNAME queries are
+     * not implemented here. */
     for (uint16_t i = 0; i < an; i++) {
         off = skip_name(p, len, off);
         if (!off || off + 10 > len) break;
@@ -118,6 +126,66 @@ static void on_reply(ip4_t src, uint16_t sport, const uint8_t* p, uint32_t len, 
 static void on_reply6(const ip6_t* src, uint16_t sport, const uint8_t* p, uint32_t len, void* ctx) {
     dns_query_t* q = ctx;
     if (sport == 53 && !memcmp(src, &q->server6, 16)) parse_reply(q, p, len);
+}
+
+/* One budget covers UDP retries, connect, writes and every fragmented read.
+ * Unsigned elapsed time keeps this valid across timer_ms() wrapping. */
+static uint32_t dns_remaining(uint32_t start, uint32_t budget) {
+    uint32_t elapsed = timer_ms() - start;
+    return elapsed < budget ? budget - elapsed : 0;
+}
+
+static int tcp_read_all(tcp_conn_t* c, uint8_t* buf, uint32_t len,
+                        uint32_t start, uint32_t budget) {
+    uint32_t got = 0;
+    while (got < len) {
+        uint32_t remaining = dns_remaining(start, budget);
+        if (!remaining) return NET_ERR_TIMEOUT;
+        int r = tcp_recv(c, buf + got, len - got, remaining);
+        if (r <= 0) return r == 0 ? NET_ERR_CLOSED : r;
+        got += (uint32_t)r;
+    }
+    return NET_OK;
+}
+
+static int resolve_tcp(dns_query_t* q, const uint8_t* pkt, uint32_t qlen,
+                       int over6, uint32_t start, uint32_t budget) {
+    uint32_t remaining = dns_remaining(start, budget);
+    if (!remaining) return NET_ERR_TIMEOUT;
+    int err = 0;
+    tcp_conn_t* c = over6 ? tcp_connect6(&q->server6, 53, remaining, &err)
+                          : tcp_connect(q->server, 53, remaining, &err);
+    if (!c) return err ? err : NET_ERR_DNS;
+    uint8_t request[302];       /* the UDP query is at most 300 bytes */
+    wr16(request, (uint16_t)qlen);
+    memcpy(request + 2, pkt, qlen);
+    uint32_t sent = 0;
+    int rc = NET_ERR_TIMEOUT;
+    uint8_t* reply = NULL;
+    while (sent < qlen + 2) {
+        remaining = dns_remaining(start, budget);
+        if (!remaining) goto out;
+        int n = tcp_send(c, request + sent, qlen + 2 - sent, remaining);
+        if (n <= 0) { rc = n < 0 ? n : NET_ERR_CLOSED; goto out; }
+        sent += (uint32_t)n;
+    }
+    uint8_t size[2];
+    rc = tcp_read_all(c, size, 2, start, budget);
+    if (rc != NET_OK) goto out;
+    uint16_t len = rd16(size);
+    /* A bounded heap buffer, never a multi-KiB allocation on the kernel stack. */
+    if (len < 12 || len > 4096) { rc = NET_ERR_DNS; goto out; }
+    reply = kmalloc(len);
+    if (!reply) { rc = NET_ERR_NOMEM; goto out; }
+    rc = tcp_read_all(c, reply, len, start, budget);
+    if (rc != NET_OK) goto out;
+    q->done = q->tc = q->found = 0;
+    parse_reply(q, reply, len);
+    if (!q->done || q->tc) rc = NET_ERR_DNS;
+out:
+    if (reply) kfree(reply);
+    tcp_close(c);
+    return rc;
 }
 
 static int encode_name(const char* name, uint8_t* out, uint32_t cap) {
@@ -181,6 +249,7 @@ static int resolve(const char* name, void* out, uint32_t timeout_ms, uint16_t ty
     if (!port || (over6 ? udp6_bind(port, on_reply6, &q) : udp_bind(port, on_reply, &q)) != 0)
         return NET_ERR_NOMEM;
 
+    int udp_bound = 1;
     int rc = NET_ERR_TIMEOUT;
     uint32_t start = timer_ms();
     for (int attempt = 0; attempt < 3 && !q.done; attempt++) {
@@ -195,6 +264,13 @@ static int resolve(const char* name, void* out, uint32_t timeout_ms, uint16_t ty
         }
         if (timer_ms() - start >= timeout_ms) break;
     }
+    if (q.done && q.tc) {
+        /* No UDP callback may change the query during blocking TCP operations. */
+        if (over6) udp6_unbind(port); else udp_unbind(port);
+        udp_bound = 0;
+        rc = resolve_tcp(&q, pkt, qlen, over6, start, timeout_ms);
+        if (rc != NET_OK) goto out;
+    }
     if (q.done) {
         if (q.rcode == 0 && q.found) {
             if (type == 28) *(ip6_t*)out = q.ip6;
@@ -206,7 +282,9 @@ static int resolve(const char* name, void* out, uint32_t timeout_ms, uint16_t ty
         }
     }
 out:
-    if (over6) udp6_unbind(port); else udp_unbind(port);
+    if (udp_bound) {
+        if (over6) udp6_unbind(port); else udp_unbind(port);
+    }
     return rc;
 }
 
