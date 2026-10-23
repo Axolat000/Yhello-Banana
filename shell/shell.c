@@ -39,6 +39,7 @@
 #include "../kernel/tty.h"
 #include "../kernel/examples.h"
 #include "../kernel/settings.h"
+#include "../kernel/hostname.h"
 #include "../kernel/login.h"
 #include "../kernel/passwd.h"
 #include "../kernel/idt.h"
@@ -57,7 +58,7 @@
 extern char _kernel_end[];   /* boot/linker.ld */
 
 #define SHELL_USER "banana"
-#define SHELL_HOST "banana-os-0.6"
+
 
 /* ── string helpers ─────────────────────────────────────────────── */
 static int k_strlen(const char* s) { int n=0; while(s[n]) n++; return n; }
@@ -1553,13 +1554,30 @@ static void cmd_chsh(const char* args, int persona) {
     terminal_writeln("(takes effect for new terminal windows / the next boot - this session is unaffected)");
 }
 
-static void cmd_uname(int persona) {
+static void cmd_uname(const char* args, int persona) {
+    args = k_skip_spaces(args);
+    if (!strcmp(args, "-n") || !strcmp(args, "--nodename")) { terminal_writeln(hostname_get()); return; }
+    if (!strcmp(args, "-a") || !strcmp(args, "--all")) {
+        terminal_write(hostname_get()); terminal_write(" ");
+    }
     if (persona == SHELL_KIND_BASH) terminal_writeln("Banana OS 0.6 " BANANA_ARCH " Banana Kernel 0.6 bash");
     else                             terminal_writeln("Banana OS 0.6 " BANANA_ARCH " Banana Kernel 0.6 sh");
 }
 
 static void cmd_whoami(void) { terminal_writeln("banana"); }
-static void cmd_hostname(void) { terminal_writeln("banana-os-0.6"); }
+static int cmd_hostname(const char* args) {
+    args = k_skip_spaces(args);
+    if (!*args || !strcmp(args, "-s")) { terminal_writeln(hostname_get()); return 0; }
+    if (!strcmp(args, "--help")) { terminal_writeln("usage: hostname [NAME] - show or change the PC name"); return 0; }
+    char name[HOSTNAME_MAX + 2];
+    const char* rest = args;
+    next_token(&rest, name, sizeof(name));
+    if (*k_skip_spaces(rest)) { terminal_writeln("usage: hostname [NAME]"); return 1; }
+    int rc = hostname_set(name);
+    if (rc == -1) terminal_writeln("hostname: use 1-63 letters, digits or hyphens; start and end with a letter or digit");
+    else if (rc) terminal_writeln("hostname: could not save /etc/hostname");
+    return rc ? 1 : 0;
+}
 
 /* ── path-taking commands (parse an optional flag + a path token) ──── */
 static void cmd_ls(const char* args) {
@@ -2020,10 +2038,12 @@ static void print_prompt(int persona) {
     if (persona == SHELL_KIND_BASH) {
         /* real bash's default PS1: whole user@host in one bright-green
          * block, rather than sh's two-tone yellow/green split below. */
-        terminal_write_color("banana@banana-os-0.6", VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        terminal_write_color("banana@", VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        terminal_write_color(hostname_get(), VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
     } else {
         terminal_write_color("banana",         VGA_COLOR_YELLOW,      VGA_COLOR_BLACK);
-        terminal_write_color("@banana-os-0.6", VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        terminal_write_color("@", VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
+        terminal_write_color(hostname_get(), VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
     }
     terminal_write_color(":",     VGA_COLOR_WHITE,      VGA_COLOR_BLACK);
     terminal_write_color(cwd_buf, VGA_COLOR_LIGHT_BLUE,  VGA_COLOR_BLACK);
@@ -2087,7 +2107,9 @@ static void line_serial_echo(const char* buf, int len, int cur, int persona) {
     char cwd_buf[FS_PATH_LEN];
     fs_cwd_path(cwd_buf, sizeof(cwd_buf));
     (void)persona;
-    echo_out(tt, "\r" SHELL_USER "@" SHELL_HOST ":");
+    echo_out(tt, "\r" SHELL_USER "@");
+    echo_out(tt, hostname_get());
+    echo_out(tt, ":");
     echo_out(tt, cwd_buf);
     echo_out(tt, "$ ");
     {
@@ -2455,6 +2477,7 @@ static void dispatch_cmd(const char* raw_line, int persona) {
  * it already: no $, !! or aliases here) - 0, or 127 if no such command */
 static int g_no_path;                           /* (dispatch_plain: no $PATH search - it would find the caller) */
 static int g_not_found;
+static int g_command_status;
 int shell_exec_line(const char* line) {
     char buf[SH_LINE_MAX];
     char unquoted[SH_LINE_MAX];
@@ -2463,9 +2486,10 @@ int shell_exec_line(const char* line) {
     int was = g_no_path;
     g_no_path = 1;
     g_not_found = 0;
+    g_command_status = 0;
     dispatch_plain(k_skip_spaces(l), g_default_shell_kind);
     g_no_path = was;
-    return g_not_found ? 127 : 0;
+    return g_not_found ? 127 : g_command_status;
 }
 
 static void dispatch_plain(const char* line, int persona) {
@@ -2510,13 +2534,13 @@ static void dispatch_plain(const char* line, int persona) {
     if (k_strcmp(line, "apropos") == 0 || k_strncmp(line, "apropos ", 8) == 0) { help_apropos(line + 7); return; }
     if (k_strcmp(line, "clear")    == 0) { terminal_clear(); return; }
     if (k_strcmp(line, "neofetch") == 0) { cmd_neofetch(persona); return; }
-    if (k_strcmp(line, "uname")    == 0) { cmd_uname(persona);    return; }
-    if (k_strncmp(line, "uname ", 6) == 0) { cmd_uname(persona); return; }   /* (uname -a ...: the same) */
+    if (k_strcmp(line, "uname")    == 0) { cmd_uname(line + 5, persona);    return; }
+    if (k_strncmp(line, "uname ", 6) == 0) { cmd_uname(line + 5, persona); return; }   /* (uname -a ...: the same) */
     if (k_strcmp(line, "halt")     == 0) { cmd_halt();       return; }
     if (k_strcmp(line, "ls")       == 0) { cmd_ls("");       return; }
     if (k_strcmp(line, "pwd")      == 0) { fs_pwd();         return; }
     if (k_strcmp(line, "whoami")   == 0) { cmd_whoami();     return; }
-    if (k_strcmp(line, "hostname") == 0) { cmd_hostname();   return; }
+    if (!strcmp(line, "hostname") || !strncmp(line, "hostname ", 9)) { g_command_status = cmd_hostname(line + 8); return; }
     if (k_strcmp(line, "history")  == 0) { cmd_history();    return; }
     if (k_strcmp(line, "find")     == 0) { cmd_find("");     return; }
     if (k_strcmp(line, "uptime")   == 0) { cmd_uptime();     return; }
@@ -2899,6 +2923,7 @@ void shell_run(void) {
             "The installed disk's files could not be read (damaged). Starting with a fresh\n"
             "filesystem; the disk is not written to unless you run 'install' again.\n\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+    hostname_boot();            /* the saved PC name, before apps and services start */
     fsdisk_start_autosave();      /* changes reach the installed disk by themselves */
     zswap_start();                /* memory low: apps' idle pages compressed (kernel/zswap.c) */
     if (fsdisk_is_installed()) zswap_disk_init();   /* and a swap area on the disk for what does not fit */

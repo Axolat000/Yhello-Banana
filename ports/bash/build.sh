@@ -12,6 +12,22 @@ OUT=$(realpath -m "$1")
 port_fetch bash 5.2.37 9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff \
     https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz
 
+# GCC 14 rejects Bash's undeclared legacy bcopy calls in its glob matcher.
+# memmove has the same overlap-safe behavior and is declared by the SDK.
+python3 - "$SRC/lib/glob/sm_loop.c" "$SRC/lib/glob/smatch.c" "$SRC/lib/termcap/tparam.c" <<'PY'
+from pathlib import Path
+import sys
+for name in sys.argv[1:]:
+    p = Path(name)
+    s = p.read_text()
+    s = s.replace("bcopy (p + 1, ccname, (close - p - 1) * sizeof (CHAR))",
+                  "memmove (ccname, p + 1, (close - p - 1) * sizeof (CHAR))")
+    s = s.replace("bcopy (p, cc, p1 - p)", "memmove (cc, p, p1 - p)")
+    if p.name == "tparam.c" and "#include <unistd.h>" not in s:
+        s = "#include <unistd.h> /* write, for GCC 14 */\n" + s
+    p.write_text(s)
+PY
+
 # what configure cannot find out by running a program (cross-compiling),
 # as it is on Banana OS
 bash_cv_getcwd_malloc=yes          # getcwd(NULL, 0) allocates (no lib/sh/getcwd.c)

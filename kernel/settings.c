@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "../net/ipv6.h"
 #include "settings.h"
+#include "hostname.h"
 #include "gfx.h"
 #include "display.h"
 #include "gpu.h"
@@ -72,6 +73,19 @@ static int        g_page;
 static uint32_t   g_gen;
 static char       g_status[96];
 static int g_sleep_available;
+static char g_pc_name[HOSTNAME_MAX + 1];
+static int g_pc_focus, g_pc_dirty;
+static void pc_submit(void) {
+    int rc = hostname_set(g_pc_name);
+    if (rc == -1) kstrlcpy(g_status, "Use 1-63 letters, digits or hyphens; no hyphen at either end", sizeof(g_status));
+    else if (rc) kstrlcpy(g_status, "Could not save the PC name", sizeof(g_status));
+    else {
+        kstrlcpy(g_pc_name, hostname_get(), sizeof(g_pc_name));
+        kstrlcpy(g_status, fsdisk_is_installed() ? "PC name saved. New terminals use it." : "PC name changed for this live session.", sizeof(g_status));
+        g_pc_focus = g_pc_dirty = 0;
+    }
+    g_gen++;
+}
 static int        g_muted, g_vol_before_mute = 80;
 static int        g_dragging_vol, g_dragging_speed;
 static uint32_t   g_tick_s;
@@ -984,6 +998,16 @@ static void click_startup(int mx, int my) {
 void settings_key(char c) {
     if (!g_open) return;
     if (fc_active()) { fc_key(c); g_gen++; return; }
+    if (g_page == PG_ABOUT && g_pc_focus) {
+        int n = (int)strlen(g_pc_name);
+        if (c == '\n') pc_submit();
+        else if (c == 27) { kstrlcpy(g_pc_name, hostname_get(), sizeof(g_pc_name)); g_pc_focus = g_pc_dirty = 0; }
+        else if (c == '\t') { g_pc_focus = 0; g_nav.shown = 1; g_nav.focus = PG_COUNT + (g_sleep_available ? 2 : 1); }
+        else if (c == '\b') { if (n) { g_pc_name[n - 1] = 0; g_pc_dirty = 1; } }
+        else if ((unsigned char)c >= 32 && (unsigned char)c < 127 && n < HOSTNAME_MAX) { g_pc_name[n] = c; g_pc_name[n + 1] = 0; g_pc_dirty = 1; }
+        g_gen++;
+        return;
+    }
     if (ipf_key(c)) return;                          /* the manual address fields (Network) */
     if (g_page != PG_STARTUP || g_pw_focus < 0) {
         if (c == 27) settings_close();              /* Esc closes, as in the other windows */
@@ -1238,7 +1262,18 @@ static void draw_about(void) {
     if(g_sleep_available)button(x+cw()-90,y+28,90,_("Sleep"),0);
     const sysinfo_t* si = sysinfo_get();
     char line[112];
-    int ly = y + 32;
+    label(x, y + 32, _("PC name"), C_HEAD);
+    int fw = cw() - 100;
+    kbnav_add(&g_nav, x, y + 52, fw, 22);
+    bevel(x, y + 52, fw, 22, TC(0x141920), TC(0x10141C), g_pc_focus ? C_ACCENT : TC(0x404B5C));
+    const char* value = g_pc_focus || g_pc_dirty ? g_pc_name : hostname_get();
+    int n = (int)strlen(value), cols = (fw - 16) / 8;
+    int first = n > cols ? n - cols : 0;
+    gfx_draw_text(x + 6, y + 59, value + first, C_TEXT, TC(0x141920));
+    if (g_pc_focus && (timer_ms() / 500) % 2 == 0) gfx_fill_rect(x + 6 + (n - first) * 8, y + 57, 2, 12, C_TEXT);
+    button(x + fw + 10, y + 53, 90, _("Apply"), 1);
+    label(x, y + 82, _("Letters, digits or hyphens. New terminals use the name."), C_DIM);
+    int ly = y + 112;
 #ifdef __x86_64__
     label(x, ly, _("64-bit (x86_64)"), C_TEXT);
 #else
@@ -1579,6 +1614,7 @@ int settings_navkey(int code) {
     if (!g_open) return 0;
     g_gen++;
     if (fc_active()) return fc_nav(code);
+    if (g_page == PG_ABOUT && g_pc_focus) return 0;
     if (g_pw_focus >= 0) return 0;                 /* typing a password: Tab and Enter are its own */
     if (g_page == PG_NETWORK && g_net_manual == 1 && g_ipf_focus >= 0) return 0;   /* (the address fields: theirs too) */
     int cx, cy;
@@ -1610,12 +1646,26 @@ void settings_click(int mx, int my) {
     /* sidebar */
     if (lx >= 8 && lx < 8 + SIDE_W - 4) {
         int i = (ly - BODY_Y - 4) / ITEM_H;
-        if (ly >= BODY_Y + 4 && i >= 0 && i < PG_COUNT) { g_page = i; fc_close(); }
+        if (ly >= BODY_Y + 4 && i >= 0 && i < PG_COUNT) { g_page = i; g_pc_focus = 0; fc_close(); }
         return;
     }
     if (fc_active()) { fc_click(mx, my); return; }
 
     int x = cx0(), y = cy0();
+    if (g_page == PG_ABOUT) {
+        int fw = cw() - 100;
+        if (inside(mx, my, x, y + 52, fw, 22)) {
+            if (!g_pc_dirty) kstrlcpy(g_pc_name, hostname_get(), sizeof(g_pc_name));
+            g_pc_focus = 1;
+            return;
+        }
+        if (inside(mx, my, x + fw + 10, y + 53, 90, 20)) {
+            if (!g_pc_dirty) kstrlcpy(g_pc_name, hostname_get(), sizeof(g_pc_name));
+            pc_submit();
+            return;
+        }
+        g_pc_focus = 0;
+    }
     if(g_page==PG_ABOUT && g_sleep_available && inside(mx,my,x+cw()-90,y+28,90,20)) {
         acpi_s3_suspend(0,g_status,sizeof(g_status));g_gen++;return;
     }
@@ -1806,6 +1856,8 @@ void settings_open_page(int page) {
 void settings_open(void) {
     char reason[160];g_sleep_available=!acpi_s3_status(reason,sizeof(reason));
     g_open = 1;
+    g_pc_focus = g_pc_dirty = 0;
+    kstrlcpy(g_pc_name, hostname_get(), sizeof(g_pc_name));
     g_status[0] = 0;
     win_clamp(&g_win);
     g_gen++;
@@ -1813,6 +1865,7 @@ void settings_open(void) {
 
 void settings_close(void) {
     g_open = 0;
+    g_pc_focus = 0;
     fc_close();
     memset(g_pw, 0, sizeof(g_pw));
     g_pw_focus = -1;
@@ -1829,7 +1882,7 @@ uint32_t settings_signature(void) {
     /* the clock, uptime and network status change by themselves */
     if (g_page == PG_APPS && timer_ms() - g_al_scanned > 2000) apps_scan();     /* installed or removed meanwhile */
     if (g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
-        uint32_t s = timer_ms() / (g_page == PG_STARTUP ? 500 : 1000);
+        uint32_t s = timer_ms() / (g_page == PG_STARTUP || g_page == PG_ABOUT ? 500 : 1000);
         if (s != g_tick_s) { g_tick_s = s; g_gen++; }
     }
     return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^

@@ -368,7 +368,7 @@ int getgroups(int n, gid_t* list) {
 int uname(struct utsname* u) {
     memset(u, 0, sizeof(*u));
     strcpy(u->sysname, "Banana OS");
-    strcpy(u->nodename, "banana-os");
+    if (gethostname(u->nodename, sizeof(u->nodename)) != 0) strcpy(u->nodename, "banana-os");
     snprintf(u->release, sizeof(u->release), "%s", __banana->os_version ? __banana->os_version : "0.6");
     strcpy(u->version, "Banana OS");
     snprintf(u->machine, sizeof(u->machine), "%s", __banana->arch);

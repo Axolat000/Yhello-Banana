@@ -3,6 +3,7 @@
 #include "kstring.h"
 #include "timer.h"
 #include "random.h"
+#include "hostname.h"
 #include "serial.h"
 
 /*
@@ -44,7 +45,7 @@ const char* dhcp_state_str(void) {
 
 static void send_msg(uint8_t type, ip4_t requested, ip4_t server) {
     netif_t* nif = net_if();
-    uint8_t p[300];
+    uint8_t p[384];
     memset(p, 0, sizeof(p));
     p[0] = 1;                    /* BOOTREQUEST */
     p[1] = 1;                    /* Ethernet */
@@ -61,7 +62,9 @@ static void send_msg(uint8_t type, ip4_t requested, ip4_t server) {
     memcpy(o, nif->dev->mac, 6); o += 6;
     if (requested && g_state != D_RENEWING) { *o++ = 50; *o++ = 4; wr32(o, requested); o += 4; }
     if (server && g_state != D_RENEWING)    { *o++ = 54; *o++ = 4; wr32(o, server); o += 4; }
-    *o++ = 12; *o++ = 9; memcpy(o, "banana-os", 9); o += 9;   /* hostname */
+    const char* host = hostname_get();
+    uint32_t host_len = (uint32_t)strlen(host);
+    *o++ = 12; *o++ = (uint8_t)host_len; memcpy(o, host, host_len); o += host_len;
     *o++ = 55; *o++ = 4; *o++ = 1; *o++ = 3; *o++ = 6; *o++ = 51;  /* want mask, router, dns, lease */
     *o++ = 255;
 

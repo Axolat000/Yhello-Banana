@@ -594,8 +594,25 @@ struct protoent* getprotobynumber(int proto) {
 }
 
 int gethostname(char* name, size_t len) {
-    const char* h = "banana-os";
-    if (strlen(h) + 1 > len) { errno = ENAMETOOLONG; return -1; }
-    strcpy(name, h);
+    if (!name || !len) { errno = EINVAL; return -1; }
+    char host[66] = "banana-os";
+    int fd = __banana->open("/etc/hostname", BANANA_O_READ);
+    if (fd >= 0) {
+        long n = __banana->read(fd, host, sizeof(host) - 1);
+        __banana->close(fd);
+        if (n > 0) {
+            host[n] = 0;
+            while (n && (host[n - 1] == '\n' || host[n - 1] == '\r')) host[--n] = 0;
+            int valid = n > 0 && n <= 63 && host[0] != '-' && host[n - 1] != '-';
+            for (long i = 0; i < n; i++) {
+                unsigned char c = host[i];
+                if (c >= 'A' && c <= 'Z') c = host[i] = c + ('a' - 'A');
+                if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) valid = 0;
+            }
+            if (!valid) strcpy(host, "banana-os");
+        } else strcpy(host, "banana-os");
+    }
+    if (strlen(host) + 1 > len) { errno = ENAMETOOLONG; return -1; }
+    strcpy(name, host);
     return 0;
 }

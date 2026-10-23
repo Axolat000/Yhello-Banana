@@ -12,6 +12,17 @@ OUT=$(realpath -m "$1")
 . "$(dirname "$0")/../port.sh"
 port_fetch zsh 5.9 9b8d1ecedd5b5e81fbf1918e876752a7dd948e05c1a0dba10ab863842d45acd5 \
     https://www.zsh.org/pub/old/zsh-5.9.tar.xz
+# GCC 14 can reject configure's old boolcodes probe against ncurses'
+# const-qualified array. Keep its fallback private when that probe says no.
+python3 - "$SRC/Src/Modules/termcap.c" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+s = s.replace("#ifndef HAVE_BOOLCODES\nstatic char *boolcodes[]",
+              "#ifndef HAVE_BOOLCODES\n#define boolcodes zsh_private_boolcodes\nstatic char *boolcodes[]")
+p.write_text(s)
+PY
 NC=$PORT_DIR/../ncurses/build/x86_64
 [ -f "$NC/lib/libncursesw.a" ] || { echo "zsh: build ports/ncurses first"; exit 1; }
 CPPFLAGS="-I$NC/include"

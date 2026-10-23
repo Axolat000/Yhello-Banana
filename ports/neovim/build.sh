@@ -111,6 +111,22 @@ if ! grep -q BANANA_PARSERS "$f"; then
     printf '\n# Banana OS: the tree-sitter parsers, linked in (ports/neovim/build.sh); nlua0 is\n# the build machine'"'"'s (NLUA0_HOST_PRG), not made for Banana OS\nif(BANANA_PARSERS)\n  target_link_libraries(nvim_bin PRIVATE ${BANANA_PARSERS})\n  set_target_properties(nlua0 PROPERTIES EXCLUDE_FROM_ALL TRUE)\nendif()\n' >> "$f"
 fi
 
+# Patch libuv after CMake extracts it, including on a fresh build.
+python3 - "$SRC/cmake.deps/cmake/BuildLibuv.cmake" "$PORT_DIR/patch_libuv.py" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+if "# Banana OS libuv compatibility" not in s:
+    s = s.replace("ExternalProject_Add(libuv",
+                  'ExternalProject_Add(libuv\n  # Banana OS libuv compatibility\n  PATCH_COMMAND python3 "' + sys.argv[2] + '" <SOURCE_DIR>', 1)
+    p.write_text(s)
+PY
+# A previous build may already have extracted libuv before this patch existed.
+if [ -f "$PORT_DIR/build/target/deps/build/src/libuv/src/unix/linux.c" ]; then
+    python3 "$PORT_DIR/patch_libuv.py" "$PORT_DIR/build/target/deps/build/src/libuv"
+fi
+
 # ── for Banana OS ──────────────────────────────────────────────────────
 T=$PORT_DIR/build/target
 TC=$SDK/tools/banana-toolchain.cmake

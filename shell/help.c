@@ -228,7 +228,11 @@ static const page_t PAGES[] = {
     /* ── system ── */
     { "uname", "system", "uname", "the system's name", NULL, NULL, NULL, "neofetch" },
     { "whoami", "system", "whoami", "the user", NULL, NULL, NULL, "passwd" },
-    { "hostname", "system", "hostname", "the computer's name", NULL, NULL, NULL, NULL },
+    { "hostname", "system", "hostname [NAME]", "show or change the computer's name",
+      "Sets the PC name immediately and saves it in /etc/hostname. Use 1-63 letters, digits or hyphens, "
+      "starting and ending with a letter or digit. Names are lowercased. New terminals use the new name; "
+      "DHCP sends it on its next request. Live-session changes last until reboot unless installed.",
+      NULL, "hostname\nhostname banana-laptop", "settings" },
     { "date", "system", "date [-u | -a] | date set [YYYY-MM-DD] [HH:MM[:SS]] | date utc on|off",
       "the date and time; set the clock by hand",
       "Shows the local time - the time zone's (see timezone) - with the zone and whether it is summer time. "
@@ -393,10 +397,10 @@ static const page_t PAGES[] = {
     { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
     { "taskmgr", "desktop", "taskmgr", "open the Task Manager", NULL, NULL, NULL, "htop" },
-    { "settings", "desktop", "settings [apps [name] | time | keyboard]", "open Settings (or its Apps, Date & time or Keyboard page)",
+    { "settings", "desktop", "settings [apps [name] | time | keyboard | about]", "open Settings (or its Apps, Date & time or Keyboard page)",
       "Opens Settings. `settings apps` opens its Apps page: every installed app with its version, size and "
       "whether it is running or has an update; select one to open it, stop it, update it or uninstall it "
-      "(Uninstall asks for a second click). The Apps launcher's Details opens the same page.",
+      "(Uninstall asks for a second click). The Apps launcher's Details opens the same page. Settings > About changes the PC name.",
       NULL, "settings\nsettings apps\nsettings apps music", "apps, apt" },
     { "wallpaper", "desktop", "wallpaper [list|reset|preset <n>|url <url>|<file> [fill|fit|stretch|center]]", "the wallpaper",
       NULL, NULL, "wallpaper list\nwallpaper ~/Pictures/beach.jpg fill", NULL },

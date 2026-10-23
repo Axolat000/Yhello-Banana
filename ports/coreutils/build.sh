@@ -17,9 +17,10 @@ port_configure --enable-single-binary=symlinks --disable-nls --without-selinux -
     --prefix=/usr --bindir=/bin
 port_make
 
+# hostname is owned by kcmd: it validates and persists the system PC name.
 # the commands: what the single program answers to
 # (install is "ginstall" inside: its name outside is install)
-PROGS=$(sed -n 's/^SINGLE_BINARY_PROGRAM("\([^"]*\)",.*/\1/p' src/coreutils.h | sed 's/^ginstall$/install/' | sort -u | tr '\n' ',' | sed 's/,$//')
+PROGS=$(sed -n 's/^SINGLE_BINARY_PROGRAM("\([^"]*\)",.*/\1/p' src/coreutils.h | sed -e 's/^ginstall$/install/' -e '/^hostname$/d' | sort -u | tr '\n' ',' | sed 's/,$//')
 [ -n "$PROGS" ] || { echo "coreutils: no program list"; exit 1; }
 port_package "$OUT" name=coreutils "title=GNU coreutils" version=$PORT_VER type=console \
     "description=The GNU core utilities: ls, cp, mv, rm, cat, sort, date and more (in /bin)" \

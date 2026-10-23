@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "hostname.h"
 #include "fs.h"
 #include "rtc.h"
 #include "terminal.h"
@@ -957,7 +958,7 @@ void fs_init(void) {
         "Welcome to Banana OS 0.6 - a from-scratch, Unix-like x86 OS.\n");
 
     f = create_file_in(etc, "hostname");
-    if (f >= 0) fs_set_text(f, "banana-os-0.6\n");
+    if (f >= 0) fs_set_text(f, HOSTNAME_DEFAULT "\n");
 
     f = create_file_in(etc, "passwd");
     if (f >= 0) fs_set_text(f,

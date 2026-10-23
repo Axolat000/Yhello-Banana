@@ -23,6 +23,13 @@ int main(int argc, char** argv) {
         first = 1;
     }
     if (!BANANA_HAS(__banana, kcmd)) { fprintf(stderr, "%s: this system cannot run its commands for programs (API 30)\n", me); return 126; }
+    /* The line codec below uses quotes as syntax. A hostname cannot
+     * contain literal quotes: reject them before that codec can drop them. */
+    if (!strcmp(me, "hostname") && argc > first + 1 &&
+        strpbrk(argv[first + 1], "'\"")) {
+        fprintf(stderr, "hostname: use only letters, digits or hyphens\n");
+        return 1;
+    }
     /* the line: the name, then each argument - quoted when it has spaces
      * (the system's commands take "a b" as one word) */
     static char line[4096];
