@@ -350,8 +350,8 @@ int shelltest_interactive(int verbose) {
     return g_fail;
 }
 
-/* ── shelltest -e: the editors (the optional packages: apt install nano vim
- * vi neovim) - each one that is installed is started on a file, typed at,
+/* ── shelltest -e: the editors (nano, vim and vi come with the system;
+ * neovim is optional: apt install neovim) - each one that is installed is started on a file, typed at,
  * saved and quit; then the file must hold what was typed. ─────────────── */
 static char* slurp(const char* path) {
     static char b[4096];
@@ -372,6 +372,7 @@ static int edit(const char* path, const char* file, const char* ready, const cha
     if (start(path, av)) return 0;
     int up = wait_for(ready, 20000);
     check("starts and draws its screen", up);
+    pump(400);                             /* (its screen drawn to the end: keys typed during it can be lost) */
     type(keys);
     int st = finish();
     return up && st == 0;
@@ -447,7 +448,7 @@ int shelltest_editors(void) {
             check(":qa! quits", finish() == 0);
         }
     }
-    if (!any) printf("no editor installed (apt install nano vim vi neovim)\n");
+    if (!any) printf("no editor installed (nano, vim and vi come with the 64-bit system; apt install neovim)\n");
     printf("shelltest -e: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;
 }

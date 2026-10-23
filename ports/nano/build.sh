@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # GNU nano 8.7.1 for Banana OS (/bin/nano), on ncurses (ports/ncurses: built
 # first), with /apps/nano/nanorc (its sysconfdir) and the syntax colouring
-# files (syntax.zip, unpacked into /usr/share/nano). An optional package:
-# built into the 64-bit system, installed by `apt install nano`.
+# files (syntax.zip, unpacked into /usr/share/nano). Built into the 64-bit
+# system and installed at boot.
 #     ports/nano/build.sh <output.bpk>
 [ -n "$1" ] || { echo "usage: $0 <output.bpk>"; exit 1; }
 OUT=$(realpath -m "$1")

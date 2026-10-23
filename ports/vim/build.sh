@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Vim 9.2 for Banana OS, on ncurses (ports/ncurses: built first) - two
-# optional packages from one source (`apt install vim` / `apt install vi`):
+# packages from one source, both built in and installed at boot:
 #   vim: the huge feature set (/bin/vim, vimdiff, view), its runtime -
 #        syntax, filetype plugins, indent, colour schemes, :help - in
 #        runtime.zip, unpacked into /usr/share/vim/vim92 ($VIMRUNTIME);

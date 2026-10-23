@@ -261,10 +261,10 @@ kernel/appbin.o64: $(foreach a,$(APPS),apps/$(a)/$(a)-x86_64.bpk.z) build/builti
 # installed at boot, their commands in /bin (bin= in their manifests).
 # kernel/appbin.asm and kernel/builtin_apps.c take the list from
 # build/ports64.inc and build/ports64.h, made from PORTS64.
-PORTS64    = bash coreutils grep sed findutils diffutils gawk ncurses less zsh
+PORTS64    = bash coreutils grep sed findutils diffutils gawk ncurses less zsh nano vim vi
 # optional ones: built in the same way, but installed only when asked for
-# (`apt install nano`, the App Store: the builtin: source) - the editors
-OPTPORTS64 = nano vim vi neovim
+# (`apt install neovim`, the App Store: the builtin: source)
+OPTPORTS64 = neovim
 PORT_BPKZ  = $(foreach p,$(PORTS64) $(OPTPORTS64),ports/$(p)/build/$(p)-x86_64.bpk.z)
 CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site ports/port.sh
 define PORT_RULE
@@ -276,8 +276,8 @@ endef
 $(foreach p,$(PORTS64) $(OPTPORTS64),$(eval $(call PORT_RULE,$(p))))
 # (vi is Vim's tiny build, from ports/vim's source and script)
 ports/vi/build/vi-x86_64.bpk: ports/vim/build.sh
-# (less, zsh and the editors are linked with ncurses' library)
-ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk $(foreach p,$(OPTPORTS64),ports/$(p)/build/$(p)-x86_64.bpk): ports/ncurses/build/ncurses-x86_64.bpk
+# (less, zsh, nano, vim and vi are linked with ncurses' library)
+ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk ports/nano/build/nano-x86_64.bpk ports/vim/build/vim-x86_64.bpk ports/vi/build/vi-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
 # Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built
 # in the same way: ps & co. (apps/procps)
 APPS64      = procps kcmd

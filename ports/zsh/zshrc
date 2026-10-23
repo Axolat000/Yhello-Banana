@@ -18,3 +18,11 @@ autoload -Uz promptinit && promptinit      # (prompt -l: the themes)
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ll='ls -l'
+# a command that comes as an optional package: how to get it
+command_not_found_handler() {
+    case $1 in
+        nvim) print -u2 "$1: not installed - apt install neovim" ;;
+        *) print -u2 "zsh: command not found: $1" ;;
+    esac
+    return 127
+}

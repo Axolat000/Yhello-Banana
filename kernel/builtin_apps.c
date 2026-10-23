@@ -37,7 +37,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
 #ifdef __x86_64__
     { "terminal", app_terminal, app_terminal_end, 0 }, /* (apps/terminal: bash in windows and tabs) */
 #define PORT(n) { #n, port_##n, port_##n##_end, 0 },
-#define OPTPORT(n) { #n, port_##n, port_##n##_end, 1 },  /* (the Makefile's OPTPORTS64: the editors) */
+#define OPTPORT(n) { #n, port_##n, port_##n##_end, 1 },  /* (the Makefile's OPTPORTS64: Neovim) */
 #include "../build/ports64.h"
 #undef PORT
 #undef OPTPORT

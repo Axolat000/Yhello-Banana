@@ -13,3 +13,11 @@ alias la='ls -A'
 enable -n help
 HISTSIZE=1000
 HISTFILESIZE=2000
+# a command that comes as an optional package: how to get it
+command_not_found_handle() {
+    case $1 in
+        nvim) printf '%s: not installed - apt install neovim\n' "$1" >&2 ;;
+        *) printf 'bash: %s: command not found\n' "$1" >&2 ;;
+    esac
+    return 127
+}
