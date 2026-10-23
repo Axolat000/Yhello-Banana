@@ -1256,7 +1256,7 @@ static const char* const known_cmds[] = {
     "alias", "unalias", "export", "unset", "env", "chsh", "autologin",
     "grep", "wc", "head", "tail", "find", "time", "nice",
     /* shell/netcmds.c + shell/wpcmd.c */
-    "ifconfig", "dhcp", "ping", "nslookup", "host", "netstat", "arp", "curl", "wget",
+    "ntp", "ifconfig", "dhcp", "ping", "nslookup", "host", "netstat", "arp", "curl", "wget",
     "cryptotest", "wallpaper", "lsusb", "usb", "httpd", "sshd", "rdpd", "rdp", "passwd", "files", "browser", "notepad",
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "play", "beep", "volume", "lsaudio",
