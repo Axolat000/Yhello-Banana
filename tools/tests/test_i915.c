@@ -68,6 +68,7 @@ static void one(int g, int is_hsw, uint16_t devid) {
     hw.mmio = bar; hw.mmio_size = 4u << 20; hw.devid = devid; hw.revision = 9; hw.gen = g; hw.hsw = is_hsw;
     hw.gtt_entries = g == 5 ? 256u * 1024u : 512u * 1024u;
     hw.reserved_lo = 8192; hw.reserved_hi = 16;
+    model_regs();
     i915_attach(&hw);
     check("present", i915_present());
 
@@ -158,11 +159,63 @@ static void one(int g, int is_hsw, uint16_t devid) {
     check("no relocation rewritten", bm[rel_at[nrel - 1]] == mark);
     check("GEM_WAIT again", gem_wait(A, ht, -1) == 0 && tm[18] == 0x22220000u);
 
+    /* hardware contexts (gen 6+): each keeps its own state between batches */
+    int iso = -1;
+    gp.param = I915_PARAM_HAS_CONTEXT_ISOLATION; gp.value = (uint64_t)(uintptr_t)&iso;
+    check("GETPARAM has_context_isolation", io(A, WR, I915(I915_NR_GETPARAM), &gp, sizeof gp) == 0 && iso == (g >= 6));
+    if (g >= 6) {
+        uint32_t ids[2];
+        for (int i = 0; i < 2; i++) {
+            struct drm_i915_gem_context_create_ext c2 = { 0, 0, 0 };
+            io(A, WR, I915(I915_NR_CONTEXT_CREATE), &c2, 8);
+            ids[i] = c2.ctx_id;
+        }
+        uint32_t hc = create(A, 4096);
+        uint32_t* cm = map(A, hc, 4096);
+        struct drm_i915_gem_exec_object2 exc[2];
+        struct drm_i915_gem_relocation_entry rc;
+        struct drm_i915_gem_execbuffer2 ebc;
+        /* a batch: "state" in a register (LRI), or that register stored into the target (SRM) */
+        #define CTX_BATCH(ctx, store, val) do { \
+            int q = 0; \
+            if (store) { cm[q++] = (0x24u << 23) | 1u; cm[q++] = 0x7300; cm[q++] = 0xDEAD0000u; } \
+            else { cm[q++] = (0x22u << 23) | 1u; cm[q++] = 0x7300; cm[q++] = (val); } \
+            cm[q++] = 0x0Au << 23; cm[q++] = 0; \
+            rc = (struct drm_i915_gem_relocation_entry){ 1, 96, 8, 0, 2, 2 }; \
+            memset(exc, 0, sizeof exc); \
+            exc[0].handle = hc; exc[0].relocation_count = (store) ? 1 : 0; exc[0].relocs_ptr = (uint64_t)(uintptr_t)&rc; \
+            exc[1].handle = ht; exc[1].flags = EXEC_OBJECT_WRITE; \
+            memset(&ebc, 0, sizeof ebc); \
+            ebc.buffers_ptr = (uint64_t)(uintptr_t)exc; ebc.buffer_count = 2; ebc.batch_len = (uint32_t)q * 4; \
+            ebc.flags = I915_EXEC_RENDER | I915_EXEC_HANDLE_LUT | I915_EXEC_BATCH_FIRST; ebc.rsvd1 = (ctx); \
+            r = io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &ebc, sizeof ebc); \
+            gem_wait(A, ht, -1); \
+        } while (0)
+        uint32_t inh0 = ctx_inhibits, sw0 = ctx_switches;
+        CTX_BATCH(ids[0], 0, 0xAAAA0001u);
+        CTX_BATCH(ids[1], 0, 0xBBBB0002u);
+        check("two new contexts: switched to, from the golden image", r == 0 && ctx_inhibits == inh0 && ctx_restores > 0);
+        tm[24] = 0;
+        CTX_BATCH(ids[0], 1, 0);
+        check("context A's state back after B's batch", r == 0 && tm[24] == 0xAAAA0001u);
+        CTX_BATCH(ids[1], 1, 0);
+        check("context B's state back after A's", r == 0 && tm[24] == 0xBBBB0002u);
+        CTX_BATCH(ids[1], 1, 0);
+        check("the same context twice: no switch", ctx_switches - sw0 == 4);
+        CTX_BATCH(0, 1, 0);
+        check("the app's default context: its own state (not B's)", r == 0 && tm[24] != 0xBBBB0002u);
+        struct drm_i915_gem_context_destroy cd = { ids[1], 0 };
+        check("CONTEXT_DESTROY of the one the GPU holds", io(A, W, I915(I915_NR_CONTEXT_DESTROY), &cd, sizeof cd) == 0);
+        check("its handle is gone", io(A, W, I915(I915_NR_CONTEXT_DESTROY), &cd, sizeof cd) == -2);
+        CTX_BATCH(ids[0], 1, 0);
+        check("A still has its state", r == 0 && tm[24] == 0xAAAA0001u);
+    }
+
     /* many: the ring wraps */
     uint32_t t = 0;
     for (int i = 0; i < 3000 && !r; i++) { r = io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &eb, sizeof eb); t++; }
     check("3000 submissions", r == 0 && gem_wait(A, ht, -1) == 0);
-    check("the model ran every batch", g_ran == 3002);
+    check("the model ran every batch", g_ran == 3002 + (g >= 6 ? 7 : 0));
 
     /* a big buffer away from the 64 KiB-aligned place: alignment asked for */
     struct drm_i915_gem_exec_object2 ex2[2];

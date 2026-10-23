@@ -13,8 +13,10 @@
  *    the render ring; every buffer remembers the last seqno that reads or
  *    writes it, for waits, "busy" and closing a buffer the GPU still uses
  *    (it is freed once the GPU is done with it);
- *  - contexts (bookkeeping only: Mesa's batches set the whole state) and
- *    their reset statistics, syncobjs (a seqno each), the GPU's clock.
+ *  - contexts: each a hardware context of its own from gen 6 (its state
+ *    saved and restored by the GPU; an app's batches without one go in a
+ *    default context of the app's), and their reset statistics; syncobjs
+ *    (a seqno each), the GPU's clock.
  * Everything is the app's (owner): another app's handles do not exist for
  * it, and what it has is released when it ends. */
 #include "gpu_i915.h"
@@ -64,6 +66,8 @@ typedef struct {
 
 typedef struct {
     int      owner;
+    int      hw;                    /* its hardware context (kernel/gpu_i915.c), 0: none */
+    int      dflt;                  /* the app's default context (ctx_id 0) */
     uint32_t last;                  /* its last seqno */
     uint32_t active, pending;       /* batches lost in GPU resets: guilty, innocent */
     int      banned;                /* lost work and not "recoverable": submissions fail (-EIO) */
@@ -198,6 +202,29 @@ static ctx_t* ctx_get(int owner, uint32_t id) {
     return c->owner == owner ? c : NULL;
 }
 
+static ctx_t* ctx_new(int owner, int dflt, uint32_t* id) {
+    for (int i = 0; i < CTX_MAX; i++)
+        if (!g_ctx[i].owner) {
+            int hw = 0;
+            if (i915_has_contexts() && (hw = i915_ctx_create()) < 0) return NULL;
+            g_ctx[i] = (ctx_t){ owner, hw, dflt, 0, 0, 0, 0, 1 };
+            if (id) *id = (uint32_t)i + 1;
+            return &g_ctx[i];
+        }
+    return NULL;
+}
+
+static void ctx_free(ctx_t* c) {
+    if (c->hw > 0) i915_ctx_destroy(c->hw);
+    memset(c, 0, sizeof(*c));
+}
+
+/* batches without a context: the app's default one (its state its own too) */
+static ctx_t* ctx_default(int owner) {
+    for (int i = 0; i < CTX_MAX; i++) if (g_ctx[i].owner == owner && g_ctx[i].dflt) return &g_ctx[i];
+    return ctx_new(owner, 1, NULL);
+}
+
 /* the GPU hung: the context whose batch was running is guilty, the others with work queued innocent */
 static void on_reset(uint32_t done, uint32_t submitted) {
     (void)submitted;
@@ -222,12 +249,9 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
     uint32_t n = eb->buffer_count;
     if (!n || n > EXEC_MAX) return -E_INVAL;
     uint32_t ctx_id = (uint32_t)eb->rsvd1;
-    ctx_t* ctx = NULL;
-    if (ctx_id) {
-        ctx = ctx_get(owner, ctx_id);
-        if (!ctx) return -E_NOENT;
-        if (ctx->banned) return -E_IO;
-    }
+    ctx_t* ctx = ctx_id ? ctx_get(owner, ctx_id) : ctx_default(owner);
+    if (!ctx) return ctx_id ? -E_NOENT : -E_NOMEM;
+    if (ctx->banned) return -E_IO;
     if (!u_ok(eb->buffers_ptr, (uint64_t)n * sizeof(struct drm_i915_gem_exec_object2))) return -E_FAULT;
     struct drm_i915_gem_exec_object2* uex = (struct drm_i915_gem_exec_object2*)(uintptr_t)eb->buffers_ptr;
     struct drm_i915_gem_exec_object2* ex = (struct drm_i915_gem_exec_object2*)kmalloc(sizeof(*ex) * n);
@@ -294,7 +318,7 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
     if (!rc && ((eb->batch_start_offset & 7) || eb->batch_start_offset >= (uint64_t)ob[bi]->pages * 4096u)) rc = -E_INVAL;
     if (!rc) {
         __asm__ volatile("sfence; mfence" ::: "memory");     /* (the app's write-combined stores out) */
-        uint32_t s = i915_submit(ob[bi]->gtt * 4096u + eb->batch_start_offset);
+        uint32_t s = i915_submit_ctx(ctx->hw, ob[bi]->gtt * 4096u + eb->batch_start_offset);
         if (!s) rc = -E_IO;
         else {
             g_submits++;
@@ -302,7 +326,7 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
                 ob[i]->last_read = s;
                 if (ex[i].flags & EXEC_OBJECT_WRITE) ob[i]->last_write = s;
             }
-            if (ctx) ctx->last = s;
+            ctx->last = s;
             for (uint32_t k = 0; k < nf; k++)
                 if (fe[k].flags & I915_EXEC_FENCE_SIGNAL) { sync_t* y = &g_sync[fe[k].handle - 1]; y->seqno = s; y->signaled = 0; }
         }
@@ -332,7 +356,8 @@ static int getparam(int32_t param, int* v) {
     case I915_PARAM_NUM_FENCES_AVAIL: case I915_PARAM_HAS_BSD: case I915_PARAM_HAS_BLT: case I915_PARAM_HAS_VEBOX:
     case I915_PARAM_HAS_BSD2: case I915_PARAM_HAS_SEMAPHORES: case I915_PARAM_HAS_SECURE_BATCHES:
     case I915_PARAM_HAS_PINNED_BATCHES: case I915_PARAM_HAS_EXEC_SOFTPIN: case I915_PARAM_MMAP_GTT_VERSION:
-    case I915_PARAM_HAS_SCHEDULER: case I915_PARAM_HAS_EXEC_FENCE: case I915_PARAM_HAS_CONTEXT_ISOLATION:
+    case I915_PARAM_HAS_CONTEXT_ISOLATION: *v = i915_has_contexts(); return 0;   /* (the render engine) */
+    case I915_PARAM_HAS_SCHEDULER: case I915_PARAM_HAS_EXEC_FENCE:
     case I915_PARAM_HAS_GEN7_SOL_RESET: case I915_PARAM_HAS_WT: case I915_PARAM_CMD_PARSER_VERSION:
         *v = 0; return 0;
     }
@@ -566,18 +591,12 @@ static int ioctl_i915(int owner, unsigned nr, unsigned size, void* arg, uspace_t
     case I915_NR_CONTEXT_CREATE: {
         struct drm_i915_gem_context_create_ext* c = (struct drm_i915_gem_context_create_ext*)arg;
         if (size >= sizeof(*c) && (c->flags || c->extensions)) return -E_INVAL;
-        for (int i = 0; i < CTX_MAX; i++)
-            if (!g_ctx[i].owner) {
-                g_ctx[i] = (ctx_t){ owner, 0, 0, 0, 0, 1 };
-                c->ctx_id = (uint32_t)i + 1;
-                return 0;
-            }
-        return -E_NOMEM;
+        return ctx_new(owner, 0, &c->ctx_id) ? 0 : -E_NOMEM;
     }
     case I915_NR_CONTEXT_DESTROY: {
         ctx_t* c = ctx_get(owner, ((struct drm_i915_gem_context_destroy*)arg)->ctx_id);
-        if (!c) return -E_NOENT;
-        memset(c, 0, sizeof(*c));
+        if (!c || c->dflt) return -E_NOENT;
+        ctx_free(c);
         return 0;
     }
     case I915_NR_CONTEXT_GETPARAM: case I915_NR_CONTEXT_SETPARAM: {
@@ -656,7 +675,7 @@ void gem_release(int owner) {
             memset(g_obj[i].map, 0, sizeof(g_obj[i].map));      /* (its address space is going away) */
             obj_close(&g_obj[i], NULL);
         }
-    for (int i = 0; i < CTX_MAX; i++) if (g_ctx[i].owner == owner) memset(&g_ctx[i], 0, sizeof(ctx_t));
+    for (int i = 0; i < CTX_MAX; i++) if (g_ctx[i].owner == owner) ctx_free(&g_ctx[i]);
     for (int i = 0; i < SYNC_MAX; i++) if (g_sync[i].owner == owner) memset(&g_sync[i], 0, sizeof(sync_t));
     retire();
 }

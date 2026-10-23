@@ -17,9 +17,12 @@
  *  - the hardware fixes (workarounds and clock gating) Linux applies to
  *    these generations, and bit-6 swizzling as the firmware set it up;
  *  - a hung GPU (no progress for 2 s): a reset of the render engine and
- *    everything set up again; the batches lost are reported.
- * There are no hardware contexts (MI_SET_CONTEXT): every batch of Mesa's
- * crocus sets the whole GPU state again (ports/mesa: the Banana patch). */
+ *    everything set up again; the batches lost are reported;
+ *  - hardware contexts (gen 6 - 7.5): each app context has an image the
+ *    GPU saves its state into when another context's batch comes, and
+ *    restores it from (MI_SET_CONTEXT) - so Mesa sets only what changed,
+ *    and one app's state never shows in another's. Ironlake has none:
+ *    crocus sets the whole state in every batch there. */
 #include "gpu_i915.h"
 #include "kheap.h"
 #include "kstring.h"
@@ -49,6 +52,9 @@
 #define R_MODE7         (RCS + 0x29C)       /* RING_MODE_GEN7 */
 #define R_TIMESTAMP     (RCS + 0x358)
 #define R_HWS_PGA6      0x4080
+#define R_CXT_SIZE6     0x21A0
+#define R_CXT_SIZE7     0x21A8
+#define R_CCID          (RCS + 0x180)
 #define R_INSTPM        0x20C0
 #define R_GFX_MODE6     0x2520
 #define HEAD_ADDR       0x001FFFFCu
@@ -86,6 +92,13 @@
 #define   MI_EXE_FLUSH         (1u << 1)
 #define   MI_INVALIDATE_ISP    (1u << 5)
 #define MI_BATCH_BUFFER_END    MI(0x0A, 0)
+#define MI_ARB_ON_OFF          MI(0x08, 0)
+#define   MI_ARB_ENABLE        1u
+#define MI_SET_CONTEXT         MI(0x18, 0)
+#define   MI_MM_SPACE_GTT      (1u << 8)
+#define   MI_SAVE_EXT_STATE_EN (1u << 3)
+#define   MI_RESTORE_EXT_STATE_EN (1u << 2)
+#define   MI_RESTORE_INHIBIT   (1u << 0)
 #define MI_STORE_DWORD_INDEX   MI(0x21, 1)
 #define MI_BATCH_BUFFER_START  MI(0x31, 0)
 #define   MI_BATCH_GTT         (2u << 6)    /* gen 5 */
@@ -134,6 +147,20 @@ static uint32_t  g_ring_gtt, g_tail;
 static volatile uint32_t* g_hws;
 static uint32_t  g_hws_gtt, g_scratch_gtt;
 static uint32_t  g_seqno;                   /* the last one emitted */
+
+/* hardware contexts: their images in the GTT; 0 is the kernel's own (the
+ * GPU always holds one, so a switch always has somewhere to save to) */
+#define HWCTX_MAX 1024
+typedef struct {
+    uint8_t* mem;
+    uint32_t gtt;                           /* the image's GTT address */
+    uint32_t last;                          /* the last seqno that switched to it */
+    uint8_t  used, fresh, dying;            /* fresh: never saved - nothing to restore */
+} hwctx_t;
+static hwctx_t*  g_hc;
+static uint32_t  g_ctx_bytes;               /* an image's size (0: no contexts) */
+static int       g_cur = -1;                /* the context the GPU holds (-1: none) */
+static uint8_t*  g_golden;                  /* the GPU's state as it starts: every new context's */
 static uint32_t  g_resets;
 static void (*g_reset_cb)(uint32_t, uint32_t);
 /* hang detection: the seqno and command address seen last, and when they last moved */
@@ -400,6 +427,75 @@ static void* kernel_pages(uint32_t bytes, uint32_t* gtt) {
     return p;
 }
 
+/* ── hardware contexts (gen 6 - 7.5) ────────────────────────────────── */
+
+/* the size of a context image, as the GPU reports it (as Linux's i915) */
+static uint32_t ctx_size(void) {
+    uint32_t b = 0;
+    if (H.gen == 6) {
+        uint32_t r = rd(R_CXT_SIZE6);
+        b = (((r >> 24) & 0x3F) + ((r >> 6) & 0x3F) + (r & 0x3F)) * 64u;
+    } else if (H.gen == 7) {
+        if (H.hsw) return 17u * 4096u;                      /* HSW_CXT_TOTAL_SIZE */
+        uint32_t r = rd(R_CXT_SIZE7);
+        b = (((r >> 9) & 0x7F) + (r & 0x3F)) * 64u;
+    }
+    return (b + 4095u) & ~4095u;
+}
+
+int i915_has_contexts(void) { return g_ctx_bytes != 0; }
+
+int i915_ctx_create(void) {
+    if (!g_ctx_bytes || !g_hc) return -1;
+    for (int i = 1; i < HWCTX_MAX; i++) {
+        if (g_hc[i].used) continue;
+        uint32_t n = g_ctx_bytes / 4096u;
+        /* (Sandy Bridge: a context 64 KiB-aligned in the GTT) */
+        uint8_t* p = (uint8_t*)kmalloc_aligned(g_ctx_bytes, 4096);
+        if (!p) return -1;
+        memset(p, 0, g_ctx_bytes);
+        int64_t at = i915_gtt_alloc(n, H.gen == 6 ? 16 : 1);
+        if (at < 0) { kfree(p); return -1; }
+        uint64_t* ph = (uint64_t*)kmalloc(sizeof(uint64_t) * n);
+        if (!ph) { i915_gtt_free((uint32_t)at, n); kfree(p); return -1; }
+        for (uint32_t k = 0; k < n; k++) ph[k] = (uint64_t)(uintptr_t)p + k * 4096u;
+        i915_gtt_bind((uint32_t)at, ph, n);
+        kfree(ph);
+        /* a new context starts from the GPU's state at start, not from the
+         * last app's (as Linux's i915: its "default state") */
+        if (g_golden) memcpy(p, g_golden, g_ctx_bytes);
+        g_hc[i] = (hwctx_t){ p, (uint32_t)at * 4096u, 0, 1, g_golden == NULL, 0 };
+        return i;
+    }
+    return -1;
+}
+
+static void ctx_release(int i) {
+    uint32_t n = g_ctx_bytes / 4096u;
+    i915_gtt_unbind(g_hc[i].gtt / 4096u, n);
+    i915_gtt_free(g_hc[i].gtt / 4096u, n);
+    kfree(g_hc[i].mem);
+    memset(&g_hc[i], 0, sizeof(g_hc[i]));
+}
+
+/* images the GPU is done with (not the one it holds: it saves into that one
+ * at the next switch) */
+static void ctx_reap(void) {
+    if (!g_hc) return;
+    for (int i = 1; i < HWCTX_MAX; i++)
+        if (g_hc[i].used && g_hc[i].dying && i != g_cur && i915_done(g_hc[i].last)) ctx_release(i);
+}
+
+static uint32_t submit_in(int ctx, uint32_t batch_gtt, int with_batch, int privileged);
+
+void i915_ctx_destroy(int i) {
+    if (!g_hc || i <= 0 || i >= HWCTX_MAX || !g_hc[i].used) return;
+    g_hc[i].dying = 1;
+    /* the GPU holds it: back to the kernel's, so it can go */
+    if (i == g_cur && g_state == 2) { uint32_t s = submit_in(0, 0, 0, 1); if (s) g_hc[i].last = s; }
+    ctx_reap();
+}
+
 /* ── the ring ──────────────────────────────────────────────────────── */
 static uint32_t hws_seqno(void) {
     if (H.gen == 5) clflush(&g_hws[HWS_SEQNO], 4);
@@ -535,13 +631,33 @@ static void emit_breadcrumb(uint32_t s) {
     }
 }
 
-#define EMIT_MAX 96                          /* dwords: invalidate + start + breadcrumb, at most */
+/* MI_SET_CONTEXT, as Linux's i915 emits it on these generations: the
+ * arbiter off around it on gen 7, a no-op on both sides */
+static void emit_switch(int c) {
+    hwctx_t* x = &g_hc[c];
+    uint32_t flags = MI_MM_SPACE_GTT | MI_SAVE_EXT_STATE_EN | MI_RESTORE_EXT_STATE_EN | (x->fresh ? MI_RESTORE_INHIBIT : 0);
+    if (H.gen == 7) out(MI_ARB_ON_OFF);
+    out(MI_NOOP);
+    out(MI_SET_CONTEXT);
+    out(x->gtt | flags);
+    out(MI_NOOP);
+    if (H.gen == 7) out(MI_ARB_ON_OFF | MI_ARB_ENABLE);
+    x->fresh = 0;
+    g_cur = c;
+}
 
-static uint32_t submit(uint32_t batch_gtt, int with_batch, int privileged) {
+#define EMIT_MAX 112                         /* dwords: switch + invalidate + start + breadcrumb, at most */
+
+static uint32_t submit_in(int ctx, uint32_t batch_gtt, int with_batch, int privileged) {
     if (ring_room(EMIT_MAX)) return 0;
     g_emit_start = g_tail;
     uint32_t s = ++g_seqno;
     if (!s) s = ++g_seqno;                   /* (0 means "nothing") */
+    if (g_ctx_bytes && g_hc) {
+        if (ctx < 0 || ctx >= HWCTX_MAX || !g_hc[ctx].used) ctx = 0;
+        if (ctx != g_cur) emit_switch(ctx);
+        g_hc[ctx].last = s;
+    }
     emit_invalidate();
     if (with_batch) {
         uint32_t un = privileged ? 0 : H.hsw ? MI_BATCH_NON_SECURE | MI_BATCH_NON_SECURE_HSW : MI_BATCH_NON_SECURE;
@@ -552,6 +668,7 @@ static uint32_t submit(uint32_t batch_gtt, int with_batch, int privileged) {
     advance();
     return s;
 }
+static uint32_t submit(uint32_t batch_gtt, int with_batch, int privileged) { return submit_in(0, batch_gtt, with_batch, privileged); }
 
 /* ── a hung GPU ────────────────────────────────────────────────────── */
 static int engine_reset(void) {
@@ -578,6 +695,7 @@ static void hang(void) {
     klog("i915: the GPU hung at seqno %u of %u (HEAD %08x ACTHD %08x IPEHR %08x INSTDONE %08x EIR %08x ESR %08x) - reset\n",
          done, g_seqno, rd(R_HEAD), rd(R_ACTHD), rd(R_IPEHR), rd(R_INSTDONE), rd(R_EIR), rd(R_ESR));
     g_resets++;
+    g_cur = -1;                                  /* (the reset forgets the context it held) */
     if (g_reset_cb) g_reset_cb(done, g_seqno);
     int ok = engine_reset() == 0 && hw_setup() == 0;
     g_hws[HWS_SEQNO] = g_seqno;                  /* what was lost counts as finished */
@@ -609,16 +727,18 @@ int i915_wait(uint32_t s, int timeout_ms) {
     return 0;
 }
 
-static uint32_t submit_batch(uint32_t batch_gtt, int privileged) {
+static uint32_t submit_batch(int ctx, uint32_t batch_gtt, int privileged) {
     if (g_state != 2) return 0;
     hang_check();
     if (g_state != 2) return 0;
-    uint32_t s = submit(batch_gtt, 1, privileged);
-    if (!s) { hang(); if (g_state == 2) s = submit(batch_gtt, 1, privileged); }
+    ctx_reap();
+    uint32_t s = submit_in(ctx, batch_gtt, 1, privileged);
+    if (!s) { hang(); if (g_state == 2) s = submit_in(ctx, batch_gtt, 1, privileged); }
     return s;
 }
-uint32_t i915_submit(uint32_t batch_gtt) { return submit_batch(batch_gtt, 0); }
-uint32_t i915_submit_privileged(uint32_t batch_gtt) { return submit_batch(batch_gtt, 1); }
+uint32_t i915_submit(uint32_t batch_gtt) { return submit_batch(0, batch_gtt, 0); }
+uint32_t i915_submit_ctx(int ctx, uint32_t batch_gtt) { return submit_batch(ctx, batch_gtt, 0); }
+uint32_t i915_submit_privileged(uint32_t batch_gtt) { return submit_batch(0, batch_gtt, 1); }
 
 uint64_t i915_timestamp(void) {
     if (g_state != 2) return 0;
@@ -631,6 +751,17 @@ uint64_t i915_timestamp(void) {
  * start and after a reset) */
 static int hw_setup(void) {
     if (forcewake_get()) { kstrlcpy(g_why, "the GT did not wake up (forcewake)", sizeof(g_why)); return -1; }
+    if (H.gen >= 6 && !g_hc) {
+        /* the contexts: the kernel's own first (a switch needs somewhere to save) */
+        uint32_t b = ctx_size();
+        g_hc = b && b <= (1u << 20) ? (hwctx_t*)kzalloc(sizeof(hwctx_t) * HWCTX_MAX) : NULL;
+        if (g_hc) {
+            g_ctx_bytes = b;
+            int k = i915_ctx_create();
+            if (k != 1) { kfree(g_hc); g_hc = NULL; g_ctx_bytes = 0; }
+            else { g_hc[0] = g_hc[1]; memset(&g_hc[1], 0, sizeof(g_hc[1])); }
+        }
+    }
     workarounds();
     swizzling();
     ppgtt_enable();
@@ -642,6 +773,20 @@ static int hw_setup(void) {
     while (!i915_done(s)) {
         if (timer_ms() - t0 > 500) return fail("the render ring does not run");
         task_sleep_ms(1);
+    }
+    if (g_ctx_bytes && !g_golden) {
+        /* the state as it is now, saved by switching away from the kernel's
+         * context (into a scratch one) and back: the golden image */
+        int t = i915_ctx_create();
+        uint8_t* gold = (uint8_t*)kmalloc(g_ctx_bytes);
+        if (t > 0 && gold) {
+            uint32_t a = submit_in(t, 0, 0, 1), b = a ? submit_in(0, 0, 0, 1) : 0;
+            t0 = timer_ms();
+            while (b && !i915_done(b) && timer_ms() - t0 < 500) task_sleep_ms(1);
+            if (b && i915_done(b)) { memcpy(gold, g_hc[0].mem, g_ctx_bytes); g_golden = gold; gold = NULL; }
+        }
+        kfree(gold);
+        if (t > 0) i915_ctx_destroy(t);
     }
     return 0;
 }
@@ -662,10 +807,10 @@ int i915_start(void) {
     g_state = 2;                                   /* (submit() and i915_done() run from here) */
     if (hw_setup()) { g_state = -1; return -1; }
     g_seen_ms = timer_ms();
-    klog("i915: render ring running (gen %s, %s forcewake, PPGTT %s, swizzle %s, %u MiB of GPU address space free)\n",
+    klog("i915: render ring running (gen %s, %s forcewake, PPGTT %s, swizzle %s, contexts %s%u KiB, %u MiB of GPU address space free)\n",
          H.hsw ? "7.5" : H.gen == 7 ? "7" : H.gen == 6 ? "6" : "5",
          H.gen < 6 ? "no" : g_fw_legacy || H.gen == 6 ? "legacy" : "multi-threaded",
-         H.gen >= 6 ? "aliasing" : "none", g_swizzle ? "9/10" : "none", g_free / 256u);
+         H.gen >= 6 ? "aliasing" : "none", g_swizzle ? "9/10" : "none", g_ctx_bytes ? "" : "none ", g_ctx_bytes / 1024u, g_free / 256u);
     kstrlcpy(g_why, "running", sizeof(g_why));
     return 0;
 }
@@ -698,6 +843,10 @@ uint32_t i915_swizzle_x(void) { return 0; }
 uint32_t i915_submit(uint32_t b) { (void)b; return 0; }
 uint32_t i915_submit_privileged(uint32_t b) { (void)b; return 0; }
 int      i915_done(uint32_t s) { (void)s; return 1; }
+int      i915_has_contexts(void) { return 0; }
+int      i915_ctx_create(void) { return -1; }
+void     i915_ctx_destroy(int c) { (void)c; }
+uint32_t i915_submit_ctx(int c, uint32_t b) { (void)c; (void)b; return 0; }
 int      i915_wait(uint32_t s, int t) { (void)s; (void)t; return 0; }
 uint32_t i915_last_submitted(void) { return 0; }
 uint32_t i915_resets(void) { return 0; }

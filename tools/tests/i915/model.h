@@ -85,6 +85,42 @@ static void gpu_write(uint32_t a, uint32_t v, int ppgtt) {
     *p = v;
 }
 
+/* hardware contexts (gen 6+): the registers batches set with
+ * MI_LOAD_REGISTER_IMM stand for the 3D state; MI_SET_CONTEXT saves them
+ * into the image the GPU holds and restores the next one's (unless
+ * MI_RESTORE_INHIBIT) - the image: a count, then (register, value) pairs */
+#define CTXREG_MAX 64
+static uint32_t ctxreg[CTXREG_MAX], nctxreg;
+static uint32_t ctx_cur;                    /* the image's GTT address (0: none) */
+static uint32_t ctx_switches, ctx_inhibits, ctx_restores;
+static void ctxreg_note(uint32_t r) {
+    if (r < 0x2000 || r >= 0x8000 || (r >= 0x2000 && r < 0x2400)) return;   /* (3D state, not the ring's own) */
+    for (uint32_t i = 0; i < nctxreg; i++) if (ctxreg[i] == r) return;
+    if (nctxreg < CTXREG_MAX) ctxreg[nctxreg++] = r;
+}
+static uint32_t* xlate(uint32_t a, int ppgtt);
+static void ctx_save(void) {
+    if (!ctx_cur) return;
+    uint32_t* img = xlate(ctx_cur + 0x400, 0);
+    if (!img) return;
+    img[0] = nctxreg;
+    for (uint32_t i = 0; i < nctxreg; i++) { img[1 + 2 * i] = ctxreg[i]; img[2 + 2 * i] = REG(ctxreg[i]); }
+}
+static void ctx_load(uint32_t a, int inhibit) {
+    if (inhibit) { ctx_inhibits++; return; }
+    uint32_t* img = xlate(a + 0x400, 0);
+    if (!img || img[0] > CTXREG_MAX) return;
+    ctx_restores++;
+    for (uint32_t i = 0; i < nctxreg; i++) REG(ctxreg[i]) = 0;     /* (what the image does not have: as at start) */
+    for (uint32_t i = 0; i < img[0]; i++) { ctxreg_note(img[1 + 2 * i]); REG(img[1 + 2 * i]) = img[2 + 2 * i]; }
+}
+/* what the GPU's registers say before the driver touches them */
+static void model_regs(void) {
+    if (gen == 6) REG(0x21A0) = 63u << 6 | 63u;                 /* CXT_SIZE: 126 x 64 bytes */
+    if (gen == 7) REG(0x21A8) = 100u << 9 | 20u;                /* GEN7_CXT_SIZE: 120 x 64 bytes */
+    ctx_cur = 0; nctxreg = 0;
+}
+
 /* runs commands at a (through the GTT or the PPGTT) until a batch end; 0 when done, -1 stuck */
 static int run(uint32_t a, int ppgtt, int depth, uint32_t end, int is_ring);
 static uint32_t hws_base(void) { return gen == 5 ? REG(0x2080) : REG(0x4080); }
@@ -106,7 +142,21 @@ static int exec_cmd(uint32_t* c, uint32_t* len, int ppgtt, int depth) {
             gpu_write(c[2], c[3], gen >= 6 && ppgtt && !global);
             break;
         }
-        case 0x24: gpu_write(c[2], 0, gen >= 6 && ppgtt); break;      /* STORE_REGISTER_MEM (the model has no counters) */
+        case 0x24: gpu_write(c[2], REG(c[1] & 0x3FFFFC), gen >= 6 && ppgtt); break;  /* STORE_REGISTER_MEM */
+        case 0x22:                                       /* LOAD_REGISTER_IMM: (register, value) pairs */
+            for (uint32_t k = 1; k + 1 < *len; k += 2) { uint32_t r = c[k] & 0x3FFFFC; REG(r) = c[k + 1]; ctxreg_note(r); }
+            break;
+        case 0x18: {                                     /* SET_CONTEXT */
+            uint32_t a = c[1] & ~0xFFFu, fl = c[1] & 0xFFFu;
+            if (gen < 6 || depth > 0) { printf("    model: MI_SET_CONTEXT %s\n", gen < 6 ? "on gen 5" : "in a batch"); bad_writes++; break; }
+            if (!(fl & (1u << 8)) || (gen == 6 && (a & 0xFFFF))) { printf("    model: MI_SET_CONTEXT %08x: not GTT / misaligned\n", c[1]); bad_writes++; }
+            ctx_save();
+            ctx_load(a, fl & 1);
+            ctx_cur = a;
+            ctx_switches++;
+            REG(0x2180) = a | 1;                         /* CCID */
+            break;
+        }
         case 0x3F: hung = 1; return -1;                  /* (the tests' "hang here") */
         case 0x31: {                                     /* BATCH_BUFFER_START */
             int unpriv = gen == 5 ? 0 : (h >> 8) & 1;
@@ -182,7 +232,7 @@ static void pump(void) {
     if (ip >> 16) REG(0x20C0) = ip & 0xFFFF & ~(1u << 5);
     /* the GT reset */
     if (gen >= 6 && (REG(0x941C) & 1)) {
-        REG(0x941C) = 0; hung = 0; g_resets_seen++;
+        REG(0x941C) = 0; hung = 0; g_resets_seen++; ctx_cur = 0;
         REG(0x2034) = 0; REG(0x2030) = 0; REG(0x203C) = 0; REG(0x2038) = 0;
     }
     if (gen == 5 && (REG(0x12CA4) & 1)) {

@@ -16,6 +16,10 @@ if "'banana_crocus.c'" not in s:
  s=s.replace('dep_ws2_32, dep_thread,', 'driver_virgl, dep_ws2_32, dep_thread,')
 if 'libgalliumvl_stub' not in s: s=s.replace('libmesa, libgallium,', 'libmesa, libgallium, libgalliumvl_stub,')
 if 'inc_virtio' not in s: s=s.replace('inc_gallium_drivers,', 'inc_gallium_drivers, inc_virtio,')
+# (crocus linked in whatever order the lines above found the source in: on a
+#  fresh one driver_virgl only comes from the last of them, and the driver -
+#  GALLIUM_CROCUS - was left out of OSMesa, its screen a stub)
+if 'driver_crocus' not in s: s=s.replace('driver_virgl, dep_ws2_32,', 'driver_virgl, driver_crocus, dep_ws2_32,')
 write(p, s)
 dst=p.parent/'banana_virgl.c'; source=(here/'banana/virgl_winsys.c').read_text()
 if not dst.exists() or dst.read_text() != source: dst.write_text(source)
@@ -47,18 +51,25 @@ if 'banana_crocus_create_screen' not in s:
    if (!driver || !strcmp(driver, "virgl")) {''')
 write(root/'src/gallium/targets/osmesa/osmesa_target.c', s)
 p=root/'src/gallium/drivers/crocus/crocus_batch.c';s=p.read_text()
-if 'Banana OS keeps no hardware context' not in s:
- s=s.replace('''   /* Start a new batch buffer. */
-   crocus_batch_reset(batch);
-''', '''   /* Start a new batch buffer. */
-   crocus_batch_reset(batch);
-
-#ifdef __BANANA_OS__
+# a source patched by an older version of this script (contexts on every GPU)
+s=s.replace('''#ifdef __BANANA_OS__
    /* Banana OS keeps no hardware context between batches (no MI_SET_CONTEXT):
     * every batch sets the whole GPU state again */
    if (ret != -EIO)
       crocus_lost_context_state(batch);
 #endif
+''', '')
+if 'Banana OS: no hardware contexts' not in s:
+ s=s.replace('''   /* Start a new batch buffer. */
+   crocus_batch_reset(batch);
+''', '''   /* Start a new batch buffer. */
+   crocus_batch_reset(batch);
+
+   /* Banana OS: no hardware contexts on Ironlake (MI_SET_CONTEXT is gen 6+,
+    * kernel/gpu_i915.c): the GPU's state does not outlive a batch there, so
+    * every batch sets all of it again (the kernel says which GPUs keep it) */
+   if (ret != -EIO && !batch->screen->devinfo.has_context_isolation)
+      crocus_lost_context_state(batch);
 ''')
 write(p, s)
 p=root/'src/gallium/drivers/virgl/meson.build';s=p.read_text().replace('if not with_platform_windows\n', "if not with_platform_windows and not get_option('osmesa')\n");write(p, s)

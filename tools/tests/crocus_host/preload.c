@@ -68,6 +68,7 @@ static void boot(void) {
     hw.gtt_entries = gen == 5 ? 256u * 1024u : 512u * 1024u;
     hw.reserved_lo = 8192; hw.reserved_hi = 16;
     quiet = getenv("MODEL_QUIET") != NULL;
+    model_regs();
     i915_attach(&hw);
     printf("preload: a gen %d%s GPU model (%04x) on /dev/dri/card0\n", gen, hsw ? ".5" : "", id);
 }

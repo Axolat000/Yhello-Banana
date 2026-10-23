@@ -50,6 +50,15 @@ uint32_t i915_swizzle_x(void);          /* I915_BIT_6_SWIZZLE_* of X-tiled surfa
  * number (a seqno), or 0 if the GPU is hung and could not be reset */
 uint32_t i915_submit(uint32_t batch_gtt);
 uint32_t i915_submit_privileged(uint32_t batch_gtt);     /* (the kernel's own tests) */
+/* hardware contexts (gen 6 - 7.5; none on Ironlake): an image the GPU's
+ * state is saved into and restored from when batches of different
+ * contexts follow each other. i915_ctx_create: its number (> 0), or -1
+ * (none: no contexts here, or no memory); destroy: freed once the GPU is
+ * done with it; submit_ctx: a batch in context ctx (0: the kernel's) */
+int      i915_has_contexts(void);
+int      i915_ctx_create(void);
+void     i915_ctx_destroy(int ctx);
+uint32_t i915_submit_ctx(int ctx, uint32_t batch_gtt);
 int      i915_done(uint32_t seqno);     /* that one has finished (0: nothing to wait for) */
 /* waits until it has (timeout_ms < 0: for ever): 0, -1 timed out, -2 the GPU hung (reset) */
 int      i915_wait(uint32_t seqno, int timeout_ms);
