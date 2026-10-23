@@ -20,10 +20,13 @@ if 'inc_virtio' not in s: s=s.replace('inc_gallium_drivers,', 'inc_gallium_drive
 #  fresh one driver_virgl only comes from the last of them, and the driver -
 #  GALLIUM_CROCUS - was left out of OSMesa, its screen a stub)
 if 'driver_crocus' not in s: s=s.replace('driver_virgl, dep_ws2_32,', 'driver_virgl, driver_crocus, dep_ws2_32,')
+# iris (gen 8+) beside it
+if "'banana_iris.c'" not in s: s=s.replace("'banana_crocus.c',", "'banana_crocus.c', 'banana_iris.c',")
+if 'driver_iris' not in s: s=s.replace('driver_crocus, dep_ws2_32,', 'driver_crocus, driver_iris, dep_ws2_32,')
 write(p, s)
 dst=p.parent/'banana_virgl.c'; source=(here/'banana/virgl_winsys.c').read_text()
 if not dst.exists() or dst.read_text() != source: dst.write_text(source)
-for name, src in (('banana_crocus.c', 'crocus_screen.c'), ('banana_drm.c', 'drm_shim.c')):
+for name, src in (('banana_crocus.c', 'crocus_screen.c'), ('banana_iris.c', 'iris_screen.c'), ('banana_drm.c', 'drm_shim.c')):
  dst=p.parent/name; source=(here/'banana'/src).read_text()
  if not dst.exists() or dst.read_text() != source: dst.write_text(source)
 p=root/'src/gallium/targets/osmesa/osmesa_target.c';s=p.read_text()
@@ -49,6 +52,16 @@ if 'banana_crocus_create_screen' not in s:
       if (driver) return NULL;
    }
    if (!driver || !strcmp(driver, "virgl")) {''')
+write(root/'src/gallium/targets/osmesa/osmesa_target.c', s)
+# iris first (it turns down the GPUs crocus takes, and crocus those iris takes)
+if 'banana_iris_create_screen' not in s:
+ s=s.replace('struct pipe_screen *banana_crocus_create_screen(int asked);', 'struct pipe_screen *banana_crocus_create_screen(int asked);\nstruct pipe_screen *banana_iris_create_screen(int asked);')
+ s=s.replace("""   if (!driver || !strcmp(driver, "crocus")) {""", """   if (!driver || !strcmp(driver, "iris")) {
+      screen = banana_iris_create_screen(driver != NULL);
+      if (screen) return debug_screen_wrap(screen);
+      if (driver) return NULL;
+   }
+   if (!driver || !strcmp(driver, "crocus")) {""")
 write(root/'src/gallium/targets/osmesa/osmesa_target.c', s)
 p=root/'src/gallium/drivers/crocus/crocus_batch.c';s=p.read_text()
 # a source patched by an older version of this script (contexts on every GPU)

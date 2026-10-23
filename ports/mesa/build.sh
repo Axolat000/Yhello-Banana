@@ -13,14 +13,20 @@
 # build's compile_commands.json with the SDK's headers (rebuild.py) and
 # the library is linked without the system's C library.
 # Needs: gcc, meson, ninja, flex, bison, python3-mako, python3-yaml, mtools,
-# sfdisk (in /sbin); with CROCUS=1 also libdrm's headers (libdrm-dev).
+# sfdisk (in /sbin); with CROCUS=1 or IRIS=1 also libdrm's headers (libdrm-dev);
+# with IRIS=1 also LLVM 17, clang, libclc and SPIRV-LLVM-Translator (llvm-17-dev,
+# libclang-17-dev, libclang-cpp17-dev, libclc-17-dev, libllvmspirvlib-17-dev):
+# iris's internal shaders are OpenCL, compiled at build time by Mesa's
+# intel_clc - built first, on its own, so libOSMesa.so itself needs no LLVM.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 LLVMPIPE=${LLVMPIPE:-0}
 CROCUS=${CROCUS:-0}                      # 1: Mesa's crocus too, for Intel GPUs (gen 4 - 7.5: gpu3d)
+IRIS=${IRIS:-0}                          # 1: Mesa's iris too, for Intel GPUs (gen 8 - 11: gpu3d)
 DEFAULT_OUT=$HERE/build
 [ "$LLVMPIPE" = 0 ] || DEFAULT_OUT=$HERE/build-llvmpipe
 [ "$CROCUS" = 0 ] || DEFAULT_OUT=$DEFAULT_OUT-crocus
+[ "$IRIS" = 0 ] || DEFAULT_OUT=$DEFAULT_OUT-iris
 OUT=$(realpath -m "${1:-$DEFAULT_OUT}")
 VER=24.3.4
 SHA=e641ae27191d387599219694560d221b7feaa91c900bcec46bf444218ed66025
@@ -40,6 +46,7 @@ python3 "$HERE/patch.py" "$SRC"
 
 DRIVERS=softpipe,virgl
 [ "$CROCUS" = 0 ] || DRIVERS=$DRIVERS,crocus      # (needs libdrm's headers on the build machine)
+[ "$IRIS" = 0 ] || DRIVERS=$DRIVERS,iris
 LLVM_MODE=disabled
 DRAW_LLVM=false
 if [ "$LLVMPIPE" != 0 ]; then
@@ -48,8 +55,24 @@ if [ "$LLVMPIPE" != 0 ]; then
     export LLVM_CONFIG
     DRIVERS=softpipe,llvmpipe,virgl
     [ "$CROCUS" = 0 ] || DRIVERS=$DRIVERS,crocus
+    [ "$IRIS" = 0 ] || DRIVERS=$DRIVERS,iris
     LLVM_MODE=enabled
     DRAW_LLVM=true
+fi
+
+CLC_OPT=
+if [ "$IRIS" != 0 ]; then
+    CLC=$OUT/clc
+    if [ ! -x "$CLC/src/intel/compiler/intel_clc" ]; then
+        [ -f "$CLC/build.ninja" ] || LLVM_CONFIG=${CLC_LLVM_CONFIG:-/usr/lib/llvm-17/bin/llvm-config} meson setup "$CLC" "$SRC" \
+            -Dbuildtype=release -Dgallium-drivers= -Dvulkan-drivers= -Dintel-clc=enabled -Dllvm=enabled -Dshared-llvm=enabled \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
+            -Dzstd=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dexpat=disabled -Dxmlconfig=disabled -Dbuild-tests=false -Dtools=
+        ninja -C "$CLC" -j"$JOBS" src/intel/compiler/intel_clc
+    fi
+    PATH=$CLC/src/intel/compiler:$PATH
+    export PATH
+    CLC_OPT=-Dintel-clc=system
 fi
 
 # ── the reference Linux build ─────────────────────────────────────────
@@ -60,7 +83,7 @@ if [ -f "$REF/build.ninja" ] && [ "$(cat "$REF/.banana-conf" 2>/dev/null)" != "$
     echo "mesa: the reference build was configured otherwise - setting it up again"
     rm -rf "$REF"
 fi
-    [ -f "$REF/build.ninja" ] || meson setup "$REF" "$SRC" -Dbuildtype=release -Dosmesa=true \
+    [ -f "$REF/build.ninja" ] || meson setup "$REF" "$SRC" -Dbuildtype=release -Dosmesa=true $CLC_OPT \
         -Dgallium-drivers="$DRIVERS" -Dc_args="-DBANANA_MESA_OSMESA -include $HERE/banana/host_compat.h" -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
         -Dllvm="$LLVM_MODE" -Dcpp_rtti=false -Dgles1=disabled -Dgles2=disabled -Dzstd=disabled -Dvalgrind=disabled \
         -Dlibunwind=disabled -Dshader-cache=disabled -Dlmsensors=disabled -Dgallium-va=disabled \
