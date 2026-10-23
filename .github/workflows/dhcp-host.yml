@@ -1,0 +1,25 @@
+name: DHCP host tests
+on:
+  push:
+    branches: ['upstream/dhcp-lease-lifecycle']
+  pull_request:
+    paths:
+      - 'net/**'
+      - 'kernel/*.h'
+      - 'tools/tests/dhcp_state.c'
+      - 'tools/test_dhcp_state.py'
+      - '.github/workflows/dhcp-host.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 32-bit host compiler support
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Host tests with AddressSanitizer and UndefinedBehaviorSanitizer
+        run: python3 tools/test_dhcp_state.py --sanitize
+      - name: Host tests (32 bit)
+        run: python3 tools/test_dhcp_state.py --32
