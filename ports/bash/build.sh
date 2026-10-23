@@ -40,6 +40,13 @@ PORT_ENV=$(set | sed -n 's/^\(bash_cv_[a-z_0-9]*\)=.*/\1/p')
 grep -q '^#define SYS_BASHRC "/apps/bash/bashrc"' "$SRC/config-top.h" ||
     printf '\n/* Banana OS (ports/bash/build.sh) */\n#define SYS_BASHRC "/apps/bash/bashrc"\n' >> "$SRC/config-top.h"
 
+# notify_of_job_status: SIGCHLD blocked while it prints the jobs, always -
+# with SIGTTOU at its default when bash started (bash -i run by a program),
+# it only counts a SIGCHLD that comes meanwhile and never takes it later:
+# a job that stopped or ended right then stayed "Running" (signals come at
+# a system call's return here: the write printing "[1] pid")
+sed -i 's/^  if (old_ttou != 0)$/  if (1)  \/\* Banana OS: SIGCHLD always blocked here \*\//' "$SRC/jobs.c"
+
 port_configure --without-bash-malloc --disable-nls --enable-job-control --with-installed-readline=no \
     --without-curses --prefix=/usr --bindir=/bin
 # (bash's Makefile makes pathnames.h twice at once under -j: once first)

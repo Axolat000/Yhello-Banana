@@ -19,6 +19,12 @@ typedef unsigned long nfds_t;
 #define POLLRDHUP  0x2000
 /* sockets, files (always ready) and the terminal; timeout -1: none */
 int poll(struct pollfd* fds, nfds_t n, int timeout_ms);
+#ifdef _GNU_SOURCE
+#include <signal.h>
+#include <time.h>
+/* poll with the signal mask *mask while it waits (set at once) */
+int ppoll(struct pollfd* fds, nfds_t n, const struct timespec* ts, const sigset_t* mask);
+#endif
 #ifdef __cplusplus
 }
 #endif

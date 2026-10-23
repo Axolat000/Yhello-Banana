@@ -173,6 +173,16 @@ typedef struct {
     uint32_t  start_ms;
 } app_proc_t;
 
+/* pending signals change on several cores at once (a stop seen by the
+ * child's, the parent taking its own): no update lost */
+#ifdef __x86_64__
+#define SIG_OR(x, v)  __atomic_or_fetch(&(x), (v), __ATOMIC_SEQ_CST)
+#define SIG_AND(x, v) __atomic_and_fetch(&(x), (v), __ATOMIC_SEQ_CST)
+#else
+#define SIG_OR(x, v)  ((x) |= (v))
+#define SIG_AND(x, v) ((x) &= (v))
+#endif
+
 static app_proc_t g_procs[APP_MAX];
 /* the system call each task is in (its slot + 1; 0: none) - ps's WCHAN */
 #ifdef __x86_64__
@@ -328,7 +338,7 @@ static void breathe(app_proc_t* p, int force) {
             p->interrupted = 1;
 #ifdef __x86_64__
             /* a SIGINT handler (or SIG_IGN) takes Ctrl+C instead */
-            if (p->sig_disp[2] == BANANA_SIG_CATCH) p->sig_pending |= 1ull << 1;
+            if (p->sig_disp[2] == BANANA_SIG_CATCH) SIG_OR(p->sig_pending, 1ull << 1);
             else if (p->sig_disp[2] == BANANA_SIG_IGNORE) {}
             else
 #endif
@@ -790,7 +800,7 @@ static long pipe_io(app_proc_t* p, kfile_t* f, void* buf, unsigned long len, int
         }
         if (r == -32) {                                  /* no reader: SIGPIPE (it ends the app by default) */
 #ifdef __x86_64__
-            p->sig_pending |= 1ull << 12;
+            SIG_OR(p->sig_pending, 1ull << 12);
 #endif
             return done ? (long)done : -32;
         }
@@ -1012,7 +1022,7 @@ static long a_sock_send(int fd, const void* buf, unsigned long len, int flags, c
     if (!s) {
         kfile_t* k = h && h->type == KF_PIPE && h->is_sock ? h : NULL;
         if (!k) return -88;
-        if (flags & 0x40) { long r = kpipe_write(k, buf, len); if (r == -32 && !(flags & 0x4000)) cur()->sig_pending |= 1ull << 12; return r; }   /* MSG_DONTWAIT; MSG_NOSIGNAL */
+        if (flags & 0x40) { long r = kpipe_write(k, buf, len); if (r == -32 && !(flags & 0x4000)) SIG_OR(cur()->sig_pending, 1ull << 12); return r; }   /* MSG_DONTWAIT; MSG_NOSIGNAL */
         return pipe_io(cur(), k, (void*)buf, len > 0x7FFFFFFFul ? 0x7FFFFFFFu : (uint32_t)len, 1);
     }
     if (sa && (salen < 0 || !uok(sa, (size_t)salen))) return -14;
@@ -2248,6 +2258,17 @@ static int a_sig_suspend(const unsigned long long* mask) {
     return -4;                                                    /* EINTR: its handler runs now */
 }
 
+/* pselect / ppoll (version 30): the mask set and the wait begun at once,
+ * like sigsuspend - bash's readline waits in pselect with SIGCHLD let in
+ * only there: done in two calls, a child's stop or end was taken before
+ * the wait began and readline never heard (jobs said Running) */
+static int a_poll_mask(void* fds, int n, int timeout_ms, const unsigned long long* mask) {
+    app_proc_t* p = cur();
+    if (!p || !mask) return -14;
+    sig_state(p)->blocked = *mask & ~((1ull << 8) | (1ull << 18));
+    return a_poll(fds, n, timeout_ms);                            /* (the caller puts its mask back) */
+}
+
 /* to thread id (thread_id()'s numbering), or the app (-1); it is
  * delivered when that thread next goes back to its code */
 static int a_sig_send(int thread, int sig) {
@@ -2258,8 +2279,8 @@ static int a_sig_send(int thread, int sig) {
     if (thread > 0 && (!p->threads[thread - 1].used || p->threads[thread - 1].done)) return -1;
     if (!sig) return 0;                                          /* (only: does it exist?) */
 #ifdef __x86_64__
-    if (st) st->pending |= 1ull << (sig - 1);
-    else p->sig_pending |= 1ull << (sig - 1);
+    if (st) SIG_OR(st->pending, 1ull << (sig - 1));
+    else SIG_OR(p->sig_pending, 1ull << (sig - 1));
     /* a thread sleeping in wait() looks at its signals (EINTR-like wake) */
     if (thread > 0 && p->threads[thread - 1].pid >= 0) task_wake(p->threads[thread - 1].pid);
     else if (thread == 0 || thread == -1) task_wake(p->pid);
@@ -2666,6 +2687,7 @@ static void spec_init(void) {
     SPEC(proc_list, "ii", 0);
     SPEC(sig_suspend, "L", 0);
     SPEC(kcmd, "s", 0);
+    SPEC(poll_mask, "iiiL", 0);           /* fds: checked in a_poll */
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2851,8 +2873,8 @@ static int sig_take(app_proc_t* p, sigstate_t* st) {
     if (!ready) return 0;
     int sig = __builtin_ctzll(ready) + 1;
     uint64_t bit = 1ull << (sig - 1);
-    if (st->pending & bit) st->pending &= ~bit;
-    else p->sig_pending &= ~bit;
+    if (st->pending & bit) SIG_AND(st->pending, ~bit);
+    else SIG_AND(p->sig_pending, ~bit);
     return sig;
 }
 
@@ -3167,14 +3189,14 @@ static void proc_signal(app_proc_t* t, int sig) {
             t->stopped = 0;
             t->cont_report = 1;
             app_proc_t* parent = t->ppid ? proc_by_pid(t->ppid) : NULL;
-            if (parent) { parent->sig_pending |= 1ull << 16; proc_wake(parent); }
+            if (parent) { SIG_OR(parent->sig_pending, 1ull << 16); proc_wake(parent); }
         }
-        t->sig_pending &= ~(0xFull << 18);             /* (stops sent before: dropped) */
+        SIG_AND(t->sig_pending, ~(0xFull << 18));             /* (stops sent before: dropped) */
     } else if (sig >= 19 && sig <= 22) {
-        t->sig_pending &= ~(1ull << 17);               /* (a SIGCONT not taken yet: dropped) */
+        SIG_AND(t->sig_pending, ~(1ull << 17));               /* (a SIGCONT not taken yet: dropped) */
     }
 #ifdef __x86_64__
-    t->sig_pending |= 1ull << (sig - 1);
+    SIG_OR(t->sig_pending, 1ull << (sig - 1));
 #else
     if (sig == 9 || sig == 15 || sig == 2) t->kill_req = 1;   /* (no signals here: the ones that end it) */
 #endif
@@ -4097,6 +4119,7 @@ static void api_init(void) {
     g_api.proc_alarm = G(a_proc_alarm);
     g_api.sig_suspend = G(a_sig_suspend);
     g_api.kcmd = G(a_kcmd);
+    g_api.poll_mask = G(a_poll_mask);
 #ifdef __x86_64__
     g_api.proc_list = G(a_proc_list);                  /* (the system calls' table: 64-bit) */
 #endif

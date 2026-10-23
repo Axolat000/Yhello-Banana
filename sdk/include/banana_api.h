@@ -624,6 +624,9 @@ typedef struct banana_api {
      * the old built-in shell had) run with this program's stdin and stdout
      * - 0, 127 if there is no such command (apps/kcmd: their /bin links) */
     int (*kcmd)(const char* line);
+    /* poll_mask: poll with the calling thread's mask *mask while it waits
+     * (set at once: pselect, ppoll); the caller sets its mask back after */
+    int (*poll_mask)(void* fds, int n, int timeout_ms, const unsigned long long* mask);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

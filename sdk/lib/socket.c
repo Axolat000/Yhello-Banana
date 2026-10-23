@@ -163,7 +163,38 @@ int poll(struct pollfd* fds, nfds_t n, int timeout_ms) {
     return __kpoll(fds, n, timeout_ms);
 }
 
-int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
+/* poll, with the signal mask *mask while it waits (NULL: as it is) - set
+ * in the same system call as the wait where the system can (pselect,
+ * ppoll: a signal let in only for the wait must not come just before it) */
+static int poll_with_mask(struct pollfd* fds, nfds_t n, int timeout_ms, const sigset_t* mask) {
+    if (!mask) return poll(fds, n, timeout_ms);
+    sigset_t old;
+    sigprocmask(SIG_SETMASK, NULL, &old);
+    int r, ufd = 0;
+    for (nfds_t i = 0; i < n; i++) if (__ufd_is(fds[i].fd)) ufd = 1;
+    if (!ufd && BANANA_HAS(__banana, poll_mask)) {
+        unsigned long long m = (unsigned long long)mask->__val[0]
+#if __SIZEOF_LONG__ == 4
+            | (unsigned long long)mask->__val[1] << 32
+#endif
+            ;
+        r = (int)ret(__banana->poll_mask(fds, (int)n, timeout_ms, &m));
+    } else {
+        sigprocmask(SIG_SETMASK, mask, NULL);
+        r = poll(fds, n, timeout_ms);
+    }
+    int e = errno;
+    sigprocmask(SIG_SETMASK, &old, NULL);
+    errno = e;
+    return r;
+}
+
+int ppoll(struct pollfd* fds, nfds_t n, const struct timespec* ts, const sigset_t* mask) {
+    int ms = ts ? (int)(ts->tv_sec * 1000 + (ts->tv_nsec + 999999) / 1000000) : -1;
+    return poll_with_mask(fds, n, ms, mask);
+}
+
+static int select_mask(int n, fd_set* rd, fd_set* wr, fd_set* ex, int ms, const sigset_t* mask) {
     struct pollfd pf[64];
     int map[64], k = 0;
     for (int fd = 0; fd < n && fd < FD_SETSIZE; fd++) {
@@ -178,8 +209,7 @@ int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
         pf[k].revents = 0;
         map[k++] = fd;
     }
-    int ms = tv ? (int)(tv->tv_sec * 1000 + tv->tv_usec / 1000) : -1;
-    int r = poll(pf, (nfds_t)k, ms);
+    int r = poll_with_mask(pf, (nfds_t)k, ms, mask);
     if (r < 0) return -1;
     if (rd) FD_ZERO(rd);
     if (wr) FD_ZERO(wr);
@@ -195,18 +225,12 @@ int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
     return count;
 }
 
+int select(int n, fd_set* rd, fd_set* wr, fd_set* ex, struct timeval* tv) {
+    return select_mask(n, rd, wr, ex, tv ? (int)(tv->tv_sec * 1000 + tv->tv_usec / 1000) : -1, NULL);
+}
+
 int pselect(int n, fd_set* rd, fd_set* wr, fd_set* ex, const struct timespec* ts, const sigset_t* mask) {
-    struct timeval tv, *tvp = NULL;
-    if (ts) { tv.tv_sec = ts->tv_sec; tv.tv_usec = ts->tv_nsec / 1000; tvp = &tv; }
-    sigset_t old;
-    if (mask) sigprocmask(SIG_SETMASK, mask, &old);
-    int r = select(n, rd, wr, ex, tvp);
-    if (mask) {
-        int e = errno;
-        sigprocmask(SIG_SETMASK, &old, NULL);
-        errno = e;
-    }
-    return r;
+    return select_mask(n, rd, wr, ex, ts ? (int)(ts->tv_sec * 1000 + ts->tv_nsec / 1000000) : -1, mask);
 }
 
 int ioctl(int fd, unsigned long req, ...) {
