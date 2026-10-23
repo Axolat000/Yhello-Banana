@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "timer.h"
+#include "latency.h"
 #include "types.h"
 #include "idt.h"
 #include "io.h"
@@ -112,6 +113,7 @@ uint64_t timer_counter_per_ms(void) { return 1000000ull; } /* nanoseconds */
 uint32_t timer_irq_count(void) { return g_ms; }
 
 static void timer_irq(void) {
+    if (latency_enabled) latency_timer();
     __atomic_add_fetch(&g_seq,1,__ATOMIC_ACQ_REL);
     if(!g_hpet64 && (g_hpet || g_pm_port)) {
         uint32_t now=narrow_read();g_elapsed+=timer_wrap_delta(now,g_last,g_mask);g_last=now;

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "moncmds.h"
+#include "../kernel/latency.h"
 #include "../kernel/fpu.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
@@ -583,6 +584,14 @@ int moncmd_dispatch(const char* line) {
     char* argv[16];
     int argc = shell_split_args(buf, argv, 16);
     if (argc == 0) return 0;
+    if (strcmp(argv[0], "latency") == 0) {
+        if (argc == 2 && !strcmp(argv[1], "on")) latency_set(1);
+        else if (argc == 2 && !strcmp(argv[1], "off")) latency_set(0);
+        else if (argc == 1 || (argc == 2 && !strcmp(argv[1], "status"))) latency_report();
+        else { terminal_writeln("usage: latency [on | off | status]"); return 1; }
+        terminal_writeln("latency: sample written to serial log");
+        return 1;
+    }
     if (strcmp(argv[0], "free") == 0) { cmd_free(argc, argv); return 1; }
     if (strcmp(argv[0], "swap") == 0) { cmd_swap(argc, argv); return 1; }
     if (strcmp(argv[0], "df") == 0) { cmd_df(argc, argv); return 1; }
