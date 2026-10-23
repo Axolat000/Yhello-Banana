@@ -1,0 +1,19 @@
+name: ext4-failure-host regressions
+on:
+  push:
+    branches: ['upstream/ext4-failure-regressions']
+  pull_request:
+    paths: ['kernel/**', 'net/**', 'sdk/**', 'shell/**', 'tools/**', '.github/workflows/ext4-failure-host.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc e2fsprogs
+      - name: Run regressions
+        run: |
+          sh tools/ext4test/run.sh
