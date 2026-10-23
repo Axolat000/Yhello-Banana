@@ -27,6 +27,7 @@
 #include "diskcmd.h"
 #include "diskbench.h"
 #include "../kernel/ext4.h"
+#include "../kernel/notification.h"
 
 static void say(const char* fmt, ...) {
     char buf[256];
@@ -374,6 +375,12 @@ int syscmd_dispatch(const char* line) {
         if (argc > 1 && !apps && page < 0) { terminal_writeln("usage: settings [apps [name] | time | keyboard | themes | about]"); return 1; }
         if (!(apps ? gui_open_settings_app(argc > 2 ? argv[2] : NULL) : gui_open_settings())) terminal_writeln("settings: Settings is part of the desktop - run `startx` first");
         else if (page >= 0) settings_open_page(page);
+        return 1;
+    }
+    if (strcmp(argv[0], "notify") == 0) {
+        if (argc < 2 || argc > 3) terminal_writeln("usage: notify TITLE [BODY]");
+        else if (notify_post("Shell", argv[1], argc == 3 ? argv[2] : "", -1) <= 0)
+            terminal_writeln("notify: notification refused (rate limit)");
         return 1;
     }
     if (strcmp(argv[0], "taskmgr") == 0) {

@@ -1,0 +1,22 @@
+name: notification-host regressions
+on:
+  push:
+    branches: ['upstream/native-notifications']
+  pull_request:
+    paths: ['kernel/**', 'net/**', 'sdk/**', 'shell/**', 'tools/**', '.github/workflows/notification-host.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Run regressions
+        run: |
+          python3 tools/test_notification.py --sanitize
+          python3 tools/test_notification.py --32
+          gcc -m64 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include kernel/gui.c kernel/notification.c shell/syscmds.c shell/help.c
+          gcc -m32 -ffreestanding -fsyntax-only -Ikernel -Inet -Isdk/include kernel/gui.c kernel/notification.c shell/syscmds.c shell/help.c
