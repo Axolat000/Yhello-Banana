@@ -47,6 +47,7 @@ _Static_assert(BANANA_VM_BASE == UVM_BASE, "BANANA_VM_BASE (banana_api.h) must b
 #include "../shell/shell.h"
 #include "kfile.h"
 #include "pty.h"
+#include "vcons.h"
 #include "random.h"
 #include "../net/net.h"
 
@@ -174,8 +175,10 @@ typedef struct {
 
 static app_proc_t g_procs[APP_MAX];
 /* the system call each task is in (its slot + 1; 0: none) - ps's WCHAN */
+#ifdef __x86_64__
 static uint16_t g_insys[TASK_MAX];
 static uintptr_t g_lastip[TASK_MAX];      /* where in user code it last was (ps -o uip) */
+#endif
 
 /* argv as one line (ps shows it) */
 static void cmdline_set(app_proc_t* p, int argc, char** argv) {
@@ -921,6 +924,12 @@ static int a_fd_fcntl(int fd, int cmd, long arg) {
     return -22;
 }
 
+/* a pty's number for programs: /dev/pts/N's N, or a console's (BANANA_TTY_CONSOLE) */
+static int tty_num(pty_t* t) {
+    int m = vcons_minor(t);
+    return m ? BANANA_TTY_CONSOLE | m : pty_index(t);
+}
+
 static int a_fd_info(int fd, void* out) {
     app_proc_t* p = cur();
     kfile_t* f = get_fd(p, fd);
@@ -932,7 +941,7 @@ static int a_fd_info(int fd, void* out) {
     o->is_sock = f->type == KF_PIPE && f->is_sock;
     o->cloexec = p->cloexec[fd];
     o->size = f->type == KF_FILE ? fs_file_info(f->fidx)->size : f->type == KF_PIPE ? (unsigned)kpipe_nread(f)
-            : f->type == KF_PTM || f->type == KF_PTS ? (unsigned)pty_index(f->pty) : f->type == KF_DEV ? (unsigned)f->dev : 0;
+            : f->type == KF_PTM || f->type == KF_PTS ? (unsigned)tty_num(f->pty) : f->type == KF_DEV ? (unsigned)f->dev : 0;
     o->id = (uintptr_t)f;
     return 0;
 }
@@ -2069,54 +2078,157 @@ static int a_sig_mask(int how, const unsigned long long* set, unsigned long long
  * old built-in shell's command runs in the calling task, what it writes
  * going to the program's stdout (a terminal: with its colours and cursor
  * moves as escapes) and the keys it reads coming from its stdin */
+/* the command runs in a kernel task of its own, the program waiting for it:
+ * one that starts an app itself (selftest, run) gives that app its task -
+ * in the program's own, the app would take the program's place. What it
+ * writes and the keys it reads go through two rings here; the program's
+ * task (a_kcmd) moves them to and from its stdout and stdin - only a
+ * process's own task may use its descriptors */
+#define KJ_OUT 4096
+#define KJ_IN  256
+typedef struct {
+    char*        line;
+    int          redirect, ansi, cols, rows;
+    char         out[KJ_OUT];
+    volatile uint32_t oh, ot;           /* (the command adds at oh, the program takes at ot) */
+    char         in[KJ_IN];
+    volatile uint32_t ih, it;
+    volatile int want_in;               /* it asked for keys */
+    volatile int cancel;                /* the program is gone or cannot take more: keys read as ^C, then the end */
+    volatile int in_end;                /* stdin ended */
+    volatile int done, rc;
+} kjob_t;
+static kjob_t* g_kjob[TASK_MAX];
+
 static void kcmd_put(void* ctx, const char* s, uint32_t n) {
-    app_proc_t* p = (app_proc_t*)ctx;
-    while (n) {
-        long r = fd_write(p, 1, s, n);
-        if (r == -11) { task_sleep_ms(2); continue; }      /* (a terminal's queue full: it drains) */
-        if (r <= 0) return;
-        s += r;
-        n -= (uint32_t)r;
+    kjob_t* j = (kjob_t*)ctx;
+    for (uint32_t i = 0; i < n; i++) {
+        while ((j->oh + 1) % KJ_OUT == j->ot) {
+            if (j->cancel) return;
+            task_sleep_ms(1);
+        }
+        j->out[j->oh] = s[i];
+        j->oh = (j->oh + 1) % KJ_OUT;
     }
 }
 
-static long a_read(int fd, void* buf, unsigned long len);
 static int kcmd_get(void* ctx, int wait) {
-    app_proc_t* p = (app_proc_t*)ctx;
+    kjob_t* j = (kjob_t*)ctx;
     for (;;) {
+        if (j->it != j->ih) {
+            int c = (unsigned char)j->in[j->it];
+            j->it = (j->it + 1) % KJ_IN;
+            return c;
+        }
+        if (j->cancel == 1) { j->cancel = 2; return 3; }     /* (as a dead SSH session: ^C, so it gives up) */
+        if (j->cancel || j->in_end) return -1;
+        j->want_in = 1;
+        if (!wait) return 0;
+        task_sleep_ms(2);
+    }
+}
+
+static void kcmd_entry(void) {
+    int me = task_current_pid();
+    kjob_t* j = me >= 0 && me < TASK_MAX ? g_kjob[me] : NULL;
+    if (!j) return;
+    int ok = !j->redirect || terminal_redirect_begin(kcmd_put, j, j->ansi, j->cols, j->rows) == 0;
+    if (ok && j->redirect) keyboard_redirect_begin(kcmd_get, j);
+    j->rc = ok ? shell_exec_line(j->line) : -12;
+    if (ok && j->redirect) {
+        keyboard_redirect_end();
+        terminal_redirect_end();
+    }
+    g_kjob[me] = NULL;
+    j->done = 1;
+}
+
+static long a_read(int fd, void* buf, unsigned long len);
+
+/* the program's side: what the command wrote, to stdout (1 if there was some) */
+static int kcmd_out(app_proc_t* p, kjob_t* j) {
+    char tmp[512];
+    uint32_t n = 0;
+    while (n < sizeof(tmp) && j->ot != j->oh) {
+        tmp[n++] = j->out[j->ot];
+        j->ot = (j->ot + 1) % KJ_OUT;
+    }
+    for (uint32_t d = 0; d < n && !j->cancel; ) {
+        long r = fd_write(p, 1, tmp + d, n - d);
+        if (r == -11) { task_sleep_ms(2); continue; }
+        if (r <= 0) { j->cancel = 1; break; }         /* (a pipe nobody reads...) */
+        d += (uint32_t)r;
+    }
+    return n != 0;
+}
+
+/* ... and keys from stdin, while it wants some */
+static int kcmd_in(app_proc_t* p, kjob_t* j) {
+    int got = 0;
+    while (j->want_in && !j->in_end && (j->ih + 1) % KJ_IN != j->it) {
         kfile_t* f = get_fd(p, 0);
-        if (!f) return -1;
+        if (!f) { j->in_end = 1; break; }
         int ready = f->type == KF_PTS ? (pty_poll(f->pty, 0, KF_POLLIN) & (KF_POLLIN | KF_POLLHUP)) != 0
                   : f->type == KF_PIPE ? (kpipe_poll(f, KF_POLLIN) & (KF_POLLIN | KF_POLLHUP)) != 0 : 1;
-        if (ready) {
-            uint8_t c;
-            long r = a_read(0, &c, 1);
-            if (r == 1) return c;
-            if (r != -11) return -1;                      /* (the end, an error) */
-        }
-        if (!wait) return 0;
-        if (p->kill_req || p->exit_req) return -1;
-        task_sleep_ms(5);
+        if (!ready) break;
+        uint8_t c;
+        long r = a_read(0, &c, 1);
+        if (r == -11) break;
+        if (r != 1) { j->in_end = 1; break; }          /* (the end, an error) */
+        j->in[j->ih] = (char)c;
+        j->ih = (j->ih + 1) % KJ_IN;
+        got = 1;
     }
+    return got;
+}
+
+/* a signal that ends the program waits (SIGHUP, SIGINT, SIGQUIT, SIGTERM - not a SIGWINCH) */
+static int kcmd_stopping(app_proc_t* p) {
+#ifdef __x86_64__
+    sigstate_t* st = sig_state(p);
+    uint64_t pend = (st->pending | p->sig_pending) & ~st->blocked;
+    return (pend & ((1ull << 0) | (1ull << 1) | (1ull << 2) | (1ull << 14))) != 0;
+#else
+    (void)p;
+    return 0;
+#endif
 }
 
 static int a_kcmd(const char* line) {
     app_proc_t* p = cur();
     if (!p || !line) return -14;
     kfile_t* o = get_fd(p, 1);
-    if (o && o->type == KF_CONS) return shell_exec_line(line);     /* (the console's own: as it was) */
-    int cols = 80, rows = 24;
+    kjob_t* j = (kjob_t*)kzalloc(sizeof(kjob_t));
+    size_t len = strlen(line);
+    char* l = (char*)kmalloc(len + 1);
+    if (!j || !l) { kfree(j); kfree(l); return -12; }
+    memcpy(l, line, len + 1);
+    j->line = l;
+    j->redirect = !(o && o->type == KF_CONS);                   /* (the console's own: as it was) */
+    j->ansi = o && o->type == KF_PTS;
+    j->cols = 80;
+    j->rows = 24;
     if (o && o->type == KF_PTS) {
         pty_winsize_t ws;
         pty_get_winsize(o->pty, &ws);
-        if (ws.ws_col) cols = ws.ws_col;
-        if (ws.ws_row) rows = ws.ws_row;
+        if (ws.ws_col) j->cols = ws.ws_col;
+        if (ws.ws_row) j->rows = ws.ws_row;
     }
-    if (terminal_redirect_begin(kcmd_put, p, o && o->type == KF_PTS, cols, rows)) return -12;
-    keyboard_redirect_begin(kcmd_get, p);
-    int rc = shell_exec_line(line);
-    keyboard_redirect_end();
-    terminal_redirect_end();
+    int pid = task_create_stack("kcmd", kcmd_entry, 256u << 10);   /* (guarded; the console shell had 64 KiB: selftest needs it) */
+    if (pid < 0 || pid >= TASK_MAX) { kfree(l); kfree(j); return -12; }
+    g_kjob[pid] = j;                                            /* (before it runs: once we yield) */
+    while (!j->done) {
+        int busy = kcmd_out(p, j);
+        busy |= kcmd_in(p, j);
+        /* killed, interrupted: it is told (its keys end) - the program goes
+         * once it has returned, never while it runs for it */
+        if (!j->cancel && (p->kill_req || p->exit_req || kcmd_stopping(p))) j->cancel = 1;
+        if (!busy) task_sleep_ms(2);
+    }
+    kcmd_out(p, j);
+    int rc = j->rc;
+    kfree(l);
+    kfree(j);
     return rc;
 }
 
@@ -2188,7 +2300,16 @@ static unsigned long long a_sig_pending(void) {
 static int sig_waiting(app_proc_t* p) {
 #ifdef __x86_64__
     sigstate_t* st = sig_state(p);
-    return ((st->pending | p->sig_pending) & ~st->blocked) != 0;
+    uint64_t ready = (st->pending | p->sig_pending) & ~st->blocked;
+    /* (one that would be dropped - ignored, or CHLD CONT URG WINCH left as
+     * they are - wakes nothing: a sleep goes on after a ^Z and fg) */
+    for (uint64_t r = ready; r; r &= r - 1) {
+        int sig = __builtin_ctzll(r) + 1;
+        int d = p->sig_disp[sig];
+        if (d == BANANA_SIG_IGNORE || (d != BANANA_SIG_CATCH && (sig == 17 || sig == 18 || sig == 23 || sig == 28)))
+            ready &= ~(1ull << (sig - 1));
+    }
+    return ready != 0;
 #else
     (void)p;
     return 0;                                   /* (32-bit: nothing is delivered) */
@@ -2395,7 +2516,7 @@ static int a_proc_list(banana_procinfo_t* out, int max) {
         o->ppid = t->ppid;
         o->pgid = t->pgid;
         o->sid = t->sid;
-        o->tty = t->ctty ? pty_index(t->ctty) : t->has_term ? -2 : -1;
+        o->tty = t->ctty ? tty_num(t->ctty) : t->has_term ? -2 : -1;
         o->tpgid = t->ctty ? pty_fg(t->ctty) : 0;
         int sys = t->pid >= 0 && t->pid < TASK_MAX ? g_insys[t->pid] : 0;
         o->state = t->zombie ? 'Z' : t->stopped ? 'T' : sys ? 'S' : 'R';
@@ -3060,6 +3181,17 @@ static void proc_signal(app_proc_t* t, int sig) {
     proc_wake(t);
 }
 
+/* the last processes that ended, with their exit codes (128 + a signal):
+ * one with no parent to wait for it (an SSH session's bash) */
+typedef struct { int pid, code; } ended_t;
+static ended_t g_ended[16];
+static int g_ended_at;
+
+int app_exit_code(int pid) {
+    for (int i = 0; i < 16; i++) if (g_ended[i].pid == pid && pid) return g_ended[i].code;
+    return -1;
+}
+
 /* the process ended: what it held goes back; with a parent that may wait
  * for it, it stays as a zombie (its status) and the parent gets SIGCHLD */
 static void proc_finish(app_proc_t* p) {
@@ -3077,6 +3209,8 @@ static void proc_finish(app_proc_t* p) {
     ctty_set(p, NULL);
     p->stopped = 0;
     p->wstatus = sig ? (sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
+    g_ended[g_ended_at] = (ended_t){ p->seq, sig ? 128 + sig : p->exit_code & 0xFF };
+    g_ended_at = (g_ended_at + 1) % 16;
     app_proc_t* parent = p->ppid ? proc_by_pid(p->ppid) : NULL;
     for (int i = 0; i < APP_MAX; i++) {                 /* its children: nobody's now */
         app_proc_t* c = &g_procs[i];
@@ -3654,6 +3788,13 @@ static int dev_open(app_proc_t* p, const char* path, int flags) {
         if (pty_locked(t)) return -5;                    /* (unlockpt first) */
         return pts_open(p, t, flags | (p->ctty ? BANANA_O_NOCTTY : 0));
     }
+#ifdef __x86_64__
+    if (!strncmp(n, "tty", 3) && n[3]) {                /* the consoles: tty1..6, tty0, ttyS0 (kernel/vcons.c) */
+        pty_t* t = vcons_tty(n);
+        if (!t) return -6;                               /* ENXIO */
+        return pts_open(p, t, flags | (p->ctty ? BANANA_O_NOCTTY : 0));
+    }
+#endif
     if (!strcmp(n, "tty")) {
         if (p->ctty) return pts_open(p, p->ctty, flags | BANANA_O_NOCTTY);
         if (!p->has_term) return -6;                     /* ENXIO: no controlling terminal */
@@ -4448,7 +4589,7 @@ static int load_program(app_proc_t* p, const uint8_t* f, uint32_t size, int argc
 #endif
 
 /* reads, loads and prepares an app (slot claimed, not started) */
-static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, int ecap) {
+static app_proc_t* prepare(const char* path, int argc, char** argv, char** envp, char* err, int ecap) {
     api_init();
     int fi = fs_find_file(path);
     if (fi < 0) { kstrlcpy(err, "no such program", (size_t)ecap); return NULL; }
@@ -4471,10 +4612,11 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
     if (fd_std(p) != 0) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
 #ifdef __x86_64__
     fs_pin(fi);
-    int bad = load_program(p, (const uint8_t*)f->content, f->size, argc, argv, NULL, err, ecap) != 0;
+    int bad = load_program(p, (const uint8_t*)f->content, f->size, argc, argv, envp, err, ecap) != 0;
     fs_unpin(fi);
     if (bad) { discard(p); return NULL; }
 #else
+    (void)envp;
     uint8_t* image;
     fs_pin(fi);
     int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, 0, err, ecap) != 0;
@@ -4518,7 +4660,7 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char* err, i
 
 
 int app_exec(const char* path, int argc, char** argv, char* err, int ecap) {
-    app_proc_t* p = prepare(path, argc, argv, err, ecap);
+    app_proc_t* p = prepare(path, argc, argv, NULL, err, ecap);
     if (!p) return -1;
     p->pid = task_current_pid();
     pid_set(p->pid, p->id, -1);
@@ -4542,7 +4684,7 @@ static void spawned_entry(void) {
 }
 
 int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
-    app_proc_t* p = prepare(path, argc, argv, err, ecap);
+    app_proc_t* p = prepare(path, argc, argv, NULL, err, ecap);
     if (!p) return -1;
     p->pid = -1;
     p->own_task = 1;
@@ -4554,6 +4696,71 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     pid_set(pid, p->id, -1);
     return 0;
 }
+
+#ifdef __x86_64__
+/* ── the kernel's own terminals (kernel/vcons.c: the consoles, the serial
+ * line) - it holds the master; the program runs on the slave ── */
+
+static void tty_entry(void) {
+    app_proc_t* p = cur();
+    if (!p) return;
+    task_set_background();             /* (its keys come through the pty, not the keyboard) */
+    run(p);
+    proc_finish(p);
+}
+
+/* path started in a task of its own, a session leader with t as its
+ * controlling terminal and stdin / stdout / stderr; its pid, or -1 with err */
+int app_spawn_tty(const char* path, int argc, char** argv, char** envp, pty_t* t, char* err, int ecap) {
+    app_proc_t* p = prepare(path, argc, argv, envp, err, ecap);
+    if (!p) return -1;
+    p->pid = -1;
+    p->own_task = 1;
+    p->has_term = 0;
+    p->vt = 0;
+    for (int fd = 0; fd < 3; fd++) {
+        kfile_t* f = kfile_new(KF_PTS, KF_READ | KF_WRITE);
+        if (!f) { release(p); kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
+        f->pty = t;
+        pty_slave_ref(t, 1);
+        kfile_put(p->fdt[fd]);
+        p->fdt[fd] = f;
+    }
+    int pid = task_create(p->name, tty_entry);
+    if (pid < 0) { release(p); kstrlcpy(err, "too many tasks", (size_t)ecap); return -1; }
+    p->pid = pid;                      /* (it runs once we yield) */
+    ctty_set(p, t);
+    pty_set_session(t, p->sid);
+    pty_set_fg(t, p->pgid);
+    pid_set(pid, p->id, -1);
+    return p->seq;
+}
+
+/* the process pid is there (not ended) */
+int app_alive(int pid) {
+    app_proc_t* p = proc_by_pid(pid);
+    return p && !p->zombie;
+}
+
+/* typed into a terminal the kernel holds: its signals (^C...) sent */
+long app_pty_type(pty_t* t, const uint8_t* buf, unsigned long n) {
+    long r = pty_master_write(t, buf, n);
+    pty_dispatch(t);
+    return r;
+}
+
+/* the kernel lets go of it: SIGHUP to its session */
+void app_pty_close(pty_t* t) {
+    if (!pty_master_ref(t, -1)) pty_dispatch(t);
+}
+
+/* its size changed: SIGWINCH to its foreground */
+void app_pty_resize(pty_t* t, int cols, int rows) {
+    pty_winsize_t ws = { (uint16_t)rows, (uint16_t)cols, 0, 0 };
+    pty_set_winsize(t, &ws);
+    pty_dispatch(t);
+}
+#endif
 
 /* what an app holds: its blocks' memory, and (64-bit) the pages of its
  * mapped memory in RAM - where its malloc heap is now (sdk/lib/malloc.c) */

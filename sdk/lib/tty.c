@@ -217,7 +217,13 @@ int ttyname_r(int fd, char* buf, size_t len) {
     const char* s;
     char tmp[32];
     if (k < 0) return EBADF;
-    if (k == BANANA_FD_PTS) { snprintf(tmp, sizeof(tmp), "/dev/pts/%d", n); s = tmp; }
+    if (k == BANANA_FD_PTS && (n & BANANA_TTY_CONSOLE)) {
+        n &= 0xFF;
+        if (n == 64) snprintf(tmp, sizeof(tmp), "/dev/ttyS0");
+        else snprintf(tmp, sizeof(tmp), "/dev/tty%d", n);
+        s = tmp;
+    }
+    else if (k == BANANA_FD_PTS) { snprintf(tmp, sizeof(tmp), "/dev/pts/%d", n); s = tmp; }
     else if (k == BANANA_FD_PTM) s = "/dev/ptmx";
     else if (k == BANANA_FD_TERM) s = "/dev/console";
     else return ENOTTY;
@@ -266,6 +272,18 @@ int __dev_stat(const char* path, struct stat* st) {
         st->st_rdev = (devs[i].major << 8) | devs[i].minor;
         st->st_ino = 1000 + st->st_rdev;                     /* (fstat of an open one says the same: ufs.c) */
         st->st_dev = 5;
+        return 0;
+    }
+    /* the consoles: tty1..6, ttyS0 (64-bit: kernel/vcons.c) - Linux's numbers */
+    if (!strncmp(n, "tty", 3) && ((n[3] >= '0' && n[3] <= '6' && !n[4]) || !strcmp(n + 3, "S0"))) {
+        int fd = open(path, O_RDWR | O_NOCTTY);
+        if (fd < 0) return -1;
+        close(fd);
+        st->st_mode = S_IFCHR | 0620;
+        st->st_rdev = (4u << 8) | (n[3] == 'S' ? 64u : (unsigned)(n[3] - '0'));
+        st->st_ino = 1000 + st->st_rdev;
+        st->st_dev = 5;
+        st->st_uid = st->st_gid = 1000;
         return 0;
     }
     if (!strncmp(n, "pts/", 4) && n[4] >= '0' && n[4] <= '9') {

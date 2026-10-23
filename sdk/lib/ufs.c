@@ -93,7 +93,8 @@ int fstat(int fd, struct stat* st) {
             int chr = fi.type == BANANA_FD_TERM || fi.type == BANANA_FD_PTM || fi.type == BANANA_FD_PTS || fi.type == BANANA_FD_DEV;
             st->st_mode = fi.type == BANANA_FD_DIR ? S_IFDIR | 0755 : chr ? S_IFCHR | (fi.type == BANANA_FD_DEV ? 0666 : 0620)
                         : fi.is_sock || fi.type == BANANA_FD_SOCK ? S_IFSOCK | 0777 : S_IFIFO | 0600;
-            st->st_rdev = fi.type == BANANA_FD_PTS ? (136u << 8) | (unsigned)fi.size : fi.type == BANANA_FD_PTM ? (5u << 8) | 2u
+            st->st_rdev = fi.type == BANANA_FD_PTS ? ((fi.size & BANANA_TTY_CONSOLE) ? (4u << 8) | (fi.size & 0xFF) : (136u << 8) | (unsigned)fi.size)
+                        : fi.type == BANANA_FD_PTM ? (5u << 8) | 2u
                         : fi.type == BANANA_FD_DEV && fi.size < 5 ? (1u << 8) | dev_minor[fi.size] : 0x8800;
             st->st_nlink = 1;
             st->st_uid = st->st_gid = 1000;
@@ -429,6 +430,14 @@ static int synth_next(DIR* d) {
 static int synth_next1(DIR* d) {
     if (d->synth == 1) {
         int i = d->index - 2;
+        /* (the consoles: only where there are some) */
+        while (i < (int)(sizeof(g_devnames) / sizeof(g_devnames[0])) && !strncmp(g_devnames[i], "tty", 3) && g_devnames[i][3]) {
+            struct stat st;
+            char p[24];
+            snprintf(p, sizeof(p), "/dev/%s", g_devnames[i]);
+            if (!__dev_stat(p, &st)) break;
+            i = ++d->index - 2;
+        }
         if (i >= (int)(sizeof(g_devnames) / sizeof(g_devnames[0]))) return 0;
         snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", g_devnames[i]);
         d->ent.d_type = !strcmp(g_devnames[i], "fd") || !strcmp(g_devnames[i], "pts") ? DT_DIR :

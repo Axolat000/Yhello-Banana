@@ -54,6 +54,8 @@ int pkg_get(const char* name, pkg_info_t* out);   /* 0 if installed */
  * (or, from the desktop, in a new terminal window), a desktop app in a
  * task of its own. Returns the exit code (console, from a shell), 0, or
  * -1 with err. */
+/* /bin/<name> for every installed console app with no bin= of its own (boot) */
+void pkg_bin_sync(void);
 int pkg_run(const char* name, int argc, char** argv, int from_desktop, char* err, int ecap);
 
 #endif

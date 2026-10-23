@@ -9,8 +9,12 @@
  * here: main.c draws the cells (and tools/tests/terminal_vt checks this
  * file on Linux).
  */
+#ifdef VT_KERNEL
+#include "../../kernel/types.h"
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
 
 /* a colour: VT_DEFAULT, VT_PAL | 0..255, or VT_RGB | 0xRRGGBB */
 #define VT_DEFAULT 0u

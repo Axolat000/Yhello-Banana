@@ -211,6 +211,37 @@ static void bin_remove(const char* app, const char* link) {
     if (fs_readlink(link, have, sizeof(have)) >= 0 && !strcmp(have, target)) fs_delete(link, 0);
 }
 
+/* a console app with no bin=: its own name in /bin (pkg install
+ * ~/Examples/posixtest.bpk, then posixtest in bash) - unless /bin has that
+ * name already */
+static void bin_default(const char* mf, uint32_t len, const pkg_info_t* info, int add) {
+    if (strcmp(info->type, "console") != 0 || !bin_name_ok(info->name, (int)strlen(info->name))) return;
+    char v[8];
+    mf_get(mf, len, "bin", v, sizeof(v));
+    if (v[0]) return;
+    char link[FS_PATH_LEN];
+    ksnprintf(link, sizeof(link), "/bin/%s", info->name);
+    if (!add) { bin_remove(info->name, link); return; }
+    fs_stat_t st;
+    if (fs_stat(link, 0, &st) == 0) return;
+    bin_add(info->name, link);
+}
+
+/* at boot: the links of the console apps installed before there were any */
+void pkg_bin_sync(void) {
+    pkg_info_t* l = (pkg_info_t*)kmalloc(sizeof(pkg_info_t) * 128);
+    if (!l) return;
+    int n = pkg_list(l, 128);
+    for (int i = 0; i < n && i < 128; i++) {
+        char path[FS_PATH_LEN];
+        ksnprintf(path, sizeof(path), "%s/%s/manifest", PKG_DIR, l[i].name);
+        int fi = fs_find_file(path);
+        fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+        if (f && f->content) bin_default(f->content, f->size, &l[i], 1);
+    }
+    kfree(l);
+}
+
 int pkg_install(const char* bpk_path, char* msg, int mcap) {
     int fi = fs_find_file(bpk_path);
     if (fi < 0) { kstrlcpy(msg, "no such file", (size_t)mcap); return -1; }
@@ -302,6 +333,7 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
     int mfi = fs_find_file(path);
     fs_file_t* mff = mfi >= 0 ? fs_get_file(mfi) : NULL;
     if (mff && mff->content) each_bin(mff->content, mff->size, info.name, bin_add);
+    if (mff && mff->content) bin_default(mff->content, mff->size, &info, 1);
     if (!strcmp(info.type, "driver")) {             /* a driver: loaded right away (and at every boot) */
         char err[96];
         if (driver_load_package(info.name, err, sizeof(err)) == 0)
@@ -373,6 +405,7 @@ int pkg_remove(const char* name, char* msg, int mcap) {
     if (f && unpack_spec(f->content, f->size, ufile, sizeof(ufile), udest, sizeof(udest)) > 0 && fs_find_dir(udest) >= 0)
         fs_delete(udest, 1);
     if (f && f->content) each_bin(f->content, f->size, name, bin_remove);       /* and its /bin links */
+    if (f && f->content) bin_default(f->content, f->size, &info, 0);
     fs_delete(dir, 1);
     ksnprintf(msg, (size_t)mcap, "removed %s", info.title);
     return 0;

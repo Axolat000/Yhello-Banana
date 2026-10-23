@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#define VT_KERNEL 1
+#include "../apps/terminal/vt.h"
+#include "../kernel/vcons.h"
 #include "shell.h"
 #include "../kernel/boottime.h"
 #include "editor.h"
@@ -47,6 +50,8 @@
 #include "../kernel/display.h"
 #include "../kernel/pkg.h"
 #include "../kernel/app.h"
+#include "../kernel/pty.h"
+#include "../kernel/kheap.h"
 #include "../kernel/meminfo.h"
 
 extern char _kernel_end[];   /* boot/linker.ld */
@@ -449,7 +454,8 @@ static void cmd_neofetch(int persona) {
     terminal_write_color("  BOOT:     ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     terminal_writeln(si->uefi ? "UEFI" : "BIOS");
     terminal_write_color("  SHELL:    ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
-    terminal_writeln((persona == SHELL_KIND_BASH) ? "bash (Banana bash)" : "sh (Banana sh)");
+    terminal_writeln(vcons_running() ? "GNU bash 5.2.37"
+                     : (persona == SHELL_KIND_BASH) ? "bash (Banana bash)" : "sh (Banana sh)");
     terminal_write_color("  CPU:      ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
     terminal_writeln(si->cpu_brand[0] ? si->cpu_brand : "Whatever your hypervisor gives you");
     terminal_write_color("  VENDOR:   ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
@@ -2749,10 +2755,15 @@ static void print_banner(int persona) {
     terminal_writeln("");
     terminal_write_color("  Welcome to Banana OS 0.6  --  ",
                          VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+#ifdef __x86_64__
+    (void)persona;                      /* (bash on the consoles: kernel/vcons.c) */
+    terminal_writeln("GNU bash. Type 'help' to get started, Alt+F2..F6 for more consoles.");
+#else
     if (persona == SHELL_KIND_BASH)
         terminal_writeln("bash-compatible shell. Type 'help' to get started.");
     else
         terminal_writeln("type 'help' to get started.");
+#endif
     terminal_writeln("");
 }
 
@@ -2792,6 +2803,65 @@ static void run_init_file(int persona) {
     fs_pin(idx);
     if (f && f->content) run_script_text(f->content, persona);
     fs_unpin(idx);
+}
+
+/* ── the consoles (64-bit): bash on tty1..6 and the serial line
+ * (kernel/vcons.c) - this task drives them, and the desktop: the keys go
+ * to the console shown, or to the desktop while it is up ── */
+static int console_esc_key(char c3) {
+    switch (c3) {
+    case 'A': return VT_KEY_UP;    case 'B': return VT_KEY_DOWN;
+    case 'C': return VT_KEY_RIGHT; case 'D': return VT_KEY_LEFT;
+    case 'H': return VT_KEY_HOME;  case 'F': return VT_KEY_END;
+    case 'I': return VT_KEY_PGUP;  case 'G': return VT_KEY_PGDN;
+    case 'P': return VT_KEY_DELETE;
+    }
+    return 0;
+}
+
+static void console_loop(void) {
+    for (;;) {
+        poll_deferred_actions();
+        int busy = vcons_pump();
+        daemon_poll(1);
+        gui_poll();                 /* (yields once: the other tasks run) */
+        terminal_vt_set_active(0);
+
+        if (gui_is_enabled()) {
+            /* the desktop has the keys (the way the console shell gave them to it) */
+            if (gui_focused_vt() != 0) { task_sleep_ms(10); continue; }
+            char c = keyboard_try_getchar();
+            if (!c) { if (!busy) task_sleep_ms(10); continue; }
+            if (c == 27) {
+                char c2 = esc_follow();
+                if (c2 != '[') { gui_handle_key(c); if (c2) keyboard_unget(c2); continue; }
+                gui_handle_arrow(esc_follow());
+                continue;
+            }
+            gui_handle_key(c);
+            continue;
+        }
+
+        int k;
+        while ((k = keyboard_take_fkey())) vcons_fkey(k);
+        char c = keyboard_try_getchar();
+        if (!c) { if (!busy) task_sleep_ms(5); continue; }
+        int mods = keyboard_mods() & 1 ? VT_MOD_SHIFT : 0;
+        if (c == 27) {
+            char c2 = esc_follow();
+            if (c2 == '[') {
+                int key = console_esc_key(esc_follow());
+                if (key) vcons_key(key, mods);
+                continue;
+            }
+            vcons_key(27, 0);
+            if (c2) keyboard_unget(c2);
+            continue;
+        }
+        if (c == '\n') c = '\r';                    /* (Enter: a terminal's CR) */
+        else if (c == '\b') c = 0x7F;                /* (Backspace: DEL) */
+        vcons_key((unsigned char)c, 0);
+    }
 }
 
 /* ── entry ──────────────────────────────────────────────────────── */
@@ -2863,6 +2933,8 @@ void shell_run(void) {
 
     run_init_file(persona);
 
+    if (vcons_start() == 0) console_loop();   /* (64-bit, with bash: never returns) */
+
     while (1) {
         buf[0] = '\0';
         print_prompt(persona);
@@ -2891,6 +2963,45 @@ void shell_run_window(int vt) {
     }
 }
 
+#ifdef __x86_64__
+/* an SSH session with the consoles' bash about: bash on a pty, its bytes
+ * to and from the client (exec: bash -c the command); 0 if it cannot start */
+static int remote_bash(int tty) {
+    pty_t* t = pty_new();
+    if (!t) return 0;
+    pty_set_locked(t, 0);
+    int cols, rows;
+    tty_take_size(tty, &cols, &rows);
+    app_pty_resize(t, cols, rows);
+    const char* cmd = tty_exec_cmd(tty);
+    char* argv[4] = { "-bash", NULL, NULL, NULL };
+    int argc = 1;
+    if (cmd[0]) { argv[0] = "bash"; argv[1] = "-c"; argv[2] = (char*)cmd; argc = 3; }
+    char err[64];
+    uint8_t* b = (uint8_t*)kmalloc(4096);
+    int pid = b ? app_spawn_tty("/bin/bash", argc, argv, vcons_env(), t, err, sizeof(err)) : -1;
+    if (pid < 0) { kfree(b); app_pty_close(t); return 0; }
+    for (;;) {
+        int busy = 0;
+        int n = tty_read(tty, b, 4096);
+        if (n < 0) break;                               /* (the client went: a hangup) */
+        if (n > 0) { app_pty_type(t, b, (unsigned long)n); busy = 1; }
+        if (tty_take_size(tty, &cols, &rows)) app_pty_resize(t, cols, rows);
+        long m;
+        while ((m = pty_master_read(t, b, 4096)) > 0) { tty_write_n(tty, b, (uint32_t)m); busy = 1; }
+        if (!busy && !app_alive(pid)) {                 /* (it ended, and all it wrote went) */
+            int code = app_exit_code(pid);
+            tty_set_exit(tty, code < 0 ? 0 : code);
+            break;
+        }
+        if (!busy) task_sleep_ms(5);
+    }
+    kfree(b);
+    app_pty_close(t);
+    return 1;
+}
+#endif
+
 /* SSH sessions (net/sshd.c): one of these runs per remote terminal, for
  * the OS's lifetime, and serves one client after another. */
 void shell_run_remote(int tty) {
@@ -2901,6 +3012,13 @@ void shell_run_remote(int tty) {
         while (!tty_active(tty)) task_sleep_ms(50);
         terminal_vt_set_active(tty_vt(tty));
         int persona = g_default_shell_kind;
+#ifdef __x86_64__
+        if (vcons_running() && remote_bash(tty)) {
+            terminal_flush();
+            tty_finish(tty);
+            continue;
+        }
+#endif
 
         const char* cmd = tty_exec_cmd(tty);
         if (cmd[0]) {                       /* ssh host <command> */

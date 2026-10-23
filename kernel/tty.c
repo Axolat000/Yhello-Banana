@@ -20,6 +20,8 @@ typedef struct {
     int      last_cr;
     uint8_t  out[OUT_SIZE];
     uint32_t out_head, out_len;
+    int      cols, rows, resized;           /* the client's window (0: not said) */
+    int      exit_status;                   /* the session's (SSH's exit-status) */
 } tty_t;
 
 static tty_t g_tty[TTY_MAX];
@@ -78,6 +80,7 @@ void tty_attach(int t, const char* user, const char* exec_cmd) {
     kstrlcpy(y->exec, exec_cmd ? exec_cmd : "", sizeof(y->exec));
     y->hungup = 0;
     y->finished = 0;
+    y->exit_status = 0;
     y->attached = 1;
     if (y->pid >= 0) task_wake(y->pid);
 }
@@ -89,6 +92,41 @@ void tty_detach(int t) {
     if (!y) return;
     y->attached = 0;
     y->hungup = 0;
+    y->cols = y->rows = 0;
+    y->resized = 0;
+}
+
+void tty_set_exit(int t, int code) { tty_t* y = get(t); if (y) y->exit_status = code; }
+int  tty_exit_status(int t) { tty_t* y = get(t); return y ? y->exit_status : 0; }
+
+void tty_set_size(int t, int cols, int rows) {
+    tty_t* y = get(t);
+    if (!y || cols <= 0 || rows <= 0 || cols > 1000 || rows > 1000) return;
+    y->cols = cols;
+    y->rows = rows;
+    y->resized = 1;
+}
+
+int tty_take_size(int t, int* cols, int* rows) {
+    tty_t* y = get(t);
+    if (!y) return 0;
+    *cols = y->cols ? y->cols : 80;
+    *rows = y->rows ? y->rows : 24;
+    int r = y->resized;
+    y->resized = 0;
+    return r;
+}
+
+int tty_read(int t, uint8_t* out, uint32_t max) {
+    tty_t* y = get(t);
+    if (!y || !y->attached || y->hungup) return -1;
+    uint32_t n = 0;
+    while (n < max && y->in_len) {
+        out[n++] = y->in[y->in_head];
+        y->in_head = (y->in_head + 1) % IN_SIZE;
+        y->in_len--;
+    }
+    return (int)n;
 }
 
 int tty_in_use(int t) { tty_t* y = get(t); return y ? y->attached : 0; }
@@ -158,6 +196,12 @@ static void out_put(tty_t* y, uint8_t c) {
     }
     y->out[(y->out_head + y->out_len) % OUT_SIZE] = c;
     y->out_len++;
+}
+
+void tty_write_n(int t, const uint8_t* s, uint32_t n) {
+    tty_t* y = get(t);
+    if (!y || !y->attached || y->hungup) return;
+    for (uint32_t i = 0; i < n; i++) out_put(y, s[i]);
 }
 
 void tty_write(int t, const char* s) {

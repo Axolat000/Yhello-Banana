@@ -394,9 +394,11 @@ static void t_utf8(void) {
     if (vt < 0) {
         skip("terminal cells hold any character", "no free virtual terminal to write to");
     } else {
+        void* r = terminal_redirect_hold();      /* (run for a program: its output goes to the program) */
         terminal_vt_set_active(vt);
         terminal_write(text);
         terminal_vt_set_active(was);
+        terminal_redirect_unhold(r);
         const uint32_t* ch;
         const uint8_t* co;
         int w, h, stride;
@@ -986,6 +988,9 @@ static void t_swap(void) {
     skip("compressed memory", "the 64-bit kernel's apps only (their mmap memory)");
 #else
     zswap_stats_t a, b;
+    /* (other apps' idle pages - the shells on the consoles - compressed
+     * first: what is left after is the test app's alone) */
+    zswap_compress_now();
     zswap_stats(&a);
     g_sw_done = 0;
     task_create("swaptest", swap_helper);
@@ -1000,7 +1005,8 @@ static void t_swap(void) {
     report("their RAM goes back to the system", back >= (16u << 20), note);
     ksnprintf(note, sizeof(note), "%u pages brought back", (uint32_t)(b.pages_in - a.pages_in));
     report("touched again: decompressed, every byte right", rc == 0 && b.pages_in - a.pages_in >= 6000, note);
-    report("nothing left compressed once it unmapped", b.pages == a.pages, "");
+    ksnprintf(note, sizeof(note), "%u pages compressed before, %u after", a.pages, b.pages);
+    report("nothing left compressed once it unmapped", b.pages <= a.pages + 32, note);   /* (a shell's page or two that went meanwhile) */
     if (!zswap_disk_bytes()) skip("the swap area on the disk", "none on the live CD (an installed system has one)");
     else {
         ksnprintf(note, sizeof(note), "%u pages written, %u read back", g_sw_disk, (uint32_t)(b.disk_in - a.disk_in));

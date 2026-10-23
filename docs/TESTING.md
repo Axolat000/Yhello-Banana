@@ -181,7 +181,9 @@ exercises the RAM above 4 GiB.
 ### `tools/serialtest.py`
 
 Boots Banana OS in QEMU without a window and types commands at its serial
-console, each once the prompt is back. A command fails if its output shows a
+console, each once the prompt is back - on the 64-bit system that is the
+login bash on ttyS0 (build 245: the kernel's commands are `/bin` programs
+there), on the 32-bit one the built-in shell. A command fails if its output shows a
 panic or a crashed app, or - written `command ## text` - lacks `text`.
 
 ```

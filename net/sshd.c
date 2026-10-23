@@ -683,6 +683,10 @@ static void on_channel_request(ssh_t* s, const uint8_t* p, uint32_t n) {
     int want = r_u8(&r);
     if (r.err) return;
     if (str_eq(type, tl, "pty-req")) {
+        uint32_t ml;
+        r_str(&r, &ml);                         /* (TERM) */
+        uint32_t cols = r_u32(&r), rows = r_u32(&r);
+        if (!r.err) tty_set_size(s->tty, (int)cols, (int)rows);
         if (want) chan_reply(s, 1);
     } else if (str_eq(type, tl, "shell")) {
         start_shell(s, "", want);
@@ -690,7 +694,11 @@ static void on_channel_request(ssh_t* s, const uint8_t* p, uint32_t n) {
         char cmd[256];
         r_cstr(&r, cmd, sizeof(cmd));
         start_shell(s, cmd, want);
-    } else if (str_eq(type, tl, "window-change") || str_eq(type, tl, "env")) {
+    } else if (str_eq(type, tl, "window-change")) {
+        uint32_t cols = r_u32(&r), rows = r_u32(&r);
+        if (!r.err) tty_set_size(s->tty, (int)cols, (int)rows);
+        if (want) chan_reply(s, 1);
+    } else if (str_eq(type, tl, "env")) {
         if (want) chan_reply(s, str_eq(type, tl, "window-change"));
     } else {
         /* subsystems (sftp), X11, agent forwarding, signals: not here */
@@ -743,7 +751,7 @@ static void close_channel(ssh_t* s) {
         w_u32(&w, s->peer_chan);
         w_cstr(&w, "exit-status");
         w_u8(&w, 0);
-        w_u32(&w, 0);
+        w_u32(&w, (uint32_t)tty_exit_status(s->tty));
         send_wbuf(s, &w);
         w.len = 0;
         w_u8(&w, MSG_CHANNEL_EOF);

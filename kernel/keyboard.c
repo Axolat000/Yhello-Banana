@@ -810,6 +810,10 @@ static char serial_key(void) {
     return (char)b;
 }
 
+/* the serial line types on the console (0: it is a terminal of its own, kernel/vcons.c) */
+static int g_serial_keys = 1;
+void keyboard_serial_input(int on) { g_serial_keys = on; }
+
 /* while the screen is locked, only the lock screen's task gets keys */
 static int g_key_owner = -1;
 void keyboard_set_owner(int pid) { g_key_owner = pid; }
@@ -852,7 +856,7 @@ char keyboard_try_getchar(void) {
     usb_poll();           /* USB keyboards report through here */
     if (!q_empty()) return q_pop();
 
-    char sk = serial_key();
+    char sk = g_serial_keys ? serial_key() : 0;
     if (sk) return sk;
 
     /* the timer interrupt takes mouse bytes from the controller too

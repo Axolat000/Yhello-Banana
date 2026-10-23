@@ -3,7 +3,7 @@
  * ported from Linux (on the way to OpenJDK): one ok / FAIL line per check,
  * the exit code is how many failed. `selftest posix` runs it.
  *
- *   posixtest          every part
+ *   posixtest          every part (or the parts named: posixtest tty bash)
  *   posixtest mmap     mmap / munmap / mprotect
  *   posixtest threads  pthreads, __thread, semaphores, clocks
  *   posixtest sockets  TCP and UDP on the loopback, poll / select, names
@@ -1685,21 +1685,32 @@ static void t_bash(void) {
 #endif
 }
 
+/* the parts asked for (posixtest tty bash): none named, all of them */
+static int g_argc;
+static char** g_argv;
+static int want(const char* part) {
+    if (g_argc < 2) return 1;
+    for (int i = 1; i < g_argc; i++) if (!strcmp(g_argv[i], part)) return 1;
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     if (only && !strncmp(only, "child-", 6)) return child_mode(argc, argv);
-    if (!only || !strcmp(only, "mmap")) t_mmap();
-    if (!only || !strcmp(only, "threads")) t_threads();
-    if (!only || !strcmp(only, "sockets")) t_sockets();
-    if (!only || !strcmp(only, "epoll")) t_epoll();
-    if (!only || !strcmp(only, "signals")) t_signals();
-    if (!only || !strcmp(only, "dlopen")) t_dlopen();
-    if (!only || !strcmp(only, "files")) t_files();
-    if (!only || !strcmp(only, "time")) t_time();
-    if (!only || !strcmp(only, "memory")) t_memory();
-    if (!only || !strcmp(only, "proc")) t_proc();
-    if (!only || !strcmp(only, "tty")) t_tty();
-    if (!only || !strcmp(only, "bash")) t_bash();
+    g_argc = argc;
+    g_argv = argv;
+    if (want("mmap")) t_mmap();
+    if (want("threads")) t_threads();
+    if (want("sockets")) t_sockets();
+    if (want("epoll")) t_epoll();
+    if (want("signals")) t_signals();
+    if (want("dlopen")) t_dlopen();
+    if (want("files")) t_files();
+    if (want("time")) t_time();
+    if (want("memory")) t_memory();
+    if (want("proc")) t_proc();
+    if (want("tty")) t_tty();
+    if (want("bash")) t_bash();
     printf("posixtest: %d passed, %d failed\n", g_ok, g_fail);
     return g_fail;
 }

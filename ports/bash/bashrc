@@ -9,5 +9,7 @@ alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ll='ls -l'
 alias la='ls -A'
+# help: Banana OS's (/bin/help: the system's commands); bash's own: enable help
+enable -n help
 HISTSIZE=1000
 HISTFILESIZE=2000

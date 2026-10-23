@@ -111,4 +111,22 @@ void terminal_write_at(const char* str, uint8_t fg, uint8_t bg, size_t row, size
 /* what VGA text mode shows for a Unicode character (code page 437; '?' if it has none) */
 char terminal_cp437(uint32_t cp);
 
+/* the consoles (kernel/vcons.c): while a sink is set, the kernel's text for
+ * the console screen goes to put (as text with ANSI escapes, cols x rows),
+ * NULL: no more; they draw their screen with the cells: the grid's size,
+ * a cell (fg / bg: VGA colours), the cursor, and the screen brought up to date */
+/* the calling task's redirect set aside for a moment (the screen itself
+ * written: selftest), then back */
+void* terminal_redirect_hold(void);
+void  terminal_redirect_unhold(void* h);
+void terminal_console_sink(void (*put)(void* ctx, const char* s, uint32_t n), void* ctx, int cols, int rows);
+void terminal_console_sink_size(int cols, int rows);
+void terminal_console_size(int* cols, int* rows);
+void terminal_console_cell(int row, int col, uint32_t cp, uint8_t fg, uint8_t bg);
+void terminal_console_cursor(int row, int col, int visible);
+void terminal_console_flush(void);
+void terminal_console_repaint(void);        /* all of it again */
+void terminal_console_read(int row, int col, uint32_t* cp, uint8_t* fg, uint8_t* bg);
+void terminal_console_get_cursor(int* row, int* col);
+
 #endif

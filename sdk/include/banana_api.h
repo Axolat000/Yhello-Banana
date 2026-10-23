@@ -171,7 +171,7 @@ typedef struct {
 /* proc_list (version 30): a process as ps shows it */
 typedef struct {
     int  pid, ppid, pgid, sid;
-    int  tty;                    /* its terminal: /dev/pts/N (N), -2 the console, -1 none */
+    int  tty;                    /* its terminal: /dev/pts/N (N), BANANA_TTY_CONSOLE | minor a console, -2 the kernel's, -1 none */
     int  tpgid;                  /* that terminal's foreground group */
     char state;                  /* R running, S in a system call, T stopped, Z a zombie */
     char __pad[3];
@@ -694,6 +694,9 @@ typedef struct banana_ucontext {
 #define BANANA_FD_TERM 4
 #define BANANA_FD_PTM  5                /* a pseudo-terminal's master: size its number (pts/N) */
 #define BANANA_FD_PTS  6                /* ... its slave */
+/* a pty that is one of the consoles (fd_info's size, procinfo's tty):
+ * this | 1..6 /dev/tty1..6, | 64 /dev/ttyS0 (Linux's minors) - else the N of /dev/pts/N */
+#define BANANA_TTY_CONSOLE 0x10000
 #define BANANA_FD_DEV  7                /* /dev/null, zero, full, random: size which (1-4) */
 #define BANANA_FD_DIR  8                /* a folder (version 28) */
 typedef struct {

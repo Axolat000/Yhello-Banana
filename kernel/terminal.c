@@ -204,11 +204,21 @@ typedef struct {
 static redir_t g_redir[REDIR_MAX];
 static int g_nredir;
 
-static redir_t* redir_cur(void) {
+/* the consoles' sink (kernel/vcons.c): while they run, what the kernel
+ * prints for the screen goes to them as text with escapes instead */
+static redir_t g_sink;
+static int g_sink_on;
+
+static redir_t* task_redir(void) {
     if (!g_nredir) return NULL;
     int me = task_current_pid() + 1;
     for (int i = 0; i < REDIR_MAX; i++) if (g_redir[i].pid == me) return &g_redir[i];
     return NULL;
+}
+static redir_t* redir_cur(void) {
+    redir_t* r = task_redir();
+    if (r) return r;
+    return g_sink_on && vt_active == CONSOLE_VT ? &g_sink : NULL;
 }
 static void r_flush(redir_t* r) {
     if (r->n) { uint32_t n = r->n; r->n = 0; r->put(r->ctx, r->buf, n); }
@@ -218,6 +228,7 @@ static void r_out(redir_t* r, const char* s, uint32_t n) {
         if (r->n == sizeof(r->buf)) r_flush(r);
         r->buf[r->n++] = s[i];
     }
+    if (r == &g_sink) r_flush(r);           /* (its text right away: any task writes there) */
 }
 static void r_str(redir_t* r, const char* s) { r_out(r, s, (uint32_t)strlen(s)); }
 
@@ -258,10 +269,43 @@ void terminal_redirect_end(void) {
     g_nredir--;
 }
 
-int terminal_redirected(void) { return redir_cur() != NULL; }
+int terminal_redirected(void) { return task_redir() != NULL; }
+
+void* terminal_redirect_hold(void) {
+    redir_t* r = task_redir();
+    if (r) r->pid = -r->pid;
+    return r;
+}
+
+void terminal_redirect_unhold(void* h) {
+    redir_t* r = (redir_t*)h;
+    if (r) r->pid = -r->pid;
+}
+
+void terminal_console_sink(void (*put)(void* ctx, const char* s, uint32_t n), void* ctx, int cols, int rows) {
+    if (!put) { g_sink_on = 0; return; }
+    memset(&g_sink, 0, sizeof(g_sink));
+    g_sink.put = put; g_sink.ctx = ctx; g_sink.ansi = 1;
+    g_sink.cols = cols; g_sink.rows = rows;
+    g_sink.fg = VGA_COLOR_LIGHT_GREY; g_sink.bg = VGA_COLOR_BLACK;
+    g_sink_on = 1;
+}
+
+void terminal_console_sink_size(int cols, int rows) {
+    g_sink.cols = cols;
+    g_sink.rows = rows;
+}
+
+static void console_flush(void);
 
 void terminal_flush(void) {
-    { redir_t* r = redir_cur(); if (r) { r_flush(r); return; } }
+    { redir_t* r = redir_cur(); if (r) { r_flush(r); if (r != &g_sink) return; } }
+    console_flush();
+}
+
+static int g_cursor_hidden;
+
+static void console_flush(void) {
     if(crash_preview_active() || crash_in_progress())return;
     if (!fb_console_on()) return;
     if (splash_active()) return;            /* the boot screen is up: the text waits in the grid */
@@ -291,7 +335,8 @@ void terminal_flush(void) {
         for (size_t c = 0; c < cols; c++) fb_draw_cell(r, c);
     }
     g_any_dirty = 0;
-    fb_draw_cursor_overlay(cr, cc);
+    if (!g_cursor_hidden) fb_draw_cursor_overlay(cr, cc);
+    else g_ov_valid = 1, g_ov_row = cr, g_ov_col = cc;
     fb_present();
     g_last_flush_ms = timer_ms();
 }
@@ -839,7 +884,7 @@ static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t 
             if (!r->ansi || cp == TERMINAL_WIDE_CONT) return;
             char e[40];
             int ofg = r->fg, obg = r->bg;
-            ksnprintf(e, sizeof(e), "\x1b7\x1b[%u;%uH", (unsigned)row + 1, (unsigned)col + 1);
+            ksnprintf(e, sizeof(e), "\x1b" "7\x1b[%u;%uH", (unsigned)row + 1, (unsigned)col + 1);
             r_str(r, e);
             r_color(r, fg, bg);
             char u[4];
@@ -848,7 +893,7 @@ static void putentry_cp(uint32_t cp, uint8_t fg, uint8_t bg, size_t row, size_t 
                   : (u[0] = (char)(0xF0 | cp >> 18), u[1] = (char)(0x80 | ((cp >> 12) & 63)), u[2] = (char)(0x80 | ((cp >> 6) & 63)), u[3] = (char)(0x80 | (cp & 63)), 4);
             r_out(r, u, (uint32_t)n);
             r_color(r, ofg, obg);
-            r_str(r, "\x1b8");
+            r_str(r, "\x1b" "8");
             return;
         }
     }
@@ -1023,4 +1068,79 @@ void terminal_vt_set_size(int vt, int cols, int rows) {
     vt_rows[vt] = (size_t)rows;
     if (vt == vt_active) { term_row = vt_row[vt]; term_col = vt_col[vt]; }
     g_term_gen++;
+}
+
+/* ── the consoles (kernel/vcons.c) draw their screen straight into the
+ * console's grid ── */
+void terminal_console_size(int* cols, int* rows) {
+    int fb = term_mode != TERMINAL_MODE_VGA_TEXT;
+    *cols = (int)(fb ? terminal_fb_cols() : VGA_WIDTH);
+    *rows = (int)(fb ? terminal_fb_rows() : VGA_HEIGHT);
+}
+
+void terminal_console_cell(int row, int col, uint32_t cp, uint8_t fg, uint8_t bg) {
+    if (row < 0 || col < 0) return;
+    uint8_t color = vga_entry_color(fg, bg);
+    if (term_mode == TERMINAL_MODE_VGA_TEXT) {
+        if (row >= VGA_HEIGHT || col >= VGA_WIDTH) return;
+        VGA_MEMORY[row * VGA_WIDTH + col] = vga_entry(cp == TERMINAL_WIDE_CONT ? ' ' : vga_glyph(cp), color);
+        return;
+    }
+    if (row >= FB_MAX_ROWS || col >= FB_MAX_COLS) return;
+    if (vt_chars[CONSOLE_VT][row][col] == cp && vt_colors[CONSOLE_VT][row][col] == color) return;
+    vt_chars[CONSOLE_VT][row][col] = cp;
+    vt_colors[CONSOLE_VT][row][col] = color;
+    if (fb_console_on()) mark_dirty((size_t)row);
+    g_term_gen++;
+}
+
+void terminal_console_cursor(int row, int col, int visible) {
+    if (row < 0) row = 0;
+    if (col < 0) col = 0;
+    vt_row[CONSOLE_VT] = (size_t)row;
+    vt_col[CONSOLE_VT] = (size_t)col;
+    if (vt_active == CONSOLE_VT) { term_row = (size_t)row; term_col = (size_t)col; }
+    if (term_mode == TERMINAL_MODE_VGA_TEXT) {
+        if (visible == g_cursor_hidden) {               /* (the hardware cursor on / off) */
+            outb(0x3D4, 0x0A);
+            outb(0x3D5, visible ? 0x0E : 0x20);
+        }
+        uint16_t pos = (uint16_t)(row * VGA_WIDTH + col);
+        outb(0x3D4, 0x0F); outb(0x3D5, (uint8_t)(pos & 0xFF));
+        outb(0x3D4, 0x0E); outb(0x3D5, (uint8_t)(pos >> 8));
+    }
+    g_cursor_hidden = !visible;
+}
+
+void terminal_console_flush(void) {
+    console_flush();
+}
+
+void terminal_console_repaint(void) {
+    if (term_mode == TERMINAL_MODE_FRAMEBUFFER) fb_redraw_all();
+}
+
+/* what the console shows at row, col (the consoles take it over: tty1 starts with it) */
+void terminal_console_read(int row, int col, uint32_t* cp, uint8_t* fg, uint8_t* bg) {
+    uint8_t color = 0x07;
+    *cp = ' ';
+    if (term_mode == TERMINAL_MODE_VGA_TEXT) {
+        if (row < VGA_HEIGHT && col < VGA_WIDTH) {
+            uint16_t e = VGA_MEMORY[row * VGA_WIDTH + col];
+            *cp = (e & 0xFF) < 0x80 ? (e & 0xFF) : '?';
+            color = (uint8_t)(e >> 8);
+        }
+    } else if (row < FB_MAX_ROWS && col < FB_MAX_COLS) {
+        *cp = vt_chars[CONSOLE_VT][row][col];
+        color = vt_colors[CONSOLE_VT][row][col];
+    }
+    *fg = color & 0x0F;
+    *bg = (color >> 4) & 0x0F;
+}
+
+void terminal_console_get_cursor(int* row, int* col) {
+    size_t r, c;
+    console_cursor(&r, &c);
+    *row = (int)r;
+    *col = (int)c;
 }

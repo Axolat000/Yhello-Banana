@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "vcons.h"
 #include "crash.h"
 #include "i18n.h"
 #include "theme.h"
@@ -608,6 +609,8 @@ static int term_at(int mx, int my) {
     }
     return 0;
 }
+
+static int bash_terminal(const char* cmd);
 
 static int open_new_terminal(void) {
     for (int i = 0; i < TERM_WIN_MAX; i++) {
@@ -3488,7 +3491,7 @@ static void do_action(int act) {
     g_menu_open = 0;
     switch (act) {
     case ACT_ABOUT: settings_open_page(SETTINGS_PAGE_ABOUT); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
-    case ACT_TERMINAL: open_new_terminal(); g_front_app = -1; break;
+    case ACT_TERMINAL: if (!bash_terminal(NULL)) { open_new_terminal(); g_front_app = -1; } break;
     case ACT_FILES: explorer_open(NULL); g_app_min[APP_FILES] = 0; raise_app(APP_FILES); break;
     case ACT_BROWSER: browser_open(NULL); g_app_min[APP_BROWSER] = 0; raise_app(APP_BROWSER); break;
     case ACT_NOTEPAD: notepad_open(NULL); g_app_min[APP_NOTEPAD] = 0; raise_app(APP_NOTEPAD); break;
@@ -3634,7 +3637,33 @@ int gui_notepad_focused(void) {
     return gfx_available() && g_gui_enabled && g_front_app == APP_NOTEPAD && notepad_is_open() && tty_current() < 0;
 }
 
+/* 64-bit, the consoles running bash: a terminal is the Terminal app (bash
+ * in a window), cmd run there first; 0 if it could not start */
+static int bash_terminal(const char* cmd) {
+#ifdef __x86_64__
+    if (!vcons_running()) return 0;
+    char err[96], line[FS_PATH_LEN + 32];
+    char* argv[6] = { "terminal", NULL };
+    int argc = 1;
+    if (cmd && *cmd) {
+        size_t n = strlen(cmd);
+        while (n && (cmd[n - 1] == '\n' || cmd[n - 1] == '\r')) n--;
+        if (n > FS_PATH_LEN) n = FS_PATH_LEN;
+        memcpy(line, cmd, n);
+        kstrlcpy(line + n, "; exec bash", sizeof(line) - n);
+        argv[1] = "-e"; argv[2] = "/bin/bash"; argv[3] = "-c"; argv[4] = line;
+        argc = 5;
+    }
+    if (pkg_run("terminal", argc, argv, 0, err, sizeof(err)) < 0) { klog("gui: terminal: %s\n", err); return 0; }
+    return 1;
+#else
+    (void)cmd;
+    return 0;
+#endif
+}
+
 void gui_terminal_run(const char* cmd) {
+    if (bash_terminal(cmd)) return;
     open_new_terminal();
     g_front_app = -1;               /* the new terminal comes up in front */
     /* typed into the new window: it has the keyboard focus now */
@@ -3900,6 +3929,12 @@ static int kb_modal_key(int code) {
 
 static int kb_global(int k) {
     int c = KEYF_CODE(k);
+    /* Ctrl+Alt+F1..F6: a console (the desktop goes, as stopx) */
+    if (c >= KEYF_F1 && c < KEYF_F1 + VCONS_SCREENS && (k & KEYF_CTRL) && (k & KEYF_ALT) && vcons_running()) {
+        gui_set_enabled(0);
+        vcons_switch(c - KEYF_F1);
+        return 1;
+    }
     if (c == KEYF_TAB && (k & KEYF_ALT)) {
         if (g_menu_open) { g_menu_open = 0; }
         if (!g_sw_open) {

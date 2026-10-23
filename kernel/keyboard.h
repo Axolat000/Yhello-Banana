@@ -100,4 +100,7 @@ int keyboard_take_fkey(void);
 int  keyboard_redirect_begin(int (*get)(void* ctx, int wait), void* ctx);
 void keyboard_redirect_end(void);
 
+/* 0: the serial line no longer types on the console (kernel/vcons.c reads it) */
+void keyboard_serial_input(int on);
+
 #endif

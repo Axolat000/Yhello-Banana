@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The terminal's screen and its escape sequences (see vt.h). What xterm
  * does is the reference; ctlseqs.html's names are used for the sequences. */
+#ifndef VT_KERNEL             /* (the kernel's consoles build it too: kernel/kvt.c) */
 #define _XOPEN_SOURCE 700     /* (wcwidth, when tested on Linux) */
 #include "vt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#endif
 
 enum { S_GROUND, S_ESC, S_ESC_INTER, S_CSI, S_OSC, S_OSC_ESC, S_STRING, S_STRING_ESC };
 

@@ -29,6 +29,20 @@ int  app_exec(const char* path, int argc, char** argv, char* err, int ecap);
 /* starts it in a task of its own (desktop apps); 0, or -1 with err */
 int  app_spawn(const char* path, int argc, char** argv, char* err, int ecap);
 
+#ifdef __x86_64__
+/* the kernel's own terminals (kernel/vcons.c, SSH sessions): path started
+ * as a session leader on pty t (envp NULL: the default environment) - its
+ * pid, or -1 with err; whether pid still runs; keys typed into t (^C:
+ * SIGINT...); t's size changed (SIGWINCH); the master let go (SIGHUP) */
+struct pty;
+int  app_spawn_tty(const char* path, int argc, char** argv, char** envp, struct pty* t, char* err, int ecap);
+int  app_alive(int pid);
+int  app_exit_code(int pid);            /* (one that ended lately: its exit code, -1) */
+long app_pty_type(struct pty* t, const uint8_t* buf, unsigned long n);
+void app_pty_resize(struct pty* t, int cols, int rows);
+void app_pty_close(struct pty* t);
+#endif
+
 /* running apps (Task Manager) */
 typedef struct {
     int      id;

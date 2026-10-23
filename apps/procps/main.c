@@ -35,7 +35,11 @@ static const banana_procinfo_t* by_pid(int pid) {
 }
 
 static void tty_name(int t, char* out, size_t cap) {
-    if (t >= 0) snprintf(out, cap, "pts/%d", t);
+    if (t >= 0 && (t & BANANA_TTY_CONSOLE)) {
+        if ((t & 0xFF) == 64) snprintf(out, cap, "ttyS0");
+        else snprintf(out, cap, "tty%d", t & 0xFF);
+    }
+    else if (t >= 0) snprintf(out, cap, "pts/%d", t);
     else snprintf(out, cap, t == -2 ? "console" : "?");
 }
 

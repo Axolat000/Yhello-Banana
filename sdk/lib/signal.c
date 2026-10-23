@@ -56,7 +56,10 @@ static void dispatch(int sig, siginfo_t* info, void* uc) {
 }
 
 /* where the system starts every handled signal (on the thread's stack) */
+volatile unsigned long __sig_handled;     /* handlers run (nanosleep: was it one that ended the sleep?) */
+
 static void entry(int sig, void* info, void* uc) {
+    __sig_handled++;
     if (sig > 0 && sig < NSIG) dispatch(sig, (siginfo_t*)info, uc);
 }
 

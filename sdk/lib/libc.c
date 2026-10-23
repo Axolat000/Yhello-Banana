@@ -512,13 +512,37 @@ int clock_getres(clockid_t clk, struct timespec* ts) {
     return 0;
 }
 
+extern volatile unsigned long __sig_handled;
+
+/* the system's sleep ends early for a signal: when a handler ran for it,
+ * EINTR and what was left (as Linux); else (a ^Z, then fg) it sleeps on */
 int nanosleep(const struct timespec* req, struct timespec* rem) {
     if (!req || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L || req->tv_sec < 0) { errno = EINVAL; return -1; }
-    unsigned long ms = (unsigned long)req->tv_sec * 1000ul + (unsigned long)((req->tv_nsec + 999999L) / 1000000L);
-    if (ms) __banana->sleep_ms(ms > 0xFFFFFFFFul ? 0xFFFFFFFFu : (unsigned)ms);
-    else __banana->yield();
+    unsigned long long ms = (unsigned long long)req->tv_sec * 1000ull + (unsigned long long)((req->tv_nsec + 999999L) / 1000000L);
     if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
-    return 0;
+    if (!ms) { __banana->yield(); return 0; }
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    unsigned long long start = (unsigned long long)t0.tv_sec * 1000ull + (unsigned long long)(t0.tv_nsec / 1000000L);
+    for (;;) {
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        unsigned long long now = (unsigned long long)t.tv_sec * 1000ull + (unsigned long long)(t.tv_nsec / 1000000L);
+        unsigned long long done = now - start;
+        if (done >= ms) return 0;
+        unsigned long long left = ms - done;
+        unsigned long h = __sig_handled;
+        __banana->sleep_ms(left > 0xFFFFFFFFull ? 0xFFFFFFFFu : (unsigned)left);
+        if (__sig_handled != h) {
+            clock_gettime(CLOCK_MONOTONIC, &t);
+            now = (unsigned long long)t.tv_sec * 1000ull + (unsigned long long)(t.tv_nsec / 1000000L);
+            if (now - start >= ms) return 0;
+            left = ms - (now - start);
+            if (rem) { rem->tv_sec = (time_t)(left / 1000ull); rem->tv_nsec = (long)(left % 1000ull) * 1000000L; }
+            errno = EINTR;
+            return -1;
+        }
+    }
 }
 
 int clock_nanosleep(clockid_t clk, int flags, const struct timespec* req, struct timespec* rem) {
