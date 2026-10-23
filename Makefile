@@ -287,6 +287,8 @@ apps/$(1)/$(1)-x86_64.bpk.z: $$(filter-out %.bpk %.bpk.z %/build,$$(wildcard app
 	$$(MAKE) -s -C apps/$(1) $(1)-x86_64.bpk.z
 endef
 $(foreach a,$(APPS64),$(eval $(call APP64_RULE,$(a))))
+# Re-enter kcmd when its help-derived command list changes.
+apps/kcmd/kcmd-x86_64.bpk.z: shell/help.c
 kernel/appbin.o64: $(APPS64_BPKZ)
 build/builtin-meta-x86_64.bin: $(APPS64_BPKZ)
 build/ports64.inc: Makefile

@@ -21,3 +21,6 @@ space      := $(empty) $(empty)
 BIN         = kcmd,$(subst $(space),$(comma),$(strip $(COMMANDS)))
 
 include ../../sdk/banana.mk
+
+# The command aliases are generated from the system help catalog.
+$(BUILD)/manifest: ../../shell/help.c
