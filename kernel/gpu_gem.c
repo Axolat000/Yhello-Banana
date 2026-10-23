@@ -8,7 +8,10 @@
  *    place in the GPU's address space (the global GTT, and the PPGTT that
  *    mirrors it) - so the offsets Mesa presumes stay right and relocations
  *    are written only the first time; mapped into the app (write-back, or
- *    write-combining on Ironlake, which has no shared cache);
+ *    write-combining on Ironlake, which has no shared cache). Gen 8+: each
+ *    app has an address space of its own (48 bits), a buffer bound in it
+ *    where the app's submissions say ("softpin": Mesa's iris places them
+ *    itself), else at the place the kernel gave it;
  *  - submissions (execbuffer2): the relocations written, the batch run on
  *    the render ring; every buffer remembers the last seqno that reads or
  *    writes it, for waits, "busy" and closing a buffer the GPU still uses
@@ -58,6 +61,8 @@ uspace_t* app_user_space(void);
 typedef struct {
     int       owner;                /* 0: a free slot; -1: closed, waiting for the GPU to finish */
     uint32_t  pages, gtt;           /* gtt: its first page in the GPU's address space */
+    int       vm;                   /* gen 8+: the address space it is bound in (0: none yet) */
+    uint64_t  va;                   /*   and where */
     uint64_t* phys;
     uint32_t  last_read, last_write;
     uint32_t  tiling, stride;
@@ -75,6 +80,23 @@ typedef struct {
 } ctx_t;
 
 typedef struct { int owner; uint32_t seqno; int signaled; } sync_t;
+
+/* gen 8+: each app's address space (one: iris asks for the default one's id
+ * and puts every context in it) */
+#define VMS_MAX 128
+static struct { int owner, vm; } g_vms[VMS_MAX];
+static int owner_vm(int owner) {
+    for (int i = 0; i < VMS_MAX; i++) if (g_vms[i].owner == owner) return g_vms[i].vm;
+    for (int i = 0; i < VMS_MAX; i++)
+        if (!g_vms[i].owner) {
+            int vm = i915_vm_create();
+            if (vm <= 0) return -1;
+            g_vms[i].owner = owner;
+            g_vms[i].vm = vm;
+            return vm;
+        }
+    return -1;
+}
 
 static obj_t*  g_obj;
 static uint32_t g_nobj;             /* slots used up to here */
@@ -118,7 +140,8 @@ static obj_t* lookup(int owner, uint32_t h) {
 }
 
 static void obj_free(obj_t* o) {
-    i915_gtt_unbind(o->gtt, o->pages);
+    if (o->vm) i915_vm_unbind(o->vm, o->va, o->phys, o->pages);   /* (what is still its own there) */
+    if (!i915_full_ppgtt()) i915_gtt_unbind(o->gtt, o->pages);
     i915_gtt_free(o->gtt, o->pages);
     for (uint32_t i = 0; i < o->pages; i++) upage_free((void*)(uintptr_t)o->phys[i]);
     kfree(o->phys);
@@ -163,7 +186,8 @@ static int obj_create(int owner, uint64_t size, uint32_t* handle) {
     o->owner = owner;
     o->pages = n;
     o->gtt = (uint32_t)at;
-    i915_gtt_bind(o->gtt, o->phys, n);
+    /* (gen 8+: only a place - it is bound in the app's own address space when submitted) */
+    if (!i915_full_ppgtt()) i915_gtt_bind(o->gtt, o->phys, n);
     g_bytes += (uint64_t)n * 4096u;
     if (slot == g_nobj) g_nobj++;
     *handle = slot + 1;
@@ -206,7 +230,10 @@ static ctx_t* ctx_new(int owner, int dflt, uint32_t* id) {
     for (int i = 0; i < CTX_MAX; i++)
         if (!g_ctx[i].owner) {
             int hw = 0;
-            if (i915_has_contexts() && (hw = i915_ctx_create()) < 0) return NULL;
+            if (i915_full_ppgtt()) {
+                int vm = owner_vm(owner);
+                if (vm <= 0 || (hw = i915_ctx_create_vm(vm)) < 0) return NULL;
+            } else if (i915_has_contexts() && (hw = i915_ctx_create()) < 0) return NULL;
             g_ctx[i] = (ctx_t){ owner, hw, dflt, 0, 0, 0, 0, 1 };
             if (id) *id = (uint32_t)i + 1;
             return &g_ctx[i];
@@ -259,23 +286,40 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
     if (!ex || !ob) { kfree(ex); kfree(ob); return -E_NOMEM; }
     memcpy(ex, uex, sizeof(*ex) * n);
     int rc = 0;
+    int full = i915_full_ppgtt();
     for (uint32_t i = 0; i < n && !rc; i++) {
         ob[i] = lookup(owner, ex[i].handle);
         if (!ob[i]) rc = -E_NOENT;
-        else if (ex[i].flags & EXEC_OBJECT_PINNED) rc = -E_INVAL;       /* (no softpin: offsets are the kernel's) */
+        else if ((ex[i].flags & EXEC_OBJECT_PINNED) && !full) rc = -E_INVAL;   /* (gen 5 - 7.5: offsets are the kernel's) */
     }
     /* an alignment its place does not have: moved (once it is idle) */
     for (uint32_t i = 0; i < n && !rc; i++) {
         uint64_t al = ex[i].alignment;
+        if (full && (ex[i].flags & EXEC_OBJECT_PINNED)) continue;           /* (the app's place: its business) */
         if (al <= 4096 || !((uint64_t)ob[i]->gtt * 4096u % al)) continue;
         if (al & (al - 1) || al > (1u << 24)) { rc = -E_INVAL; break; }
         if (obj_wait(ob[i], 1, -1)) { rc = -E_IO; break; }
         int64_t at = i915_gtt_alloc(ob[i]->pages, (uint32_t)(al / 4096));
         if (at < 0) { rc = -E_NOSPC; break; }
-        i915_gtt_unbind(ob[i]->gtt, ob[i]->pages);
+        if (!full) i915_gtt_unbind(ob[i]->gtt, ob[i]->pages);
         i915_gtt_free(ob[i]->gtt, ob[i]->pages);
         ob[i]->gtt = (uint32_t)at;
-        i915_gtt_bind(ob[i]->gtt, ob[i]->phys, ob[i]->pages);
+        if (!full) i915_gtt_bind(ob[i]->gtt, ob[i]->phys, ob[i]->pages);   /* (gen 8+: rebound in its address space below) */
+    }
+    /* gen 8+: each buffer bound in the app's address space - where it says
+     * (softpin), else at its place - moved there once the GPU is done with it */
+    int vm = full ? owner_vm(owner) : 0;
+    if (full && vm <= 0 && !rc) rc = -E_NOMEM;
+    for (uint32_t i = 0; i < n && full && !rc; i++) {
+        obj_t* o = ob[i];
+        uint64_t want = (ex[i].flags & EXEC_OBJECT_PINNED) ? ex[i].offset & ((1ull << 48) - 1) : (uint64_t)o->gtt * 4096u;
+        if ((want & 4095) || want + (uint64_t)o->pages * 4096u > i915_vm_size()) { rc = -E_INVAL; break; }
+        if (o->vm == vm && o->va == want) continue;
+        if (o->vm && obj_wait(o, 1, -1)) { rc = -E_IO; break; }
+        if (o->vm) i915_vm_unbind(o->vm, o->va, o->phys, o->pages);
+        if (i915_vm_bind(vm, want, o->phys, o->pages)) { o->vm = 0; rc = -E_NOMEM; break; }
+        o->vm = vm;
+        o->va = want;
     }
     /* relocations: written where the presumed offset is not the real one */
     for (uint32_t i = 0; i < n && !rc; i++) {
@@ -290,13 +334,16 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
             if (eb->flags & I915_EXEC_HANDLE_LUT) { if (r.target_handle < n) t = ob[r.target_handle]; }
             else for (uint32_t j = 0; j < n && !t; j++) if (ex[j].handle == r.target_handle) t = ob[j];
             if (!t) { rc = -E_NOENT; break; }
-            uint64_t off = (uint64_t)t->gtt * 4096u;
+            uint64_t off = full ? t->va : (uint64_t)t->gtt * 4096u;
             if (r.presumed_offset == off) continue;
-            if ((r.offset & 3) || r.offset + 4 > (uint64_t)o->pages * 4096u) { rc = -E_INVAL; break; }
+            uint32_t wide = full ? 8 : 4;                            /* (gen 8+: 64-bit addresses in the batch) */
+            if ((r.offset & 3) || r.offset + wide > (uint64_t)o->pages * 4096u || (wide == 8 && (r.offset & 4095) > 4088)) { rc = -E_INVAL; break; }
             if (obj_wait(o, 1, -1)) { rc = -E_IO; break; }          /* (not under the GPU's feet) */
             uint32_t* w = (uint32_t*)(uintptr_t)(o->phys[r.offset >> 12] + (r.offset & 4095));
-            *w = (uint32_t)(off + r.delta);
-            if (!i915_llc()) clflush(w, 4);
+            uint64_t v = off + (uint64_t)(int64_t)(int32_t)r.delta;
+            w[0] = (uint32_t)v;
+            if (wide == 8) w[1] = (uint32_t)(v >> 32);
+            if (!i915_llc()) clflush(w, wide);
             rl[k].presumed_offset = off;
         }
     }
@@ -318,7 +365,8 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
     if (!rc && ((eb->batch_start_offset & 7) || eb->batch_start_offset >= (uint64_t)ob[bi]->pages * 4096u)) rc = -E_INVAL;
     if (!rc) {
         __asm__ volatile("sfence; mfence" ::: "memory");     /* (the app's write-combined stores out) */
-        uint32_t s = i915_submit_ctx(ctx->hw, ob[bi]->gtt * 4096u + eb->batch_start_offset);
+        uint64_t at = (full ? ob[bi]->va : (uint64_t)ob[bi]->gtt * 4096u) + eb->batch_start_offset;
+        uint32_t s = i915_submit_ctx(ctx->hw, at);
         if (!s) rc = -E_IO;
         else {
             g_submits++;
@@ -332,15 +380,63 @@ static int execbuffer(int owner, struct drm_i915_gem_execbuffer2* eb) {
         }
     }
     /* the offsets, for the next time */
-    if (!rc) for (uint32_t i = 0; i < n; i++) if (uex[i].offset != (uint64_t)ob[i]->gtt * 4096u) uex[i].offset = (uint64_t)ob[i]->gtt * 4096u;
+    if (!rc)
+        for (uint32_t i = 0; i < n; i++) {
+            if (full && (ex[i].flags & EXEC_OBJECT_PINNED)) continue;    /* (the app's own: left as it gave it) */
+            uint64_t at = full ? ob[i]->va : (uint64_t)ob[i]->gtt * 4096u;
+            if (uex[i].offset != at) uex[i].offset = at;
+        }
     kfree(ex);
     kfree(ob);
     return rc;
 }
 
+/* a context's parameter (c NULL: the app's defaults) */
+#define APP_VM_ID 1                         /* (the id the app's address space has for it) */
+static int ctx_param(int owner, ctx_t* c, int set, struct drm_i915_gem_context_param* p) {
+    switch (p->param) {
+    case I915_CONTEXT_PARAM_GTT_SIZE:
+        if (set) return -E_INVAL;
+        p->value = i915_full_ppgtt() ? i915_vm_size() : i915_gtt_size();
+        return 0;
+    case I915_CONTEXT_PARAM_VM:
+        /* (gen 8+: one address space an app - every context is in it already) */
+        if (!i915_full_ppgtt()) return -E_INVAL;
+        if (set) return p->value == APP_VM_ID ? 0 : -E_NOENT;
+        if (owner_vm(owner) <= 0) return -E_NOMEM;
+        p->value = APP_VM_ID;
+        return 0;
+    case I915_CONTEXT_PARAM_PRIORITY: if (!set) p->value = 0; return 0;
+    case I915_CONTEXT_PARAM_RECOVERABLE:
+        if (set) { if (c) c->recoverable = p->value != 0; } else p->value = c ? (uint64_t)c->recoverable : 1;
+        return 0;
+    case I915_CONTEXT_PARAM_BANNABLE: case I915_CONTEXT_PARAM_NO_ERROR_CAPTURE: case I915_CONTEXT_PARAM_BAN_PERIOD:
+    case I915_CONTEXT_PARAM_PERSISTENCE: case I915_CONTEXT_PARAM_LOW_LATENCY:
+        if (!set) p->value = 0;
+        return 0;
+    case I915_CONTEXT_PARAM_PROTECTED_CONTENT:
+        if (set) return p->value ? -E_NODEV : 0;
+        p->value = 0;
+        return 0;
+    }
+    return -E_INVAL;
+}
+
 /* ── the requests ──────────────────────────────────────────────────── */
 static int getparam(int32_t param, int* v) {
     const i915_hw_t* h = i915_hw();
+    if (h->gen >= 8) {
+        i915_topology_t t;
+        switch (param) {
+        case I915_PARAM_HAS_EXEC_SOFTPIN: *v = 1; return 0;
+        case I915_PARAM_HAS_ALIASING_PPGTT: *v = 2; return 0;                /* (full: an address space per app) */
+        case I915_PARAM_CS_TIMESTAMP_FREQUENCY: *v = (int)i915_timestamp_hz(); return 0;
+        case I915_PARAM_SLICE_MASK: i915_topology(&t); *v = (int)t.slice_mask; return 0;
+        case I915_PARAM_SUBSLICE_MASK: i915_topology(&t); *v = t.subslice_mask[0]; return 0;
+        case I915_PARAM_EU_TOTAL: i915_topology(&t); *v = (int)t.eu_total; return 0;
+        case I915_PARAM_HAS_USERPTR_PROBE: case I915_PARAM_HAS_EXEC_TIMELINE_FENCES: *v = 0; return 0;
+        }
+    }
     switch (param) {
     case I915_PARAM_CHIPSET_ID: *v = h->devid; return 0;
     case I915_PARAM_REVISION: *v = h->revision; return 0;
@@ -590,8 +686,19 @@ static int ioctl_i915(int owner, unsigned nr, unsigned size, void* arg, uspace_t
     }
     case I915_NR_CONTEXT_CREATE: {
         struct drm_i915_gem_context_create_ext* c = (struct drm_i915_gem_context_create_ext*)arg;
-        if (size >= sizeof(*c) && (c->flags || c->extensions)) return -E_INVAL;
-        return ctx_new(owner, 0, &c->ctx_id) ? 0 : -E_NOMEM;
+        if (size >= sizeof(*c) && (c->flags & ~I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS)) return -E_INVAL;
+        ctx_t* x = ctx_new(owner, 0, &c->ctx_id);
+        if (!x) return -E_NOMEM;
+        /* its parameters as SETPARAM extensions (iris: recoverable, the address space) */
+        uint64_t e = size >= sizeof(*c) && (c->flags & I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS) ? c->extensions : 0;
+        for (int k = 0; e && k < 16; k++) {
+            if (!u_ok(e, sizeof(struct drm_i915_gem_context_create_ext_setparam))) { ctx_free(x); return -E_FAULT; }
+            struct drm_i915_gem_context_create_ext_setparam sp = *(struct drm_i915_gem_context_create_ext_setparam*)(uintptr_t)e;
+            int r = sp.base.name != I915_CONTEXT_CREATE_EXT_SETPARAM ? -E_INVAL : ctx_param(owner, x, 1, &sp.param);
+            if (r) { ctx_free(x); return r; }
+            e = sp.base.next_extension;
+        }
+        return 0;
     }
     case I915_NR_CONTEXT_DESTROY: {
         ctx_t* c = ctx_get(owner, ((struct drm_i915_gem_context_destroy*)arg)->ctx_id);
@@ -603,18 +710,7 @@ static int ioctl_i915(int owner, unsigned nr, unsigned size, void* arg, uspace_t
         struct drm_i915_gem_context_param* p = (struct drm_i915_gem_context_param*)arg;
         ctx_t* c = p->ctx_id ? ctx_get(owner, p->ctx_id) : NULL;
         if (p->ctx_id && !c) return -E_NOENT;
-        int set = nr == I915_NR_CONTEXT_SETPARAM;
-        switch (p->param) {
-        case I915_CONTEXT_PARAM_GTT_SIZE: if (set) return -E_INVAL; p->value = i915_gtt_size(); return 0;
-        case I915_CONTEXT_PARAM_PRIORITY: if (!set) p->value = 0; return 0;
-        case I915_CONTEXT_PARAM_RECOVERABLE:
-            if (set) { if (c) c->recoverable = p->value != 0; } else p->value = c ? (uint64_t)c->recoverable : 1;
-            return 0;
-        case I915_CONTEXT_PARAM_BANNABLE: case I915_CONTEXT_PARAM_NO_ERROR_CAPTURE: case I915_CONTEXT_PARAM_BAN_PERIOD:
-            if (!set) p->value = 0;
-            return 0;
-        }
-        return -E_INVAL;
+        return ctx_param(owner, c, nr == I915_NR_CONTEXT_SETPARAM, p);
     }
     case I915_NR_REG_READ: {
         struct drm_i915_reg_read* r = (struct drm_i915_reg_read*)arg;
@@ -636,7 +732,36 @@ static int ioctl_i915(int owner, unsigned nr, unsigned size, void* arg, uspace_t
         struct drm_i915_query* q = (struct drm_i915_query*)arg;
         if (q->flags || q->num_items > 64 || !u_ok(q->items_ptr, (uint64_t)q->num_items * sizeof(struct drm_i915_query_item))) return -E_INVAL;
         struct drm_i915_query_item* it = (struct drm_i915_query_item*)(uintptr_t)q->items_ptr;
-        for (uint32_t k = 0; k < q->num_items; k++) it[k].length = -E_INVAL;      /* (no topology queries before gen 8) */
+        for (uint32_t k = 0; k < q->num_items; k++) {
+            if (it[k].query_id != DRM_I915_QUERY_TOPOLOGY_INFO || i915_hw()->gen < 8) { it[k].length = -E_INVAL; continue; }
+            /* the slices, subslices and EUs (from gen 8: iris needs it on gen 11) */
+            i915_topology_t t;
+            i915_topology(&t);
+            struct drm_i915_query_topology_info h;
+            memset(&h, 0, sizeof(h));
+            h.max_slices = (uint16_t)t.max_slices;
+            h.max_subslices = (uint16_t)t.max_subslices;
+            h.max_eus_per_subslice = (uint16_t)t.max_eus;
+            h.subslice_offset = (uint16_t)((t.max_slices + 7) / 8);
+            h.subslice_stride = (uint16_t)((t.max_subslices + 7) / 8);
+            h.eu_offset = (uint16_t)(h.subslice_offset + t.max_slices * h.subslice_stride);
+            h.eu_stride = (uint16_t)((t.max_eus + 7) / 8);
+            uint32_t len = (uint32_t)sizeof(h) + h.eu_offset + (uint32_t)(t.max_slices * t.max_subslices) * h.eu_stride;
+            if (it[k].length == 0) { it[k].length = (int32_t)len; continue; }
+            if ((uint32_t)it[k].length < len || !u_ok(it[k].data_ptr, len)) { it[k].length = -E_INVAL; continue; }
+            uint8_t buf[sizeof(h) + 64];
+            memset(buf, 0, sizeof(buf));
+            memcpy(buf, &h, sizeof(h));
+            uint8_t* d = buf + sizeof(h);
+            d[0] = (uint8_t)t.slice_mask;
+            for (int sl = 0; sl < t.max_slices; sl++) {
+                d[h.subslice_offset + sl * h.subslice_stride] = t.subslice_mask[sl];
+                for (int ss = 0; ss < t.max_subslices; ss++)
+                    d[h.eu_offset + (sl * t.max_subslices + ss) * h.eu_stride] = t.eu_mask[sl][ss];
+            }
+            memcpy((void*)(uintptr_t)it[k].data_ptr, buf, len);
+            it[k].length = (int32_t)len;
+        }
         return 0;
     }
     case I915_NR_GEM_SET_CACHING: case I915_NR_GEM_GET_CACHING: {
@@ -678,6 +803,14 @@ void gem_release(int owner) {
     for (int i = 0; i < CTX_MAX; i++) if (g_ctx[i].owner == owner) ctx_free(&g_ctx[i]);
     for (int i = 0; i < SYNC_MAX; i++) if (g_sync[i].owner == owner) memset(&g_sync[i], 0, sizeof(sync_t));
     retire();
+    /* its address space: its buffers' entries (the busy ones are freed later:
+     * they no longer point at it) */
+    for (int i = 0; i < VMS_MAX; i++)
+        if (g_vms[i].owner == owner) {
+            for (uint32_t k = 0; k < g_nobj; k++) if (g_obj[k].vm == g_vms[i].vm) g_obj[k].vm = 0;
+            i915_vm_destroy(g_vms[i].vm);
+            g_vms[i].owner = 0;
+        }
 }
 
 void gem_stats(char* buf, int cap) {
@@ -691,7 +824,7 @@ void gem_stats(char* buf, int cap) {
 void i915_tests(void (*report)(const char*, int, const char*)) {
     char d[160];
     i915_on_reset(on_reset);
-    if (!i915_present()) { report("an Intel GPU of gen 5 - 7.5", 0, i915_why()); return; }
+    if (!i915_present()) { report("an Intel GPU of gen 5 - 11", 0, i915_why()); return; }
     int up = i915_running() || i915_start() == 0;
     report("the render ring starts", up, i915_why());
     if (!up) return;
@@ -710,10 +843,11 @@ void i915_tests(void (*report)(const char*, int, const char*)) {
     /* 1: MI_STORE_DATA_IMM from a batch, through the address space apps use */
     uint32_t* b = (uint32_t*)bat;
     int k = 0;
+    int g8 = h->gen >= 8;                                         /* (64-bit addresses in commands) */
     for (int i = 0; i < 16; i++) {
         b[k++] = (0x20u << 23) | 2u | (h->gen == 5 ? 1u << 22 : 0);    /* MI_STORE_DATA_IMM (gen 5: GGTT) */
-        b[k++] = 0;
-        b[k++] = ta + (uint32_t)i * 4u;
+        if (g8) { b[k++] = ta + (uint32_t)i * 4u; b[k++] = 0; }
+        else { b[k++] = 0; b[k++] = ta + (uint32_t)i * 4u; }
         b[k++] = 0xB0A00000u + (uint32_t)i;
     }
     b[k++] = 0x0Au << 23;                                         /* MI_BATCH_BUFFER_END */
@@ -735,6 +869,9 @@ void i915_tests(void (*report)(const char*, int, const char*)) {
     else if (h->gen == 6) {
         b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 2u; b[k++] = (1u << 20) | (1u << 1); b[k++] = 0; b[k++] = 0;
         b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 2u; b[k++] = (1u << 14) | (1u << 20) | (1u << 12); b[k++] = ta + 64; b[k++] = 0x5EED0001u;
+    } else if (g8) {
+        b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 4u; b[k++] = (1u << 14) | (1u << 20) | (1u << 12);
+        b[k++] = ta + 64; b[k++] = 0; b[k++] = 0x5EED0001u; b[k++] = 0;
     } else { b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 2u; b[k++] = (1u << 14) | (1u << 20) | (1u << 12); b[k++] = ta + 64; b[k++] = 0x5EED0001u; }
     b[k++] = 0x0Au << 23; b[k++] = 0;
     if (!i915_llc()) clflush(bat, 4096);
@@ -745,7 +882,7 @@ void i915_tests(void (*report)(const char*, int, const char*)) {
     ksnprintf(d, sizeof(d), "%s, 0x%08x read back", r == 0 ? "done" : r == -1 ? "timed out" : "the GPU hung", got);
     report("the 3D pipeline's post-sync write (PIPE_CONTROL)", r == 0 && got == 0x5EED0001u, d);
     /* 3: many small submissions: the ring wraps several times */
-    b[0] = (0x20u << 23) | 2u | (h->gen == 5 ? 1u << 22 : 0); b[1] = 0; b[2] = ta + 128; b[3] = 0;
+    b[0] = (0x20u << 23) | 2u | (h->gen == 5 ? 1u << 22 : 0); b[1] = g8 ? ta + 128 : 0; b[2] = g8 ? 0 : ta + 128; b[3] = 0;
     b[4] = 0x0Au << 23; b[5] = 0;
     uint32_t t0 = timer_ms(), last = 0;
     int n = 0;
@@ -761,7 +898,7 @@ void i915_tests(void (*report)(const char*, int, const char*)) {
     uint64_t c0 = i915_timestamp();
     task_sleep_ms(20);
     uint64_t c1 = i915_timestamp();
-    ksnprintf(d, sizeof(d), "%llu ticks in 20 ms (12.5 MHz: ~250000)", (unsigned long long)(c1 - c0));
+    ksnprintf(d, sizeof(d), "%llu ticks in 20 ms (%u Hz: ~%u)", (unsigned long long)(c1 - c0), i915_timestamp_hz(), i915_timestamp_hz() / 50u);
     report("the render engine's clock", c1 > c0, d);
     i915_gtt_unbind((uint32_t)gt, 1); i915_gtt_free((uint32_t)gt, 1);
     i915_gtt_unbind((uint32_t)gb, 1); i915_gtt_free((uint32_t)gb, 1);

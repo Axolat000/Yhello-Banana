@@ -4,12 +4,14 @@
 #include "types.h"
 
 /*
- * Intel graphics, gen 5 to 7.5 (1st to 4th generation Core: Ironlake, Sandy
- * Bridge, Ivy Bridge, Haswell): the render engine, for 3D through Mesa's
- * crocus driver. kernel/gpu_i915.c drives the hardware (the GPU's address
- * spaces, the render ring, finished work, a hung GPU reset);
- * kernel/gpu_gem.c gives apps the part of Linux's i915 interface Mesa uses
- * (buffers, submissions, fences: kernel/i915_uapi.h).
+ * Intel graphics, gen 5 to 11 (1st to 10th generation Core): the render
+ * engine, for 3D through Mesa - crocus up to gen 7.5 (Ironlake, Sandy
+ * Bridge, Ivy Bridge, Haswell), iris from gen 8 (Broadwell, Skylake, Kaby /
+ * Coffee / Comet Lake, Ice Lake). kernel/gpu_i915.c drives the older ones
+ * (the GPU's address spaces, the render ring, finished work, a hung GPU
+ * reset), kernel/gpu_i915_lrc.c the newer (execlists, an address space per
+ * app); kernel/gpu_gem.c gives apps the part of Linux's i915 interface Mesa
+ * uses (buffers, submissions, fences: kernel/i915_uapi.h).
  *
  * Nothing is touched until the first use - an app opening the GPU, or
  * `gpu3d test`: the display driver (kernel/gpu_intel.c) only says what is
@@ -21,7 +23,7 @@ typedef struct {
     uint32_t mmio_size;
     uint16_t devid;
     uint8_t  revision;
-    int      gen;               /* 5, 6, 7 */
+    int      gen;               /* 5, 6, 7, 8, 9 (and 9.5), 11 */
     int      hsw;               /* gen 7.5 */
     uint32_t gtt_entries;       /* of the global GTT */
     uint32_t reserved_lo;       /* entries at the bottom the firmware's framebuffer keeps */
@@ -48,8 +50,8 @@ uint32_t i915_swizzle_x(void);          /* I915_BIT_6_SWIZZLE_* of X-tiled surfa
 
 /* the render ring: a batch at gtt (in the GPU's address space) runs; its
  * number (a seqno), or 0 if the GPU is hung and could not be reset */
-uint32_t i915_submit(uint32_t batch_gtt);
-uint32_t i915_submit_privileged(uint32_t batch_gtt);     /* (the kernel's own tests) */
+uint32_t i915_submit(uint64_t batch_gtt);
+uint32_t i915_submit_privileged(uint64_t batch_gtt);     /* (the kernel's own tests) */
 /* hardware contexts (gen 6 - 7.5; none on Ironlake): an image the GPU's
  * state is saved into and restored from when batches of different
  * contexts follow each other. i915_ctx_create: its number (> 0), or -1
@@ -58,13 +60,33 @@ uint32_t i915_submit_privileged(uint32_t batch_gtt);     /* (the kernel's own te
 int      i915_has_contexts(void);
 int      i915_ctx_create(void);
 void     i915_ctx_destroy(int ctx);
-uint32_t i915_submit_ctx(int ctx, uint32_t batch_gtt);
+uint32_t i915_submit_ctx(int ctx, uint64_t batch);
+/* gen 8+: an address space per app (48 bits, 4-level page tables) - a
+ * context runs in the one it was made for, and a buffer is where it is bound
+ * (Mesa's iris says where: "softpin"); i915_full_ppgtt: these GPUs */
+int      i915_full_ppgtt(void);
+int      i915_vm_create(void);                       /* its number (> 0), or -1 */
+void     i915_vm_destroy(int vm);                    /* (freed once its contexts are) */
+int      i915_vm_bind(int vm, uint64_t addr, const uint64_t* phys, uint32_t pages);   /* 0, -1: no memory */
+void     i915_vm_unbind(int vm, uint64_t addr, const uint64_t* phys, uint32_t pages); /* (only what still shows these pages) */
+uint64_t i915_vm_size(void);
+int      i915_ctx_create_vm(int vm);
+uint32_t i915_timestamp_hz(void);       /* the render engine's clock frequency */
+/* the GPU's slices, subslices and EUs (Mesa's iris sizes its threads by them) */
+typedef struct {
+    int      max_slices, max_subslices, max_eus;
+    uint32_t slice_mask;
+    uint8_t  subslice_mask[4];
+    uint8_t  eu_mask[4][8];             /* [slice][subslice]: a bit an EU */
+    uint32_t eu_total;
+} i915_topology_t;
+void     i915_topology(i915_topology_t* t);
 int      i915_done(uint32_t seqno);     /* that one has finished (0: nothing to wait for) */
 /* waits until it has (timeout_ms < 0: for ever): 0, -1 timed out, -2 the GPU hung (reset) */
 int      i915_wait(uint32_t seqno, int timeout_ms);
 uint32_t i915_last_submitted(void);
 uint32_t i915_resets(void);             /* hangs the GPU was reset from */
-uint64_t i915_timestamp(void);          /* the render engine's clock (12.5 MHz) */
+uint64_t i915_timestamp(void);          /* the render engine's clock (i915_timestamp_hz) */
 void     i915_info(char* buf, int cap);
 /* a hang reset: every context with work in flight is told (kernel/gpu_gem.c) */
 void     i915_on_reset(void (*fn)(uint32_t done, uint32_t submitted));

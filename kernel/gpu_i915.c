@@ -24,6 +24,7 @@
  *    and one app's state never shows in another's. Ironlake has none:
  *    crocus sets the whole state in every batch there. */
 #include "gpu_i915.h"
+#include "gpu_i915_lrc.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "serial.h"
@@ -129,7 +130,7 @@
 
 static i915_hw_t H;
 static int g_state;                         /* 0 none, 1 attached, 2 running, -1 failed */
-static char g_why[160] = "no Intel GPU of gen 5 - 7.5";
+static char g_why[160] = "no Intel GPU of gen 5 - 11";
 static int g_gt1;                           /* Ivy Bridge GT1 (HD 2500) */
 static int g_fw_legacy;                     /* Ivy Bridge without multi-threaded forcewake */
 
@@ -185,7 +186,10 @@ static void clflush(const volatile void* p, uint32_t n) {
     __asm__ volatile("mfence" ::: "memory");
 }
 
+static int g_lrc;                           /* gen 8+: kernel/gpu_i915_lrc.c drives it */
+
 void i915_attach(const i915_hw_t* hw) {
+    if (hw->gen >= 8) { lrc_attach(hw); g_lrc = lrc_present(); if (g_lrc) H = *hw; return; }
     if (hw->gen < 5 || hw->gen > 7 || !hw->gtt_entries) return;
     H = *hw;
     g_gt1 = H.gen == 7 && !H.hsw && (H.devid == 0x0152 || H.devid == 0x0156 || H.devid == 0x015A);
@@ -195,15 +199,27 @@ void i915_attach(const i915_hw_t* hw) {
          H.hsw ? "7.5" : H.gen == 7 ? "7" : H.gen == 6 ? "6" : "5", H.gtt_entries, H.reserved_lo + H.reserved_hi);
 }
 
-int i915_present(void) { return g_state != 0; }
-int i915_running(void) { return g_state == 2; }
-const char* i915_why(void) { return g_why; }
+int i915_present(void) { return g_lrc ? lrc_present() : g_state != 0; }
+int i915_running(void) { return g_lrc ? lrc_running() : g_state == 2; }
+const char* i915_why(void) { return g_lrc ? lrc_why() : g_why; }
 const i915_hw_t* i915_hw(void) { return &H; }
 int i915_llc(void) { return H.gen >= 6; }
-uint32_t i915_swizzle_x(void) { return g_swizzle; }
-uint32_t i915_resets(void) { return g_resets; }
-uint32_t i915_last_submitted(void) { return g_seqno; }
-void i915_on_reset(void (*fn)(uint32_t, uint32_t)) { g_reset_cb = fn; }
+uint32_t i915_swizzle_x(void) { return g_lrc ? 0 : g_swizzle; }          /* (gen 8+: the memory controller swizzles) */
+uint32_t i915_resets(void) { return g_lrc ? lrc_resets() : g_resets; }
+uint32_t i915_last_submitted(void) { return g_lrc ? lrc_last_submitted() : g_seqno; }
+void i915_on_reset(void (*fn)(uint32_t, uint32_t)) { if (g_lrc) lrc_on_reset(fn); else g_reset_cb = fn; }
+int i915_full_ppgtt(void) { return g_lrc; }
+int i915_vm_create(void) { return g_lrc ? lrc_vm_create() : -1; }
+void i915_vm_destroy(int vm) { if (g_lrc) lrc_vm_destroy(vm); }
+int i915_vm_bind(int vm, uint64_t a, const uint64_t* ph, uint32_t n) { return g_lrc ? lrc_vm_bind(vm, a, ph, n) : -1; }
+void i915_vm_unbind(int vm, uint64_t a, const uint64_t* ph, uint32_t n) { if (g_lrc) lrc_vm_unbind(vm, a, ph, n); }
+uint64_t i915_vm_size(void) { return g_lrc ? lrc_vm_size() : 0; }
+int i915_ctx_create_vm(int vm) { return g_lrc ? lrc_ctx_create(vm) : i915_ctx_create(); }
+uint32_t i915_timestamp_hz(void) { return g_lrc ? lrc_timestamp_hz() : 12500000u; }
+void i915_topology(i915_topology_t* t) {
+    if (g_lrc) { lrc_topology(t); return; }
+    memset(t, 0, sizeof(*t));
+}
 
 static int fail(const char* what) {
     ksnprintf(g_why, sizeof(g_why), "%s (HEAD %08x TAIL %08x CTL %08x ACTHD %08x IPEHR %08x EIR %08x)",
@@ -333,6 +349,7 @@ static void gtt_flushed(void) {
 }
 
 int64_t i915_gtt_alloc(uint32_t n, uint32_t align) {
+    if (g_lrc) return lrc_gtt_alloc(n, align);
     if (!n || !g_used) return -1;
     if (!align) align = 1;
     for (int pass = 0; pass < 2; pass++) {
@@ -355,22 +372,25 @@ int64_t i915_gtt_alloc(uint32_t n, uint32_t align) {
 }
 
 void i915_gtt_free(uint32_t first, uint32_t n) {
+    if (g_lrc) { lrc_gtt_free(first, n); return; }
     for (uint32_t i = 0; i < n; i++) if (first + i < g_hi && used(first + i)) { mark(first + i, 0); g_free++; }
     if (first < g_hint) g_hint = first;
 }
 
 void i915_gtt_bind(uint32_t first, const uint64_t* phys, uint32_t n) {
+    if (g_lrc) { lrc_gtt_bind(first, phys, n); return; }
     for (uint32_t i = 0; i < n; i++) set_entry(first + i, pte_of(phys[i]));
     gtt_flushed();
 }
 
 void i915_gtt_unbind(uint32_t first, uint32_t n) {
+    if (g_lrc) { lrc_gtt_unbind(first, n); return; }
     for (uint32_t i = 0; i < n; i++) set_entry(first + i, g_scratch_pte);
     gtt_flushed();
 }
 
-uint64_t i915_gtt_size(void) { return (uint64_t)H.gtt_entries * 4096u; }
-uint64_t i915_gtt_free_bytes(void) { return (uint64_t)g_free * 4096u; }
+uint64_t i915_gtt_size(void) { return g_lrc ? lrc_gtt_size() : (uint64_t)H.gtt_entries * 4096u; }
+uint64_t i915_gtt_free_bytes(void) { return g_lrc ? lrc_gtt_free_bytes() : (uint64_t)g_free * 4096u; }
 
 /* the GTT: every entry not the display's points at a page of zeros; then,
  * from gen 6, the aliasing PPGTT - 512 page tables mirroring it, their
@@ -443,9 +463,10 @@ static uint32_t ctx_size(void) {
     return (b + 4095u) & ~4095u;
 }
 
-int i915_has_contexts(void) { return g_ctx_bytes != 0; }
+int i915_has_contexts(void) { return g_lrc ? 1 : g_ctx_bytes != 0; }
 
 int i915_ctx_create(void) {
+    if (g_lrc) return lrc_ctx_create(0);
     if (!g_ctx_bytes || !g_hc) return -1;
     for (int i = 1; i < HWCTX_MAX; i++) {
         if (g_hc[i].used) continue;
@@ -489,6 +510,7 @@ static void ctx_reap(void) {
 static uint32_t submit_in(int ctx, uint32_t batch_gtt, int with_batch, int privileged);
 
 void i915_ctx_destroy(int i) {
+    if (g_lrc) { lrc_ctx_destroy(i); return; }
     if (!g_hc || i <= 0 || i >= HWCTX_MAX || !g_hc[i].used) return;
     g_hc[i].dying = 1;
     /* the GPU holds it: back to the kernel's, so it can go */
@@ -502,7 +524,7 @@ static uint32_t hws_seqno(void) {
     return g_hws[HWS_SEQNO];
 }
 
-int i915_done(uint32_t s) { return !s || g_state != 2 || (int32_t)(hws_seqno() - s) >= 0; }
+int i915_done(uint32_t s) { return g_lrc ? lrc_done(s) : !s || g_state != 2 || (int32_t)(hws_seqno() - s) >= 0; }
 
 static void ppgtt_enable(void) {
     if (H.gen == 6) {
@@ -717,6 +739,7 @@ static int hang_check(void) {
 }
 
 int i915_wait(uint32_t s, int timeout_ms) {
+    if (g_lrc) return lrc_wait(s, timeout_ms);
     uint32_t t0 = timer_ms();
     while (!i915_done(s)) {
         if (hang_check()) return -2;
@@ -736,11 +759,12 @@ static uint32_t submit_batch(int ctx, uint32_t batch_gtt, int privileged) {
     if (!s) { hang(); if (g_state == 2) s = submit_in(ctx, batch_gtt, 1, privileged); }
     return s;
 }
-uint32_t i915_submit(uint32_t batch_gtt) { return submit_batch(0, batch_gtt, 0); }
-uint32_t i915_submit_ctx(int ctx, uint32_t batch_gtt) { return submit_batch(ctx, batch_gtt, 0); }
-uint32_t i915_submit_privileged(uint32_t batch_gtt) { return submit_batch(0, batch_gtt, 1); }
+uint32_t i915_submit(uint64_t batch) { return g_lrc ? lrc_submit(batch) : submit_batch(0, (uint32_t)batch, 0); }
+uint32_t i915_submit_ctx(int ctx, uint64_t batch) { return g_lrc ? lrc_submit_ctx(ctx, batch) : submit_batch(ctx, (uint32_t)batch, 0); }
+uint32_t i915_submit_privileged(uint64_t batch) { return g_lrc ? lrc_submit_privileged(batch) : submit_batch(0, (uint32_t)batch, 1); }
 
 uint64_t i915_timestamp(void) {
+    if (g_lrc) return lrc_timestamp();
     if (g_state != 2) return 0;
     uint32_t hi = rd(R_TIMESTAMP + 4), lo = rd(R_TIMESTAMP), hi2 = rd(R_TIMESTAMP + 4);
     if (hi != hi2) lo = rd(R_TIMESTAMP);
@@ -792,6 +816,7 @@ static int hw_setup(void) {
 }
 
 int i915_start(void) {
+    if (g_lrc) return lrc_start();
     if (g_state == 2) return 0;
     if (g_state != 1) return -1;
     forcewake_detect();
@@ -816,6 +841,7 @@ int i915_start(void) {
 }
 
 void i915_info(char* buf, int cap) {
+    if (g_lrc) { lrc_info(buf, cap); return; }
     if (g_state != 2) { ksnprintf(buf, (size_t)cap, "render engine: %s", g_why); return; }
     ksnprintf(buf, (size_t)cap,
               "render engine: running, seqno %u of %u, %u reset(s)\n"
@@ -840,13 +866,22 @@ uint64_t i915_gtt_size(void) { return 0; }
 uint64_t i915_gtt_free_bytes(void) { return 0; }
 int      i915_llc(void) { return 0; }
 uint32_t i915_swizzle_x(void) { return 0; }
-uint32_t i915_submit(uint32_t b) { (void)b; return 0; }
-uint32_t i915_submit_privileged(uint32_t b) { (void)b; return 0; }
+uint32_t i915_submit(uint64_t b) { (void)b; return 0; }
+uint32_t i915_submit_privileged(uint64_t b) { (void)b; return 0; }
 int      i915_done(uint32_t s) { (void)s; return 1; }
 int      i915_has_contexts(void) { return 0; }
 int      i915_ctx_create(void) { return -1; }
 void     i915_ctx_destroy(int c) { (void)c; }
-uint32_t i915_submit_ctx(int c, uint32_t b) { (void)c; (void)b; return 0; }
+uint32_t i915_submit_ctx(int c, uint64_t b) { (void)c; (void)b; return 0; }
+int      i915_full_ppgtt(void) { return 0; }
+int      i915_vm_create(void) { return -1; }
+void     i915_vm_destroy(int vm) { (void)vm; }
+int      i915_vm_bind(int vm, uint64_t a, const uint64_t* ph, uint32_t n) { (void)vm; (void)a; (void)ph; (void)n; return -1; }
+void     i915_vm_unbind(int vm, uint64_t a, const uint64_t* ph, uint32_t n) { (void)vm; (void)a; (void)ph; (void)n; }
+uint64_t i915_vm_size(void) { return 0; }
+int      i915_ctx_create_vm(int vm) { (void)vm; return -1; }
+uint32_t i915_timestamp_hz(void) { return 0; }
+void     i915_topology(i915_topology_t* t) { memset(t, 0, sizeof(*t)); }
 int      i915_wait(uint32_t s, int t) { (void)s; (void)t; return 0; }
 uint32_t i915_last_submitted(void) { return 0; }
 uint32_t i915_resets(void) { return 0; }

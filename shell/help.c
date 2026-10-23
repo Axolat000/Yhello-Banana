@@ -426,12 +426,14 @@ static const page_t PAGES[] = {
       "7000 TeraScale 2 cards (the HD 7450...) and RX 400 / 500 Polaris cards (the RX 580...), a hardware mouse pointer and "
       "vsync over the firmware's screen. The driver first checks that the card scans out exactly the screen the firmware "
       "handed over, else it leaves the card alone. The choice is kept; off takes effect at the next start. With no word: "
-      "whether it is on and what the driver found. Intel HD Graphics (1st to 8th generation Core) need no switch: their "
+      "whether it is on and what the driver found. Intel HD / UHD / Iris Graphics (1st to 10th generation Core) need no switch: their "
       "driver is always on. NVIDIA cards keep the firmware's screen.",
       NULL, "gpu experimental on\ngpu experimental", "lsgpu, devmgr" },
-    { "gpu3d", "hardware", "gpu3d [status | on | off | test]", "3D on Intel HD Graphics (1st - 4th generation Core)",
-      "Banana OS drives the render engine of Intel HD Graphics of the 1st to 4th generation Core processors (Ironlake, Sandy "
-      "Bridge, Ivy Bridge, Haswell) itself, for OpenGL through Mesa's crocus driver. It starts the first time an app uses "
+    { "gpu3d", "hardware", "gpu3d [status | on | off | test]", "3D on Intel HD / UHD / Iris Graphics (1st - 10th generation Core)",
+      "Banana OS drives the render engine of Intel graphics of the 1st to 10th generation Core processors itself, for OpenGL "
+      "through Mesa: crocus on Ironlake, Sandy Bridge, Ivy Bridge and Haswell, iris (experimental: written without the "
+      "hardware) on Broadwell, Skylake, Kaby / Coffee / Comet Lake and Ice Lake, where every app gets its own GPU address "
+      "space. It starts the first time an app uses "
       "it. With no word: whether it runs, its ring, the GPU memory in use. test starts it if it is not running and checks "
       "it on the real GPU: a batch that writes memory, the 3D pipeline's write, 4000 submissions, the GPU's clock. A GPU "
       "that hangs is reset after 2 seconds. Apps (OpenGL through Mesa) get the GPU only after gpu3d on - the choice is "

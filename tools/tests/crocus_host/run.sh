@@ -11,7 +11,7 @@ SRC=$(ls -d "$ROOT"/ports/mesa/src/mesa-*/ | head -1)
 OUT=${TMPDIR:-/tmp}/crocus_host
 mkdir -p "$OUT"
 cc -O1 -fPIC -shared -w -I "$ROOT/kernel" -I "$ROOT/tools/tests" "$ROOT/tools/tests/crocus_host/preload.c" \
-   "$ROOT/kernel/gpu_i915.c" "$ROOT/kernel/gpu_gem.c" -o "$OUT/preload.so" -ldl -lpthread
+   "$ROOT/kernel/gpu_i915.c" "$ROOT/kernel/gpu_i915_lrc.c" "$ROOT/kernel/gpu_gem.c" -o "$OUT/preload.so" -ldl -lpthread
 cc -O1 -w -I "$SRC/include" "$ROOT/tools/tests/crocus_host/gltri.c" -L "$REF/src/gallium/targets/osmesa" -lOSMesa \
    -Wl,-rpath,"$REF/src/gallium/targets/osmesa" -o "$OUT/gltri"
 fail=0

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Hosted run of kernel/gpu_i915.c and kernel/gpu_gem.c against a model of
+/* Hosted run of kernel/gpu_i915.c, gpu_i915_lrc.c and gpu_gem.c against a model of
  * an Intel GPU's command streamer, gen 5, 6, 7 and 7.5. The model: the
  * register BAR (forcewake acks, masked registers, the GT reset), the global
  * GTT in its upper half, the aliasing PPGTT (its directory in GTT entries,
@@ -12,7 +12,7 @@
  * the i915 interface as Mesa uses it: buffers, maps, relocations, execbuffer2
  * with a fence array, waits, syncobjs, contexts, a hung batch and the
  * reset, buffers closed while busy, the app's end; and `gpu3d test`.
- *   cc -O1 -no-pie -w -I kernel -I tools/tests tools/tests/test_i915.c kernel/gpu_i915.c kernel/gpu_gem.c -o /tmp/i915 && /tmp/i915 */
+ *   cc -O1 -no-pie -w -I kernel -I tools/tests tools/tests/test_i915.c kernel/gpu_i915.c kernel/gpu_i915_lrc.c kernel/gpu_gem.c -o /tmp/i915 && /tmp/i915 */
 #include "i915/model.h"
 
 /* ── the app side ──────────────────────────────────────────────────── */
@@ -55,18 +55,38 @@ static int gem_wait(int owner, uint32_t h, int64_t ns) {
 
 static void report(const char* name, int ok, const char* d) { printf("    gpu3d test: %s %s: %s\n", ok ? "ok  " : "FAIL", name, d); check(name, ok); }
 
+/* a store of v at addr (its address dword: *rel), as each generation has it */
+static int sdi(uint32_t* b, int k, uint32_t v, int* rel) {
+    b[k++] = (0x20u << 23) | 2u;
+    if (gen >= 8) { *rel = k; b[k++] = 0xDEAD0000u; b[k++] = 0; }
+    else { b[k++] = 0; *rel = k; b[k++] = 0xDEAD0000u; }
+    b[k++] = v;
+    return k;
+}
+/* PIPE_CONTROL's post-sync write (gen 6+) */
+static int pc_write(uint32_t* b, int k, uint32_t v, int* rel) {
+    if (gen >= 8) {
+        b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 4u; b[k++] = (1u << 14) | (1u << 20) | (1u << 12);
+        *rel = k; b[k++] = 0xDEAD0000u; b[k++] = 0; b[k++] = v; b[k++] = 0;
+    } else {
+        b[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 2u; b[k++] = (1u << 14) | (1u << 20) | (1u << 12);
+        *rel = k; b[k++] = 0xDEAD0000u; b[k++] = v;
+    }
+    return k;
+}
+
 static void one(int g, int is_hsw, uint16_t devid) {
     gen = g; hsw = is_hsw;
-    printf("gen %s (%04x)\n", hsw ? "7.5" : g == 7 ? "7" : g == 6 ? "6" : "5", devid);
-    bar = (uint8_t*)arena_take(4u << 20, 4096);
-    memset(bar, 0, 4u << 20);
+    printf("gen %s (%04x)\n", hsw ? "7.5" : g == 7 ? "7" : g == 6 ? "6" : g == 5 ? "5" : g == 8 ? "8" : g == 9 ? "9" : "11", devid);
+    bar = (uint8_t*)arena_take(bar_size(), 4096);
+    memset(bar, 0, bar_size());
     g_ran = 0; bad_writes = 0; hung = 0; g_resets_seen = 0;
     /* (a fresh driver: the globals of the two files start over by running the program again
      *  - so each generation runs in its own process: see main) */
     i915_hw_t hw;
     memset(&hw, 0, sizeof hw);
-    hw.mmio = bar; hw.mmio_size = 4u << 20; hw.devid = devid; hw.revision = 9; hw.gen = g; hw.hsw = is_hsw;
-    hw.gtt_entries = g == 5 ? 256u * 1024u : 512u * 1024u;
+    hw.mmio = bar; hw.mmio_size = bar_size(); hw.devid = devid; hw.revision = 9; hw.gen = g; hw.hsw = is_hsw;
+    hw.gtt_entries = g == 5 ? 256u * 1024u : g >= 8 ? 1024u * 1024u : 512u * 1024u;
     hw.reserved_lo = 8192; hw.reserved_hi = 16;
     model_regs();
     i915_attach(&hw);
@@ -97,7 +117,8 @@ static void one(int g, int is_hsw, uint16_t devid) {
     struct drm_i915_gem_context_param cp = { cc.ctx_id, 0, I915_CONTEXT_PARAM_RECOVERABLE, 0 };
     check("CONTEXT_SETPARAM recoverable=0", io(A, WR, I915(I915_NR_CONTEXT_SETPARAM), &cp, sizeof cp) == 0);
     cp.param = I915_CONTEXT_PARAM_GTT_SIZE;
-    check("CONTEXT_GETPARAM gtt size", io(A, WR, I915(I915_NR_CONTEXT_GETPARAM), &cp, sizeof cp) == 0 && cp.value == (uint64_t)hw.gtt_entries * 4096u);
+    check("CONTEXT_GETPARAM gtt size", io(A, WR, I915(I915_NR_CONTEXT_GETPARAM), &cp, sizeof cp) == 0 &&
+          cp.value == (g >= 8 ? 1ull << 48 : (uint64_t)hw.gtt_entries * 4096u));
 
     uint32_t hb = create(A, 8192), ht = create(A, 4096), hbig = create(A, 1u << 20);
     check("GEM_CREATE x3", hb && ht && hbig);
@@ -109,14 +130,14 @@ static void one(int g, int is_hsw, uint16_t devid) {
     /* (gen 5: unprivileged batches may not store to the GTT - Mesa writes with PIPE_CONTROL there) */
     int k = 0, nrel = 0;
     uint32_t rel_at[3], rel_delta[3];
+    int ra;
     if (g != 5)
         for (int i = 0; i < 2; i++) {
-            bm[k++] = (0x20u << 23) | 2u; bm[k++] = 0;
-            rel_at[nrel] = (uint32_t)k; rel_delta[nrel++] = 64u + (uint32_t)i * 4u;
-            bm[k++] = 0xDEAD0000u; bm[k++] = 0x11110000u + (uint32_t)i;
+            k = sdi(bm, k, 0x11110000u + (uint32_t)i, &ra);
+            rel_at[nrel] = (uint32_t)ra; rel_delta[nrel++] = 64u + (uint32_t)i * 4u;
         }
     if (g == 5) { bm[k++] = (3u << 29 | 3u << 27 | 2u << 24 | 2u) | (1u << 14); rel_at[nrel] = (uint32_t)k; rel_delta[nrel++] = 72; bm[k++] = 0xDEAD0000u; bm[k++] = 0x22220000u; bm[k++] = 0; }
-    else { bm[k++] = 3u << 29 | 3u << 27 | 2u << 24 | 2u; bm[k++] = (1u << 14) | (1u << 20) | (1u << 12); rel_at[nrel] = (uint32_t)k; rel_delta[nrel++] = 72; bm[k++] = 0xDEAD0000u; bm[k++] = 0x22220000u; }
+    else { k = pc_write(bm, k, 0x22220000u, &ra); rel_at[nrel] = (uint32_t)ra; rel_delta[nrel++] = 72; }
     bm[k++] = 0x0Au << 23; bm[k++] = 0;
     struct drm_i915_gem_relocation_entry rl[3];
     for (int i = 0; i < nrel; i++) rl[i] = (struct drm_i915_gem_relocation_entry){ 1 /* LUT: the target */, rel_delta[i], rel_at[i] * 4u, 0, 2, 2 };
@@ -159,6 +180,64 @@ static void one(int g, int is_hsw, uint16_t devid) {
     check("no relocation rewritten", bm[rel_at[nrel - 1]] == mark);
     check("GEM_WAIT again", gem_wait(A, ht, -1) == 0 && tm[18] == 0x22220000u);
 
+    /* gen 8+: the parameters iris needs, the topology, softpin */
+    if (g >= 8) {
+        int v = -1;
+        gp.param = I915_PARAM_HAS_EXEC_SOFTPIN; gp.value = (uint64_t)(uintptr_t)&v;
+        check("GETPARAM has_exec_softpin", io(A, WR, I915(I915_NR_GETPARAM), &gp, sizeof gp) == 0 && v == 1);
+        gp.param = I915_PARAM_CS_TIMESTAMP_FREQUENCY;
+        check("GETPARAM timestamp frequency", io(A, WR, I915(I915_NR_GETPARAM), &gp, sizeof gp) == 0 &&
+              v == (g == 8 ? 12500000 : g == 9 ? 12000000 : 19200000));
+        gp.param = I915_PARAM_EU_TOTAL;
+        check("GETPARAM eu_total", io(A, WR, I915(I915_NR_GETPARAM), &gp, sizeof gp) == 0 && v == (g == 8 ? 24 : g == 9 ? 24 : 32));
+        struct drm_i915_query_item qi = { DRM_I915_QUERY_TOPOLOGY_INFO, 0, 0, 0 };
+        struct drm_i915_query q = { 1, 0, (uint64_t)(uintptr_t)&qi };
+        check("QUERY topology: its length", io(A, WR, I915(I915_NR_QUERY), &q, sizeof q) == 0 && qi.length > 16);
+        uint8_t topo[128];
+        memset(topo, 0, sizeof topo);
+        qi.data_ptr = (uint64_t)(uintptr_t)topo;
+        struct drm_i915_query_topology_info* ti = (struct drm_i915_query_topology_info*)topo;
+        check("QUERY topology", io(A, WR, I915(I915_NR_QUERY), &q, sizeof q) == 0 && qi.length > 16 && topo[16] == 1 &&
+              topo[16 + ti->subslice_offset] == (g == 9 ? 0x7 : g == 8 ? 0x7 : 0xFF) && topo[16 + ti->eu_offset] == (g == 11 ? 0xF0 : 0xFF));
+        struct drm_i915_gem_context_param vp = { 0, 0, I915_CONTEXT_PARAM_VM, 0 };
+        check("CONTEXT_GETPARAM vm (the app's address space)", io(A, WR, I915(I915_NR_CONTEXT_GETPARAM), &vp, sizeof vp) == 0 && vp.value);
+        /* a context made with extensions: recoverable off, that address space */
+        struct drm_i915_gem_context_create_ext_setparam e2 = { { 0, I915_CONTEXT_CREATE_EXT_SETPARAM, 0, { 0 } }, { 0, 0, I915_CONTEXT_PARAM_VM, vp.value } };
+        struct drm_i915_gem_context_create_ext_setparam e1 = { { (uint64_t)(uintptr_t)&e2, I915_CONTEXT_CREATE_EXT_SETPARAM, 0, { 0 } }, { 0, 0, I915_CONTEXT_PARAM_RECOVERABLE, 0 } };
+        struct drm_i915_gem_context_create_ext ce = { 0, I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS, (uint64_t)(uintptr_t)&e1 };
+        check("CONTEXT_CREATE_EXT with SETPARAMs", io(A, WR, I915(I915_NR_CONTEXT_CREATE), &ce, sizeof ce) == 0 && ce.ctx_id);
+        /* softpin: buffers where the app says, high in the 48-bit space (as iris: canonical addresses) */
+        uint32_t hp = create(A, 4096), hq = create(A, 4096);
+        uint32_t* pm = map(A, hp, 4096);
+        uint32_t* qm = map(A, hq, 4096);
+        uint64_t qa = 0x0000700000010000ull, pa = 0xFFFF800000200000ull;     /* (the second: bit 47, sign-extended) */
+        int kk = 0;
+        pm[kk++] = (0x20u << 23) | 2u; pm[kk++] = (uint32_t)qa + 32; pm[kk++] = (uint32_t)(qa >> 32); pm[kk++] = 0x50F70001u;
+        pm[kk++] = 0x0Au << 23; pm[kk++] = 0;
+        struct drm_i915_gem_exec_object2 xs[2];
+        memset(xs, 0, sizeof xs);
+        xs[0].handle = hp; xs[0].offset = pa; xs[0].flags = EXEC_OBJECT_PINNED | EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
+        xs[1].handle = hq; xs[1].offset = qa; xs[1].flags = EXEC_OBJECT_PINNED | EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_WRITE;
+        struct drm_i915_gem_execbuffer2 es;
+        memset(&es, 0, sizeof es);
+        es.buffers_ptr = (uint64_t)(uintptr_t)xs; es.buffer_count = 2; es.batch_len = (uint32_t)kk * 4;
+        es.flags = I915_EXEC_RENDER | I915_EXEC_NO_RELOC | I915_EXEC_HANDLE_LUT | I915_EXEC_BATCH_FIRST; es.rsvd1 = ce.ctx_id;
+        check("EXECBUFFER2 softpinned (48-bit addresses)", io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &es, sizeof es) == 0);
+        check("its offsets left as given", xs[0].offset == pa && xs[1].offset == qa);
+        check("the store landed at the softpinned address", gem_wait(A, hq, -1) == 0 && qm[8] == 0x50F70001u);
+        /* the address given to another buffer (the first one closed): it lands there now */
+        struct drm_gem_close gq = { hq, 0 };
+        io(A, W, DRM_NR_GEM_CLOSE, &gq, sizeof gq);
+        uint32_t hr = create(A, 4096);
+        uint32_t* rm = map(A, hr, 4096);
+        xs[1].handle = hr;
+        pm[3] = 0x50F70002u;
+        check("an address reused by another buffer", io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &es, sizeof es) == 0 &&
+              gem_wait(A, hr, -1) == 0 && rm[8] == 0x50F70002u);
+        xs[1].offset = 0x123;
+        check("a softpinned offset not page-aligned: EINVAL", io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &es, sizeof es) == -22);
+    }
+
     /* hardware contexts (gen 6+): each keeps its own state between batches */
     int iso = -1;
     gp.param = I915_PARAM_HAS_CONTEXT_ISOLATION; gp.value = (uint64_t)(uintptr_t)&iso;
@@ -178,7 +257,7 @@ static void one(int g, int is_hsw, uint16_t devid) {
         /* a batch: "state" in a register (LRI), or that register stored into the target (SRM) */
         #define CTX_BATCH(ctx, store, val) do { \
             int q = 0; \
-            if (store) { cm[q++] = (0x24u << 23) | 1u; cm[q++] = 0x7300; cm[q++] = 0xDEAD0000u; } \
+            if (store) { cm[q++] = (0x24u << 23) | (g >= 8 ? 2u : 1u); cm[q++] = 0x7300; cm[q++] = 0xDEAD0000u; if (g >= 8) cm[q++] = 0; } \
             else { cm[q++] = (0x22u << 23) | 1u; cm[q++] = 0x7300; cm[q++] = (val); } \
             cm[q++] = 0x0Au << 23; cm[q++] = 0; \
             rc = (struct drm_i915_gem_relocation_entry){ 1, 96, 8, 0, 2, 2 }; \
@@ -215,7 +294,7 @@ static void one(int g, int is_hsw, uint16_t devid) {
     uint32_t t = 0;
     for (int i = 0; i < 3000 && !r; i++) { r = io(A, W, I915(I915_NR_GEM_EXECBUFFER2), &eb, sizeof eb); t++; }
     check("3000 submissions", r == 0 && gem_wait(A, ht, -1) == 0);
-    check("the model ran every batch", g_ran == 3002 + (g >= 6 ? 7 : 0));
+    check("the model ran every batch", g_ran == 3002 + (g >= 6 ? 7 : 0) + (g >= 8 ? 2 : 0));
 
     /* a big buffer away from the 64 KiB-aligned place: alignment asked for */
     struct drm_i915_gem_exec_object2 ex2[2];
@@ -272,20 +351,26 @@ static void one(int g, int is_hsw, uint16_t devid) {
     i915_tests(report);
 }
 
+#define NGEN 9
 int main(int argc, char** argv) {
     arena = mmap(0, arena_size, 3, 0x22 | 0x40 /* MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT */, -1, 0);
     if (!arena || arena == (void*)-1) { printf("no arena\n"); return 2; }
     int which = argc > 1 ? argv[1][0] - '0' : -1;
+    if (which >= NGEN) return 2;
     if (which < 0) {
         /* each generation in a process of its own (the drivers' state is global) */
         extern int system(const char*);
         char cmd[512];
         int bad = 0;
-        for (int i = 0; i < 4; i++) { ksnprintf(cmd, sizeof cmd, "%s %d", argv[0], i); bad += system(cmd) != 0; }
-        printf(bad ? "%d generation(s) FAILED\n" : "all 4 generations passed\n", bad);
+        for (int i = 0; i < NGEN; i++) { ksnprintf(cmd, sizeof cmd, "%s %d", argv[0], i); bad += system(cmd) != 0; }
+        printf(bad ? "%d generation(s) FAILED\n" : "all %d generations passed\n", bad ? bad : NGEN);
         return bad != 0;
     }
-    static const struct { int gen, hsw; uint16_t id; } G[4] = { { 5, 0, 0x0046 }, { 6, 0, 0x0116 }, { 7, 0, 0x0166 }, { 7, 1, 0x0416 } };
+    static const struct { int gen, hsw; uint16_t id; } G[NGEN] = {
+        { 5, 0, 0x0046 }, { 6, 0, 0x0116 }, { 7, 0, 0x0166 }, { 7, 1, 0x0416 },        /* Ironlake, Sandy / Ivy Bridge, Haswell */
+        { 8, 0, 0x1616 }, { 9, 0, 0x1912 }, { 9, 0, 0x3E92 }, { 9, 0, 0x9BC5 },        /* Broadwell, Skylake, Coffee Lake, Comet Lake */
+        { 11, 0, 0x8A52 },                                                             /* Ice Lake */
+    };
     one(G[which].gen, G[which].hsw, G[which].id);
     printf("  %d of %d checks passed\n", checks - failed, checks);
     return failed != 0;

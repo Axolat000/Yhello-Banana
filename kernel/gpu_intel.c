@@ -159,6 +159,39 @@ static const intel_id_t IDS[] = {
     { 0x3EA6, 9, "Intel Iris Plus Graphics 645 (Coffee Lake)" },
     { 0x3EA8, 9, "Intel Iris Plus Graphics 655 (Coffee Lake)" },
     { 0x3EA9, 9, "Intel UHD Graphics 620 (Coffee Lake)" },
+    /* 10th: Comet Lake (gen 9.5, as Coffee Lake) */
+    { 0x9B21, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9B41, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9BA2, 9, "Intel UHD Graphics 610 (Comet Lake)" },
+    { 0x9BA4, 9, "Intel UHD Graphics 610 (Comet Lake)" },
+    { 0x9BA5, 9, "Intel UHD Graphics 610 (Comet Lake)" },
+    { 0x9BA8, 9, "Intel UHD Graphics 610 (Comet Lake)" },
+    { 0x9BAA, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9BAC, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9BC2, 9, "Intel UHD Graphics 630 (Comet Lake)" },
+    { 0x9BC4, 9, "Intel UHD Graphics (Comet Lake mobile)" },
+    { 0x9BC5, 9, "Intel UHD Graphics 630 (Comet Lake)" },
+    { 0x9BC6, 9, "Intel UHD Graphics P630 (Comet Lake)" },
+    { 0x9BC8, 9, "Intel UHD Graphics 630 (Comet Lake)" },
+    { 0x9BCA, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9BCC, 9, "Intel UHD Graphics (Comet Lake ULT)" },
+    { 0x9BE6, 9, "Intel UHD Graphics P630 (Comet Lake)" },
+    { 0x9BF6, 9, "Intel UHD Graphics P630 (Comet Lake)" },
+    /* 10th: Ice Lake (gen 11) */
+    { 0x8A50, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A51, 11, "Intel Iris Plus Graphics G7 (Ice Lake)" },
+    { 0x8A52, 11, "Intel Iris Plus Graphics G7 (Ice Lake)" },
+    { 0x8A53, 11, "Intel Iris Plus Graphics G7 (Ice Lake)" },
+    { 0x8A54, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A56, 11, "Intel UHD Graphics G1 (Ice Lake)" },
+    { 0x8A57, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A58, 11, "Intel UHD Graphics G1 (Ice Lake)" },
+    { 0x8A59, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A5A, 11, "Intel Iris Plus Graphics G4 (Ice Lake)" },
+    { 0x8A5B, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A5C, 11, "Intel Iris Plus Graphics G4 (Ice Lake)" },
+    { 0x8A5D, 11, "Intel Iris Plus Graphics (Ice Lake)" },
+    { 0x8A71, 11, "Intel Iris Plus Graphics (Ice Lake)" },
 };
 
 static gpu_t g_gpu;
@@ -245,7 +278,7 @@ static int setup_cursor_memory(void) {
         g_cur_addr = (uint32_t)phys;
         return 0;
     }
-    if (g_gen == 9) {
+    if (g_gen >= 9) {
         /* the display buffer: the cursor's share and its watermark, as the firmware set them */
         uint32_t ddb = pr(CUR_BUF_CFG_A), wm = pr(CUR_WM_0_A);
         if ((ddb >> 16 & 0x3FF) <= (ddb & 0x3FF) || !(wm & 0x80000000u)) {
@@ -327,9 +360,11 @@ static int it_backlight(gpu_t* g, int percent) {
 }
 
 /* the south bridge (PCH): Cannon Point (300 series) keeps the backlight its own way */
+/* Cannon Point and the PCHs after it that set the backlight its way: Comet
+ * Point (Comet Lake), Ice Point (Ice Lake) */
 static int pch_is_cnp(void) {
-    uint16_t id = pci_read16(0, 0x1F, 0, 2);
-    return (id & 0xFF80) == 0xA300 || (id & 0xFF80) == 0x9D80;
+    uint16_t id = pci_read16(0, 0x1F, 0, 2) & 0xFF80;
+    return id == 0xA300 || id == 0x9D80 || id == 0x0280 || id == 0x0680 || id == 0xA380 || id == 0x3480 || id == 0x3880;
 }
 
 static void setup_backlight(void) {
@@ -345,7 +380,7 @@ static void setup_backlight(void) {
         if (!(rd(BLC_PWM_CPU_CTL2) & 0x80000000u)) return;
         g_blc_max = rd(BLC_PWM_PCH_CTL2) >> 16;
         if (g_blc_max) g_blc = BLC_CPU;
-    } else if (g_gen == 9 && pch_is_cnp()) {
+    } else if (g_gen >= 9 && pch_is_cnp()) {
         g_blc_max = rd(BLC_PWM_PCH_CTL2);
         if (g_blc_max && rd(BLC_PWM_CPU_CTL) <= g_blc_max) g_blc = BLC_CNP;
     } else {
@@ -362,7 +397,7 @@ static void it_info(gpu_t* g, char* buf, int cap) {
               "timings: %u x %u visible of %u x %u total\n"
               "stolen memory: %u MiB, graphics translation table: %u entries\n"
               "hardware cursor: %s%s, backlight: %s",
-              g_hsw ? "7.5" : g_gen == 3 ? "3" : g_gen == 5 ? "5" : g_gen == 6 ? "6" : g_gen == 7 ? "7" : g_gen == 8 ? "8" : "9",
+              g_hsw ? "7.5" : g_gen == 3 ? "3" : g_gen == 5 ? "5" : g_gen == 6 ? "6" : g_gen == 7 ? "7" : g_gen == 8 ? "8" : g_gen == 9 ? "9" : "11",
               'A' + g_pipe, g_npipes, pr(DSPACNTR), pr(DSPASTRIDE),
               (ht & 0xFFF) + 1, (vt & 0xFFF) + 1, (ht >> 16 & 0x1FFF) + 1, (vt >> 16 & 0x1FFF) + 1,
               g_stolen >> 20, g_gtt_entries, g_cur_ok ? "yes" : "no - ", g_cur_ok ? "" : g_cur_why, BLC[g_blc]);
@@ -389,7 +424,7 @@ static void read_ggc(void) {
     } else {
         uint16_t ggc = pci_read16(0, 0, 0, 0x50);
         uint32_t gms = ggc >> 8 & 0xFF, ggms = ggc >> 6 & 3;
-        if (g_gen == 9 && gms >= 0xF0) g_stolen = (gms - 0xF0 + 1) * (4u << 20);
+        if (g_gen >= 9 && gms >= 0xF0) g_stolen = (gms - 0xF0 + 1) * (4u << 20);
         else g_stolen = gms > 0x7F ? 0 : gms * (32u << 20);
         g_gtt_entries = ggms ? (1u << ggms) * (1u << 20) / 8u : 0;    /* 2, 4 or 8 MiB of 8-byte entries */
     }
@@ -406,7 +441,7 @@ int gpu_intel_probe(const pci_dev_t* d) {
     int io = 0;
     uintptr_t mm = pci_bar(d, 0, &io);
     if (!mm || io) return -1;
-    /* gen 3: 512 KiB of registers; gen 5 - 7.5: 2 MiB + the GTT (4 MiB); gen 8, 9: 8 MiB + the GTT (16 MiB) */
+    /* gen 3: 512 KiB of registers; gen 5 - 7.5: 2 MiB + the GTT (4 MiB); gen 8 - 11: 8 MiB + the GTT (16 MiB) */
     g_mmio_size = g_gen == 3 ? 512u << 10 : g_gen >= 8 ? 16u << 20 : 4u << 20;
     if (!mmio_map(mm, g_mmio_size)) return -1;
     g_mmio = (volatile uint8_t*)mm;
@@ -449,7 +484,7 @@ int gpu_intel_probe(const pci_dev_t* d) {
     if (g_cur_ok) { g_gpu.cursor_image = it_cursor_image; g_gpu.cursor_move = it_cursor_move; g_gpu.cursor_irq_safe = 1; }
     if (g_blc) g_gpu.backlight = it_backlight;
     g_gpu.info = it_info;
-    if (g_gen >= 5 && g_gen <= 7) {
+    if (g_gen >= 5) {
         /* 3D (kernel/gpu_i915.c): its own part of the GTT - not the firmware's
          * framebuffer (the stolen memory, and the surface shown), not the
          * cursor's pages at the top */

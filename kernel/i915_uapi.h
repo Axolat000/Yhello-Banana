@@ -145,6 +145,11 @@ struct drm_i915_getparam { int32_t param; uint32_t pad; uint64_t value; };   /* 
 #define I915_PARAM_HAS_EXEC_FENCE_ARRAY 49
 #define I915_PARAM_HAS_CONTEXT_ISOLATION 50
 #define I915_PARAM_CS_TIMESTAMP_FREQUENCY 51
+#define I915_PARAM_EU_TOTAL             34
+#define I915_PARAM_SLICE_MASK           46
+#define I915_PARAM_SUBSLICE_MASK        47
+#define I915_PARAM_HAS_EXEC_TIMELINE_FENCES 55
+#define I915_PARAM_HAS_USERPTR_PROBE    56
 
 struct drm_i915_gem_create { uint64_t size; uint32_t handle, pad; };
 struct drm_i915_gem_pread { uint32_t handle, pad; uint64_t offset, size, data_ptr; };
@@ -166,7 +171,11 @@ struct drm_i915_gem_exec_object2 {
 #define EXEC_OBJECT_NEEDS_FENCE  (1u << 0)
 #define EXEC_OBJECT_NEEDS_GTT    (1u << 1)
 #define EXEC_OBJECT_WRITE        (1u << 2)
+#define EXEC_OBJECT_SUPPORTS_48B_ADDRESS (1u << 3)
 #define EXEC_OBJECT_PINNED       (1u << 4)
+#define EXEC_OBJECT_PAD_TO_SIZE  (1u << 5)
+#define EXEC_OBJECT_ASYNC        (1u << 6)
+#define EXEC_OBJECT_CAPTURE      (1u << 7)
 struct drm_i915_gem_exec_fence { uint32_t handle, flags; };
 #define I915_EXEC_FENCE_WAIT   1
 #define I915_EXEC_FENCE_SIGNAL 2
@@ -213,7 +222,23 @@ struct drm_i915_gem_context_param { uint32_t ctx_id, size; uint64_t param, value
 #define I915_CONTEXT_PARAM_BANNABLE     5
 #define I915_CONTEXT_PARAM_PRIORITY     6
 #define I915_CONTEXT_PARAM_RECOVERABLE  8
+#define I915_CONTEXT_PARAM_VM           9
+#define I915_CONTEXT_PARAM_ENGINES      10
+#define I915_CONTEXT_PARAM_PERSISTENCE  11
+#define I915_CONTEXT_PARAM_PROTECTED_CONTENT 13
+#define I915_CONTEXT_PARAM_LOW_LATENCY  14
+/* CONTEXT_CREATE with extensions: a chain of SETPARAMs */
+#define I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS 1u
+struct i915_user_extension { uint64_t next_extension; uint32_t name, flags, rsvd[4]; };
+#define I915_CONTEXT_CREATE_EXT_SETPARAM 0
+struct drm_i915_gem_context_create_ext_setparam { struct i915_user_extension base; struct drm_i915_gem_context_param param; };
 struct drm_i915_query { uint32_t num_items, flags; uint64_t items_ptr; };
 struct drm_i915_query_item { uint64_t query_id; int32_t length; uint32_t flags; uint64_t data_ptr; };
+#define DRM_I915_QUERY_TOPOLOGY_INFO 1
+struct drm_i915_query_topology_info {
+    uint16_t flags, max_slices, max_subslices, max_eus_per_subslice;
+    uint16_t subslice_offset, subslice_stride, eu_offset, eu_stride;
+    /* uint8_t data[]: the slice mask, then each slice's subslice mask, then each subslice's EU mask */
+};
 
 #endif

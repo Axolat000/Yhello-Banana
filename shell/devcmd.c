@@ -159,7 +159,7 @@ int devcmd_dispatch(int argc, char** argv) {
             if (sub[1] == 'n' && !i915_present()) { terminal_write("gpu3d: but "); say(i915_why()); }
             return 1;
         }
-        if (sub[0] && strcmp(sub, "status")) { say("usage: gpu3d [status | on | off | test]   (Intel HD Graphics, 1st - 4th generation Core)"); return 1; }
+        if (sub[0] && strcmp(sub, "status")) { say("usage: gpu3d [status | on | off | test]   (Intel graphics, 1st - 10th generation Core)"); return 1; }
         say(gem_enabled() ? "gpu3d: on (OpenGL apps use the GPU)" : "gpu3d: off (OpenGL apps draw on the processor; gpu3d on to use the GPU)");
         if (!i915_present()) { terminal_write("gpu3d: "); say(i915_why()); return 1; }
         i915_info(buf, sizeof(buf));
