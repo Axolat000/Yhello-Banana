@@ -122,6 +122,11 @@ static const page_t PAGES[] = {
       "In Files, double-click an archive (or right-click > Extract) to extract it.",
       "-l|list the entries\n-o|replace files that are there\n-q|quiet: only the summary\n-d|the folder to extract to",
       "unzip photos.zip\nunzip -l photos.zip\nunzip /mnt/usb/game.zip -d ~/game", "zip" },
+    { "ntp", "network", "ntp [--set] [server]", "query network UTC, optionally set the clock",
+      "Query SNTP using the native UDP stack (default pool.ntp.org). Without --set the clock is unchanged. "
+      "--set changes UTC explicitly; this is a step, not gradual discipline. Ordinary NTP is unauthenticated; "
+      "the local whole-second clock makes the offset approximate.", "--set|set UTC after a validated reply",
+      "ntp\nntp --set pool.ntp.org", "date" },
     { "clip", "files", "clip <text> | -p | -l | -c", "the clipboard: copy, print, its history",
       "clip <text> copies the text (quotes around all of it are dropped), as Ctrl+C would; -p prints the clipboard; "
       "-l lists the clipboard history (Win+V on the desktop: the last 25 texts copied, * pinned); -c clears it, "

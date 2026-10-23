@@ -10,6 +10,7 @@
 #include "../kernel/rtc.h"
 #include "../net/net.h"
 #include "../net/tcp.h"
+#include "../net/ntp.h"
 #include "../net/http.h"
 #include "../net/tls.h"
 #include "../crypto/selftest.h"
@@ -888,6 +889,23 @@ static void cmd_cryptotest(void) {
                 timer_ms() - t0);
 }
 
+static void cmd_ntp(int argc, char** argv) {
+    int set = argc > 1 && !strcmp(argv[1], "--set");
+    int arg = set ? 2 : 1;
+    if (argc > arg + 1 || (argc > arg && argv[arg][0] == '-')) {
+        terminal_writeln("usage: ntp [--set] [server]"); return;
+    }
+    ntp_result_t r;
+    int rc = ntp_query(argc > arg ? argv[arg] : NULL, 6000, &r);
+    if (rc) { printf_line("ntp: %s\n", net_strerror(rc)); return; }
+    printf_line("ntp: UTC %u; stratum %u; delay %u ms; approximate offset %lld ms\n",
+                r.utc, (unsigned)r.stratum, r.roundtrip_ms, (long long)r.offset_ms);
+    if (set) {
+        if (rtc_set_utc(r.utc)) terminal_writeln("ntp: could not set the clock");
+        else terminal_writeln("ntp: UTC clock set");
+    }
+}
+
 /* ── dispatch ───────────────────────────────────────────────────── */
 
 int netcmd_dispatch(const char* line) {
@@ -898,6 +916,7 @@ int netcmd_dispatch(const char* line) {
     if (argc == 0) return 0;
     const char* c = argv[0];
 
+    if (strcmp(c, "ntp") == 0) { cmd_ntp(argc, argv); return 1; }
     if (strcmp(c, "ifconfig") == 0)                  { cmd_ifconfig(argc, argv); return 1; }
     if (strcmp(c, "toggle6") == 0) { cmd_toggle6(argc, argv); return 1; }
     if (strcmp(c, "ipv6") == 0)                      { cmd_ipv6(argc, argv); return 1; }
