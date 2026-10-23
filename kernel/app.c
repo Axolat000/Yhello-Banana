@@ -6,6 +6,7 @@
 #include "appwin.h"
 #include "audio.h"
 #include "fs.h"
+#include "fsdisk.h"
 #include "kheap.h"
 #include "kstring.h"
 #include "task.h"
@@ -870,6 +871,29 @@ static long a_seek(int fd, long off, int whence) {
 
 static int a_close(int fd) {
     return fd_close(cur(), fd) == 0 ? 0 : -1;
+}
+
+/* Flush the installed volume, including its journal and device cache.
+ * Hold the open description across a sleeping flush, just as read/write do. */
+static int a_fd_sync(int fd) {
+    HOLD(f, fd);
+    if (!f) return -9;                                  /* EBADF */
+    int mnt;
+    if (f->type == KF_FILE) {
+        fs_file_t* ff = fs_file_info(f->fidx);
+        if (!ff || !ff->used) return -9;
+        mnt = ff->mnt;
+    } else if (f->type == KF_DIR) {
+        int idx = f->path ? fs_find_dir(f->path) : -1;
+        const fs_dir_t* d = idx >= 0 ? fs_get_dir(idx) : NULL;
+        if (!d || !d->used) return -9;
+        mnt = d->mnt;
+    } else return -22;                                  /* EINVAL */
+    /* A RAM-only session or another mounted filesystem has no sync backend. */
+    if (mnt || !fsdisk_is_installed()) return -38;       /* ENOSYS */
+    int rc = fsdisk_sync_durable();
+    if (rc == FSDISK_OK) return 0;
+    return rc == FSDISK_ERR_FROZEN ? -16 : -5;            /* EBUSY / EIO */
 }
 
 /* ── Unix descriptors (version 25) ─────────────────────────────────── */
@@ -2692,6 +2716,7 @@ static void spec_init(void) {
     SPEC(proc_list, "ii", 0);
     SPEC(sig_suspend, "L", 0);
     SPEC(kcmd, "s", 0);
+    SPEC(fd_sync, "i", 0);
     SPEC(poll_mask, "iiiL", 0);           /* fds: checked in a_poll */
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
@@ -4125,6 +4150,7 @@ static void api_init(void) {
     g_api.sig_suspend = G(a_sig_suspend);
     g_api.kcmd = G(a_kcmd);
     g_api.poll_mask = G(a_poll_mask);
+    g_api.fd_sync = G(a_fd_sync);
 #ifdef __x86_64__
     g_api.proc_list = G(a_proc_list);                  /* (the system calls' table: 64-bit) */
 #endif

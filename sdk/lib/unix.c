@@ -151,8 +151,16 @@ int clearenv(void) {
 
 mode_t umask(mode_t m) { static mode_t cur = 022; mode_t o = cur; cur = m & 0777; return o; }
 int mkfifo(const char* path, mode_t mode) { (void)path; (void)mode; errno = ENOTSUP; return -1; }
-int fsync(int fd) { (void)fd; return 0; }
-int fdatasync(int fd) { (void)fd; return 0; }
+int fsync(int fd) {
+    if (!BANANA_HAS(__banana, fd_sync) || !__banana->fd_sync) {
+        errno = ENOSYS;
+        return -1;
+    }
+    int rc = __banana->fd_sync(fd);
+    if (rc < 0) { errno = -rc; return -1; }
+    return 0;
+}
+int fdatasync(int fd) { return fsync(fd); }
 void sync(void) {}
 int flock(int fd, int op) { (void)fd; (void)op; return 0; }
 

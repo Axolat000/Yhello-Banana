@@ -22,6 +22,7 @@
 #define FSDISK_ERR_ISO_TOO_BIG -5 /* boot image bigger than the reserved region (build issue) */
 #define FSDISK_ERR_IO          -6 /* a read or write failed */
 #define FSDISK_ERR_FULL        -7 /* the files are past what a slot on this disk holds */
+#define FSDISK_ERR_FROZEN      -9 /* durable sync cannot complete during a backup freeze */
 #define FSDISK_ERR_NO_INSTALL  -8 /* no disk holds an installed Banana OS */
 
 /* Looks for exactly one non-ATAPI ATA disk attached (any bus/position).
@@ -49,6 +50,8 @@ int fsdisk_find_installed(ata_disk_t* out);
  * FSDISK_ERR_NO_TARGET if this session isn't associated with an
  * installed disk yet (call fsdisk_install() first). */
 int fsdisk_sync(void);
+/* Same flush, but never reports deferred writes as completed. */
+int fsdisk_sync_durable(void);
 
 /* Called once at boot, before fs_init() would otherwise seed the default
  * hierarchy: if exactly one ATA disk is present and holds a valid Banana
