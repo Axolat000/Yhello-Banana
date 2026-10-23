@@ -630,7 +630,8 @@ typedef struct banana_api {
      * (set at once: pselect, ppoll); the caller sets its mask back after */
     int (*poll_mask)(void* fds, int n, int timeout_ms, const unsigned long long* mask);
     /* version 31: completed file/directory synchronization. 0 or -errno;
-     * installed disk only for now; EBUSY while frozen for a backup. */
+     * live RAM root succeeds without disk I/O; installed root flushes;
+     * other mounts: ENOSYS; backup freeze: EBUSY. */
     int (*fd_sync)(int fd);
 } banana_api_t;
 

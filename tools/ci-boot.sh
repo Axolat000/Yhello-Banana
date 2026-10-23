@@ -36,5 +36,8 @@ esac
 python3 tools/serialtest.py --log "$logs/serial.log" \
     --boot-timeout 180 --timeout 180 \
     --cmd 'selftest boot ## 0 failed' \
-    --cmd 'selftest ram ## 0 failed' -- "${args[@]}" \
+    --cmd 'selftest ram ## 0 failed' \
+    --cmd 'pkg install /home/banana/Examples/shelltest.bpk' \
+    --cmd 'apt install neovim' \
+    --cmd 'shelltest -e ## shelltest: all passed (0 failed)' -- "${args[@]}" \
     2>&1 | tee "$logs/results.log"

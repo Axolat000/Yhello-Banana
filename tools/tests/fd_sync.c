@@ -57,7 +57,10 @@ int main(void) {
     CHECK(a_fd_sync(3) == 0 && calls == 1 && files[0].pos == 42 && files[0].refs == 1);
     backend_rc=FSDISK_ERR_IO; CHECK(a_fd_sync(3) == -5);
     backend_rc=FSDISK_ERR_FROZEN; CHECK(a_fd_sync(3) == -16);
-    backend_rc=0; installed=0; CHECK(a_fd_sync(3) == -38); installed=1;
+    backend_rc=0; installed=0; int live_calls=calls;
+    CHECK(a_fd_sync(3) == 0 && calls == live_calls && files[0].pos == 42);
+    file.mnt=2; CHECK(a_fd_sync(3) == -38 && calls == live_calls); file.mnt=0;
+    installed=1;
     file.mnt=2; CHECK(a_fd_sync(3) == -38); file.mnt=0;
     int before=calls;
     for (int kind=KF_SOCK; kind<=KF_DEV; kind++) {
@@ -67,7 +70,9 @@ int main(void) {
     CHECK(calls==before);
     files[2]=(kfile_t){.type=KF_DIR,.path="/home",.refs=1}; fds[5]=&files[2];
     CHECK(a_fd_sync(5) == -9); dir.used=1; CHECK(a_fd_sync(5) == 0);
-    dir.mnt=1; CHECK(a_fd_sync(5) == -38); dir.mnt=0;
+    installed=0; live_calls=calls;
+    CHECK(a_fd_sync(5) == 0 && calls == live_calls);
+    dir.mnt=1; CHECK(a_fd_sync(5) == -38 && calls == live_calls); dir.mnt=0; installed=1;
     files[2].path="/deleted"; CHECK(a_fd_sync(5) == -9);
     api.size=__builtin_offsetof(banana_api_t,fd_sync);
     CHECK(sdk_fsync(3)==-1 && errno==ENOSYS);

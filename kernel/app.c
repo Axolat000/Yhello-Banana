@@ -873,8 +873,8 @@ static int a_close(int fd) {
     return fd_close(cur(), fd) == 0 ? 0 : -1;
 }
 
-/* Flush the installed volume, including its journal and device cache.
- * Hold the open description across a sleeping flush, just as read/write do. */
+/* Synchronize root-volume files: RAM is already current; an installed volume
+ * also flushes its journal and device cache. Hold across a sleeping flush. */
 static int a_fd_sync(int fd) {
     HOLD(f, fd);
     if (!f) return -9;                                  /* EBADF */
@@ -889,8 +889,11 @@ static int a_fd_sync(int fd) {
         if (!d || !d->used) return -9;
         mnt = d->mnt;
     } else return -22;                                  /* EINVAL */
-    /* A RAM-only session or another mounted filesystem has no sync backend. */
-    if (mnt || !fsdisk_is_installed()) return -38;       /* ENOSYS */
+    /* Other mounts need their own backend. The live root is memory-backed:
+     * its writes are already current, with no device cache to flush. Success
+     * here adds no persistence beyond the lifetime of the live session. */
+    if (mnt) return -38;                               /* ENOSYS */
+    if (!fsdisk_is_installed()) return 0;
     int rc = fsdisk_sync_durable();
     if (rc == FSDISK_OK) return 0;
     return rc == FSDISK_ERR_FROZEN ? -16 : -5;            /* EBUSY / EIO */
