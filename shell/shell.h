@@ -3,6 +3,8 @@
 #define SHELL_H
 
 void shell_run(void);
+/* The shell selected for new graphical Terminal windows/tabs. */
+const char* shell_terminal_path(void);
 
 /* Runs a full shell instance (its own prompt, history, commands - "help",
  * "top", "edit", etc. all work exactly as in the main console) bound to a

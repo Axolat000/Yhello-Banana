@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Terminal: windows with tabs, each tab a pseudo-terminal running
- * /bin/bash (or terminal -e command...). The screen's escape sequences are
+ * the selected shell (or terminal -e command...). The screen's escape sequences are
  * vt.c's; here: the windows, drawing the cells, the keyboard and the mouse,
  * selection and the clipboard, the scrollback, resizing.
  *
@@ -83,7 +83,7 @@ typedef struct {
 
 static term_t g_w[MAX_WINDOWS];
 static int g_font = 15, g_cw = 9, g_ch = 18, g_ascent = 14;
-static char** g_cmd;            /* terminal -e command...: what tabs run (NULL: bash) */
+static char** g_cmd;            /* terminal -e command...: what tabs run (NULL: the selected shell) */
 
 /* ── glyphs: each drawn once by the system's font, kept as coverage ── */
 
@@ -173,6 +173,27 @@ static void child_env(void) {
     unsetenv("LINES");
 }
 
+/* Read the saved choice for each new tab, so chsh takes effect without
+ * replacing the terminal emulator or disturbing existing shells. */
+static const char* default_shell(void) {
+    char line[128];
+    FILE* f = fopen("/etc/settings.conf", "r");
+    const char* path = "/bin/bash";
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            char* p = line; while (*p == ' ' || *p == '\t') p++;
+            if (strncmp(p, "shell=", 6)) continue;
+            p += 6; p[strcspn(p, "\r\n")] = 0;
+            size_t n = strlen(p); while (n && (p[n-1] == ' ' || p[n-1] == '\t')) p[--n] = 0;
+            if (!strcmp(p, "zsh")) path = "/bin/zsh";
+            else if (!strcmp(p, "sh")) path = "/bin/sh";
+            break;
+        }
+        fclose(f);
+    }
+    return access(path, X_OK) == 0 ? path : "/bin/bash";
+}
+
 static tab_t* tab_new(term_t* t) {
     int cols, rows;
     text_area(t, &cols, &rows);
@@ -180,18 +201,20 @@ static tab_t* tab_new(term_t* t) {
     if (!tab) return NULL;
     tab->vt = vt_new(cols, rows, SCROLLBACK);
     if (!tab->vt) { free(tab); return NULL; }
-    snprintf(tab->title, sizeof(tab->title), "%s", g_cmd ? g_cmd[0] : "bash");
+    const char* shell = default_shell();
+    snprintf(tab->title, sizeof(tab->title), "%s", g_cmd ? g_cmd[0] : strrchr(shell, '/') + 1);
     struct winsize ws = { (unsigned short)rows, (unsigned short)cols, 0, 0 };
     int m = -1;
     pid_t pid = forkpty(&m, NULL, NULL, &ws);
     if (pid == 0) {
         child_env();
+        setenv("SHELL", shell, 1);
         const char* home = getenv("HOME");
         if (home && !g_cmd) chdir(home);
         if (g_cmd) execvp(g_cmd[0], g_cmd);
-        else execl("/bin/bash", "bash", (char*)NULL);
-        printf("terminal: cannot run %s: %s\r\n", g_cmd ? g_cmd[0] : "/bin/bash", strerror(errno));
-        if (!g_cmd) printf("(bash comes with the 64-bit Banana OS)\r\n");
+        else execl(shell, strrchr(shell, '/') + 1, (char*)NULL);
+        printf("terminal: cannot run %s: %s\r\n", g_cmd ? g_cmd[0] : shell, strerror(errno));
+        if (!g_cmd) printf("(choose an installed shell with chsh bash or chsh zsh)\r\n");
         _exit(127);
     }
     if (pid < 0) {
@@ -819,7 +842,7 @@ int main(int argc, char** argv) {
                 }
                 if (tab->vt->title_changed) {
                     tab->vt->title_changed = 0;
-                    snprintf(tab->title, sizeof(tab->title), "%s", tab->vt->title[0] ? tab->vt->title : "bash");
+                    snprintf(tab->title, sizeof(tab->title), "%s", tab->vt->title[0] ? tab->vt->title : "Terminal");
                 }
             }
         } else if (!n) {

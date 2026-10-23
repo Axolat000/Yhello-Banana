@@ -2058,7 +2058,7 @@ static void desk_sync_links(void) {
     }
     int n = pkg_list(g_pkgs, DESK_MAX);
     for (int i = 0; i < n && i < DESK_MAX; i++) {
-        if (strcmp(g_pkgs[i].type, "gui") != 0 || listed(DESK_APPS_FILE, g_pkgs[i].name)) continue;
+        if (!pkg_is_desktop(&g_pkgs[i]) || listed(DESK_APPS_FILE, g_pkgs[i].name)) continue;
         if (!strcmp(g_pkgs[i].name, "terminal")) continue;          /* (the Terminal program is it) */
         const char* label = g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name;
         char key[56], target[PKG_NAME_MAX + 8];
@@ -2070,14 +2070,27 @@ static void desk_sync_links(void) {
     /* an app gone: its shortcuts too */
     static int fi2[DESK_MAX];
     int nf = fs_list_files(DESKTOP_DIR, fi2, DESK_MAX);
+    char canonical[FS_PATH_LEN], canonical_target[FS_PATH_LEN];
+    ksnprintf(canonical, sizeof(canonical), "%s/%s.link", DESKTOP_DIR, _("Terminal"));
+    int keep_terminal = fs_find_file(canonical);
+    if (keep_terminal >= 0 && (shortcut_read(canonical, canonical_target, sizeof(canonical_target)) != SC_APP ||
+        builtin_act(canonical_target + 4) != ACT_TERMINAL)) keep_terminal = -1;
     for (int i = 0; i < nf && i < DESK_MAX; i++) {
         fs_file_t* f = fs_file_info(fi2[i]);
         if (!f || !shortcut_is(f->name)) continue;
         char p[FS_PATH_LEN], target[FS_PATH_LEN];
         ksnprintf(p, sizeof(p), "%s/%s", DESKTOP_DIR, f->name);
-        if (shortcut_read(p, target, sizeof(target)) != SC_APP || builtin_act(target + 4) >= 0) continue;
+        if (shortcut_read(p, target, sizeof(target)) != SC_APP) continue;
+        int act = builtin_act(target + 4);
+        if (act == ACT_TERMINAL) {
+            if (keep_terminal < 0) keep_terminal = fi2[i];
+            else if (fi2[i] != keep_terminal) fs_delete(p, 0);
+            continue;
+        }
+        if (act >= 0) continue;
         pkg_info_t have;
-        if (pkg_get(target + 4, &have) != 0 && listed(DESK_APPS_FILE, target + 4)) fs_delete(p, 0);
+        int found = pkg_get(target + 4, &have) == 0;
+        if ((found && !pkg_is_desktop(&have)) || (!found && listed(DESK_APPS_FILE, target + 4))) fs_delete(p, 0);
     }
 }
 
@@ -2377,6 +2390,7 @@ static void open_submenu(const fb_info_t* fi, int slot) {
     if (MENU_ACTS[menu_idx(slot)] == ACT_PROGRAMS) {
         int k = pkg_list(g_pkgs, DESK_MAX);
         for (int i = 0; i < k && n < CTX_MAX_ITEMS - 2; i++) {
+            if (!pkg_is_desktop(&g_pkgs[i]) || !strcmp(g_pkgs[i].name, "terminal")) continue;
             kstrlcpy(g_prog_names[n], g_pkgs[i].name, PKG_NAME_MAX);
             items[n].label = g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name;
             items[n].id = n;
@@ -3788,8 +3802,8 @@ int gui_notepad_focused(void) {
     return gfx_available() && g_gui_enabled && g_front_app == APP_NOTEPAD && notepad_is_open() && tty_current() < 0;
 }
 
-/* 64-bit, the consoles running bash: a terminal is the Terminal app (bash
- * in a window), cmd run there first; 0 if it could not start */
+/* 64-bit: the original Terminal entry opens the tabbed emulator with the
+ * selected shell; cmd runs there first. 0 if it could not start. */
 static int bash_terminal(const char* cmd) {
 #ifdef __x86_64__
     if (!vcons_running()) return 0;
@@ -3801,8 +3815,8 @@ static int bash_terminal(const char* cmd) {
         while (n && (cmd[n - 1] == '\n' || cmd[n - 1] == '\r')) n--;
         if (n > FS_PATH_LEN) n = FS_PATH_LEN;
         memcpy(line, cmd, n);
-        kstrlcpy(line + n, "; exec bash", sizeof(line) - n);
-        argv[1] = "-e"; argv[2] = "/bin/bash"; argv[3] = "-c"; argv[4] = line;
+        ksnprintf(line + n, sizeof(line) - n, "; exec %s", shell_terminal_path());
+        argv[1] = "-e"; argv[2] = (char*)shell_terminal_path(); argv[3] = "-c"; argv[4] = line;
         argc = 5;
     }
     if (pkg_run("terminal", argc, argv, 0, err, sizeof(err)) < 0) { klog("gui: terminal: %s\n", err); return 0; }
@@ -3855,6 +3869,10 @@ int gui_open_target(const char* target) {
 
 int gui_desktop_shortcut(const char* name, const char* target) {
     char p[FS_PATH_LEN];
+    if (target && !strncasecmp(target, "app:", 4) && builtin_act(target + 4) < 0) {
+        pkg_info_t info;
+        if (pkg_get(target + 4, &info) == 0 && !pkg_is_desktop(&info)) return -1;
+    }
     if (shortcut_create(DESKTOP_DIR, name, target, p, sizeof(p)) != 0) return -1;
     desk_refresh(1);
     return 0;

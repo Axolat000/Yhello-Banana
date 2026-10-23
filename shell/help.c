@@ -505,7 +505,7 @@ static const page_t PAGES[] = {
       NULL, "export PATH=$PATH:/home/banana/tools", "unset, env" },
     { "unset", "shell", "unset <name>", "remove an environment variable", NULL, NULL, NULL, "export" },
     { "env", "shell", "env", "the environment variables", NULL, NULL, NULL, "export" },
-    { "chsh", "shell", "chsh [sh|bash]", "the default shell for new sessions", NULL, NULL, NULL, NULL },
+    { "chsh", "shell", "chsh [sh|bash|zsh]", "the shell for new Terminal windows and tabs", "Saves the choice for Terminal; existing shells keep running.", NULL, "chsh zsh\nchsh bash", "settings" },
     { "run", "shell", "run <file.sh>", "run a script, line by line",
       "Scripts also run by their name when they are in a $PATH folder.", NULL, NULL, "export" },
     /* ── vm and tests ── */

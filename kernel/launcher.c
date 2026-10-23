@@ -51,7 +51,9 @@ static void set_status(const char* s) { kstrlcpy(g_status, s, sizeof(g_status));
 
 static void rescan(void) {
     int n = pkg_list(g_apps, MAX_APPS);
-    g_napps = n > MAX_APPS ? MAX_APPS : n;
+    g_napps = 0;
+    for (int i = 0; i < n && i < MAX_APPS; i++)
+        if (pkg_is_desktop(&g_apps[i])) g_apps[g_napps++] = g_apps[i];
     g_scan_ms = timer_ms();
     g_gen++;
 }

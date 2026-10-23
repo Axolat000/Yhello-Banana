@@ -14,6 +14,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **One Terminal and graphical-only app menus (build 252)** - the desktop keeps its original Terminal launcher; the Apps launcher and Start menu (including All Programs and search) show graphical apps only, without separate Bash, Zsh or GNU command entries. Command-line packages stay installed and available in the terminal, App Store and Settings > Apps. Old CLI desktop shortcuts and duplicate Terminal shortcuts are cleaned up. `chsh zsh` or `chsh bash` selects the shell for new Terminal windows and tabs; existing tabs keep their shell.
+
 - **Rename the PC in Settings or the terminal (build 251)** - Settings > About now has an editable PC name; `hostname NAME` sets the same name and `hostname` displays it. Names are saved in `/etc/hostname`, survive reboots on installed systems, and are used by new terminals, `uname -n` and DHCP requests. Names allow 1-63 letters, digits or hyphens and are normalized to lowercase.
 
 - **Install larger system images (build 250)** - new installations reserve a boot area sized for the ISO (256 MiB, 512 MiB or 1 GiB), with the ext4 partition recorded in the MBR. This fixes installation of build 249's 156.6 MiB ISO, which exceeded the previous 128 MiB area. Updates preserve the partition; existing 128 MiB installations remain readable and reject oversized updates before writing. See [the disk layout and tests](docs/INSTALLER-BOOT-AREA.md).

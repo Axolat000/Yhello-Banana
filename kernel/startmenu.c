@@ -118,6 +118,7 @@ static void add_all_programs(const char* q) {
     int sm[NBUILTIN + 48], pi[NBUILTIN + 48], n = 0;
     for (int i = 0; i < NBUILTIN; i++) { lab[n] = BUILTIN[i].label; sm[n] = BUILTIN[i].sm; pi[n] = -1; n++; }
     for (int i = 0; i < np && i < 48; i++) {
+        if (!pkg_is_desktop(&g_pkgs[i]) || !strcmp(g_pkgs[i].name, "terminal")) continue;
         lab[n] = g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name; sm[n] = 0; pi[n] = i; n++;
     }
     for (int i = 1; i < n; i++)                         /* A-Z */
@@ -199,7 +200,7 @@ static void build(void) {
         add_prog(SM_TASKMGR, NULL, "Task Manager");
         int np = pkg_list(g_pkgs, 48);
         for (int i = 0; i < np && i < 48; i++)               /* (the desktop apps: the command-line ones are in All Programs) */
-            if (!strcmp(g_pkgs[i].type, "gui")) add_prog(0, g_pkgs[i].name, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name);
+            if (pkg_is_desktop(&g_pkgs[i]) && strcmp(g_pkgs[i].name, "terminal")) add_prog(0, g_pkgs[i].name, g_pkgs[i].title[0] ? g_pkgs[i].title : g_pkgs[i].name);
     }
     if (g_sel >= g_ne) g_sel = -1;
 }

@@ -437,3 +437,7 @@ int pkg_run(const char* name, int argc, char** argv, int from_desktop, char* err
 int pkg_inspect_mem(const uint8_t* data, uint32_t size, pkg_info_t* out, char* err, int ecap) {
     return inspect_data(data, size, out, err, ecap);
 }
+
+int pkg_is_desktop(const pkg_info_t* info) {
+    return info && !strcmp(info->type, "gui");
+}

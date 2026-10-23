@@ -39,6 +39,7 @@
 #include "../kernel/tty.h"
 #include "../kernel/examples.h"
 #include "../kernel/settings.h"
+#include "../kernel/config.h"
 #include "../kernel/hostname.h"
 #include "../kernel/login.h"
 #include "../kernel/passwd.h"
@@ -1523,35 +1524,46 @@ static void cmd_unset(const char* args) {
     }
 }
 
+const char* shell_terminal_path(void) {
+#ifndef __x86_64__
+    return g_default_shell_kind == SHELL_KIND_BASH ? "/bin/bash" : "/bin/sh";
+#else
+    char selected[16];
+    if (settings_get("shell", selected, sizeof(selected))) {
+        if (!strcmp(selected, "zsh") && fs_find_file("/bin/zsh") >= 0) return "/bin/zsh";
+        if (!strcmp(selected, "sh") && fs_find_file("/bin/sh") >= 0) return "/bin/sh";
+    }
+    return "/bin/bash";
+#endif
+}
+
 static void cmd_chsh(const char* args, int persona) {
+    (void)persona;
     const char* a = args ? k_skip_spaces(args) : "";
     if (!*a) {
-        terminal_write_color("Default shell (for new sessions): ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
-        terminal_writeln(shell_kind_name(g_default_shell_kind));
-        terminal_write_color("This session's shell:              ", VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK);
-        terminal_writeln(shell_kind_name(persona));
-        terminal_writeln("Usage: chsh <sh|bash>");
+        terminal_write("Default terminal shell: "); terminal_writeln(shell_terminal_path());
+        terminal_writeln("Usage: chsh <sh|bash|zsh>");
         return;
     }
-    char tok[16];
-    const char* pp = a;
-    next_token(&pp, tok, sizeof(tok));
-
-    int kind;
-    if (k_strcmp(tok, "sh") == 0 || k_strcmp(tok, "/bin/sh") == 0) kind = SHELL_KIND_SH;
-    else if (k_strcmp(tok, "bash") == 0 || k_strcmp(tok, "/bin/bash") == 0) kind = SHELL_KIND_BASH;
-    else {
-        terminal_write_color("chsh: unknown shell: ", VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
-        terminal_writeln(tok);
-        terminal_writeln("Available: sh, bash");
-        return;
+    char tok[32]; const char* rest = a;
+    next_token(&rest, tok, sizeof(tok));
+    const char* name = !strncmp(tok, "/bin/", 5) ? tok + 5 : tok;
+    if (*k_skip_spaces(rest) || (strcmp(name, "sh") && strcmp(name, "bash") && strcmp(name, "zsh"))) {
+        terminal_writeln("chsh: choose sh, bash or zsh"); return;
     }
-
-    g_default_shell_kind = kind;
-    settings_set("shell", kind == SHELL_KIND_BASH ? "bash" : "sh");
-    terminal_write_color("Default shell set to: ", VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK);
-    terminal_writeln(shell_kind_name(kind));
-    terminal_writeln("(takes effect for new terminal windows / the next boot - this session is unaffected)");
+#ifndef __x86_64__
+    if (!strcmp(name, "zsh")) { terminal_writeln("chsh: zsh needs the 64-bit system"); return; }
+#else
+    char path[24]; ksnprintf(path, sizeof(path), "/bin/%s", name);
+    if (fs_find_file(path) < 0) { terminal_writeln("chsh: that shell is not installed"); return; }
+#endif
+    if (cfg_set(CFG_SETTINGS, "shell", name, "# Banana OS settings\n") != 0) {
+        terminal_writeln("chsh: could not save the shell"); return;
+    }
+    cfg_persist();
+    g_default_shell_kind = !strcmp(name, "sh") ? SHELL_KIND_SH : SHELL_KIND_BASH;
+    terminal_write("Default terminal shell set to: "); terminal_writeln(name);
+    terminal_writeln("New Terminal windows and tabs use it; existing shells keep running.");
 }
 
 static void cmd_uname(const char* args, int persona) {
