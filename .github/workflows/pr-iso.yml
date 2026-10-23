@@ -1,0 +1,107 @@
+name: Build review ISO
+on:
+  pull_request:
+    paths:
+      - 'kernel/**'
+      - 'net/**'
+      - 'shell/**'
+      - 'sdk/**'
+      - 'apps/**'
+      - 'ports/**'
+      - 'web/**'
+      - 'crypto/**'
+      - 'usb/**'
+      - 'media/**'
+      - 'boot/**'
+      - 'loader/**'
+      - 'Makefile'
+      - 'tools/**'
+      - '.github/workflows/pr-iso.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: review-iso-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nasm gcc-multilib binutils xorriso mtools python3 sbsigntool efitools ncurses-bin zsh cmake git
+
+      # FFmpeg for the Media Player and Music apps (ports/ffmpeg/build.sh):
+      # built once, then kept until the build script or the SDK's libc changes
+      - name: FFmpeg build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ports/ffmpeg/src
+            ports/ffmpeg/build
+          key: ffmpeg-7.1-${{ hashFiles('ports/ffmpeg/build.sh', 'sdk/lib/*.c', '!sdk/lib/banana.c', 'sdk/include/**', '!sdk/include/banana*.h') }}
+
+      # the Unix programs in /bin (ports/<name>/build.sh with ports/port.sh,
+      # 64-bit): bash, coreutils, grep, sed, findutils, diffutils, gawk,
+      # ncurses (+ terminfo), less, zsh; the optional editors (nano, vim, vi,
+      # neovim) - the downloads kept, the builds too
+      # while their scripts and the SDK stay (port.sh reconfigures otherwise)
+      - name: Unix ports build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ports/bash/src
+            ports/bash/build
+            ports/coreutils/src
+            ports/coreutils/build
+            ports/grep/src
+            ports/grep/build
+            ports/sed/src
+            ports/sed/build
+            ports/findutils/src
+            ports/findutils/build
+            ports/diffutils/src
+            ports/diffutils/build
+            ports/gawk/src
+            ports/gawk/build
+            ports/ncurses/src
+            ports/ncurses/build
+            ports/less/src
+            ports/less/build
+            ports/zsh/src
+            ports/zsh/build
+            ports/nano/src
+            ports/nano/build
+            ports/vim/src
+            ports/vim/build
+            ports/vi/build
+            ports/neovim/src
+            ports/neovim/build
+          key: unix-ports-v2-${{ hashFiles('ports/port.sh', 'ports/bash/*', 'ports/coreutils/*', 'ports/grep/*', 'ports/sed/*', 'ports/findutils/*', 'ports/diffutils/*', 'ports/gawk/*', 'ports/ncurses/*', 'ports/less/*', 'ports/zsh/*', 'ports/nano/*', 'ports/vim/*', 'ports/vi/*', 'ports/neovim/*', 'sdk/tools/banana-*', 'sdk/lib/*.c', 'sdk/include/**') }}
+          restore-keys: unix-ports-v2-
+
+      - name: Build Banana_OS.iso
+        run: |
+          make clean
+          make
+
+      - name: Record artifact provenance
+        run: |
+          mkdir -p build/pr
+          git rev-parse HEAD > build/pr/commit.txt
+          sha256sum Banana_OS.iso > build/pr/SHA256SUMS
+      - name: Retain review ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: Banana-OS-review-${{ github.sha }}
+          path: |
+            Banana_OS.iso
+            build/pr/commit.txt
+            build/pr/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
