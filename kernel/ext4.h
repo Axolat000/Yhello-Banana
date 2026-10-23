@@ -15,7 +15,8 @@
  *
  * Features: filetype, extents, flex_bg (incompat); sparse_super, large_file,
  * dir_nlink, extra_isize, uninit_bg (ro_compat); sparse_super2 with no
- * backup superblock (compat). Not (yet): a journal, htree directories,
+ * backup superblock (compat); an internal JBD2 journal in ordered mode.
+ * See docs/ext4-format.md for geometry and mount acceptance. Not (yet): htree directories,
  * metadata checksums, inline data, extended attributes.
  */
 
