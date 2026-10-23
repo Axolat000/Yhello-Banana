@@ -1894,8 +1894,8 @@ static void cmd_install(const char* args) {
             break;
         case FSDISK_ERR_TOO_SMALL:
             terminal_write_color(
-                "install: target disk is too small (need room for the 128 MB boot area\n"
-                "plus the files). Use a disk of 256 MB or more and retry.\n",
+                "install: target disk is too small (need room for the boot image\n"
+                "plus the files). Use a larger disk and retry.\n",
                 VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
             break;
         case FSDISK_ERR_ISO_TOO_BIG:
@@ -1938,6 +1938,12 @@ static void cmd_update(const char* args) {
     if (k == 0 && same >= 0) print_timing("update", "compared");
     if (same == FSDISK_ERR_NO_SOURCE) {
         terminal_write_color("update: no Banana OS CD or USB stick found - plug in the one with the new version.\n",
+                             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        return;
+    }
+    if (same == FSDISK_ERR_ISO_TOO_BIG) {
+        terminal_write_color("update: this system image is too big for the installed disk's boot area.\n"
+                             "        Back up your files and reinstall to create a larger boot area.\n",
                              VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }

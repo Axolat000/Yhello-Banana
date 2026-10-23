@@ -219,7 +219,7 @@ static const char* result_text(int rc) {
     case FSDISK_ERR_NO_TARGET:   return "No hard disk was found.";
     case FSDISK_ERR_AMBIGUOUS:   return "Choose the disk to install on first.";
     case FSDISK_ERR_NO_SOURCE:   return "No Banana OS CD or USB stick found to copy the system from.";
-    case FSDISK_ERR_TOO_SMALL:   return "The disk is too small (256 MB or more is best).";
+    case FSDISK_ERR_TOO_SMALL:   return "The disk is too small for the boot image and files.";
     case FSDISK_ERR_ISO_TOO_BIG: return "This CD's system does not fit the disk's boot area.";
     case FSDISK_ERR_FULL:        return "The files are too big for this disk.";
     case FSDISK_ERR_NO_INSTALL:  return "There is no Banana OS on the disk to update.";

@@ -266,12 +266,54 @@ void fsdisk_timing(fsdisk_timing_t* out) { *out = g_tm; }
  * own place, so a sink can skip what has not changed. */
 #define READ_BLOCKS  512u                  /* 1 MB of CD blocks per read */
 #define HASH_BLOCKS  32u                   /* the unit of the image's checksum table: 64 KB */
-#define HTAB_MAX     2048u                 /* 2048 x 64 KB: the 128 MB boot area */
+#define HTAB_MAX     16384u                /* covers images up to 1 GiB */
+
+/* New installs reserve a power-of-two boot area, at least 256 MiB.
+ * Entry 2 of the hybrid MBR describes ext4; entry 1 remains the ESP.
+ * Legacy layouts have no entry 2 and retain their 128 MiB boundary. */
+#define BOOT_LEGACY_LBA (128u * 1024u * 1024u / FSDISK_SECTOR)
+#define BOOT_MIN_LBA    (256u * 1024u * 1024u / FSDISK_SECTOR)
+#define BOOT_MAX_LBA    (1024u * 1024u * 1024u / FSDISK_SECTOR)
+#define BOOT_TABLE_SECT 256u
+
+static uint32_t boot_u32(const uint8_t* p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+static void boot_put32(uint8_t* p, uint32_t v) {
+    for (unsigned i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8u * i));
+}
+static uint32_t boot_partition(const ata_disk_t* d, uint8_t* part) {
+    uint8_t mbr[FSDISK_SECTOR];
+    if (part) memset(part, 0, 16);
+    if (disk_read(d, 0, 1, mbr) != 0) return 0;
+    const uint8_t* e = mbr + 462;
+    if (mbr[510] != 0x55 || mbr[511] != 0xaa || memcmp(mbr + 440, "BnOS", 4) || e[4] != 0x83)
+        return BOOT_LEGACY_LBA;
+    uint32_t base = boot_u32(e + 8), n = boot_u32(e + 12);
+    if (base < BOOT_MIN_LBA || base > BOOT_MAX_LBA || (base & (base - 1u)) ||
+        !n || (uint64_t)base + n > d->sectors) return 0;
+    if (part) memcpy(part, e, 16);
+    return base;
+}
+static uint32_t boot_table_lba(uint32_t base) {
+    return base - (base == BOOT_LEGACY_LBA ? 64u : BOOT_TABLE_SECT);
+}
+static uint32_t boot_table_sectors(uint32_t base) {
+    return base == BOOT_LEGACY_LBA ? 17u : 1u + HTAB_MAX * 4u / FSDISK_SECTOR;
+}
+static uint32_t boot_install_base(uint32_t bytes) {
+    uint32_t base = BOOT_MIN_LBA;
+    while ((uint64_t)bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR) {
+        if (base == BOOT_MAX_LBA) return 0;
+        base *= 2u;
+    }
+    return base;
+}
 
 /* need(first block, blocks): 0 skips that chunk (NULL: every chunk) */
 typedef int (*chunk_need_t)(uint32_t blk, uint32_t nblk);
 
-static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t sink, void* ctx, chunk_need_t need) {
+static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t sink, void* ctx, chunk_need_t need, const uint8_t* partition) {
     uint32_t total = iso_bytes / 2048u;
     char vv[24];
     g_video_new[0] = 0;
@@ -298,6 +340,7 @@ static int stream_image(const img_src_t* src, uint32_t iso_bytes, image_sink_t s
         g_tm.read_ms += timer_ms() - t0;
         memcpy(prev, buf + CARRY + (n - 1u) * 2048u, CARRY);      /* (as read: the next chunk's "before") */
         patch_marker(buf, CARRY + (n + after) * 2048u);
+        if (!done && partition) memcpy(buf + CARRY + 462, partition, 16);
         t0 = timer_ms();
         rc = sink(done, n, buf + CARRY, ctx);
         g_tm.disk_ms += timer_ms() - t0;
@@ -375,9 +418,9 @@ static int sink_hash_compare(uint32_t blk, uint32_t nblk, const uint8_t* data, v
 
 /* Copies the CD's boot image (block-exact, per the ISO9660 PVD) onto the
  * disk from LBA 0 - 2048-byte CD blocks become 4 disk sectors each. */
-static int copy_boot_image(const img_src_t* src, const ata_disk_t* dst, uint32_t iso_bytes) {
+static int copy_boot_image(const img_src_t* src, const ata_disk_t* dst, uint32_t iso_bytes, const uint8_t* partition) {
     memset(&g_new, 0, sizeof(g_new));
-    return stream_image(src, iso_bytes, sink_write, (void*)dst, NULL);
+    return stream_image(src, iso_bytes, sink_write, (void*)dst, NULL, partition);
 }
 
 /* ── the filesystem on disk ───────────────────────────────────────────
@@ -397,12 +440,9 @@ static int copy_boot_image(const img_src_t* src, const ata_disk_t* dst, uint32_t
 #define V4_BASE_LBA         (128u * 1024u * 1024u / FSDISK_SECTOR)
 #define V4_TAIL_SECTORS     2048u                        /* 1 MB left free at the end */
 #define V4_MIN_SLOT_SECTORS (32u * 1024u * 1024u / FSDISK_SECTOR)
-/* the checksum table's place: the last 32 KB of the 128 MB boot area (the
- * image must end before it) - a header sector, then the checksums */
-#define HTAB_LBA     (V4_BASE_LBA - 64u)
-#define HTAB_SECTORS (1u + HTAB_MAX * 4u / FSDISK_SECTOR)
+/* Legacy disks reserve the last 32 KiB of the 128 MiB boot area for
+ * checksums. Partitioned installs use 128 KiB at their own boundary. */
 #define HTAB_MAGIC   0x48534842u              /* "BHSH" */
-#define IMAGE_MAX    (HTAB_LBA * FSDISK_SECTOR)
 
 #define V3_BASE_LBA         (32u * 1024u * 1024u / FSDISK_SECTOR)
 #define V3_SLOT_SECTORS     (((uint32_t)24u + (256u * 1024u * 1024u) + 65535u) / FSDISK_SECTOR)
@@ -1431,7 +1471,7 @@ static int v5_format(const ata_disk_t* d, uint32_t keep_lba, uint32_t keep_sect)
  * the end of the boot area to 1 MB before the disk's end - the same place
  * layout 5 used. Every change goes to it as it is made (a block cache in
  * between, written within a second): RAM is a cache, not a copy to save.
- * Linux mounts it (an offset of 128 MiB on the disk) and its e2fsck
+ * Linux mounts its MBR partition (legacy disks: an offset of 128 MiB); e2fsck
  * checks it. Layout-5 disks become ext4 in place at boot (e4_migrate):
  * their files' data stays where it is, the inodes point at it. */
 
@@ -1471,20 +1511,21 @@ static int e4_flush_dev(void* ctx) {
 
 /* the filesystem's place on disk d */
 static void e4_geometry(const ata_disk_t* d, ext4_dev_t* dev, uint32_t* base) {
-    *base = V4_BASE_LBA;
+    *base = boot_partition(d, NULL);
     uint32_t end = (d->sectors - V4_TAIL_SECTORS) & ~(V5_BLOCK_SECT - 1u);
     memset(dev, 0, sizeof(*dev));
     dev->read = e4_read;
     dev->write = e4_write;
     dev->flush = e4_flush_dev;
-    dev->sectors = end > *base ? end - *base : 0;
+    dev->sectors = *base && end > *base ? end - *base : 0;
 }
 
 /* an ext4 Banana OS disk: its superblock, named BANANA_OS */
 static int e4_detect(const ata_disk_t* d) {
-    if (d->sectors <= V4_BASE_LBA + V4_TAIL_SECTORS + 2048u) return 0;
+    uint32_t base = boot_partition(d, NULL);
+    if (!base || d->sectors <= (uint64_t)base + V4_TAIL_SECTORS + 2048u) return 0;
     uint8_t sec[FSDISK_SECTOR];
-    if (disk_read(d, V4_BASE_LBA + 2u, 1, sec) != 0) return 0;          /* byte 1024: the superblock */
+    if (disk_read(d, base + 2u, 1, sec) != 0) return 0;          /* byte 1024: the superblock */
     return sec[0x38] == 0x53 && sec[0x39] == 0xEF && !memcmp(sec + 0x78, "BANANA_OS", 9);
 }
 
@@ -1915,20 +1956,30 @@ int fsdisk_install_to(const ata_disk_t* tp) {
 
     uint32_t iso_bytes;
     if (src_iso_size(&source, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
-    if (iso_bytes > IMAGE_MAX) return FSDISK_ERR_ISO_TOO_BIG;
+    uint32_t base = boot_install_base(iso_bytes);
+    if (!base) return FSDISK_ERR_ISO_TOO_BIG;
+    if (target.sectors <= (uint64_t)base + V4_TAIL_SECTORS + V4_MIN_SLOT_SECTORS)
+        return FSDISK_ERR_TOO_SMALL;
+    uint8_t partition[16];
+    memset(partition, 0, sizeof(partition));
+    partition[1] = partition[5] = 0xfe;
+    partition[2] = partition[3] = partition[6] = partition[7] = 0xff;
+    partition[4] = 0x83;
+    boot_put32(partition + 8, base);
+    uint32_t end = (target.sectors - V4_TAIL_SECTORS) & ~(V5_BLOCK_SECT - 1u);
+    boot_put32(partition + 12, end - base);
 
     layout_t l;
     if (!layout_v4(&target, &l)) return FSDISK_ERR_TOO_SMALL;
-    v5_mark_t m;
-    v5_new_mark(&target, &m);
-    if (bytes_to_sectors(fs_snapshot_size()) > m.data_end - m.data_lba) return FSDISK_ERR_FULL;
+    if (bytes_to_sectors(fs_snapshot_size()) > end - base) return FSDISK_ERR_FULL;
 
     if (htab_drop(&target) != 0) return FSDISK_ERR_IO;
-    if (copy_boot_image(&source, &target, iso_bytes) != 0) return FSDISK_ERR_IO;
+    if (copy_boot_image(&source, &target, iso_bytes, partition) != 0) return FSDISK_ERR_IO;
     /* old headers: a layout-3 install's (past the new image), a layout-4 one's */
     if (iso_bytes <= V3_BASE_LBA * FSDISK_SECTOR) wipe_header(&target, V3_BASE_LBA);
-    wipe_header(&target, V4_BASE_LBA);
-    if (l.nslots == 2) wipe_header(&target, slot_lba_of(&l, 1));
+    if (iso_bytes <= V4_BASE_LBA * FSDISK_SECTOR) wipe_header(&target, V4_BASE_LBA);
+    if (l.nslots == 2 && slot_lba_of(&l, 1) >= bytes_to_sectors(iso_bytes))
+        wipe_header(&target, slot_lba_of(&l, 1));
     uint32_t t_files = timer_ms();
     int rc = e4_format(&target);
     g_tm.files_ms = timer_ms() - t_files;
@@ -2187,12 +2238,15 @@ static uint32_t pvd_check_of(const ata_disk_t* d) {
 /* g_old: the disk's table, if it is the one of the image the disk holds */
 static void htab_load(const ata_disk_t* d) {
     memset(&g_old, 0, sizeof(g_old));
-    uint8_t* b = (uint8_t*)kmalloc(HTAB_SECTORS * FSDISK_SECTOR);
+    uint32_t base = boot_partition(d, NULL);
+    if (!base) return;
+    uint32_t sectors = boot_table_sectors(base);
+    uint8_t* b = (uint8_t*)kmalloc(sectors * FSDISK_SECTOR);
     if (!b) return;
     htab_hdr_t h;
-    if (disk_read(d, HTAB_LBA, HTAB_SECTORS, b) == 0) {
+    if (disk_read(d, boot_table_lba(base), sectors, b) == 0) {
         memcpy(&h, b, sizeof(h));
-        if (h.magic == HTAB_MAGIC && h.version == 1 && h.n <= HTAB_MAX &&
+        if (h.magic == HTAB_MAGIC && h.version == 1 && h.n <= (sectors - 1u) * FSDISK_SECTOR / 4u &&
             h.check == crc32c(0, &h, 24u) &&
             h.tab_check == crc32c(0, b + FSDISK_SECTOR, h.n * 4u) && h.pvd_check == pvd_check_of(d)) {
             memcpy(g_old.tab, b + FSDISK_SECTOR, h.n * 4u);
@@ -2205,24 +2259,31 @@ static void htab_load(const ata_disk_t* d) {
 
 /* g_new onto the disk, for the image just written (after it is flushed) */
 static int htab_save(const ata_disk_t* d, uint32_t iso_bytes) {
-    uint8_t* b = (uint8_t*)kzalloc(HTAB_SECTORS * FSDISK_SECTOR);
+    uint32_t base = boot_partition(d, NULL);
+    if (!base) return -1;
+    uint32_t sectors = boot_table_sectors(base);
+    if (g_new.n > (sectors - 1u) * FSDISK_SECTOR / 4u) return -1;
+    uint8_t* b = (uint8_t*)kzalloc(sectors * FSDISK_SECTOR);
     if (!b) return -1;
     htab_hdr_t h = { HTAB_MAGIC, 1, g_new.n, iso_bytes, pvd_check_of(d), 0, 0 };
     memcpy(b + FSDISK_SECTOR, g_new.tab, g_new.n * 4u);
     h.tab_check = crc32c(0, b + FSDISK_SECTOR, g_new.n * 4u);
     h.check = crc32c(0, &h, 24u);
     memcpy(b, &h, sizeof(h));
-    int rc = h.pvd_check && disk_write(d, HTAB_LBA, HTAB_SECTORS, b) == 0 && disk_flush(d) == 0 ? 0 : -1;
+    int rc = h.pvd_check && disk_write(d, boot_table_lba(base), sectors, b) == 0 && disk_flush(d) == 0 ? 0 : -1;
     kfree(b);
     return rc;
 }
 
 /* the table goes before the image changes: half an update leaves none (the next one writes all) */
 static int htab_drop(const ata_disk_t* d) {
-    if (HTAB_LBA >= d->sectors) return 0;
+    uint32_t base = boot_partition(d, NULL);
+    if (!base) return -1;
+    uint32_t lba = boot_table_lba(base);
+    if (lba >= d->sectors) return 0;
     uint8_t z[FSDISK_SECTOR];
     memset(z, 0, sizeof(z));
-    return disk_write(d, HTAB_LBA, 1, z) == 0 && disk_flush(d) == 0 ? 0 : -1;
+    return disk_write(d, lba, 1, z) == 0 && disk_flush(d) == 0 ? 0 : -1;
 }
 
 /* the last comparison against the table (fsdisk_compare_boot), which the
@@ -2266,6 +2327,11 @@ int fsdisk_compare_boot(void) {
     uint32_t iso_bytes;
     if (!fsdisk_find_install(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
+    uint8_t partition[16];
+    uint32_t base = boot_partition(&dst, partition);
+    if (!base) return FSDISK_ERR_IO;
+    if ((uint64_t)iso_bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR)
+        return FSDISK_ERR_ISO_TOO_BIG;
     int lay = fsdisk_install_layout();
     if (lay != (int)LAYOUT_V4 && lay != 5 && lay != 6) return 0;            /* an old layout: always worth updating */
     htab_load(&dst);
@@ -2274,7 +2340,7 @@ int fsdisk_compare_boot(void) {
     if (g_old.valid) {
         /* the CD against the table: nothing of the disk is read */
         int differ = 0;
-        rc = stream_image(&src, iso_bytes, sink_hash_compare, &differ, NULL);
+        rc = stream_image(&src, iso_bytes, sink_hash_compare, &differ, NULL, partition);
         same = differ == 0 && g_new.n == g_old.n;
         g_cmp = g_new;
         g_cmp_ok = rc == 0;
@@ -2285,7 +2351,7 @@ int fsdisk_compare_boot(void) {
         /* no table (installed by an older Banana OS): the disk is read back */
         cmp_ctx_t c = { &dst, (uint8_t*)kmalloc(READ_BLOCKS * 2048u), 1 };
         if (!c.buf) return FSDISK_ERR_IO;
-        rc = stream_image(&src, iso_bytes, sink_compare, &c, NULL);
+        rc = stream_image(&src, iso_bytes, sink_compare, &c, NULL, partition);
         kfree(c.buf);
         same = c.same;
     }
@@ -2345,7 +2411,11 @@ int fsdisk_update_on(const ata_disk_t* dp) {
     dst = *dp;
     if (!fsdisk_holds_banana(&dst)) return FSDISK_ERR_NO_INSTALL;
     if (!find_source(&src) || src_iso_size(&src, &iso_bytes) != 0) return FSDISK_ERR_NO_SOURCE;
-    if (iso_bytes > IMAGE_MAX) return FSDISK_ERR_ISO_TOO_BIG;
+    uint8_t partition[16];
+    uint32_t base = boot_partition(&dst, partition);
+    if (!base) return FSDISK_ERR_IO;
+    if ((uint64_t)iso_bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR)
+        return FSDISK_ERR_ISO_TOO_BIG;
     int rc = migrate_to_v4(&dst);
     if (rc != FSDISK_OK) return rc;
     /* the boot area only: the files after it stay as they are. With the
@@ -2360,7 +2430,7 @@ int fsdisk_update_on(const ata_disk_t* dp) {
     }
     g_cmp_ok = 0;
     if (htab_drop(&dst) != 0) return FSDISK_ERR_IO;
-    if (stream_image(&src, iso_bytes, sink_delta, (void*)&dst, need) != 0) return FSDISK_ERR_IO;
+    if (stream_image(&src, iso_bytes, sink_delta, (void*)&dst, need, partition) != 0) return FSDISK_ERR_IO;
     if (iso_bytes <= V3_BASE_LBA * FSDISK_SECTOR) wipe_header(&dst, V3_BASE_LBA);
     if (disk_flush(&dst) != 0) return FSDISK_ERR_IO;
     htab_save(&dst, iso_bytes);              /* (without it the next update writes everything: no harm) */
@@ -2381,7 +2451,9 @@ int fsdisk_set_boot_video(const char* value) {
     uint32_t sectors = 0;
     if (disk_read(&g_target, 16 * 4, 4, buf) == 0 && buf[0] == 1 && memcmp(buf + 1, "CD001", 5) == 0)
         sectors = ((uint32_t)buf[80] | (uint32_t)buf[81] << 8 | (uint32_t)buf[82] << 16 | (uint32_t)buf[83] << 24) * 4u;
-    if (sectors > V4_BASE_LBA) sectors = V4_BASE_LBA;
+    uint32_t base = boot_partition(&g_target, NULL);
+    if (!base) { kfree(buf); dunlock(); return -1; }
+    if (sectors > base) sectors = base;
     int hits = 0, rc = 0;
     for (uint32_t s = 0; s < sectors && rc == 0; s += CH) {
         /* one sector more: a line across the chunk's end is found whole */

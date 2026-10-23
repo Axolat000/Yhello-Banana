@@ -18,7 +18,7 @@
 #define FSDISK_ERR_NO_TARGET   -1 /* no ATA hard disk found */
 #define FSDISK_ERR_AMBIGUOUS   -2 /* more than one ATA hard disk found */
 #define FSDISK_ERR_NO_SOURCE   -3 /* no ATAPI boot CD found to copy from */
-#define FSDISK_ERR_TOO_SMALL   -4 /* target disk too small for the 128 MB boot area + filesystem */
+#define FSDISK_ERR_TOO_SMALL   -4 /* target disk too small for the boot area + filesystem */
 #define FSDISK_ERR_ISO_TOO_BIG -5 /* boot image bigger than the reserved region (build issue) */
 #define FSDISK_ERR_IO          -6 /* a read or write failed */
 #define FSDISK_ERR_FULL        -7 /* the files are past what a slot on this disk holds */
