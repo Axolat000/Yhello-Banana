@@ -165,6 +165,30 @@ static void astro(checks_t* c,page_env_t* env) {
     check(c,"Astro finishes without script errors",!p->status[0] && c->logs==logs,p->status[0]?p->status:c->last_log);
     page_free(p);
 }
+/* Redirected child documents must resolve resources from the final URL. */
+static int frame_resource(void* ctx,const char* url,char** data,uint32_t* len,char* type,int tc,
+                          char* final,int fc,char* err,int ec){
+    (void)ctx;const char* text;
+    if(!strcmp(url,"https://frames.example/start")){
+        text="<html><body><div id='frame-result'>waiting</div><script src='frame.js'></script></body></html>";
+        kstrlcpy(final,"https://cdn.example/target/index.html",fc);kstrlcpy(type,"text/html",tc);
+    }else if(!strcmp(url,"https://cdn.example/target/frame.js")){
+        text="document.getElementById('frame-result').textContent='redirect OK';";kstrlcpy(final,url,fc);kstrlcpy(type,"text/javascript",tc);
+    }else {kstrlcpy(err,"offline frame fetch rejected",ec);return -1;}
+    *len=(uint32_t)strlen(text);*data=kmalloc(*len+1);
+    if(!*data)return -1;memcpy(*data,text,*len+1);return 0;
+}
+static void frames(checks_t* c){
+    page_env_t env={.fetch=frame_resource,.now_ms=now_ms};
+    page_t* p=page_new(&env,16u<<20);
+    if(!p){check(c,"iframe fixture starts",0,"allocation failed");return;}
+    const char* html="<iframe src='https://frames.example/start'></iframe><iframe src='https://frames.example/missing'></iframe>";
+    page_load(p,"https://parent.example/",html,(uint32_t)strlen(html),640);
+    check(c,"iframe navigation keeps its final redirect URL",p->nframes==2&&!strcmp(p->frames[0]->url,"https://cdn.example/target/index.html"),"");
+    check(c,"iframe scripts resolve relative to the redirected document",p->nframes==2&&text_is(p->frames[0],"frame-result","redirect OK"),"");
+    check(c,"failed iframe resources retain their load error",p->nframes==2&&!strcmp(p->frames[1]->status,"offline frame fetch rejected"),"");
+    page_free(p);
+}
 #include "framework_layout_tests.h"
 #include "framework_image_tests.h"
 
@@ -178,6 +202,7 @@ int framework_tests_run(void (*report)(const char*,int,const char*)) {
     image_tests(&c);
     astro(&c,&env);
     styles(&c,&env);
+    frames(&c);
     mutations(&c,&env,"about:frameworks/tests/mutations","MutationObserver records and old values",0);
     mutations(&c,&env,"about:frameworks/tests/mutations-async","MutationObserver asynchronous delivery",0);
     mutations(&c,&env,"about:frameworks/tests/mutations-limits","MutationObserver feedback and overflow limits",1);

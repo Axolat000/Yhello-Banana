@@ -201,14 +201,19 @@ int page_data_url(const char* url, char** data, uint32_t* len, char* ctype, int 
     return 0;
 }
 
-static int fetch(page_t* p, const char* url, char** data, uint32_t* len, char* ctype, int ccap) {
-    char fin[1024], err[160];
-    int d = page_data_url(url, data, len, ctype, ccap);
-    if (d != -2) return d;
-    if (!p->env || !p->env->fetch) return -1;
-    int r = p->env->fetch(p->env->ctx, url, data, len, ctype, ccap, fin, sizeof(fin), err, sizeof(err));
-    if (r != 0) plog(p, "browser: cannot load %s", url);
+static int fetch_final(page_t* p,const char* url,char** data,uint32_t* len,
+                       char* ctype,int ccap,char* final,int fcap,char* err,int ecap) {
+    if(fcap)final[0]=0;if(ecap)err[0]=0;
+    int d=page_data_url(url,data,len,ctype,ccap);
+    if(d!=-2){if(!d)kstrlcpy(final,url,fcap);return d;}
+    if(!p->env||!p->env->fetch)return -1;
+    int r=p->env->fetch(p->env->ctx,url,data,len,ctype,ccap,final,fcap,err,ecap);
+    if(r)plog(p,"browser: cannot load %s",url);
     return r;
+}
+static int fetch(page_t* p,const char* url,char** data,uint32_t* len,char* ctype,int ccap) {
+    char final[1024],err[160];
+    return fetch_final(p,url,data,len,ctype,ccap,final,sizeof(final),err,sizeof(err));
 }
 
 static void init_forms(dom_node_t* n) {
@@ -448,16 +453,19 @@ static void load_frames(page_t* p, dom_node_t* n) {
                 const char* src = dom_attr(c, "src");
                 char* html = NULL;
                 uint32_t len = 0;
-                char furl[PAGE_URL_MAX];
+                char furl[PAGE_URL_MAX],frame_error[160]={0};
+                int frame_failed=0;
                 if (srcdoc && *srcdoc) {
                     len = (uint32_t)strlen(srcdoc);
                     html = (char*)kmalloc(len + 1);
                     if (html) { memcpy(html, srcdoc, len); html[len] = 0; len = html_decode_entities(html, len); }
                     kstrlcpy(furl, p->base, sizeof(furl));
                 } else if (src && *src && strcmp(src, "about:blank") != 0) {
-                    char ct[96];
-                    url_resolve(p->base, src, furl, sizeof(furl));
-                    if (fetch(p, furl, &html, &len, ct, sizeof(ct)) != 0) html = NULL;
+                    char ct[96],final[PAGE_URL_MAX];
+                    url_resolve(p->base,src,furl,sizeof(furl));
+                    if(fetch_final(p,furl,&html,&len,ct,sizeof(ct),final,sizeof(final),frame_error,sizeof(frame_error))){
+                        html=NULL;frame_failed=1;
+                    }else if(final[0])kstrlcpy(furl,final,sizeof(furl));
                 } else {
                     kstrlcpy(furl, "about:blank", sizeof(furl));
                 }
@@ -467,6 +475,7 @@ static void load_frames(page_t* p, dom_node_t* n) {
                     child->js_disabled = p->js_disabled;
                     child->view_h = 150;
                     page_load(child, furl, html ? html : "", html ? len : 0, frame_inner_w(p, c));
+                    if(frame_failed)kstrlcpy(child->status,frame_error[0]?frame_error:"Frame resource could not be fetched",sizeof(child->status));
                     p->frames[p->nframes++] = child;
                     c->frame = child;
                     c->frame_layout = child->layout;
