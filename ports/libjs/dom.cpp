@@ -82,6 +82,8 @@ struct DOM {
         out.kind=v.is_function()?9:8;out.token=id;return out;
     }
     ThrowCompletionOr<Value> host_op(int op){
+        if(op==6)return Value(PrimitiveString::create(*vm,
+            String::from_utf8_with_replacement_character(StringView(last_error,strlen(last_error)))));
         Vector<ByteString> strings;
         bjs_value object={},out={};
         char const* name="";
@@ -93,7 +95,7 @@ struct DOM {
             if(!id.is_number()||!isfinite(id.as_double())||id.as_double()<0||id.as_double()>=handles.size()||
                id.as_double()!=(unsigned)id.as_double())return failure();
             object=handles[(unsigned)id.as_double()];
-            if(op==2){
+            if(op==2||op==7){
                 args.append(TRY(to_host(vm->argument(1),strings)));
                 auto av=vm->argument(2);
                 auto length=TRY(av.get(*vm,vm->names.length));
@@ -145,7 +147,7 @@ static constexpr char bootstrap[]=R"JS(
      set(t,k,v){if(typeof k==='symbol')return Reflect.set(t,k,v);__bananaSet(id,String(k),v);return true},
      has(t,k){return typeof k==='string'&&__bananaGet(id,k)!==undefined||Reflect.has(t,k)},
      apply(t,self,args){return __bananaCall(id,self,args)},
-     construct(t,args){const v=__bananaCall(id,{},args);if(v===null||typeof v!=='object'&&typeof v!=='function')throw new TypeError('DOM constructor');return v}
+     construct(t,args,newTarget){const v=__bananaConstruct(id,newTarget,args);if(v===null||typeof v!=='object'&&typeof v!=='function')throw new TypeError('DOM constructor');return v}
    });
    cache.set(id,proxy);reverse.set(proxy,id);
    if(!callable&&!array){const proto=__bananaProto(id);if(proto!==undefined)Reflect.setPrototypeOf(target,proto);}
@@ -192,9 +194,10 @@ extern "C" void* bjs_create(void* host){
     d->binding=guard.ptr();Binding* binding=guard.ptr();bindings.append(move(guard));
     d->enter();
     auto& global=d->realm->global_object();
-    char const* names[]={"__bananaGet","__bananaSet","__bananaCall","__bananaGlobal","__bananaProto"};
-    for(int index=0;index<5;index++){
-        int op=index==4?5:index;
+    char const* names[]={"__bananaGet","__bananaSet","__bananaCall","__bananaGlobal","__bananaProto","__bananaDiagnostics","__bananaConstruct"};
+    int operations[]={0,1,2,3,5,6,7};
+    for(int index=0;index<7;index++){
+        int op=operations[index];
         auto fn=NativeFunction::create(*d->realm,key(names[index]),[binding,op](VM& vm)->ThrowCompletionOr<Value>{
             if(!binding->session)return vm.throw_completion<TypeError>(ErrorType::NotAnObject,"detached DOM realm");
             return binding->session->host_op(op);

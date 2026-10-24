@@ -164,7 +164,8 @@ static void crashed(remote_page_t* r,const char* why) {
     r->slot=-1;r->dead=1;r->stage=0;r->p.js=NULL;r->p.focus=NULL;r->p.dirty=0;
     r->p.nav_pending=r->p.alert_pending=r->p.file_pick_pending=0;
     kstrlcpy(r->p.status,why,sizeof(r->p.status));r->layout.height=0;
-    klog("browser worker: %s (app %d)\n",why,r->app);
+    klog("browser worker: %s (app %d; op %u; peak %u KiB)\n",
+         why,r->app,r->cmd.op,r->peak_memory/1024);
 }
 static void apply(remote_page_t* r) {
     page_t* p=&r->p;ww_state_t* s=&r->state;
@@ -493,6 +494,17 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     report("LibJS timers retain callbacks and modify attributes",!rc&&!strcmp(text,"7|yes"),text);
     rc=remote_page_eval(p,"(()=>{let n=0;const f=()=>n++;const e=document.getElementById('go');e.addEventListener('click',f);e.removeEventListener('click',f);e.click();return n===0})()",text,sizeof(text));
     report("event removal preserves LibJS callback identity",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{try{MutationObserver(()=>{});return false}catch(e){return String(e).includes('requires new')}})()",text,sizeof(text));
+    report("DOM constructors reject calls without new",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"globalThis.observed='';globalThis.observer=new MutationObserver(records=>{observed=records[0].type+'|'+records[0].attributeName});observer.observe(document.getElementById('out'),{attributes:true});document.getElementById('out').setAttribute('data-observed','yes');true",text,sizeof(text));
+    report("LibJS constructs native MutationObserver",!rc&&!strcmp(text,"true"),text);
+    remote_page_tick(p);
+    rc=remote_page_eval(p,"observed",text,sizeof(text));
+    report("native mutation delivery calls back into LibJS",!rc&&!strcmp(text,"attributes|data-observed"),text);
+    rc=remote_page_eval(p,"observer.disconnect();document.getElementById('out').setAttribute('data-observed','no');observed='disconnected';true",text,sizeof(text));
+    remote_page_tick(p);
+    rc=remote_page_eval(p,"observed",text,sizeof(text));
+    report("constructed observers disconnect correctly",!rc&&!strcmp(text,"disconnected"),text);
     rc=remote_page_eval(p,"globalThis.blocked=false;fetch('file:///etc/hostname').catch(()=>blocked=true);true",text,sizeof(text));
     remote_page_tick(p);
     rc=remote_page_eval(p,"blocked",text,sizeof(text));

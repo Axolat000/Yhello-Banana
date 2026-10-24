@@ -93,10 +93,20 @@ int bjs_host(void* host,int op,bjs_value object,const char* key,bjs_value* args,
     }else if(op==1&&argc){
         obj_t* o=v.t==V_OBJ?v.o:v.t==V_FUNC?v.f->statics:NULL;
         if(o)obj_set(I,o,key,import_value(s,args[0]));
-    }else if(op==2&&argc&&argc<=129){
+    }else if((op==2||op==7)&&argc&&argc<=129){
         value_t av[128];
         for(unsigned k=1;k<argc;k++)av[k-1]=import_value(s,args[k]);
-        if(script_call(I,v,import_value(s,args[0]),(int)argc-1,av,&r)<0){
+        value_t self=import_value(s,args[0]),saved_nt=I->new_target;
+        if(op==7){
+            /* Native DOM constructors use the same explicit "new" marker as
+             * the legacy evaluator; ordinary calls must keep rejecting it. */
+            if(v.t!=V_FUNC||!v.f->native){kstrlcpy(error,"Invalid DOM constructor",cap);return -1;}
+            I->new_target=self;
+            self=v_null();self.b=0x4E57;
+        }
+        int rc=script_call(I,v,self,(int)argc-1,av,&r);
+        I->new_target=saved_nt;
+        if(rc<0){
             kstrlcpy(error,script_error(I),cap);return -1;
         }
     }else return -1;

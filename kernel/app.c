@@ -175,6 +175,7 @@ typedef struct {
     uint32_t  start_ms;
     int       web_restricted;
     uint32_t  web_deadline, web_cpu_start, web_cpu_limit;
+    uint32_t  web_stop_reason, web_stop_cpu;
     uint32_t  web_window, web_window_cpu;
 } app_proc_t;
 
@@ -904,8 +905,11 @@ static void web_check_budget(app_proc_t* p) {
     if (!p || !p->web_restricted) return;
     uint32_t now = timer_ms(), cpu = 0;
     task_query(p->pid, NULL, &cpu, NULL);
-    if ((p->web_deadline && (int32_t)(now - p->web_deadline) >= 0) ||
-        (p->web_cpu_limit && cpu - p->web_cpu_start > p->web_cpu_limit)) p->kill_req = 1;
+    if(!p->kill_req&&p->web_cpu_limit&&cpu-p->web_cpu_start>p->web_cpu_limit){
+        p->web_stop_reason=1;p->web_stop_cpu=cpu-p->web_cpu_start;p->kill_req=1;
+    }else if(!p->kill_req&&p->web_deadline&&(int32_t)(now-p->web_deadline)>=0){
+        p->web_stop_reason=2;p->kill_req=1;
+    }
     if (now - p->web_window >= 1000u) {
         p->web_window = now; p->web_window_cpu = cpu;
     } else if (cpu - p->web_window_cpu >= 500u) {
@@ -4814,6 +4818,12 @@ static void spawned_entry(void) {
     task_set_background();             /* no terminal: it talks through its windows */
     run(p);
     if(!p->web_restricted)klog("app %s exited (%d)\n", p->name, p->exit_code);
+    else if(p->web_stop_reason==1)
+        klog("browser quota: CPU %u ms exceeded %u ms (app %d)\n",p->web_stop_cpu,p->web_cpu_limit,p->id);
+    else if(p->web_stop_reason==2)
+        klog("browser quota: wall deadline exceeded (app %d)\n",p->id);
+    else if(p->exit_code&&p->exit_code!=137&&!p->crash_msg[0])
+        klog("browser worker exited with code %d (app %d)\n",p->exit_code,p->id);
     proc_finish(p);
 }
 
@@ -4852,6 +4862,7 @@ void app_web_budget(int id, uint32_t generation, uint32_t wall_ms, uint32_t cpu_
     task_query(p->pid, NULL, &p->web_cpu_start, NULL);
     p->web_deadline = wall_ms ? timer_ms() + wall_ms : 0;
     p->web_cpu_limit = cpu_ms;
+    p->web_stop_reason=0;p->web_stop_cpu=0;
 }
 
 int app_spawn_web_worker(const char* path, char* err, int cap) {

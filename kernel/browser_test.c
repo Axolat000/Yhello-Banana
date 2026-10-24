@@ -31,7 +31,8 @@ static void worker(void) {
         else if(live_site==6)web_libjs_dom_tests(collect);
         else if(live_site){
             char* data=NULL;uint32_t len=0;char final[8192];
-            const char* target=(live_site==3||live_site==7)?"https://www.google.com/search?gbv=1&q=Banana%20OS":
+            const char* target=live_site==7?"https://www.google.com/search?q=Banana%20OS":
+                               live_site==3?"https://www.google.com/search?gbv=1&q=Banana%20OS":
                                (live_site==4||live_site==8)?"https://github.com/qcom-toolbox/Banana-OS/releases":BROWSER_SITE_TEST_URL;
             int rc=browser_fetch_document(target,NULL,0,&data,&len,final,sizeof(final));
             collect("live site fetched",!rc,final);
@@ -68,6 +69,16 @@ static void worker(void) {
                     char text[256]={0};
                     remote_page_eval(p,"document.title",text,sizeof(text));
                     collect("live document title available",text[0]!=0,text);
+                    if(live_site==7){
+                        uint32_t* pixels=kmalloc(800*480*4);
+                        int painted=0;
+                        if(pixels){
+                            remote_render(p->layout,pixels,800,800,480,0,0,800,480,0);
+                            for(int i=0;i<800*480;i++)if(pixels[i]!=0xffffff){painted=1;break;}
+                            kfree(pixels);
+                        }
+                        collect("Google viewport rendered",painted,p->status);
+                    }
                     collect("live scripts completed",p->status[0]==0,p->status);
                     if((live_site==3||live_site==7)){
                         remote_page_eval(p,"(function(){var a=document.getElementsByTagName('a'),n=0;for(var i=0;i<a.length;i++){var h=a[i].href||'';if(h.indexOf('http')===0&&h.indexOf('google.')<0&&h.indexOf('gstatic.')<0)n++;}return n>=3&&document.body.textContent.indexOf('Banana')>=0;})()",text,sizeof(text));
@@ -75,6 +86,8 @@ static void worker(void) {
                         if(live_site==7&&p->status[0]){
                             remote_page_eval(p,"'solve='+typeof solveSimpleChallenge+' scripts='+document.getElementsByTagName('script').length",text,sizeof(text));
                             collect("Google script-loading diagnostics",1,text);
+                            remote_page_eval(p,"'grecaptcha='+typeof grecaptcha+' iframes='+document.getElementsByTagName('iframe').length+' callback='+__bananaDiagnostics()",text,sizeof(text));
+                            collect("Google widget diagnostics",1,text);
                             for(int i=0;i<4;i++){
                                 char code[512];
                                 ksnprintf(code,sizeof(code),"(function(){var s=document.getElementsByTagName('script')[%d];return s?('type='+s.getAttribute('type')+' nomodule='+s.hasAttribute('nomodule')+' src='+s.getAttribute('src')+' text='+s.textContent.slice(0,100)):'none'})()",i);
