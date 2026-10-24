@@ -462,6 +462,12 @@ void web_libjs_tests(void (*report)(const char*,int,const char*)) {
     remote_page_free(p);
 }
 
+/* Host-requested selftest diagnostics, never exported to page JavaScript. */
+int remote_page_frame_diagnostics(page_t* p,char* out,unsigned cap){
+    int args[10]={6};if(!out||!cap)return -1;out[0]=0;
+    int rc=call((remote_page_t*)p,WW_TEST,args,NULL,NULL,0,out,cap);
+    out[cap-1]=0;return rc;
+}
 void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     page_t* p=remote_page_new_libjs(browser_env(),0);
     report("LibJS DOM renderer starts",p!=NULL,"optional libjsworker package");
@@ -509,6 +515,18 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     remote_page_tick(p);
     rc=remote_page_eval(p,"observed",text,sizeof(text));
     report("constructed observers disconnect correctly",!rc&&!strcmp(text,"disconnected"),text);
+    rc=remote_page_eval(p,"(()=>{const bytes=Array.from({length:256},(_,i)=>String.fromCharCode(i)).join('');return atob(btoa(bytes))===bytes&&atob('AP+A').charCodeAt(1)===255})()",text,sizeof(text));
+    report("browser base64 preserves every byte including NUL",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"btoa(String.fromCharCode(233))==='6Q=='&&atob(' Y Q = = ')==='a'&&atob('YWI')==='ab'",text,sizeof(text));
+    report("browser base64 uses Latin-1 and forgiving whitespace",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{let n=0;for(const f of [()=>atob('a'),()=>atob('YQ===') ,()=>btoa(String.fromCharCode(256))]){try{f()}catch(e){if(e.name==='InvalidCharacterError')n++}}return n===3})()",text,sizeof(text));
+    report("browser base64 rejects malformed input and non Latin-1",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{const e=new TextEncoder,d=new TextDecoder,s='A'+String.fromCharCode(233,0)+String.fromCodePoint(0x1f34c);return d.decode(e.encode(s))===s})()",text,sizeof(text));
+    report("LibJS text codecs preserve Unicode and embedded NUL",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{const a=new Uint8Array(5),r=new TextEncoder().encodeInto('A'+String.fromCodePoint(0x1f34c)+'B',a);const d=new TextDecoder;return r.read===3&&r.written===5&&d.decode(new Uint8Array([240,159]),{stream:true})===''&&d.decode(new Uint8Array([141,140]))===String.fromCodePoint(0x1f34c)})()",text,sizeof(text));
+    report("LibJS UTF-8 streaming and encodeInto preserve character boundaries",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{const d=new TextDecoder('utf-8',{fatal:true});let failed=false;try{d.decode(new Uint8Array([192,128]))}catch(e){failed=e instanceof TypeError}return failed&&new TextDecoder().decode(new Uint8Array([239,187,191,65]))==='A'})()",text,sizeof(text));
+    report("LibJS UTF-8 decoding handles BOM and fatal errors",!rc&&!strcmp(text,"true"),text);
     rc=remote_page_eval(p,"globalThis.blocked=false;fetch('file:///etc/hostname').catch(()=>blocked=true);true",text,sizeof(text));
     remote_page_tick(p);
     rc=remote_page_eval(p,"blocked",text,sizeof(text));
@@ -528,7 +546,7 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     }else report("LibJS render buffer",0,"out of memory");
     rc=remote_page_eval(p,
         "(()=>{const f=document.createElement('iframe');f.setAttribute('width','80');f.setAttribute('height','40');"
-        "f.setAttribute('srcdoc','<body><script>const colors=new Map([[1,\"#1122ee\"]]);document.body.style.background=colors.get(1)</script></body>');"
+        "f.setAttribute('srcdoc','<body><script>const colors=new Map([[1,\"#1122ee\"]]);document.body.style.background=new TextDecoder().decode(new TextEncoder().encode(colors.get(1)))</script></body>');"
         "document.body.appendChild(f);return true})()",text,sizeof(text));
     remote_page_update(p,640);
     pixels=kmalloc(640*240*4);

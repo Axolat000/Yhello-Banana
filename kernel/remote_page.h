@@ -16,6 +16,7 @@ int remote_page_link_at(page_t*, int, int, char*, int);
 void remote_page_set_files(page_t*, dom_node_t*, const char*);
 int remote_page_eval(page_t*, const char*, char*, int);
 void remote_page_post(page_t*, const char*);
+int remote_page_frame_diagnostics(page_t*,char*,unsigned);
 void remote_render(const layout_t*, uint32_t*, int, int, int, int, int, int, int, int);
 int remote_text_pos(layout_t*, int, int, int*, int*);
 uint32_t remote_text_range(layout_t*, int, int, int, int, char*, uint32_t);

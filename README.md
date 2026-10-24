@@ -32,7 +32,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   audio/video is temporarily disabled. See [scope, limits and tests](docs/browser-isolation.md).
   The optional [Ladybird LibJS prototype](ports/libjs/README.md) now runs JavaScript
   and containment probes in a restricted user process. Its optional DOM worker
-  supports persistent realms, events, timers and rendering via browser --libjs;
+  supports persistent realms, events, timers, MutationObserver, binary-safe Base64,
+  UTF-8 text codecs and rendering via browser --libjs;
   Google/CAPTCHA compatibility remains in progress.
 
 - **PNG screenshots** - `screenshot [absolute directory]` saves the screen without overwriting previous captures; **Win+Shift+S** captures the completed desktop frame. The default destination is `/home/banana/Pictures`.

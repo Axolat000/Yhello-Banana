@@ -218,6 +218,23 @@ static void execute(void) {
         }break;
     }
     case WW_TEST:
+#ifdef BANANA_LIBJS_WORKER
+        if(cmd.a[0]==6){
+            result_data=calloc(1,4096);if(!result_data)__banana->exit(120);
+            unsigned used=snprintf((char*)result_data,4096,"frames=%d",page?page->nframes:0);
+            if(page)for(int i=0;i<page->nframes&&used<3500;i++){
+                page_t* f=page->frames[i];
+                value_t fn=f->js?script_get_global(f->js,"__bananaDiagnostics"):v_undef(),detail=v_undef();
+                const char* diagnostic="";
+                if(v_isfunc(fn)&&!script_call(f->js,fn,v_undef(),0,NULL,&detail))diagnostic=v_cstr(f->js,detail);
+                char url[160];kstrlcpy(url,f->url,sizeof(url));char* query=strchr(url,'?');if(query)*query=0;
+                used+=snprintf((char*)result_data+used,4096-used,
+                    "\nframe %d items=%u nested=%d\nstatus=%.100s\ndetail=%.256s\ntitle=%.60s\nurl=%.160s",
+                    i,f->layout?f->layout->n:0,f->nframes,f->status,diagnostic,f->title,url);
+            }
+            result_length=(unsigned)strlen((char*)result_data)+1;
+        }
+#endif
         if(cmd.a[0]==5){
             for(int round=0;round<20;round++){
                 volatile char* map=__banana->vm_map(NULL,8u<<20,BANANA_PROT_READ|BANANA_PROT_WRITE,0);

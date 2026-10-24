@@ -54,7 +54,7 @@ def compile_one(e):
         command+=['-Wno-error=format-nonliteral']
     specific=(here/'probe.h').read_text() if e['file']==str(here/'probe.cpp') else ''
     signature=hashlib.sha256((json.dumps(command)+header_hash+specific).encode()).hexdigest()
-    if original.name=='dom.cpp':signature=hashlib.sha256((signature+(here/'dom.h').read_text()).encode()).hexdigest()
+    if original.name=='dom.cpp':signature=hashlib.sha256((signature+(here/'dom.h').read_text()+(here/'web_compat.h').read_text()).encode()).hexdigest()
     stamp=obj.with_suffix('.signature')
     if obj.exists() and stamp.exists() and stamp.read_text()==signature and obj.stat().st_mtime>=actual.stat().st_mtime:
         return e['file'],0,'cached'

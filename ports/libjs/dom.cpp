@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "dom.h"
+#include "web_compat.h"
 #include <AK/Vector.h>
 #include <LibGC/Root.h>
 #include <LibGC/RootVector.h>
@@ -117,12 +118,21 @@ struct DOM {
         enter();
         int rc=-1;
         auto script=Script::parse(StringView(source,length),*realm,name?StringView(name,strlen(name)):"page"sv);
-        if(script.is_error()){if(cap)snprintf(error,cap,"LibJS parse error");}
+        if(script.is_error()){snprintf(last_error,sizeof(last_error),"LibJS parse error");if(cap)snprintf(error,cap,"LibJS parse error");}
         else{
             auto result=vm->bytecode_interpreter().run(*script.release_value());
             if(!result.is_error())rc=0;
             else if(cap){
-                auto text=result.error().value().to_string(*vm);
+                auto exception=result.error().value();
+                auto text=exception.to_string(*vm);
+                snprintf(last_error,sizeof(last_error),"%s",text.is_error()?"LibJS exception":text.value().to_byte_string().characters());
+                if(exception.is_object()){
+                    auto stack=exception.as_object().get(key("stack"));
+                    if(!stack.is_error()&&stack.value().is_string()){
+                        auto detail=stack.value().to_string(*vm);
+                        if(!detail.is_error())snprintf(last_error,sizeof(last_error),"%s",detail.value().to_byte_string().characters());
+                    }
+                }
                 if(text.is_error())snprintf(error,cap,"LibJS exception");
                 else snprintf(error,cap,"LibJS (%s): %s",name?name:"script",text.value().to_byte_string().characters());
             }
@@ -207,6 +217,7 @@ extern "C" void* bjs_create(void* host){
     d->leave();
     char error[256]={};
     if(d->run(bootstrap,sizeof(bootstrap)-1,"DOM bootstrap",error,sizeof(error))<0){bjs_destroy(d);return nullptr;}
+    if(d->run(web_compat,sizeof(web_compat)-1,"Web codecs",error,sizeof(error))<0){bjs_destroy(d);return nullptr;}
     bjs_value window={},unused={};char diagnostic[8];
     if(!bjs_host(host,3,unused,"window",nullptr,0,&window,diagnostic,sizeof(diagnostic)))
         for(unsigned i=0;i<d->handles.size();i++)

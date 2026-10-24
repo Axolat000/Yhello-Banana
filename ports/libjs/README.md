@@ -24,10 +24,11 @@ SHA-256. Preparation verifies downloads before extracting and publishes complete
 trees atomically. Existing unverified trees are rejected. Upstream copyright
 and license files remain in the source trees.
 
-The native build also runs 15 DOM session regressions: persistent declarations,
+The native build also runs 36 DOM session regressions: persistent declarations,
 realm separation, window identity, forged handles, promises, detached callbacks
-VM teardown/recreation and callback arguments collected between conversions. These use the actual adapter with a minimal
-host; HTML/layout/event integration is tested separately in QEMU.
+VM teardown/recreation, callback arguments collected between conversions,
+Base64/UTF-8 codecs and host exception diagnostics. These use the actual adapter
+with a minimal host; HTML/layout/event integration is tested separately in QEMU.
 
 The reference uses ICU 76.1 as supplied by Debian 13 and tests the APIs used
 by this snapshot against it. Upstream specifies ICU 78. The probe includes
@@ -144,12 +145,13 @@ Target checks:
     python3 ports/libjs/test_vm.py --dom --memory 512M --live
     python3 ports/libjs/test_vm.py --dom --memory 512M --uefi --live
 
-The 23 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
-element creation, dynamically inserted iframe execution/rendering, promise jobs, timers, attributes, native construction and MutationObserver delivery/disconnection,
-denied file fetches, forged
+The 29 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
+element creation, dynamically inserted iframe execution/rendering, promise jobs,
+timers, attributes, native construction and MutationObserver delivery/disconnection,
+binary-safe Base64 and UTF-8 text codecs, denied file fetches, forged
 bridge indices, exceptions, pixel IPC and CPU containment alongside an
 independent renderer. Classic nomodule fallback scripts run because the module
-loader is not yet integrated. The existing 26 isolation, 73 offline framework
+loader is not yet integrated. The existing 26 isolation, 76 offline framework
 and six memory checks pass. Real GitHub releases pass in both the original
 worker and the optional LibJS worker.
 
@@ -157,20 +159,31 @@ The DOM fixture's charged peak is approximately 59 MiB, including the image.
 Its static PIE is approximately 56 MB and the compressed BPK approximately
 23 MB, with full ICU data and embedded fonts. These are prototype measurements,
 not web-page benchmarks or optimized shipping sizes.
+An additional native differential run checked 2,048 UTF-8 decoding/streaming/fatal
+vectors and 512 encoding/encodeInto vectors against Python UTF-8/UTF-16 codecs.
+The comparison uses complete output because malformed sequences can be emitted
+on different incremental chunks by the two decoders.
+
+TextEncoder and TextDecoder now operate on real LibJS BufferSource values.
+UTF-8 decoding supports streaming, fatal errors and BOM handling; encodeInto
+writes complete characters and reports consumed UTF-16 units. Other decoder
+labels currently throw RangeError. Base64 uses Latin-1 binary strings, including
+NUL, instead of converting byte data through C UTF-8 strings.
 
 ## Remaining compatibility work
 
 This adapter is not Ladybird LibWeb or a complete WebIDL implementation. DOM
-reflection/prototype details, typed host values, ES module loading, cross-frame
+reflection/prototype details, typed host values, Dedicated Workers, ES module
+loading, cross-frame
 messaging and transferable ports require further work. Existing multimedia
 restrictions and TLS verification limitations are unchanged. The older engine
 snapshot also needs updates and a security audit before a production switch.
 
-Google reaches consent and a verification page, but the live check still fails
-in challenge JavaScript. Native constructor calls now preserve the interpreter's
-explicit construction marker instead of calling constructors as ordinary methods.
-Search results and manual CAPTCHA completion have not
-passed. Reproduce the diagnostic without counting it as a passing regression:
+Google reaches consent and a verification page. Native diagnostics now get past
+native constructor calls and binary/UTF-8 decoding, then fail on the missing
+Dedicated Worker API used by reCAPTCHA. The QEMU live Google check still fails
+and may reach the bounded document CPU quota. Search results and manual CAPTCHA
+completion have not passed. Reproduce the diagnostic without counting it as a passing regression:
 
     python3 ports/libjs/test_vm.py --dom --memory 1G --google
 

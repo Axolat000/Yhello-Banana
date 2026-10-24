@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../../web/page.h"
 #include "../../web/script_int.h"
-#include "../../kernel/kstring.h"
+#include "kstring.h"
 #include "dom.h"
 #include "../../web/prelude.h"
 typedef struct foreign {unsigned id;int callable;value_t value;struct foreign* next;} foreign_t;

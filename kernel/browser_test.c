@@ -70,7 +70,17 @@ static void worker(void) {
                     remote_page_eval(p,"document.title",text,sizeof(text));
                     collect("live document title available",text[0]!=0,text);
                     if(live_site==7){
-                        remote_page_update(p,800);
+                        for(int tick=0;tick<20;tick++){
+                            remote_page_tick(p);remote_page_update(p,800);task_sleep_ms(100);
+                        }
+                        char frames[4096];
+                        if(!remote_page_frame_diagnostics(p,frames,sizeof(frames))){
+                            char* line=frames;
+                            for(int row=0;line&&*line&&row<48;row++){
+                                char* next=strchr(line,'\n');if(next){*next=0;next++;}
+                                collect("Google frame diagnostics",1,line);line=next;
+                            }
+                        }
                         uint32_t* pixels=kmalloc(800*480*4);
                         int painted=0;
                         if(pixels){
