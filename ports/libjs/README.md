@@ -37,7 +37,7 @@ Intl formatting; broader locale and Temporal compatibility remains to test.
 
 Install the host prerequisites:
 
-    sudo apt-get install g++ cmake ninja-build python3 git ca-certificates \
+    sudo apt-get install g++ make binutils nasm cmake ninja-build python3 git ca-certificates \
         pkg-config libicu-dev libssl-dev libtommath-dev libfast-float-dev
 
 Then:

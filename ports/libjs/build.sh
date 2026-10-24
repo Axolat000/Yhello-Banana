@@ -10,6 +10,10 @@ MODE=${1:-native}
 [ "$#" -le 1 ] && { [ "$MODE" = native ] || [ "$MODE" = target ]; } || {
     echo 'usage: build.sh [native|target]' >&2; exit 2;
 }
+if [ "$MODE" = target ] && ! command -v nasm >/dev/null 2>&1; then
+    echo 'LibJS target: install nasm to assemble the renderer fonts' >&2
+    exit 1
+fi
 python3 -m py_compile "$HERE"/*.py
 python3 "$HERE/prepare_source.py"
 for item in simdutf-7.5.0 simdjson-4.2.4; do
