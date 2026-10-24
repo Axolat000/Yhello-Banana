@@ -1367,7 +1367,9 @@ static void apps_scan(void) {
     g_al_scanned = timer_ms() | 1;
     if (g_al_busy) return;                       /* (the package lists are being rewritten) */
     int n = pkg_list(g_al, APPS_MAX);
-    g_nal = n < 0 ? 0 : n > APPS_MAX ? APPS_MAX : n;
+    g_nal = 0;
+    for (int i = 0; i < n && i < APPS_MAX; i++)
+        if (!banana_system_component(g_al[i].name)) g_al[g_nal++] = g_al[i];
     for (int i = 0; i < g_nal; i++) {
         char p[FS_PATH_LEN];
         ksnprintf(p, sizeof(p), "%s/%s", PKG_DIR, g_al[i].name);

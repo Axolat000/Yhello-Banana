@@ -48,8 +48,10 @@ int main(void) {
     CHECK(terminals==1);
     printf("PASS: Start menu, All Programs and search hide CLI packages and show one Terminal\n");
 #else
-    rescan(); CHECK(g_napps==2);
-    CHECK(!strcmp(g_apps[0].name,"terminal") && !strcmp(g_apps[1].name,"mediaplayer"));
+    rescan(); CHECK(g_napps==1);
+    CHECK(!strcmp(g_apps[0].name,"mediaplayer"));
+    CHECK(banana_system_component("terminal") && banana_system_component("bash") && banana_system_component("zsh"));
+    CHECK(!banana_system_component("terminal-extra") && !banana_system_component("zshell") && !banana_system_component(0));
     printf("PASS: Apps launcher shows graphical packages only\n");
 #endif
     return 0;

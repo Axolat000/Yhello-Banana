@@ -245,22 +245,6 @@ static term_win_t g_terms[TERM_WIN_MAX] = {
     {.x = 260, .y = 180, .w = 520, .h = 340},
 };
 
-/* Each open terminal window is driven by its own cooperative shell task
- * (kernel/task.h) bound permanently to its vt, so windows make progress
- * independently instead of all sharing whichever single shell last had
- * focus (the original bug: running "top"/"edit"/"help" in one window and
- * then clicking another showed the same running command, because there
- * used to be only one shell instance and focus just retargeted its
- * output). task_create() takes a plain 0-argument entry point, so these
- * four trampolines exist one-per-slot to close over each slot's index. */
-static void term_task_entry_0(void) { shell_run_window(g_terms[0].vt); }
-static void term_task_entry_1(void) { shell_run_window(g_terms[1].vt); }
-static void term_task_entry_2(void) { shell_run_window(g_terms[2].vt); }
-static void term_task_entry_3(void) { shell_run_window(g_terms[3].vt); }
-static void (*const g_term_task_entry[TERM_WIN_MAX])(void) = {
-    term_task_entry_0, term_task_entry_1, term_task_entry_2, term_task_entry_3
-};
-
 /* z-order: back -> front */
 static int g_term_order[TERM_WIN_MAX] = {0, 1, 2, 3};
 
@@ -614,36 +598,6 @@ static int term_at(int mx, int my) {
 }
 
 static int bash_terminal(const char* cmd);
-
-static int open_new_terminal(void) {
-    for (int i = 0; i < TERM_WIN_MAX; i++) {
-        if (g_terms[i].open) continue;
-
-        if (g_terms[i].vt == 0) {
-            /* First time this slot has ever been opened: allocate its vt
-             * and start its shell task. Both are kept forever after this
-             * (see the term_win_t.vt comment) - closing the window later
-             * just hides it, it does not free the vt or stop the task. */
-            int vt = terminal_vt_alloc();
-            if (vt < 0) continue; /* out of vts; maybe another slot is reusable */
-            g_terms[i].vt = vt;
-            task_create("term-sh", g_term_task_entry[i]);
-        }
-
-        g_terms[i].open = 1;
-        g_terms[i].desk = g_cur_desk;            /* (opens on the desktop shown) */
-        g_terms[i].top = 0;
-        g_terms[i].minimized = 0;
-        g_terms[i].dragging = 0;
-        g_terms[i].sel = 0;
-        term_apply_size(&g_terms[i]);
-        bring_term_front(i);
-        return i;
-    }
-    /* none free: focus the frontmost */
-    bring_term_front(g_term_order[TERM_WIN_MAX - 1]);
-    return g_term_order[TERM_WIN_MAX - 1];
-}
 
 static void draw_terminal_window(const fb_info_t* fi, const term_win_t* win) {
     if (!win || !TERM_SHOWN(win)) return;
@@ -1679,6 +1633,10 @@ static void draw_win_glyph(int h, int x, int y, uint32_t bg) {
         else draw_icon_taskmgr(x, y, bg);
         return;
     }
+    if (k == WK_APPWIN && appwin_is_terminal(i)) {
+        draw_icon_terminal(x, y, bg);
+        return;
+    }
     draw_bevel_box(x, y, 14, 12, 0x00D0A030u, 0x00F0D070u, 0x00604010u);
 }
 
@@ -2096,11 +2054,23 @@ static void desk_sync_links(void) {
         if (shortcut_read(p, target, sizeof(target)) != SC_APP) continue;
         int act = builtin_act(target + 4);
         if (act == ACT_TERMINAL) {
-            if (keep_terminal < 0) keep_terminal = fi2[i];
-            else if (fi2[i] != keep_terminal) fs_delete(p, 0);
+            if (keep_terminal < 0) {
+                char terminal_path[FS_PATH_LEN];
+                if (shortcut_create(DESKTOP_DIR, _("Terminal"), "app:Terminal",
+                                    terminal_path, sizeof(terminal_path)) == 0)
+                    keep_terminal = fs_find_file(terminal_path);
+                if (keep_terminal < 0) keep_terminal = fi2[i];
+            }
+            if (fi2[i] != keep_terminal) fs_delete(p, 0);
             continue;
         }
         if (act >= 0) continue;
+        /* Shortcuts from older shell launchers may outlive their package. */
+        if (!strcasecmp(target + 4, "bash") || !strcasecmp(target + 4, "zsh") ||
+            !strcasecmp(target + 4, "zshell")) {
+            fs_delete(p, 0);
+            continue;
+        }
         pkg_info_t have;
         int found = pkg_get(target + 4, &have) == 0;
         if ((found && !pkg_is_desktop(&have)) || (!found && listed(DESK_APPS_FILE, target + 4))) fs_delete(p, 0);
@@ -3695,7 +3665,7 @@ static void do_action(int act) {
     g_menu_open = 0;
     switch (act) {
     case ACT_ABOUT: settings_open_page(SETTINGS_PAGE_ABOUT); g_app_min[APP_SETTINGS] = 0; raise_app(APP_SETTINGS); break;
-    case ACT_TERMINAL: if (!bash_terminal(NULL)) { open_new_terminal(); g_front_app = -1; } break;
+    case ACT_TERMINAL: bash_terminal(NULL); break;
     case ACT_FILES: explorer_open(NULL); g_app_min[APP_FILES] = 0; raise_app(APP_FILES); break;
     case ACT_BROWSER: browser_open(NULL); g_app_min[APP_BROWSER] = 0; raise_app(APP_BROWSER); break;
     case ACT_NOTEPAD: notepad_open(NULL); g_app_min[APP_NOTEPAD] = 0; raise_app(APP_NOTEPAD); break;
@@ -3845,7 +3815,6 @@ int gui_notepad_focused(void) {
  * selected shell; cmd runs there first. 0 if it could not start. */
 static int bash_terminal(const char* cmd) {
 #ifdef __x86_64__
-    if (!vcons_running()) return 0;
     char err[96], line[FS_PATH_LEN + 32];
     char* argv[6] = { "terminal", NULL };
     int argc = 1;
@@ -3858,20 +3827,21 @@ static int bash_terminal(const char* cmd) {
         argv[1] = "-e"; argv[2] = (char*)shell_terminal_path(); argv[3] = "-c"; argv[4] = line;
         argc = 5;
     }
-    if (pkg_run("terminal", argc, argv, 0, err, sizeof(err)) < 0) { klog("gui: terminal: %s\n", err); return 0; }
+    if (pkg_run("terminal", argc, argv, 0, err, sizeof(err)) < 0) {
+        klog("gui: terminal: %s\n", err);
+        notify_post("terminal", "Terminal", err, 0);
+        return 0;
+    }
     return 1;
 #else
     (void)cmd;
+    notify_post("terminal", "Terminal", "The graphical Bash terminal requires 64-bit Banana OS.", 0);
     return 0;
 #endif
 }
 
 void gui_terminal_run(const char* cmd) {
-    if (bash_terminal(cmd)) return;
-    open_new_terminal();
-    g_front_app = -1;               /* the new terminal comes up in front */
-    /* typed into the new window: it has the keyboard focus now */
-    keyboard_inject(cmd);
+    bash_terminal(cmd);
 }
 
 int gui_open_files(const char* path) {

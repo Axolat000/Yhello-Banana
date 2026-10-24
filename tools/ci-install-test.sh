@@ -87,6 +87,10 @@ echo "== 4. Boot updated disk again and verify user data"
 python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --boot-timeout 180 --timeout 180 \
     --cmd 'selftest boot ## 0 failed' \
+    --cmd 'pkg info terminal ## Terminal' \
+    --cmd 'pkg remove terminal ## integrated OS component' \
+    --cmd 'pkg remove bash ## integrated OS component' \
+    --cmd 'pkg remove zsh ## integrated OS component' \
     --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-after-update.log"

@@ -67,6 +67,7 @@ void     appwin_focus(int focused);             /* the app windows went to front
 
 /* taskbar / Task Manager: window id 0..APPWIN_MAX-1 */
 int      appwin_info(int id, char* title, int cap, int* minimized);   /* 0 if unused */
+int      appwin_is_terminal(int id);             /* integrated Terminal glyph */
 int      appwin_front_id(void);                 /* the topmost visible one, -1 */
 int      appwin_focused_owner(void);            /* the app whose window has the keyboard, -1 */
 void     appwin_minimize(int id, int min);

@@ -6,6 +6,10 @@ preserving user files. New installations reserve at least 1 GiB and require
 50% image growth room (at least 256 MiB). CI checks BIOS and UEFI upgrades
 from both legacy 128 MiB and newer 256 MiB installations.
 
+The integrated Terminal uses the newer tabbed Bash interface with the original
+terminal icon. Zsh is selected with chsh zsh. Terminal, Bash and Zsh have no
+separate entries in Apps, App Store or Settings > Apps.
+
 Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux kernel, no external OS kernel) - a **64-bit (x86_64) kernel with a 32-bit fallback**, booting on **UEFI and BIOS** machines and in VirtualBox/QEMU with **its own boot loader** (Banana Boot, Multiboot2) - now with **real networking**: its own drivers for the Intel e1000, AMD PCnet, virtio-net and Realtek RTL8139 network cards (every card VirtualBox offers) and its own TCP/IP stack, so `ping`, `curl` and `wget` talk to the actual Internet (HTTP and HTTPS).
 
 ```
@@ -36,7 +40,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 - **Review images and boot validation** - pull requests can produce an unsigned [review ISO with its commit and checksum](docs/review-iso.md). The main build validates its exact ISO with BIOS and UEFI boot, live editor saves, installation, upgrade and user-file persistence checks on disposable QEMU disks.
 
-- **One Terminal and graphical-only app menus (build 252)** - the desktop keeps its original Terminal launcher; the Apps launcher and Start menu (including All Programs and search) show graphical apps only, without separate Bash, Zsh or GNU command entries. Command-line packages stay installed and available in the terminal, App Store and Settings > Apps. Old CLI desktop shortcuts and duplicate Terminal shortcuts are cleaned up. `chsh zsh` or `chsh bash` selects the shell for new Terminal windows and tabs; existing tabs keep their shell.
+- **One Terminal and graphical-only app menus (build 252)** - the desktop keeps its original Terminal launcher; the Apps launcher and Start menu (including All Programs and search) show graphical apps only, without separate Bash, Zsh or GNU command entries. Other command-line packages stay installed and available in the terminal, App Store and Settings > Apps; Terminal, Bash and Zsh are integrated components and are hidden from app inventories. Old CLI desktop shortcuts and duplicate Terminal shortcuts are cleaned up. `chsh zsh` or `chsh bash` selects the shell for new Terminal windows and tabs; existing tabs keep their shell.
 
 - **Rename the PC in Settings or the terminal (build 251)** - Settings > About now has an editable PC name; `hostname NAME` sets the same name and `hostname` displays it. Names are saved in `/etc/hostname`, survive reboots on installed systems, and are used by new terminals, `uname -n` and DHCP requests. Names allow 1-63 letters, digits or hyphens and are normalized to lowercase.
 
@@ -372,7 +376,7 @@ Banana-OS/
   - **I2C HID touchpads** (most laptops since ~2015: Synaptics, ELAN, ALPS, Cirque... on the Intel LPSS I2C controllers, Skylake and later): found from the ACPI tables, switched to precision-touchpad mode
   - gestures on both: tap to click, tap-and-drag, double tap, two-finger tap = right click, three-finger tap = middle click, two-finger scrolling; *Settings > Mouse* turns tap-to-click and natural scrolling on/off; `usbctl` shows which touchpad was found
 - Ctrl+Alt+Delete closes the GUI, from anywhere
-- Up to 4 draggable, closable, focusable terminal windows in GUI mode, each with its own independent shell task and scrollback
+- The integrated tabbed Terminal uses Bash by default, with independent PTYs, shell processes and scrollback for each tab (64-bit)
 - Fluxbox-inspired dark desktop theme, with network status in the taskbar
 - Wallpaper app with 10 built-in presets plus your own pictures from `~/Pictures`
 - In-memory Unix-style filesystem (`/bin`, `/etc`, `/home/banana`, `/usr`, `/var`, `/tmp`, `/dev`, `/root`) with absolute/relative path resolution, `.`/`..`/`~`, files up to 32 MiB (text or binary)
@@ -414,7 +418,7 @@ Banana-OS/
 - Browser - the web browser (below)
 - Notepad - a text editor window: click to place the cursor, drag to select, double-click selects a word; Ctrl+A/C/X/V, Ctrl+S save, Ctrl+O open, Ctrl+N new, Ctrl+F find and Ctrl+G find next, right-click pastes; closing it with unsaved changes asks whether to save them
 - Wallpaper app - pick one of 10 built-in presets, or one of your own pictures from `~/Pictures`
-- Up to 4 terminal windows (draggable, closable, focusable, scrollable), each running its own independent shell task
+- Resizable Terminal windows with tabs, Bash by default and a shell selectable through chsh; all use the original Terminal icon
 - Every window resizes from its bottom-right corner; double-click a title bar to maximize it (and again to restore)
 - Copy and paste: drag over a terminal's text to select and copy it, right-click to paste it (into the shell, or whatever runs there); Notepad, the editor (Ctrl+C / Ctrl+V) and the browser share the same clipboard
 - PS/2 mouse, Synaptics PS/2 and I2C HID touchpads (gestures, see above) all work for pointing

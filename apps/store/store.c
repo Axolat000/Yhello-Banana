@@ -12,6 +12,7 @@
  * Keys: type to search, Esc clears it / goes back, Up / Down / Enter pick
  * an app, Tab moves between the pages, F5 refreshes.
  */
+#include <banana_components.h>
 #include <banana.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,7 +180,10 @@ static void reload(void) {
     if (detail >= 0) snprintf(keep, sizeof(keep), "%s", pkgs[detail].name);
     for (int i = 0; i < npkgs; i++) { free(icons[i].px); }
     memset(icons, 0, sizeof(icons));
-    npkgs = banana_repo_list(pkgs, MAXPKG);
+    int total = banana_repo_list(pkgs, MAXPKG);
+    npkgs = 0;
+    for (int i = 0; i < total && i < MAXPKG; i++)
+        if (!banana_system_component(pkgs[i].name)) pkgs[npkgs++] = pkgs[i];
     qsort(pkgs, npkgs, sizeof(pkgs[0]), cmp_title);
     detail = -1;
     for (int i = 0; i < npkgs; i++) if (keep[0] && !strcmp(pkgs[i].name, keep)) detail = i;

@@ -1,45 +1,39 @@
-# One graphical Terminal
+# Integrated graphical Terminal
 
-The desktop and Start menu retain the original Terminal entry. It opens the
-same tabbed Terminal emulator; Bash and Zsh are shell choices, not additional
-desktop apps. The terminal package is titled Terminal.
+There is one graphical terminal implementation: the newer tabbed user-space
+terminal in apps/terminal, using Bash by default. Desktop and Start retain
+one Terminal entry with the original terminal icon. Its taskbar windows use
+that same icon. Opening Terminal, Win+R, and opening a console command from
+Files all use this implementation. The old kernel GUI terminal factory and
+its fallback have been removed; a startup failure is reported instead.
 
-Only type=gui packages appear in the Apps launcher and Start menu, including
-All Programs and program search. The Start menu omits the terminal package
-entry because it already has the built-in Terminal entry.
+Terminal, Bash and Zsh are integrated OS components. They have internal
+packages for delivery and dependencies, but do not appear as applications in
+Apps, App Store or Settings > Apps. They cannot be uninstalled as ordinary
+apps and are restored at boot if missing. Other CLI tools remain in App Store
+and Settings > Apps, while desktop, Start and Apps show graphical apps only.
 
-Console packages remain installed, callable from /bin, and visible in App
-Store and Settings > Apps. The package inventory itself is not filtered.
-Desktop refresh removes app shortcuts to installed console packages and
-duplicate Terminal app shortcuts, retaining the original Terminal.link.
-It does not remove packages or ordinary files. New GUI shortcut creation
-also rejects console-package app targets.
+Desktop refresh removes obsolete Bash/Zsh/ZShell app shortcuts, console
+package shortcuts and duplicate Terminal shortcuts. It preserves ordinary
+files and the canonical Terminal shortcut. This cleanup also runs on upgrades.
 
-Choose a shell with:
-    chsh zsh
-    chsh bash
-    chsh sh
+Choose the shell for new windows and tabs with chsh bash, chsh zsh or chsh sh.
+The saved choice is retained; existing tabs keep their shell. Explicit
+terminal -e commands still run as requested. Zsh has no separate app launcher.
 
-The choice is saved in /etc/settings.conf and read when each Terminal tab
-starts. New windows and tabs use it; existing tabs keep their shell.
-This setting controls the graphical Terminal, not already-running consoles.
-Explicit terminal -e commands still run as requested.
+The graphical Bash terminal currently requires 64-bit Banana OS. On 32-bit
+systems, opening Terminal reports this requirement; the old GUI terminal is
+not substituted. The serial and text consoles remain available.
 
-Host regression tests:
-    sh tools/tests/desktop_catalog.sh
-These exercise the actual Start menu builder (normal entries, All Programs
-and search) and Apps launcher scanner against a mixed package inventory.
+Run sh tools/tests/desktop_catalog.sh for the real Start/All Programs/search
+and Apps visibility policy tests.
 
-Validation (2026-10-23):
-- Full i386/x86_64 hybrid image builds.
-- Host tests pass for the Apps launcher and all Start menu views.
-- QEMU cleanup of existing Bash, Zsh, GNU and duplicate Terminal shortcuts
-  preserves the original Terminal.link.
-- A graphical Terminal starts Zsh after chsh zsh. Selecting Bash starts it
-  in a new tab while the existing Zsh tab stays Zsh.
-- GNU commands still execute; coreutils and shell package details remain
-  available through package management.
-- Installation and reboot preserve the shell choice and clean desktop;
-  a newly opened Terminal after reboot runs Zsh.
-- The Apps launcher was visually checked: seven graphical apps, one Terminal,
-  no separate shells or GNU command packages.
+Validation on QEMU:
+- Win+R opens the tabbed terminal with Bash; after chsh zsh a new window
+  uses Zsh while the existing Bash window remains active.
+- The Terminal windows use the original terminal icon in the taskbar.
+- Desktop cleanup leaves one Terminal shortcut and removes obsolete
+  Bash, Zsh, ZShell and duplicate terminal shortcuts.
+- Apps shows six GUI applications and no terminal/shell entries; Settings
+  retains other command packages while excluding the integrated components.
+- The boot selftests pass (37 checks).

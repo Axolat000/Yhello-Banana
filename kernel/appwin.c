@@ -763,6 +763,15 @@ int appwin_info(int id, char* title, int cap, int* minimized) {
     return 1;
 }
 
+int appwin_is_terminal(int id) {
+    if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return 0;
+    app_info_t apps[APP_MAX];
+    int n = app_snapshot(apps, APP_MAX);
+    for (int i = 0; i < n && i < APP_MAX; i++)
+        if (apps[i].id == g_w[id].owner) return !strcmp(apps[i].name, "terminal");
+    return 0;
+}
+
 int appwin_front_id(void) {
     awin_t* w = front();
     return w ? (int)(w - g_w) : -1;

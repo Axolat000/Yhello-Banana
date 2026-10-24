@@ -3,6 +3,7 @@
 #define PKG_H
 
 #include "types.h"
+#include "../sdk/include/banana_components.h"
 
 /*
  * App packages (.bpk), made by the SDK's `bpkg` tool:
@@ -47,7 +48,7 @@ int pkg_remove(const char* name, char* msg, int mcap);
 int pkg_inspect(const char* bpk_path, pkg_info_t* out, char* err, int ecap);
 /* installed apps: how many (fills out[] up to max) */
 int pkg_list(pkg_info_t* out, int max);
-/* Desktop launchers show graphical apps only; management keeps every package. */
+/* Desktop launchers show graphical apps except integrated OS components. */
 int pkg_is_desktop(const pkg_info_t* info);
 int pkg_list_drivers(pkg_info_t* out, int max);  /* the installed driver packages (type=driver) */
 int pkg_get(const char* name, pkg_info_t* out);   /* 0 if installed */

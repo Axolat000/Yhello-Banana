@@ -123,7 +123,10 @@ void builtin_apps_install(void) {
         if (zlen <= 0) continue;
         /* the package this system already has (or left out on purpose): not unpacked again */
         uint32_t zcrc = crc32c(0, APPS[i].start, (uint32_t)zlen);
-        if (marked_z(APPS[i].name, zcrc)) continue;
+        if (marked_z(APPS[i].name, zcrc)) {
+            pkg_info_t present;
+            if (!banana_system_component(APPS[i].name) || pkg_get(APPS[i].name, &present) == 0) continue;
+        }
         pkg_info_t have;
         if (APPS[i].optional && pkg_get(APPS[i].name, &have) != 0) continue;   /* (not asked for) */
         unpacked++;
@@ -143,7 +146,7 @@ void builtin_apps_install(void) {
             else
                 /* removed by the user, or left out by the install profile (and not
                  * installed again since): stays out */
-                want = !skipped(mine.name) && !marked_version(mine.name, mine.version);
+                want = banana_system_component(mine.name) || (!skipped(mine.name) && !marked_version(mine.name, mine.version));
             if (want) {
                 char msg[160];
                 if (pkg_install_mem(bpk, (uint32_t)len, msg, sizeof(msg)) == 0) {

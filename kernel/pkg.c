@@ -394,6 +394,10 @@ int pkg_list(pkg_info_t* out, int max) { return list_kind(out, max, 0); }
 int pkg_list_drivers(pkg_info_t* out, int max) { return list_kind(out, max, 1); }
 
 int pkg_remove(const char* name, char* msg, int mcap) {
+    if (banana_system_component(name)) {
+        ksnprintf(msg, (size_t)mcap, "%s is an integrated OS component", name);
+        return -1;
+    }
     pkg_info_t info;
     if (pkg_get(name, &info) != 0) { ksnprintf(msg, (size_t)mcap, "%s is not installed", name); return -1; }
     char dir[FS_PATH_LEN], path[FS_PATH_LEN], ufile[ENT_NAME], udest[FS_PATH_LEN];
@@ -439,5 +443,5 @@ int pkg_inspect_mem(const uint8_t* data, uint32_t size, pkg_info_t* out, char* e
 }
 
 int pkg_is_desktop(const pkg_info_t* info) {
-    return info && !strcmp(info->type, "gui");
+    return info && !banana_system_component(info->name) && !strcmp(info->type, "gui");
 }
