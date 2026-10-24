@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "render.h"
+#include "round_rect.h"
 #include "font8x8.h"
 #include "font.h"
 
@@ -18,14 +19,6 @@ static void fill(target_t* T, int x, int y, int w, int h, uint32_t c) {
     }
 }
 
-/* how far a row dy into a corner of radius r is pushed in (integer circle) */
-static int corner_inset(int r, int dy) {
-    int d = r - dy;                     /* distance from the corner's centre row */
-    int x = 0;
-    while ((x + 1) * (x + 1) + d * d <= r * r) x++;
-    return r - x;
-}
-
 /* a box with rounded corners; ring > 0: only an outline that wide */
 static void round_rect(target_t* T, int x, int y, int w, int h, int r, int ring, uint32_t c) {
     if (r * 2 > w) r = w / 2;
@@ -37,15 +30,15 @@ static void round_rect(target_t* T, int x, int y, int w, int h, int r, int ring,
         int py = y + yy;
         if (py < T->cy0 || py >= T->cy1) continue;
         int in = 0;
-        if (yy < r) in = corner_inset(r, yy);
-        else if (yy >= h - r) in = corner_inset(r, h - 1 - yy);
+        if (yy < r) in = web_corner_inset(r, yy);
+        else if (yy >= h - r) in = web_corner_inset(r, h - 1 - yy);
         if (!ring) { fill(T, x + in, py, w - 2 * in, 1, c); continue; }
         /* the hole of the ring */
         int iy = yy - ring, ih = h - 2 * ring;
         if (iy < 0 || iy >= ih) { fill(T, x + in, py, w - 2 * in, 1, c); continue; }
         int inner = 0;
-        if (iy < ri) inner = corner_inset(ri, iy);
-        else if (iy >= ih - ri) inner = corner_inset(ri, ih - 1 - iy);
+        if (iy < ri) inner = web_corner_inset(ri, iy);
+        else if (iy >= ih - ri) inner = web_corner_inset(ri, ih - 1 - iy);
         int hx0 = x + ring + inner, hx1 = x + w - ring - inner;
         fill(T, x + in, py, hx0 - (x + in), 1, c);
         fill(T, hx1, py, x + w - in - hx1, 1, c);

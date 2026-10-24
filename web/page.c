@@ -978,24 +978,20 @@ static int is_text_field(dom_node_t* e) {
 
 void page_click(page_t* p, int x, int y) {
     if (!p->layout) return;
-    /* a click landing on an <iframe> goes to the child document (its
-     * buttons, checkboxes and onclick handlers). A link inside the frame
-     * is not followed in this version. */
-    for (uint32_t i = 0; i < p->layout->n; i++) {
-        dl_item_t* it = &p->layout->items[i];
-        if (it->kind != DL_IFRAME) continue;
-        if (x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) {
-            dom_node_t* e = it->node;
-            page_t* child = e ? (page_t*)e->frame : NULL;
-            if (child) {
-                page_click(child, x - (it->x + 2), y - (it->y + 2) + e->frame_scroll);
-                child->nav_pending = 0;          /* frame navigation is not supported yet */
-                p->dirty = 1;
-            }
-            return;
+    /* The topmost visible display item decides both ordinary and frame
+     * activation. A clipped or covered iframe must not steal another click. */
+    const dl_item_t* it=layout_hit_item(p->layout,x,y);
+    if(it&&it->kind==DL_IFRAME){
+        dom_node_t* e=it->node;
+        page_t* child=e?(page_t*)e->frame:NULL;
+        if(child){
+            page_click(child,x-(it->x+2),y-(it->y+2)+e->frame_scroll);
+            child->nav_pending=0;
+            p->dirty=1;
         }
+        return;
     }
-    page_activate(p,layout_hit(p->layout,x,y));
+    page_activate(p,it?it->node:NULL);
 }
 
 /* Shared HTML activation behavior for physical and scripted clicks. */

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "layout.h"
+#include "round_rect.h"
 #include "kstring.h"
 #include "kheap.h"
 #include "font.h"
@@ -1620,22 +1621,55 @@ layout_t* layout_build(arena_t* A, dom_node_t* doc, int width, dom_node_t* focus
     return L;
 }
 
-dom_node_t* layout_hit(layout_t* L, int x, int y) {
+static int item_clip_contains(const dl_item_t* it,int x,int y){
+    return !it->has_clip||(x>=it->cx0&&x<it->cx1&&y>=it->cy0&&y<it->cy1);
+}
+static int item_contains(const dl_item_t* it,int x,int y){
+    if(!item_clip_contains(it,x,y))return 0;
+    int64_t dx=(int64_t)x-it->x,dy=(int64_t)y-it->y;
+    if(dx<0||dy<0||dx>=it->w||dy>=it->h)return 0;
+    if((it->kind!=DL_RECT&&it->kind!=DL_CARET)||(!it->radius&&!it->ring))return 1;
+    int r=it->radius;
+    if(r*2>it->w)r=it->w/2;
+    if(r*2>it->h)r=it->h/2;
+    if(r<0)r=0;
+    int row=(int)dy,in=0;
+    if(row<r)in=web_corner_inset(r,row);
+    else if(row>=it->h-r)in=web_corner_inset(r,it->h-1-row);
+    if(dx<in||dx>=it->w-in)return 0;
+    if(it->ring){
+        int iy=row-it->ring,ih=it->h-2*it->ring,ri=r-it->ring,inner=0;
+        if(ri<0)ri=0;
+        if(iy>=0&&iy<ih){
+            if(iy<ri)inner=web_corner_inset(ri,iy);
+            else if(iy>=ih-ri)inner=web_corner_inset(ri,ih-1-iy);
+            if(dx>=it->ring+inner&&dx<it->w-it->ring-inner)return 0;
+        }
+    }
+    return 1;
+}
+
+const dl_item_t* layout_hit_item(layout_t* L, int x, int y) {
     for (uint32_t i = L->n; i > 0; i--) {
         dl_item_t* it = &L->items[i - 1];
         if (!it->node) continue;
-        if (x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) return it->node;
+        if(item_contains(it,x,y))return it;
     }
     /* nothing right under it: text counts its whole line (a few pixels above
      * and below the glyphs), as links do in other browsers */
     for (uint32_t i = L->n; i > 0; i--) {
         dl_item_t* it = &L->items[i - 1];
-        if (!it->node || it->kind != DL_TEXT) continue;
+        if (!it->node || it->kind != DL_TEXT || !item_clip_contains(it,x,y)) continue;
         int slop = it->h / 2 + 1;
         if (slop > 6) slop = 6;
-        if (x >= it->x && x < it->x + it->w && y >= it->y - slop && y < it->y + it->h + slop) return it->node;
+        if (x >= it->x && x < it->x + it->w && y >= it->y - slop && y < it->y + it->h + slop) return it;
     }
     return NULL;
+}
+
+dom_node_t* layout_hit(layout_t* L,int x,int y){
+    const dl_item_t* it=layout_hit_item(L,x,y);
+    return it?it->node:NULL;
 }
 
 /* ══ text selection ═══════════════════════════════════════════════════ */

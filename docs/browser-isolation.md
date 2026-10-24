@@ -70,6 +70,7 @@ Run the sanitized host regressions:
     bash tools/tests/web_worker_ipc.sh
     bash tools/tests/web_policy.sh
     bash tools/tests/web_memory.sh
+    bash tools/tests/web_hit.sh
     bash tools/tests/github_reader.sh
     python3 tools/test_serialtest.py
 
@@ -105,3 +106,11 @@ selected explicitly with browser --libjs after installing its optional package;
 SDK webviews and ordinary browser launches retain the default worker. Google
 and manual CAPTCHA compatibility remain unfinished. The module loader is not
 integrated, so the experimental worker honors classic nomodule fallbacks.
+
+
+Input hit testing follows rounded outlines, transparent corners and clipping.
+A rounded container border no longer covers the controls painted inside it.
+Frame clicks also use the topmost visible display item instead of activating a
+clipped or covered iframe. The host regression compares 640,008 pixel/hit and
+clipping/stacking cases. A physical click on Google's consent rejection button
+was verified in the experimental browser.

@@ -26,6 +26,7 @@ jobs:
           bash tools/tests/web_worker_ipc.sh
           bash tools/tests/web_policy.sh
           bash tools/tests/web_memory.sh
+          bash tools/tests/web_hit.sh
           bash tools/tests/github_reader.sh
       - name: Serial failure detection regressions
         run: python3 tools/test_serialtest.py

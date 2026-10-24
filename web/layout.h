@@ -62,6 +62,7 @@ layout_t*   layout_build(arena_t* A, dom_node_t* doc, int width, dom_node_t* foc
 /* an <iframe>'s box size from its width/height attributes or CSS (avail:
  * the width available for a percentage; default 300x150, like browsers) */
 void        iframe_dims(dom_node_t* n, int avail, int* w, int* h);
+const dl_item_t* layout_hit_item(layout_t*, int, int);
 dom_node_t* layout_hit(layout_t* L, int x, int y);   /* element at page coordinates */
 
 /* text selection: the text position (DL_TEXT item index, character) nearest a page point;
