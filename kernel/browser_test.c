@@ -70,6 +70,7 @@ static void worker(void) {
                     remote_page_eval(p,"document.title",text,sizeof(text));
                     collect("live document title available",text[0]!=0,text);
                     if(live_site==7){
+                        remote_page_update(p,800);
                         uint32_t* pixels=kmalloc(800*480*4);
                         int painted=0;
                         if(pixels){

@@ -21,8 +21,8 @@ generation, so reusing an application slot does not transfer a channel.
   available when the first worker starts, whichever is smaller. Compressed or
   swapped mmap pages keep their charge; unmapping or ending the process returns
   it. Quota termination also works when a worker faults on another CPU core.
-- CPU use is limited to 500 ms per one-second window. Page loads and image
-  decoding have a 30-second CPU / 90-second wall limit; other commands have
+- CPU use is limited to 500 ms per one-second window. Page loads, image decoding and layout updates have a
+  30-second CPU / 90-second wall limit; other commands have
   a two-second CPU / ten-second wall limit. Idle workers wait without using
   their command budget. A fault or exhausted budget terminates that worker.
 - Documents and resource responses are limited to 8 MiB. Each channel has
@@ -114,3 +114,8 @@ Frame clicks also use the topmost visible display item instead of activating a
 clipped or covered iframe. The host regression compares 640,008 pixel/hit and
 clipping/stacking cases. A physical click on Google's consent rejection button
 was verified in the experimental browser.
+
+Layout updates can load newly inserted iframe documents and decode resources.
+They use the same bounded 30-second CPU / 90-second wall budget as document
+loading; eval, timers, input and rendering retain the 2-second CPU / 10-second
+wall budget. The per-second CPU throttle and memory limits apply to both.

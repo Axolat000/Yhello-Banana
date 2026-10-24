@@ -194,14 +194,18 @@ static int call(remote_page_t* r,unsigned int op,const int* args,const char* url
         (r->p.status[0]?8:0)|(r->p.scroll_req>=0?16:0)|(r->p.dirty?32:0);
     if(url)kstrlcpy(r->cmd.url,url,sizeof(r->cmd.url));
     r->input=data;r->output=out;r->out_cap=cap;r->out_used=0;
-    app_web_budget(r->app,r->generation,(op==WW_LOAD||op==WW_DECODE)?90000u:10000u,(op==WW_LOAD||op==WW_DECODE)?30000u:2000u);
+    /* Updating layout can load new iframe documents and decode resources,
+     * exactly as the initial document load does. Timers, eval and input keep
+     * the short interaction budget. Both classes remain bounded and throttled. */
+    int loading=op==WW_LOAD||op==WW_DECODE||op==WW_UPDATE;
+    app_web_budget(r->app,r->generation,loading?90000u:10000u,loading?30000u:2000u);
     __sync_synchronize();r->stage=1;uint32_t start=timer_ms();
     for(;;){
         uint32_t memory=app_web_memory(r->app,r->generation);
         if(memory>r->peak_memory)r->peak_memory=memory;
         if(r->resource_ready==1)serve(r);
         if(r->stage==3)break;
-        if(!app_web_alive(r->app,r->generation)||timer_ms()-start>((op==WW_LOAD||op==WW_DECODE)?95000u:12000u)){
+        if(!app_web_alive(r->app,r->generation)||timer_ms()-start>(loading?95000u:12000u)){
             crashed(r,"Page stopped: worker crash, memory limit or execution quota");r->busy=0;return -1;
         }
         task_sleep_ms(1);
@@ -522,6 +526,19 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
         int painted=0;for(int i=0;i<640*160;i++)if(pixels[i]!=0xffffff){painted=1;break;}
         report("LibJS DOM uses validated renderer pixel IPC",painted,p->status);kfree(pixels);
     }else report("LibJS render buffer",0,"out of memory");
+    rc=remote_page_eval(p,
+        "(()=>{const f=document.createElement('iframe');f.setAttribute('width','80');f.setAttribute('height','40');"
+        "f.setAttribute('srcdoc','<body><script>const colors=new Map([[1,\"#1122ee\"]]);document.body.style.background=colors.get(1)</script></body>');"
+        "document.body.appendChild(f);return true})()",text,sizeof(text));
+    remote_page_update(p,640);
+    pixels=kmalloc(640*240*4);
+    int frame_painted=0;
+    if(pixels){
+        remote_render(p->layout,pixels,640,640,240,0,0,640,240,0);
+        for(int i=0;i<640*240;i++)if(pixels[i]==0x1122ee){frame_painted=1;break;}
+        kfree(pixels);
+    }
+    report("layout updates execute new iframe documents in LibJS",!rc&&frame_painted,p->status);
     char memory_note[96];
     ksnprintf(memory_note,sizeof(memory_note),"%u KiB charged",((remote_page_t*)p)->peak_memory/1024);
     report("LibJS DOM memory accounting",((remote_page_t*)p)->peak_memory>0,memory_note);

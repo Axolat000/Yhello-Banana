@@ -144,8 +144,8 @@ Target checks:
     python3 ports/libjs/test_vm.py --dom --memory 512M --live
     python3 ports/libjs/test_vm.py --dom --memory 512M --uefi --live
 
-The 22 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
-element creation, promise jobs, timers, attributes, native construction and MutationObserver delivery/disconnection,
+The 23 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
+element creation, dynamically inserted iframe execution/rendering, promise jobs, timers, attributes, native construction and MutationObserver delivery/disconnection,
 denied file fetches, forged
 bridge indices, exceptions, pixel IPC and CPU containment alongside an
 independent renderer. Classic nomodule fallback scripts run because the module
