@@ -45,6 +45,190 @@ def iso_find(img, path):
     return lba, size
 
 
+
+def fat_file(img, start, size, path):
+    """Return the absolute offset and size of a contiguous FAT16/32 file."""
+    boot = img[start:start + 512]
+    bps = struct.unpack_from("<H", boot, 11)[0]
+    spc = boot[13]
+    reserved = struct.unpack_from("<H", boot, 14)[0]
+    roots = struct.unpack_from("<H", boot, 17)[0]
+    fatlen = struct.unpack_from("<H", boot, 22)[0] or struct.unpack_from("<I", boot, 36)[0]
+    total = struct.unpack_from("<H", boot, 19)[0] or struct.unpack_from("<I", boot, 32)[0]
+    rootsecs = (roots * 32 + 511) // 512
+    data = reserved + boot[16] * fatlen + rootsecs
+    if bps != 512 or not spc or spc & (spc - 1) or not fatlen or total * bps > size:
+        raise ValueError("invalid ESP geometry")
+    count = (total - data) // spc
+    bits = 16 if count < 65525 else 32
+    if count < 4085:
+        raise ValueError("FAT12 ESP is not supported")
+    cluster_size = spc * bps
+    fatbase = start + reserved * bps
+
+    def chain(first):
+        seen = set()
+        while first < (0xfff8 if bits == 16 else 0xffffff8):
+            if first < 2 or first >= count + 2 or first in seen:
+                raise ValueError("invalid ESP cluster chain")
+            seen.add(first)
+            yield first
+            pos = fatbase + first * (bits // 8)
+            first = struct.unpack_from("<H" if bits == 16 else "<I", img, pos)[0]
+            if bits == 32:
+                first &= 0xfffffff
+
+    def offset(cluster):
+        return start + (data + (cluster - 2) * spc) * bps
+
+    if bits == 16:
+        directory = img[start + (reserved + boot[16] * fatlen) * bps:
+                        start + data * bps]
+    else:
+        directory = b"".join(img[offset(c):offset(c) + cluster_size]
+                             for c in chain(struct.unpack_from("<I", boot, 44)[0]))
+    parts = path.strip("/").upper().split("/")
+    for i, part in enumerate(parts):
+        found = None
+        for n in range(0, len(directory), 32):
+            e = directory[n:n + 32]
+            if not e[0]:
+                break
+            if e[0] == 0xe5 or e[11] & 0x08 or e[11] == 0x0f:
+                continue
+            name = e[:8].decode("ascii").rstrip()
+            ext = e[8:11].decode("ascii").rstrip()
+            if ext:
+                name += "." + ext
+            if name == part:
+                first = struct.unpack_from("<H", e, 26)[0]
+                if bits == 32:
+                    first |= struct.unpack_from("<H", e, 20)[0] << 16
+                found = (e, list(chain(first)))
+                break
+        if found is None:
+            raise ValueError("missing ESP file " + path)
+        entry, clusters = found
+        if i + 1 < len(parts):
+            if not entry[11] & 0x10:
+                raise ValueError("ESP path is not a directory")
+            directory = b"".join(img[offset(c):offset(c) + cluster_size] for c in clusters)
+        else:
+            length = struct.unpack_from("<I", entry, 28)[0]
+            if entry[11] & 0x10 or not length or not clusters or len(clusters) != (length + cluster_size - 1) // cluster_size:
+                raise ValueError("invalid ESP kernel file")
+            if any(b != a + 1 for a, b in zip(clusters, clusters[1:])):
+                raise ValueError("fragmented ESP kernel file")
+            return offset(clusters[0]), length
+
+
+def compact_kernels(img):
+    """Share aligned kernel data between FAT and ISO9660 (including Joliet).
+
+    Remove duplicate ISO extents, preserving every remaining file. Refuse
+    layouts with metadata behind the removed extents rather than silently
+    invalidating path tables, boot catalog pointers or Rock Ridge data.
+    """
+    esp_lba, esp_size = iso_find(img, "efi.img")
+    aliases, removed = {}, []
+    for name in ("kernel.bin", "kernel64.bin"):
+        lba, size = iso_find(img, "boot/" + name)
+        off, fat_size = fat_file(img, esp_lba * 2048, esp_size, "boot/" + name)
+        if off % 2048 or size != fat_size or img[lba * 2048:lba * 2048 + size] != img[off:off + size]:
+            raise ValueError("ESP/ISO kernel mismatch or alignment error: " + name)
+        aliases[lba] = off // 2048
+        removed.append((lba, lba + (size + 2047) // 2048))
+    removed.sort()
+    first = removed[0][0]
+    if removed[0][1] > removed[1][0] or esp_lba + (esp_size + 2047) // 2048 > first:
+        raise ValueError("unexpected kernel/ESP extent overlap")
+
+    def moved(lba):
+        for a, b in removed:
+            if a <= lba < b:
+                raise ValueError("file overlaps a removed kernel extent")
+        return lba - sum(b - a for a, b in removed if b <= lba)
+
+    def both32(pos, value):
+        struct.pack_into("<I", img, pos, value)
+        struct.pack_into(">I", img, pos + 4, value)
+
+    descriptors = []
+    visited = set()
+
+    def walk(lba, size):
+        key = (lba, size)
+        if key in visited:
+            return
+        visited.add(key)
+        if lba + (size + 2047) // 2048 > first:
+            raise ValueError("directory metadata follows kernel data")
+        for block in range(0, size, 2048):
+            pos, end = lba * 2048 + block, lba * 2048 + min(block + 2048, size)
+            while pos < end and img[pos]:
+                length = img[pos]
+                if length < 34 or pos + length > end:
+                    raise ValueError("invalid ISO directory record")
+                extent = struct.unpack_from("<I", img, pos + 2)[0]
+                length_bytes = struct.unpack_from("<I", img, pos + 10)[0]
+                isdir = img[pos + 25] & 2
+                # Rock Ridge continuation records refer to absolute blocks.
+                namelen = img[pos + 32]
+                su = pos + 33 + namelen + (not (namelen & 1))
+                while su + 4 <= pos + length and img[su + 2] >= 4:
+                    n = img[su + 2]
+                    if su + n > pos + length:
+                        raise ValueError("invalid Rock Ridge entry")
+                    if img[su:su + 2] == b"CE" and struct.unpack_from("<I", img, su + 4)[0] >= first:
+                        raise ValueError("Rock Ridge continuation follows kernel data")
+                    su += n
+                if isdir:
+                    walk(extent, length_bytes)
+                else:
+                    if extent not in aliases:
+                        for a, b in removed:
+                            if extent < b and extent + (length_bytes + 2047) // 2048 > a:
+                                raise ValueError("file overlaps kernel data")
+                    both32(pos + 2, aliases[extent] if extent in aliases else moved(extent))
+                pos += length
+
+    block = 16
+    while True:
+        pos = block * 2048
+        if img[pos + 1:pos + 6] != b"CD001":
+            raise ValueError("invalid volume descriptor")
+        kind = img[pos]
+        if kind in (1, 2):
+            descriptors.append(pos)
+            for off, fmt in ((140, "<I"), (144, "<I"), (148, ">I"), (152, ">I")):
+                if struct.unpack_from(fmt, img, pos + off)[0] >= first:
+                    raise ValueError("path table follows kernel data")
+            root = pos + 156
+            walk(struct.unpack_from("<I", img, root + 2)[0],
+                 struct.unpack_from("<I", img, root + 10)[0])
+        elif kind == 0:
+            catalog = struct.unpack_from("<I", img, pos + 71)[0]
+            if catalog >= first:
+                raise ValueError("boot catalog follows kernel data")
+            # All boot images must precede the compacted extents.
+            for entry in range(catalog * 2048 + 32, (catalog + 1) * 2048, 32):
+                if img[entry] == 0x88 and struct.unpack_from("<I", img, entry + 8)[0] >= first:
+                    raise ValueError("boot image follows kernel data")
+        elif kind == 255:
+            break
+        block += 1
+    blocks = len(img) // 2048 - sum(b - a for a, b in removed)
+    for pos in descriptors:
+        both32(pos + 80, blocks)
+    result, previous = bytearray(), 0
+    for a, b in removed:
+        result.extend(img[previous:a * 2048])
+        previous = b * 2048
+    result.extend(img[previous:])
+    print("mkimage: shared kernel data saves %d KiB" % (sum(b-a for a,b in removed)*2))
+    return result
+
+
 def chs(lba):
     """CHS for a partition entry (255 heads, 63 sectors; past 8 GB: the maximum)"""
     c, rest = divmod(lba, 255 * 63)
@@ -57,6 +241,7 @@ def chs(lba):
 def main():
     iso, mbr_path = sys.argv[1], sys.argv[2]
     img = bytearray(open(iso, "rb").read())
+    img = compact_kernels(img)
     mbr = bytearray(open(mbr_path, "rb").read())
     if len(mbr) != 440:
         sys.exit("mkimage: the MBR code must be 440 bytes")

@@ -268,12 +268,14 @@ void fsdisk_timing(fsdisk_timing_t* out) { *out = g_tm; }
 #define HASH_BLOCKS  32u                   /* the unit of the image's checksum table: 64 KB */
 #define HTAB_MAX     16384u                /* covers images up to 1 GiB */
 
-/* New installs reserve a power-of-two boot area, at least 256 MiB.
+/* New installs reserve at least 1 GiB, with room for image growth.
  * Entry 2 of the hybrid MBR describes ext4; entry 1 remains the ESP.
  * Legacy layouts have no entry 2 and retain their 128 MiB boundary. */
 #define BOOT_LEGACY_LBA (128u * 1024u * 1024u / FSDISK_SECTOR)
 #define BOOT_MIN_LBA    (256u * 1024u * 1024u / FSDISK_SECTOR)
-#define BOOT_MAX_LBA    (1024u * 1024u * 1024u / FSDISK_SECTOR)
+#define BOOT_INSTALL_LBA (1024u * 1024u * 1024u / FSDISK_SECTOR)
+#define BOOT_MAX_LBA    (2u * BOOT_INSTALL_LBA)
+#define BOOT_HEADROOM  (256u * 1024u * 1024u)
 #define BOOT_TABLE_SECT 256u
 
 static uint32_t boot_u32(const uint8_t* p) {
@@ -301,9 +303,19 @@ static uint32_t boot_table_lba(uint32_t base) {
 static uint32_t boot_table_sectors(uint32_t base) {
     return base == BOOT_LEGACY_LBA ? 17u : 1u + HTAB_MAX * 4u / FSDISK_SECTOR;
 }
+static int boot_image_fits(uint32_t base, uint32_t bytes) {
+    return base && (uint64_t)bytes <= (uint64_t)HTAB_MAX * HASH_BLOCKS * 2048u &&
+           (uint64_t)bytes <= (uint64_t)boot_table_lba(base) * FSDISK_SECTOR;
+}
 static uint32_t boot_install_base(uint32_t bytes) {
-    uint32_t base = BOOT_MIN_LBA;
-    while ((uint64_t)bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR) {
+    /* Keep the checksum table's image limit independent of reserved space.
+     * Use 64-bit arithmetic before rounding so oversized input cannot wrap. */
+    if ((uint64_t)bytes > (uint64_t)HTAB_MAX * HASH_BLOCKS * 2048u) return 0;
+    uint64_t spare = ((uint64_t)bytes + 1u) / 2u;
+    if (spare < BOOT_HEADROOM) spare = BOOT_HEADROOM;
+    uint64_t required = (uint64_t)bytes + spare;
+    uint32_t base = BOOT_INSTALL_LBA;
+    while (required > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR) {
         if (base == BOOT_MAX_LBA) return 0;
         base *= 2u;
     }
@@ -2335,7 +2347,7 @@ int fsdisk_compare_boot(void) {
     uint8_t partition[16];
     uint32_t base = boot_partition(&dst, partition);
     if (!base) return FSDISK_ERR_IO;
-    if ((uint64_t)iso_bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR)
+    if (!boot_image_fits(base, iso_bytes))
         return FSDISK_ERR_ISO_TOO_BIG;
     int lay = fsdisk_install_layout();
     if (lay != (int)LAYOUT_V4 && lay != 5 && lay != 6) return 0;            /* an old layout: always worth updating */
@@ -2419,7 +2431,7 @@ int fsdisk_update_on(const ata_disk_t* dp) {
     uint8_t partition[16];
     uint32_t base = boot_partition(&dst, partition);
     if (!base) return FSDISK_ERR_IO;
-    if ((uint64_t)iso_bytes > (uint64_t)boot_table_lba(base) * FSDISK_SECTOR)
+    if (!boot_image_fits(base, iso_bytes))
         return FSDISK_ERR_ISO_TOO_BIG;
     int rc = migrate_to_v4(&dst);
     if (rc != FSDISK_OK) return rc;

@@ -162,13 +162,13 @@ loader/keys/PK.auth: $(SB_CERT)
 # the EFI system partition: a FAT image with both UEFI loaders, the kernels,
 # the medium line, Banana OS's certificate (to enroll it by hand in the
 # firmware's settings) and its signed keys (to enroll from the menu)
-isoroot/efi.img: loader/BOOTX64.EFI loader/BOOTIA32.EFI kernel.bin kernel64.bin loader/keys/PK.auth loader/keys/BananaOS.cer
+isoroot/efi.img: tools/format_efi.py loader/BOOTX64.EFI loader/BOOTIA32.EFI kernel.bin kernel64.bin loader/keys/PK.auth loader/keys/BananaOS.cer
 	mkdir -p isoroot
 	rm -f $@
 	printf 'set banana_medium=live-cd\nset banana_video=auto        \n' > isoroot/medium.cfg
 	kb=$$(( ($$(stat -c %s kernel.bin) + $$(stat -c %s kernel64.bin) + 2 * $$(stat -c %s loader/BOOTX64.EFI)) / 1024 + 2048 )); \
 	    dd if=/dev/zero of=$@ bs=1024 count=$$kb status=none
-	mformat -i $@ -v BANANA_EFI ::
+	python3 tools/format_efi.py $@
 	mmd -i $@ ::/EFI ::/EFI/BOOT ::/EFI/BananaOS ::/boot
 	mcopy -i $@ loader/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	mcopy -i $@ loader/BOOTIA32.EFI ::/EFI/BOOT/BOOTIA32.EFI

@@ -1,5 +1,11 @@
 # 🍌 Banana OS 0.6
 
+Hybrid images share the BIOS and UEFI kernel data, reducing the current ISO
+from about 157 MiB to 80 MiB so older 128 MiB boot areas can update while
+preserving user files. New installations reserve at least 1 GiB and require
+50% image growth room (at least 256 MiB). CI checks BIOS and UEFI upgrades
+from both legacy 128 MiB and newer 256 MiB installations.
+
 Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux kernel, no external OS kernel) - a **64-bit (x86_64) kernel with a 32-bit fallback**, booting on **UEFI and BIOS** machines and in VirtualBox/QEMU with **its own boot loader** (Banana Boot, Multiboot2) - now with **real networking**: its own drivers for the Intel e1000, AMD PCnet, virtio-net and Realtek RTL8139 network cards (every card VirtualBox offers) and its own TCP/IP stack, so `ping`, `curl` and `wget` talk to the actual Internet (HTTP and HTTPS).
 
 ```

@@ -81,6 +81,9 @@ jobs:
           key: unix-ports-v2-${{ hashFiles('ports/port.sh', 'ports/bash/*', 'ports/coreutils/*', 'ports/grep/*', 'ports/sed/*', 'ports/findutils/*', 'ports/diffutils/*', 'ports/gawk/*', 'ports/ncurses/*', 'ports/less/*', 'ports/zsh/*', 'ports/nano/*', 'ports/vim/*', 'ports/vi/*', 'ports/neovim/*', 'sdk/tools/banana-*', 'sdk/lib/*.c', 'sdk/include/**') }}
           restore-keys: unix-ports-v2-
 
+      - name: Test shared BIOS and UEFI image data
+        run: python3 tools/test_mkimage.py
+
       - name: Build Banana_OS.iso
         run: |
           make clean
@@ -112,7 +115,7 @@ jobs:
   # app, and /usr/java, which `pkg install java.bpk` unpacks: jdk/ (ports/openjdk),
   # lib/libOSMesa.so (ports/mesa: OpenGL 3.3) and lwjgl/ (ports/lwjgl)
   boot:
-    name: Validate ${{ matrix.firmware }} boot and installed disk
+    name: Validate ${{ matrix.firmware }} upgrade from build ${{ matrix.install_build }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -122,6 +125,7 @@ jobs:
       fail-fast: false
       matrix:
         firmware: [bios, uefi]
+        install_build: [212, 218]
     steps:
       - uses: actions/checkout@v4
       - name: Install validation dependencies
@@ -129,10 +133,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: boot-iso-${{ github.sha }}
-      - name: Download previous installation fixture (build 218)
+      - name: Download previous installation fixture (build ${{ matrix.install_build }})
         run: |
-          curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-218/Banana_OS.iso
-          echo '0adf9de2ae15764454634825c04515769bb1f0650e2c52d967f2c0927e788bde  previous.iso' | sha256sum -c -
+          curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-${{ matrix.install_build }}/Banana_OS.iso
+          case "${{ matrix.install_build }}" in
+            212) expected=a71ee27998d0af3b9ca2d60d271cc8bc7f50dc8054a4e0f0c600df7b30333a23 ;;
+            218) expected=0adf9de2ae15764454634825c04515769bb1f0650e2c52d967f2c0927e788bde ;;
+            *) exit 1 ;;
+          esac
+          echo "$expected  previous.iso" | sha256sum -c -
       - name: Boot, install, update and verify persistence
         env:
           BASE_ISO: previous.iso
@@ -144,7 +153,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-${{ matrix.firmware }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: boot-${{ matrix.firmware }}-from-${{ matrix.install_build }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             build/logs/**/*.log
             build/logs/**/provenance.txt

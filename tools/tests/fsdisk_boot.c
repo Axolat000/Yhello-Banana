@@ -37,13 +37,40 @@ static void partition(uint32_t base, uint32_t n) {
 }
 int main(void) {
     ata_disk_t d; memset(&d,0,sizeof(d)); d.sectors=8u*1024*1024;
-    uint32_t limit=boot_table_lba(BOOT_MIN_LBA)*512u;
-    CHECK(boot_install_base(164177920u)==BOOT_MIN_LBA);
-    CHECK(boot_install_base(limit)==BOOT_MIN_LBA);
-    CHECK(boot_install_base(limit+1)==2u*BOOT_MIN_LBA);
-    CHECK(boot_install_base(boot_table_lba(BOOT_MAX_LBA)*512u)==BOOT_MAX_LBA);
-    CHECK(!boot_install_base(boot_table_lba(BOOT_MAX_LBA)*512u+1));
+    uint32_t capacity=boot_table_lba(BOOT_INSTALL_LBA)*512u;
+    uint32_t threshold=(uint32_t)((uint64_t)capacity*2u/3u);
+    uint32_t image_max=HTAB_MAX*HASH_BLOCKS*2048u;
+    CHECK(boot_install_base(164177920u)==BOOT_INSTALL_LBA);
+    CHECK(boot_install_base(0)==BOOT_INSTALL_LBA);
+    CHECK(boot_install_base(256u*1024*1024)==BOOT_INSTALL_LBA);
+    CHECK(boot_install_base(512u*1024*1024)==BOOT_INSTALL_LBA);
+    CHECK(boot_install_base(threshold)==BOOT_INSTALL_LBA);
+    CHECK(boot_install_base(threshold+1)==BOOT_MAX_LBA);
+    CHECK(boot_install_base(image_max)==BOOT_MAX_LBA);
+    CHECK(!boot_install_base(image_max+1));
     CHECK(!boot_install_base(~0u));
+    CHECK(boot_image_fits(BOOT_LEGACY_LBA,134184960u));
+    CHECK(!boot_image_fits(BOOT_LEGACY_LBA,134184961u));
+    CHECK(boot_image_fits(BOOT_MIN_LBA,boot_table_lba(BOOT_MIN_LBA)*512u));
+    CHECK(!boot_image_fits(BOOT_MIN_LBA,boot_table_lba(BOOT_MIN_LBA)*512u+1));
+    CHECK(boot_image_fits(BOOT_MAX_LBA,image_max));
+    CHECK(!boot_image_fits(BOOT_MAX_LBA,image_max+1));
+    CHECK(!boot_image_fits(0,0));
+    /* Sweep image sizes: every accepted installation has both margins,
+     * including its checksum reservation, rather than just an exact fit. */
+    for (uint64_t bytes=0;bytes<=image_max;bytes+=65536u) {
+        uint32_t chosen=boot_install_base((uint32_t)bytes);
+        uint64_t room=(uint64_t)boot_table_lba(chosen)*512u-bytes;
+        CHECK(chosen>=BOOT_INSTALL_LBA && chosen<=BOOT_MAX_LBA);
+        CHECK(room>=BOOT_HEADROOM && room>=(bytes+1u)/2u);
+    }
+    /* Read all previously emitted boundaries and the new larger boundary. */
+    for (uint32_t b=BOOT_MIN_LBA;b<=BOOT_MAX_LBA;b*=2u) {
+        partition(b,d.sectors-b-2048);
+        CHECK(boot_partition(&d,0)==b);
+        CHECK(boot_table_lba(b)+boot_table_sectors(b)<=b);
+    }
+    memset(mbr,0,sizeof(mbr));
     CHECK(boot_partition(&d,0)==BOOT_LEGACY_LBA);
     CHECK(boot_table_lba(BOOT_LEGACY_LBA)*512u==134184960u);
     CHECK(boot_table_sectors(BOOT_LEGACY_LBA)==17);
@@ -63,6 +90,13 @@ int main(void) {
     CHECK(!memcmp(g_old.tab,g_new.tab,g_new.n*4u));
     table[512+2300*4]^=1; htab_load(&d); CHECK(!g_old.valid);
     CHECK(!htab_drop(&d)); CHECK(!boot_u32(table));
+    partition(BOOT_MAX_LBA,d.sectors-BOOT_MAX_LBA-2048);
+    table_lba=boot_table_lba(BOOT_MAX_LBA);
+    g_new.n=HTAB_MAX;
+    for (uint32_t i=0;i<g_new.n;i++) g_new.tab[i]=i*177u;
+    CHECK(!htab_save(&d,image_max));
+    htab_load(&d); CHECK(g_old.valid && g_old.n==HTAB_MAX);
+    CHECK(!memcmp(g_old.tab,g_new.tab,g_new.n*4u));
     partition(BOOT_MIN_LBA+2048,1024); CHECK(!boot_partition(&d,0));
     partition(BOOT_MIN_LBA,d.sectors); CHECK(!boot_partition(&d,0));
     fail_read=1; CHECK(!boot_partition(&d,0)); fail_read=0;
