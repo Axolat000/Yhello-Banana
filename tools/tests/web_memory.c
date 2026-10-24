@@ -11,12 +11,18 @@ static void spin_unlock_irq(spinlock_t* l,uintptr_t f){(void)f;__sync_lock_relea
 #include "../../kernel/umem.c"
 extern int printf(const char*,...);
 extern void exit(int);
+static uint32_t mock_heap_used;
 uint32_t kheap_total_bytes(void){return 128u<<20;}
-uint32_t kheap_used_bytes(void){return 0;}
+uint32_t kheap_used_bytes(void){return mock_heap_used;}
 static int checks;
 #define CHECK(x) do{checks++;if(!(x)){printf("FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
 int main(void){
     umem_t a={0},b={0},ordinary={0};
+    umem_web_pool_init();
+    CHECK(g_pool_limit==(64u<<20)&&g_pool_used==0);
+    mock_heap_used=32u<<20; /* loader image consumes memory after the snapshot */
+    umem_web_pool_init();
+    CHECK(g_pool_limit==(64u<<20)&&g_pool_used==0);
     a.reserved=8u<<20;b.reserved=8u<<20;
     CHECK(!umem_limit(&a,32u<<20));
     CHECK(!umem_limit(&b,64u<<20));

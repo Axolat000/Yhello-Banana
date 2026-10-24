@@ -4856,6 +4856,7 @@ void app_web_budget(int id, uint32_t generation, uint32_t wall_ms, uint32_t cpu_
 
 int app_spawn_web_worker(const char* path, char* err, int cap) {
 #ifdef __x86_64__
+    umem_web_pool_init();
     char* argv[] = { "web-worker" };
     app_proc_t* p = prepare(path, 1, argv, NULL, err, cap);
     if (!p) return -1;

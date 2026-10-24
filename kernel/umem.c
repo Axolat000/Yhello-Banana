@@ -87,6 +87,10 @@ static int pool_take(uint32_t bytes) {
     if(ok)g_pool_used+=bytes;
     spin_unlock_irq(&g_pool_lock,flags);return ok;
 }
+/* Snapshot once before the first worker image is loaded; its code is itself
+ * charged to this pool. Initializing afterwards would count that image twice
+ * when deriving the available budget and penalize larger optional engines. */
+void umem_web_pool_init(void) { (void)pool_take(0); }
 static void pool_give(uint32_t bytes) {
     uintptr_t flags=spin_lock_irq(&g_pool_lock);
     g_pool_used-=bytes;
