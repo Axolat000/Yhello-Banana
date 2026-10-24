@@ -1,0 +1,39 @@
+name: LibJS reference prototype
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ports/libjs/**'
+      - '.github/workflows/libjs-reference.yml'
+  pull_request:
+    paths:
+      - 'ports/libjs/**'
+      - '.github/workflows/libjs-reference.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Install reference toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends ca-certificates git g++ cmake ninja-build python3 pkg-config libicu-dev libssl-dev libtommath-dev libfast-float-dev
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ports/libjs/src
+          key: libjs-sources-${{ hashFiles('ports/libjs/sources.json') }}
+      - name: Build and run the semantic probes
+        shell: bash
+        run: |
+          set -o pipefail
+          JOBS=2 bash ports/libjs/build.sh 2>&1 | tee libjs-reference.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: libjs-reference-log
+          path: libjs-reference.log

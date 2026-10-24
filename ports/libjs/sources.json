@@ -1,0 +1,43 @@
+{
+  "ladybird": {
+    "revision": "e6669482e693bda4f75cd8a90b2abd292c0f3774",
+    "url": "https://codeload.github.com/LadybirdBrowser/ladybird/tar.gz/e6669482e693bda4f75cd8a90b2abd292c0f3774",
+    "archive": "ladybird-e6669482.tar.gz",
+    "directory": "ladybird-e6669482e693bda4f75cd8a90b2abd292c0f3774",
+    "sha256": "afe5691b9bf4661cdbcd45ad8c0098be03fb6155296f21b436011776f7b5ad42"
+  },
+  "simdutf": {
+    "revision": "v7.5.0",
+    "url": "https://codeload.github.com/simdutf/simdutf/tar.gz/refs/tags/v7.5.0",
+    "archive": "simdutf-7.5.0.tar.gz",
+    "directory": "simdutf-7.5.0",
+    "sha256": "3cad2f554912ecd77222272e5d1a7c1e5e33b4011bee823269cdc9095d2fdce2"
+  },
+  "simdjson": {
+    "revision": "v4.2.4",
+    "url": "https://codeload.github.com/simdjson/simdjson/tar.gz/refs/tags/v4.2.4",
+    "archive": "simdjson-4.2.4.tar.gz",
+    "directory": "simdjson-4.2.4",
+    "sha256": "6f942d018561a6c30838651a386a17e6e4abbfc396afd0f62740dea1810dedea"
+  },
+  "libtommath": {
+    "revision": "v1.3.0",
+    "url": "https://codeload.github.com/libtom/libtommath/tar.gz/refs/tags/v1.3.0",
+    "archive": "libtommath-1.3.0.tar.gz",
+    "directory": "libtommath-1.3.0",
+    "sha256": "6d099e93ff00fa9b18346f4bcd97dcc48c3e91286f7e16c4ac5515a7171c3149"
+  },
+  "icu": {
+    "revision": "76.1",
+    "url": "https://github.com/unicode-org/icu/releases/download/release-76-1/icu4c-76_1-src.tgz",
+    "archive": "icu4c-76_1-src.tgz",
+    "directory": "icu",
+    "sha256": "dfacb46bfe4747410472ce3e1144bf28a102feeaa4e3875bac9b4c6cf30f4f3e"
+  },
+  "publicsuffix": {
+    "revision": "dfc780b86d5da2f178a1d944f5d7c10c42839c5f",
+    "url": "https://raw.githubusercontent.com/publicsuffix/list/dfc780b86d5da2f178a1d944f5d7c10c42839c5f/public_suffix_list.dat",
+    "archive": "public_suffix_list.dat",
+    "sha256": "05c9db6e8ec9c6e0b81b89333fa09133290aa0c30f764841308ff83f9dc873f3"
+  }
+}
