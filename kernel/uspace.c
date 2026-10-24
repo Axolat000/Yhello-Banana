@@ -47,6 +47,8 @@ struct uspace {
     uint64_t*      vm_pdpt[UVM_SLOTS];
     uvma_t*        vma;
     int            nvma, vcap;
+    uint64_t       vm_limit;
+    int            vma_limit;
     uint64_t       vm_pages;
     uint64_t       vm_zpages;           /* of its pages, compressed away (kernel/zswap.c) */
     volatile int   zbusy;               /* the compressor is working on it: not freed yet */
@@ -330,6 +332,7 @@ static int vma_at(uspace_t* us, uint64_t a) {
 }
 
 static int vma_room(uspace_t* us, int extra) {
+    if (us->vma_limit && us->nvma + extra > us->vma_limit) return -1;
     if (us->nvma + extra <= us->vcap) return 0;
     int cap = us->vcap ? us->vcap * 2 : 64;
     while (cap < us->nvma + extra) cap *= 2;
@@ -369,6 +372,11 @@ static int vma_cut(uspace_t* us, uint64_t s, uint64_t e) {
 
 /* a range where nothing is: joined to its neighbours of the same protection */
 static int vma_add(uspace_t* us, uint64_t s, uint64_t e, int prot) {
+    if (us->vm_limit) {
+        uint64_t total = e - s;
+        for (int k = 0; k < us->nvma; k++) total += us->vma[k].end - us->vma[k].start;
+        if (total > us->vm_limit || us->nvma >= us->vma_limit) return -1;
+    }
     if (vma_room(us, 1)) return -1;
     int i = 0;
     while (i < us->nvma && us->vma[i].start < s) i++;
@@ -468,6 +476,10 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
         shootdown(us);
         for (int k = 0; k < n; k++) upage_free(pg[k]);
     }
+}
+
+void uvm_limit(uspace_t* us, uint64_t bytes, int ranges) {
+    if (us) { us->vm_limit = bytes; us->vma_limit = ranges; }
 }
 
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags) {

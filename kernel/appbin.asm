@@ -30,6 +30,10 @@ app_store_end:
 align 16
 %include "build/ports64.inc"               ; (the ports: the Makefile's PORTS64)
 align 16
+global app_webworker, app_webworker_end
+app_webworker: incbin "apps/webworker/webworker-x86_64.bpk.z"
+app_webworker_end:
+align 16
 app_terminal: incbin "apps/terminal/terminal-x86_64.bpk.z"
 app_terminal_end:
 section .rodata                 ; (not .payload: that goes to the heap once released)
@@ -55,6 +59,9 @@ app_code_end:
 align 16
 app_store: incbin "apps/store/store-i686.bpk.z"
 app_store_end:
+global app_webworker, app_webworker_end
+app_webworker:
+app_webworker_end:
 app_terminal:
 app_terminal_end:
 section .rodata                 ; (not .payload: that goes to the heap once released)

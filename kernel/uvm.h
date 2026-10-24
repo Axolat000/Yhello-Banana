@@ -33,6 +33,7 @@
 
 /* maps len bytes (rounded up to pages) at addr (a hint, or exactly with
  * UVM_FIXED): the address, or 0 */
+void uvm_limit(uspace_t* us, uint64_t bytes, int ranges);
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags);
 /* unmaps [addr, addr + len): its pages go back to the app's memory; 0, -1 */
 int       uvm_unmap(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len);

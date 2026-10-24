@@ -145,6 +145,8 @@ void    page_update(page_t* p, int width);
 
 /* mouse click at page coordinates: links, buttons, form fields, onclick */
 void    page_click(page_t* p, int x, int y);
+void    page_activate(page_t* p, dom_node_t* node);
+void    page_submit_form(page_t* p, dom_node_t* form, dom_node_t* submitter, int dispatch_event);
 /* a key for the focused field: printable, '\b', '\n' (submit) */
 int     page_key(page_t* p, char c);
 /* a key going down (down = 1) or up on its own, for games: keydown /

@@ -34,7 +34,7 @@ WEBP_SRCS = $(wildcard third_party/libwebp/src/dec/*.c third_party/libwebp/src/d
 
 C_SRCS   = $(wildcard kernel/*.c) $(wildcard shell/*.c) $(wildcard net/*.c) \
            $(wildcard crypto/*.c) $(wildcard usb/*.c) $(wildcard web/*.c) $(wildcard media/*.c) \
-           third_party/stb/stb_image_impl.c $(WEBP_SRCS)
+           third_party/stb/stb_image_impl.c
 ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/s3_resume.asm
 ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm kernel/s3_resume.asm
 kernel/frameworkbin.o kernel/frameworkbin.o64: $(wildcard web/fixtures/* web/fixtures/astro/* web/fixtures/astro/_astro/*) $(wildcard web/test/cases/mutation_observer*.html)
@@ -214,7 +214,7 @@ run-tap: Banana_OS.iso
 clean:
 	for e in $(EXAMPLES); do $(MAKE) -s -C sdk/examples/$$e clean; done
 	rm -f $(EXAMPLE_BPKZ)
-	for a in $(APPS) $(APPS64) terminal; do $(MAKE) -s -C apps/$$a clean; done
+	for a in $(APPS) $(APPS64) terminal webworker; do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
 	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
@@ -301,6 +301,11 @@ build/ports64.h: Makefile
 kernel/builtin_apps.o64: build/ports64.h
 
 # the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
+WEBWORKER_BPKZ = apps/webworker/webworker-x86_64.bpk.z
+$(WEBWORKER_BPKZ): $(wildcard apps/webworker/*.c apps/webworker/*.h) apps/webworker/Makefile $(wildcard web/*.c web/*.h) kernel/image.c kernel/image.h kernel/font.c kernel/font.h kernel/fontbin.asm kernel/font8x8.c kernel/ttf.c kernel/ttf.h kernel/types.h $(wildcard fonts/*.ttf third_party/libwebp/src/*/*.c third_party/libwebp/src/*/*.h) web/test/image_stb_host.c $(SDK_DEPS)
+	$(MAKE) -C apps/webworker webworker-x86_64.bpk.z
+kernel/appbin.o64: $(WEBWORKER_BPKZ)
+build/builtin-meta-x86_64.bin: $(WEBWORKER_BPKZ)
 TERMINAL_BPKZ = apps/terminal/terminal-x86_64.bpk.z
 build/builtin-meta-x86_64.bin: $(PORT_BPKZ) $(TERMINAL_BPKZ)
 $(TERMINAL_BPKZ): $(wildcard apps/terminal/*.c apps/terminal/*.h) apps/terminal/Makefile apps/terminal/icon.png $(SDK_DEPS)
@@ -312,7 +317,7 @@ kernel/appbin.o64: $(TERMINAL_BPKZ)
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64) $(OPTPORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
+	    $(if $(filter x86_64,$*),webworker.bpk=$(WEBWORKER_BPKZ) terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64) $(OPTPORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
 	      $(foreach a,$(APPS64),$(a).bpk=apps/$(a)/$(a)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 

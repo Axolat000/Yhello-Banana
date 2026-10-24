@@ -4,6 +4,10 @@
 
 /* Freestanding types - no system headers needed */
 
+#ifdef BANANA_USER_WORKER
+#include <stdint.h>
+#include <stddef.h>
+#else
 typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;
 typedef unsigned int       uint32_t;
@@ -19,6 +23,8 @@ typedef __SIZE_TYPE__      size_t;
 typedef __PTRDIFF_TYPE__   ptrdiff_t;
 typedef __UINTPTR_TYPE__   uintptr_t;
 typedef __INTPTR_TYPE__    intptr_t;
+
+#endif
 
 /* the architecture this kernel was built for (uname, neofetch) */
 #ifdef __x86_64__

@@ -39,7 +39,12 @@ void __malloc_thread_end(void* cache);
 #ifdef __x86_64__
 
 #define SPAN       65536ul
-#define REGION     (1ul << 30)
+/* Restricted runtimes may use smaller power-of-two regions so the small
+ * allocation heap fits their virtual-address quota. */
+#ifndef BANANA_MALLOC_REGION
+#define BANANA_MALLOC_REGION (1ul << 30)
+#endif
+#define REGION     BANANA_MALLOC_REGION
 #define NSPANS     (REGION / SPAN)
 #define MAX_REGION 64                   /* 64 GiB of small blocks */
 #define SMALL_MAX  32768ul

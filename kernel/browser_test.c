@@ -6,6 +6,8 @@
 #include "../web/arena.h"
 #include "../web/site_test.h"
 #include "browser.h"
+#include "remote_page.h"
+#include "kheap.h"
 
 /* Keep engine recursion off the shell's small stack. Collect results here
  * and print them in the calling shell, preserving its terminal/SSH output. */
@@ -24,7 +26,61 @@ static void collect(const char* name,int ok,const char* note) {
 static void worker(void) {
     if(!kjmp_set(&recovery)) {
         task_set_recover(&recovery);
-        if(live_site)site_tests_run(browser_env(),browser_page_mem(),collect,NULL);
+        if(live_site==2)web_isolation_tests(collect);
+        else if(live_site){
+            char* data=NULL;uint32_t len=0;char final[8192];
+            const char* target=live_site==3?"https://www.google.com/search?gbv=1&q=Banana%20OS":
+                               live_site==4?"https://github.com/qcom-toolbox/Banana-OS/releases":BROWSER_SITE_TEST_URL;
+            int rc=browser_fetch_document(target,NULL,0,&data,&len,final,sizeof(final));
+            collect("live site fetched",!rc,final);
+            page_t* p=data?remote_page_new(browser_env(),0):NULL;
+            if(p){remote_page_load(p,final,data,len,800);
+                collect("live site parsed in isolated renderer",p->title[0]!=0,p->title);
+                if(live_site==3 && strstr(final,"consent.google.com")){
+                    char consent[256]={0};
+                    remote_page_eval(p,
+                        "(function(){var b=document.querySelectorAll('button,input[type=submit]');for(var i=0;i<b.length;i++){"
+                        "var t=b[i].value||b[i].textContent;if(t.indexOf('Alle ablehnen')>=0||t.indexOf('Tout refuser')>=0||t.indexOf('Reject all')>=0){"
+                        "b[i].click();return 'Rejected optional cookies';}}return 'Consent button not found';})()",
+                        consent,sizeof(consent));
+                    collect("Google optional-cookie consent handled in fresh test session",p->nav_pending!=0,consent);
+                    if(!p->nav_pending){
+                        remote_page_eval(p,"(function(){var b=document.getElementsByTagName('input'),s='inputs='+b.length+' ';for(var i=0;i<b.length&&i<12;i++)s+=b[i].getAttribute('type')+':'+b[i].getAttribute('value')+'|';return s;})()",consent,sizeof(consent));
+                        collect("Google consent form diagnostics",1,consent);
+                    }
+                }
+                for(int attempt=0;attempt<3;attempt++){
+                    remote_page_tick(p);
+                    if(!p->nav_pending)break;
+                    char next[8192];kstrlcpy(next,p->nav,sizeof(next));
+                    uint32_t post_len=p->nav_post_len;char* post=NULL;
+                    if(post_len){post=kmalloc(post_len+1);if(post){memcpy(post,p->nav_post,post_len);post[post_len]=0;}}
+                    p->nav_pending=0;remote_page_free(p);p=NULL;kfree(data);data=NULL;
+                    rc=browser_fetch_document(next,post,post?post_len:0,&data,&len,final,sizeof(final));
+                    if(post)kfree(post);
+                    p=data?remote_page_new(browser_env(),0):NULL;
+                    if(!p)break;
+                    remote_page_load(p,final,data,len,800);
+                }
+                if(p){
+                    char text[256]={0};
+                    remote_page_eval(p,"document.title",text,sizeof(text));
+                    collect("live document title available",text[0]!=0,text);
+                    collect("live scripts completed",p->status[0]==0,p->status);
+                    if(live_site==3){
+                        remote_page_eval(p,"(function(){var a=document.getElementsByTagName('a'),n=0;for(var i=0;i<a.length;i++){var h=a[i].href||'';if(h.indexOf('http')===0&&h.indexOf('google.')<0&&h.indexOf('gstatic.')<0)n++;}return n>=3&&document.body.textContent.indexOf('Banana')>=0;})()",text,sizeof(text));
+                        collect("Google search returned query results",!strcmp(text,"true"),text);
+                    }else if(live_site==4){
+                        remote_page_eval(p, "document.body.innerHTML.indexOf('/releases/download/')>=0" ,text,sizeof(text));
+                        collect("GitHub release downloads rendered",!strcmp(text,"true"),text);
+                        remote_page_eval(p,"(function(){var a=document.getElementsByTagName('a'),s='links='+a.length+' ';for(var i=0;i<a.length&&i<3;i++)s+=a[i].getAttribute('href')+'|';return s;})()",text,sizeof(text));
+                        collect("GitHub link diagnostics",1,text);
+                    }
+                    remote_page_free(p);
+                }
+            }else collect("live isolated renderer",0,"unavailable");
+            if(data)kfree(data);
+        }
         else framework_tests_run(collect);
     } else collect("browser engine completed",0,task_crash_msg());
     task_set_recover(NULL);
@@ -57,3 +113,7 @@ static void run_tests(void (*report)(const char*,int,const char*),int live) {
 }
 void browser_test_run(void (*report)(const char*,int,const char*)) {run_tests(report,0);}
 void browser_site_test_run(void (*report)(const char*,int,const char*)) {run_tests(report,1);}
+
+void browser_isolation_test_run(void (*report)(const char*,int,const char*)) {run_tests(report,2);}
+
+void browser_compatibility_test_run(int google,void (*report)(const char*,int,const char*)) {run_tests(report,google?3:4);}

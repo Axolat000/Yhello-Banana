@@ -18,7 +18,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 31u
+#define BANANA_API_VERSION 32u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -633,6 +633,9 @@ typedef struct banana_api {
      * live RAM root succeeds without disk I/O; installed root flushes;
      * other mounts: ENOSYS; backup freeze: EBUSY. */
     int (*fd_sync)(int fd);
+    /* version 32: bounded browser-worker IPC. Only a kernel-created,
+     * restricted worker may use its own channel; no caller-supplied IDs. */
+    int (*web_ipc)(int op, const void* in, unsigned int len, void* out, unsigned int cap);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

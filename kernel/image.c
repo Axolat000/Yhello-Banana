@@ -34,6 +34,10 @@ const char* image_format(const uint8_t* d, uint32_t len) {
 }
 
 int image_decode(const uint8_t* data, uint32_t len, image_t* out, char* err, uint32_t errlen) {
+#ifndef BANANA_USER_WORKER
+    extern int web_worker_decode(const uint8_t*,uint32_t,image_t*,char*,uint32_t);
+    return web_worker_decode(data,len,out,err,errlen);
+#else
     memset(out, 0, sizeof(*out));
     if (len > 2147483647u) { ksnprintf(err,errlen,"image input is too large"); return -1; }
     const char* fmt = image_format(data, len);
@@ -82,6 +86,7 @@ int image_decode(const uint8_t* data, uint32_t len, image_t* out, char* err, uin
     out->w = w;
     out->h = h;
     return 0;
+#endif
 }
 
 void image_free(image_t* img) {

@@ -490,7 +490,7 @@ static value_t* prop_handler(page_t* p, dom_node_t* n, const char* type) {
     ksnprintf(src, cl + 64, "__jsdom_h = function (event) {\n%s\n};", code);
     value_t fn = v_null();
     if (script_run(p->js, src, (uint32_t)strlen(src), attr) == 0) fn = script_get_global(p->js, "__jsdom_h");
-    else kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+    else if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
     add_handler(p, n, ev, fn);
     return prop_handler(p, n, type);
 }
@@ -568,7 +568,7 @@ static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const ch
             if (!v_isfunc(fn)) continue;
             value_t ret = v_undef();
             if (script_call(I, fn, wrap(p, n), 1, &evv, &ret) != 0) {
-                kstrlcpy(p->status, script_error(I), sizeof(p->status));
+                if(!p->status[0])kstrlcpy(p->status, script_error(I), sizeof(p->status));
                 if (p->env && p->env->log) p->env->log(p->env->ctx, p->status);
             } else if (isprop && ret.t == V_BOOL && !ret.b) {
                 prevented = 1;
@@ -1668,21 +1668,8 @@ static value_t m_removeEventListener(interp_t* I, value_t self, int argc, value_
 
 static value_t m_click(interp_t* I, value_t self, int argc, value_t* argv) {
     (void)argc; (void)argv;
-    dom_node_t* n = self_node(I, self);
-    if (!n) return v_undef();
-    if (is_elem(n, "input")) {
-        const char* t = dom_attr(n, "type");
-        if (t && (strcasecmp(t, "checkbox") == 0)) {
-            if (!n->form_init) { n->value = (char*)node_value(P(I), n); n->checked = dom_attr(n, "checked") != NULL; n->form_init = 1; }
-            n->checked = !n->checked;
-        }
-    }
-    int prevented = dispatch(P(I), n, "click", NULL);
-    if (!prevented && is_elem(n, "input") && dom_attr(n, "type") && strcasecmp(dom_attr(n, "type"), "file") == 0 &&
-        !dom_attr(n, "disabled")) {
-        P(I)->file_pick = n;
-        P(I)->file_pick_pending = 1;
-    }
+    dom_node_t* n=self_node(I,self);
+    if(n)page_activate(P(I),n);
     return v_undef();
 }
 
@@ -1744,45 +1731,8 @@ static value_t m_getAttributeNames(interp_t* I, value_t self, int argc, value_t*
 
 static value_t m_submit(interp_t* I, value_t self, int argc, value_t* argv) {
     (void)argc; (void)argv;
-    dom_node_t* n = self_node(I, self);
-    if (!n) return v_undef();
-    /* a synthetic click on a hidden submit button would be simpler, but
-     * form.submit() must not fire onsubmit: build the GET url here */
-    page_t* p = P(I);
-    char base[1024];
-    const char* action = dom_attr(n, "action");
-    if (action && *action) url_resolve(p->base, action, base, sizeof(base));
-    else kstrlcpy(base, p->url, sizeof(base));
-    char* q = strchr(base, '?');
-    if (q) *q = 0;
-    kstrlcpy(p->nav, base, sizeof(p->nav));
-    kstrlcat(p->nav, "?", sizeof(p->nav));
-    dom_node_t* all[MAX_LIST];
-    int cnt = collect(n, 0, "*", all, 0);
-    int first = 1;
-    for (int i = 0; i < cnt; i++) {
-        dom_node_t* e = all[i];
-        const char* name = dom_attr(e, "name");
-        if (!name || !(is_elem(e, "input") || is_elem(e, "select") || is_elem(e, "textarea"))) continue;
-        const char* t = dom_attr(e, "type");
-        if (t && (strcasecmp(t, "submit") == 0 || strcasecmp(t, "button") == 0)) continue;
-        if (t && (strcasecmp(t, "checkbox") == 0 || strcasecmp(t, "radio") == 0) && !e->checked) continue;
-        if (!first) kstrlcat(p->nav, "&", sizeof(p->nav));
-        first = 0;
-        kstrlcat(p->nav, name, sizeof(p->nav));
-        kstrlcat(p->nav, "=", sizeof(p->nav));
-        static const char hx[] = "0123456789ABCDEF";
-        for (const char* s = node_value(p, e); *s; s++) {
-            unsigned char c = (unsigned char)*s;
-            char enc[4] = { (char)c, 0, 0, 0 };
-            if (c == ' ') enc[0] = '+';
-            else if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')) {
-                enc[0] = '%'; enc[1] = hx[c >> 4]; enc[2] = hx[c & 15];
-            }
-            kstrlcat(p->nav, enc, sizeof(p->nav));
-        }
-    }
-    p->nav_pending = 1;
+    dom_node_t* n=self_node(I,self);
+    if(n)page_submit_form(P(I),n,NULL,0);
     return v_undef();
 }
 
@@ -2323,7 +2273,7 @@ static value_t w_requestIdleCallback(interp_t* I, value_t self, int argc, value_
 
 static int do_request(page_t* p, const char* url_in, const char* method, const char* body, uint32_t blen, const char* btype,
                       char** data, uint32_t* len, char* ctype, int ccap, char* err, int ecap, char* final_url) {
-    char url[1024];
+    char url[PAGE_URL_MAX];
     url_resolve(p->base, url_in, url, sizeof(url));
     kstrlcpy(final_url, url, 1024);
     if (strcasecmp(method, "GET") == 0) {
@@ -2757,7 +2707,7 @@ static obj_t* module_load(page_t* p, const char* url) {
     const char* nm0 = slash ? slash + 1 : url;
     const char* name = arena_strdup(&p->A, nm0, (uint32_t)(strlen(nm0) > 80 ? 80 : strlen(nm0)));
     if (script_run_module(I, data, len, name, kept, ns) != 0) {
-        kstrlcpy(p->status, script_error(I), sizeof(p->status));
+        if(!p->status[0])kstrlcpy(p->status, script_error(I), sizeof(p->status));
         mod_log(p, "js: ", p->status);
     }
     kfree(data);                                     /* the syntax tree does not point into it */
@@ -2766,7 +2716,7 @@ static obj_t* module_load(page_t* p, const char* url) {
 
 static value_t module_import(interp_t* I, void* ctx, const char* spec, const char* base) {
     page_t* p = (page_t*)ctx;
-    char url[1024], msg[200];
+    char url[PAGE_URL_MAX], msg[200];
     if (module_resolve(p, spec, base, url, sizeof(url)) != 0) {
         ksnprintf(msg, sizeof(msg), "TypeError: cannot resolve module \"%s\"", spec);
         script_throw(I, msg);
@@ -2801,7 +2751,7 @@ static value_t w_media_open(interp_t* I, value_t self, int argc, value_t* argv) 
     (void)self;
     page_t* p = P(I);
     if (!p->env || !p->env->media_open || p->nmedia >= 16) return v_num(-1);
-    char url[1024];
+    char url[PAGE_URL_MAX];
     url_resolve(p->base, arg_str(I, argc, argv, 0), url, sizeof(url));
     int id = p->env->media_open(p->env->ctx, p, url);
     if (id >= 0) p->media[p->nmedia++] = id;
@@ -2860,7 +2810,7 @@ void jsdom_module(page_t* p, const char* url, const char* code, uint32_t len) {
     obj_t* ns = obj_new(p->js, OBJ_PLAIN);
     url = arena_strdup(&p->A, url, (uint32_t)strlen(url));   /* kept by its functions (pushState may change p->url) */
     if (script_run_module(p->js, code, len, "inline module", url, ns) != 0) {
-        kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+        if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
         mod_log(p, "js: ", p->status);
     }
 }
@@ -2918,7 +2868,7 @@ void jsdom_loaded(page_t* p, int phase) {
         obj_set(I, ev, "defaultPrevented", v_bool(0));
         value_t evv = v_obj(ev);
         value_t fn = p->onload[i];
-        if (script_call(I, fn, v_undef(), 1, &evv, NULL) != 0) kstrlcpy(p->status, script_error(I), sizeof(p->status));
+        if (script_call(I, fn, v_undef(), 1, &evv, NULL) != 0) if(!p->status[0])kstrlcpy(p->status, script_error(I), sizeof(p->status));
     }
 }
 

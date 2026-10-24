@@ -545,6 +545,11 @@ them.
 
 ### The ABI
 
+API 32 appends the internal web-worker IPC entry. SDK web views use isolated
+64-bit renderers with origin/file permissions and quotas; browser compatibility
+and multimedia limits are described in [browser isolation](../docs/browser-isolation.md).
+Ordinary applications cannot attach to another process's worker channel.
+
 Banana OS loads the ELF, applies its relocations, and calls
 `_banana_start(api, argc, argv)` (in `lib/crt0.c`) on a 1 MiB stack; `api`
 points to the `banana_api_t` table in `include/banana_api.h`. The table only

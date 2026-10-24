@@ -1066,8 +1066,8 @@ int selftest_cmd(int argc, char** argv) {
     if(only && !strcmp(only,"ram") && argc!=2) { terminal_writeln("usage: selftest ram");return 1; }
     if(only && !strcmp(only,"sleep") && (argc>3 || (argc==3 && strcmp(argv[2],"cycle")))) { terminal_writeln("usage: selftest sleep [cycle]");return 1; }
     uint16_t ipv6_port = 80;
-    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm")))) {
-        terminal_writeln("usage: selftest browser [swm]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
+    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm") && strcmp(argv[2],"isolation") && strcmp(argv[2],"google") && strcmp(argv[2],"github")))) {
+        terminal_writeln("usage: selftest browser [swm|isolation|github|google]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
     }
     if (only && !strcmp(only, "ipv6") && argc > 3) {
         uint32_t n;
@@ -1079,7 +1079,7 @@ int selftest_cmd(int argc, char** argv) {
     }
     g_ok = g_fail = 0;
     uint32_t t0 = timer_ms();
-    terminal_writeln(only && !strcmp(only, "browser") ? (argc==3?"selftest: checking live swm.mxtpasontop.fr":"selftest: checking browser frameworks (offline)") :
+    terminal_writeln(only && !strcmp(only, "browser") ? (argc==3?"selftest: checking browser isolation or live compatibility":"selftest: checking browser frameworks (offline)") :
                      only && !strcmp(only, "opencl") ? "selftest: checking OpenCL" :
                      only && !strcmp(only, "ipv6") ? "selftest: checking IPv6" :
                      only && !strcmp(only, "posix") ? "selftest: checking the POSIX layer" :
@@ -1132,7 +1132,13 @@ int selftest_cmd(int argc, char** argv) {
         section("mouse: two pointing devices");mouse_source_tests(report);
         if(argc==3)mouse_demo();
     } else if (only && !strcmp(only, "browser")) {
-        if(argc==3) {
+        if(argc==3&&!strcmp(argv[2],"isolation") && strcmp(argv[2],"google") && strcmp(argv[2],"github")){
+            section("browser user-space isolation and hostile inputs");
+            browser_isolation_test_run(report);
+        } else if(argc==3&&(!strcmp(argv[2],"google")||!strcmp(argv[2],"github"))){
+            section("live isolated browser compatibility");
+            browser_compatibility_test_run(!strcmp(argv[2],"google"),report);
+        } else if(argc==3) {
             section("SuperWebManager live website checks");
             browser_site_test_run(report);
         } else {

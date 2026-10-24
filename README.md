@@ -24,6 +24,13 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Isolated browser and image decoding (first milestone)** - HTML/CSS/JavaScript,
+  fonts, SVG and raster decoding now run in restricted 64-bit user processes,
+  with bounded IPC, origin/file permissions and CPU/memory quotas. GitHub release
+  pages display notes and asset links through a reader in the isolated process.
+  Google search and manual CAPTCHA support are still in progress; page
+  audio/video is temporarily disabled. See [scope, limits and tests](docs/browser-isolation.md).
+
 - **PNG screenshots** - `screenshot [absolute directory]` saves the screen without overwriting previous captures; **Win+Shift+S** captures the completed desktop frame. The default destination is `/home/banana/Pictures`.
 
 - **Native notifications** - `notify TITLE [BODY]` posts a five-second desktop toast; **Win+N** opens the last 16 alerts, with keyboard navigation and Clear all. Notifications are rate-limited per source.

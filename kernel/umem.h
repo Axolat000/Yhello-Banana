@@ -31,6 +31,8 @@ void    umem_free_pages(umem_t* m, void* p, size_t guard);
 /* the size of the umem_alloc_pages() run starting at p (no guard), 0 if none */
 size_t  umem_pages_size(umem_t* m, const void* p);
 
+int umem_limit(umem_t* m, uint32_t bytes);
+
 uint32_t umem_used(umem_t* m);                  /* bytes handed out */
 
 /* 1 if [p, p + n) lies wholly in m's blocks */

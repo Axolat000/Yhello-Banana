@@ -52,6 +52,7 @@ typedef struct uchunk {
     uint32_t       nframes;             /* > 1: one big allocation */
     int            big_used;
     int            broken;              /* its tables could not be made: never handed out */
+    int            pooled;
     int            pinned;              /* (a big allocation) the system's: see umem_alloc_pages */
     uint64_t       pin[PAGES / 64];     /* runs starting at these pages are the system's */
     uint32_t       free_pages;
@@ -68,7 +69,29 @@ struct umem {
     uslab_t*  partial[NCLS];
     uslab_t*  slabs;
     uint32_t  used;
+    uint32_t  limit, reserved;           /* physical blocks; zero limit: unrestricted */
 };
+
+/* Restricted processes share a finite pool, leaving at least half of the
+ * currently free kernel heap for the system and ordinary applications. */
+static spinlock_t g_pool_lock = SPINLOCK_INIT;
+static uint32_t g_pool_limit, g_pool_used;
+static int pool_take(uint32_t bytes) {
+    uintptr_t flags=spin_lock_irq(&g_pool_lock);
+    if(!g_pool_limit){
+        uint32_t free=kheap_total_bytes()-kheap_used_bytes();
+        g_pool_limit=free/2u;
+        if(g_pool_limit>(512u<<20))g_pool_limit=512u<<20;
+    }
+    int ok=bytes<=g_pool_limit-g_pool_used;
+    if(ok)g_pool_used+=bytes;
+    spin_unlock_irq(&g_pool_lock,flags);return ok;
+}
+static void pool_give(uint32_t bytes) {
+    uintptr_t flags=spin_lock_irq(&g_pool_lock);
+    g_pool_used-=bytes;
+    spin_unlock_irq(&g_pool_lock,flags);
+}
 
 /* frame -> its block: a directory of 4 KiB tables (512 frames, 1 GiB each)
  * made when a gigabyte first has a block */
@@ -98,6 +121,7 @@ static int frame_set(uintptr_t f, uchunk_t* c) {
 
 /* the memory of a block back to where it came from */
 static void chunk_release(uchunk_t* c) {
+    if(c->pooled)pool_give(c->nframes*BLOCK);
     if (c->alloc) kfree(c->alloc);
     if (c->high) hmem_free(c->base, c->high);
 }
@@ -128,8 +152,11 @@ static int link_chunk(umem_t* m, uchunk_t* c) {
 
 /* n blocks in a row, zeroed and opened to the app */
 static uchunk_t* new_chunk(umem_t* m, uint32_t n) {
+    if (!n || (m->limit && ((uint64_t)m->reserved + (uint64_t)n * BLOCK > m->limit))) return NULL;
+    if(m->limit&&!pool_take(n*BLOCK))return NULL;
     uchunk_t* c = (uchunk_t*)kzalloc(sizeof(uchunk_t));
-    if (!c) return NULL;
+    if (!c) { if(m->limit)pool_give(n*BLOCK);return NULL; }
+    c->pooled=m->limit!=0;c->nframes=n;
     uint8_t* mem = NULL;
 #ifdef __x86_64__
     mem = (uint8_t*)(uintptr_t)hmem_alloc(n);           /* above 4 GiB first */
@@ -137,7 +164,7 @@ static uchunk_t* new_chunk(umem_t* m, uint32_t n) {
 #endif
     if (!mem) {
         mem = (uint8_t*)kmalloc_aligned((size_t)n * BLOCK, BLOCK);
-        if (!mem) { kfree(c); return NULL; }
+        if (!mem) { chunk_release(c);kfree(c);return NULL; }
         c->alloc = mem;
     }
     c->m = m;
@@ -149,6 +176,7 @@ static uchunk_t* new_chunk(umem_t* m, uint32_t n) {
         kfree(c);
         return NULL;
     }
+    m->reserved += n * BLOCK;
     memset(mem, 0, (size_t)n * BLOCK);        /* nothing of the kernel's (or another app's) left in it */
     /* (if the tables cannot be made, the block is still the app's - given
      * back when it exits - but never handed out) */
@@ -500,4 +528,13 @@ void umem_destroy(umem_t* m) {
         kfree(c);
     }
     kfree(m);
+}
+
+/* Set by the kernel before starting a restricted process. Existing loader
+ * allocations are charged too; only process teardown releases physical blocks. */
+int umem_limit(umem_t* m, uint32_t bytes) {
+    if(!m||m->limit||!bytes||m->reserved>bytes||!pool_take(m->reserved))return -1;
+    m->limit=bytes;
+    for(uchunk_t* c=m->chunks;c;c=c->next)c->pooled=1;
+    return 0;
 }

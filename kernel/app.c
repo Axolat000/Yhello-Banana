@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "app.h"
+#include "web_worker.h"
 #include "i18n.h"
 #include "gpu_virgl.h"
 #include "gpu_i915.h"
@@ -172,6 +173,9 @@ typedef struct {
     /* for ps (version 30: proc_list): its command line, when it started */
     char      cmdline[160];
     uint32_t  start_ms;
+    int       web_restricted;
+    uint32_t  web_deadline, web_cpu_start, web_cpu_limit;
+    uint32_t  web_window, web_window_cpu;
 } app_proc_t;
 
 /* pending signals change on several cores at once (a stop seen by the
@@ -875,6 +879,33 @@ static int a_close(int fd) {
 
 /* Synchronize root-volume files: RAM is already current; an installed volume
  * also flushes its journal and device cache. Hold across a sleeping flush. */
+static int a_web_ipc(int op, const void* in, unsigned int len, void* out, unsigned int cap) {
+    app_proc_t* p = cur();
+    if (!p || !p->web_restricted || len > 65536u || cap > 65536u) return -1;
+#ifdef __x86_64__
+    /* Buffer ownership alone is not enough: a hostile worker can protect
+     * its own output mapping read-only. Never fault in the kernel while
+     * copying a response into such a mapping. */
+    if(cap && !uvm_user_writable(p->us,p->mem,(uintptr_t)out,cap))return -1;
+#endif
+    return web_worker_ipc(p->id, (uint32_t)p->seq, op, in, len, out, cap);
+}
+
+/* CPU time comes from the scheduler, so sleeping and network waits do not
+ * consume the budget. Enforced at timer preemption and on every syscall. */
+static void web_check_budget(app_proc_t* p) {
+    if (!p || !p->web_restricted) return;
+    uint32_t now = timer_ms(), cpu = 0;
+    task_query(p->pid, NULL, &cpu, NULL);
+    if ((p->web_deadline && (int32_t)(now - p->web_deadline) >= 0) ||
+        (p->web_cpu_limit && cpu - p->web_cpu_start > p->web_cpu_limit)) p->kill_req = 1;
+    if (now - p->web_window >= 1000u) {
+        p->web_window = now; p->web_window_cpu = cpu;
+    } else if (cpu - p->web_window_cpu >= 500u) {
+        task_sleep_ms(1000u - (now - p->web_window));
+    }
+}
+
 static int a_fd_sync(int fd) {
     HOLD(f, fd);
     if (!f) return -9;                                  /* EBADF */
@@ -2503,6 +2534,7 @@ void app_preempt(uintptr_t ip, int from_user, void* regs) {
     athread_t* t = cur_thread(p);
     if (t ? !t->running : !p->running) return;
     __asm__ volatile("sti");
+    web_check_budget(p);
     if (p->exit_req || p->kill_req) leave(p, p->exit_req ? p->exit_req_code : 137);
     /* what an app call does: paint the desktop (the app may run in the task
      * that draws it), notice Ctrl+C / End task, let the other tasks run */
@@ -2726,6 +2758,7 @@ static void spec_init(void) {
     SPEC(sig_suspend, "L", 0);
     SPEC(kcmd, "s", 0);
     SPEC(fd_sync, "i", 0);
+    SPEC(web_ipc, "ibibi", 0);
     SPEC(poll_mask, "iiiL", 0);           /* fds: checked in a_poll */
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
@@ -3002,6 +3035,17 @@ static int gather_args(app_proc_t* p, const sysspec_t* sp, const sysframe_t* r, 
 }
 
 #define API_SLOT(f) (__builtin_offsetof(banana_api_t, f) / sizeof(void*))
+static int web_syscall_allowed(uint64_t slot) {
+    switch (slot) {
+    case API_SLOT(exit): case API_SLOT(malloc): case API_SLOT(free):
+    case API_SLOT(realloc): case API_SLOT(ticks_ms): case API_SLOT(sleep_ms):
+    case API_SLOT(yield): case API_SLOT(vm_map): case API_SLOT(vm_unmap):
+    case API_SLOT(vm_protect): case API_SLOT(tls_set): case API_SLOT(thread_id):
+    case API_SLOT(localtime): case API_SLOT(random): case API_SLOT(web_ipc):
+        return 1;
+    default: return 0;
+    }
+}
 static int in_uvm(uint64_t v) { return v >= UVM_BASE && v - UVM_BASE < UVM_SIZE; }
 
 /* a call on another core, interrupts off: 1 if it was done here, 0 if it
@@ -3010,7 +3054,7 @@ static int syscall_here(sysframe_t* r) {
     uint64_t slot = r->rax;
     if (slot >= API_SLOTS || !g_local[slot] || !g_spec[slot].args) return 0;
     app_proc_t* p = cur();
-    if (!p || p->exit_req || p->kill_req) return 0;     /* (the boot core ends it) */
+    if (!p || p->web_restricted || p->exit_req || p->kill_req) return 0;     /* (the boot core ends it) */
     uint64_t a[SYS_ARGS];
     /* app memory in its mmap region may be in the swap area on the disk: a
      * call that would read it goes to the boot core, where a fault may wait
@@ -3088,6 +3132,13 @@ void app_syscall(sysframe_t* r) {
         __asm__ volatile("cli");
         return;
     }
+    web_check_budget(p);
+    if (p->web_restricted && (slot != SYS_RETURN && !web_syscall_allowed(slot))) {
+        r->rax = (uint64_t)-1;
+        __asm__ volatile("cli");
+        return;
+    }
+    if (p->kill_req) leave(p, 137);
     if (slot == SYS_RETURN) {                   /* returned: what exit(ret) / thread_exit(ret) do */
         athread_t* t = cur_thread(p);
         if (t) leave_thread(p, t, (int)r->rdi);
@@ -3106,6 +3157,12 @@ void app_syscall(sysframe_t* r) {
     if (mine) g_sysframe[me] = r;                   /* (fork copies it) */
     uint64_t a[SYS_ARGS];
     if (!gather_args(p, &g_spec[slot], r, a)) bad_call(p, slot, "it passed memory that is not its own to the system");
+    if(p->web_restricted && slot==API_SLOT(localtime) &&
+       !uvm_user_writable(p->us,p->mem,(uintptr_t)a[0],sizeof(banana_time_t))){
+        r->rax=(uint64_t)-1;
+        __asm__ volatile("cli");
+        return;
+    }
     sysfn_t fn = (sysfn_t)((void* const*)&g_api)[slot];
     if (mine) { g_insys[me] = (uint16_t)(slot + 1); g_lastip[me] = r->rip; }     /* (ps: what it is in, where) */
     r->rax = fn(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
@@ -4160,6 +4217,7 @@ static void api_init(void) {
     g_api.kcmd = G(a_kcmd);
     g_api.poll_mask = G(a_poll_mask);
     g_api.fd_sync = G(a_fd_sync);
+    g_api.web_ipc = G(a_web_ipc);
 #ifdef __x86_64__
     g_api.proc_list = G(a_proc_list);                  /* (the system calls' table: 64-bit) */
 #endif
@@ -4742,7 +4800,7 @@ static void spawned_entry(void) {
     if (!p) return;
     task_set_background();             /* no terminal: it talks through its windows */
     run(p);
-    klog("app %s exited (%d)\n", p->name, p->exit_code);
+    if(!p->web_restricted)klog("app %s exited (%d)\n", p->name, p->exit_code);
     proc_finish(p);
 }
 
@@ -4758,6 +4816,52 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     p->pid = pid;                      /* the new task runs once we yield */
     pid_set(pid, p->id, -1);
     return 0;
+}
+
+uint32_t app_web_generation(int id) {
+    return id>=0 && id<APP_MAX && g_procs[id].used && g_procs[id].web_restricted ? (uint32_t)g_procs[id].seq : 0;
+}
+int app_web_alive(int id, uint32_t generation) {
+    return id>=0 && id<APP_MAX && g_procs[id].used && !g_procs[id].zombie &&
+           g_procs[id].web_restricted && (uint32_t)g_procs[id].seq==generation;
+}
+int app_web_kill(int id, uint32_t generation) {
+    return app_web_alive(id,generation) ? app_kill(id) : -1;
+}
+
+void app_web_budget(int id, uint32_t generation, uint32_t wall_ms, uint32_t cpu_ms) {
+    if (id < 0 || id >= APP_MAX) return;
+    app_proc_t* p = &g_procs[id];
+    if (!p->used || !p->web_restricted || (uint32_t)p->seq!=generation) return;
+    task_query(p->pid, NULL, &p->web_cpu_start, NULL);
+    p->web_deadline = wall_ms ? timer_ms() + wall_ms : 0;
+    p->web_cpu_limit = cpu_ms;
+}
+
+int app_spawn_web_worker(const char* path, char* err, int cap) {
+#ifdef __x86_64__
+    char* argv[] = { "web-worker" };
+    app_proc_t* p = prepare(path, 1, argv, NULL, err, cap);
+    if (!p) return -1;
+    p->web_restricted = 1;
+    p->web_window = timer_ms();
+    p->web_deadline = timer_ms() + 15000u;
+    p->web_cpu_limit = 5000u;
+    if(umem_limit(p->mem,256u<<20)<0){
+        release(p);kstrlcpy(err,"browser memory pool is full",(size_t)cap);return -1;
+    }
+    uvm_limit(p->us,512u<<20,256);
+    p->pid = -1; p->own_task = 1; p->has_term = 0; p->vt = 0;
+    int pid = task_create("web-worker", spawned_entry);
+    if (pid < 0) { release(p); return -1; }
+    p->pid = pid;
+    pid_set(pid, p->id, -1);
+    return p->id;
+#else
+    (void)path;
+    kstrlcpy(err, "Isolated browsing requires the 64-bit kernel", (size_t)cap);
+    return -1;
+#endif
 }
 
 #ifdef __x86_64__

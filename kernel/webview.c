@@ -10,6 +10,7 @@
 #include "../web/page.h"
 #include "../web/render.h"
 #include "../web/script.h"
+#include "remote_page.h"
 
 #define WV_MAX    32
 #define WV_CMDS   32
@@ -200,19 +201,6 @@ static void after_event(wv_t* v) {
     if (changed) v->render_req = 1;
 }
 
-/* a value as text for web_eval: strings as they are, the rest as JSON */
-static void value_text(interp_t* I, value_t r, char* out, int cap) {
-    if (r.t == V_OBJ || r.t == V_FUNC) {
-        value_t json = script_get_global(I, "JSON");
-        if (json.t == V_OBJ) {
-            value_t st = obj_get(I, json.o, "stringify");
-            value_t s;
-            if (v_isfunc(st) && script_call(I, st, json, 1, &r, &s) == 0 && s.t == V_STR) { kstrlcpy(out, v_cstr(I, s), (size_t)cap); return; }
-        }
-    }
-    kstrlcpy(out, r.t == V_UNDEF ? "" : v_cstr(I, r), (size_t)cap);
-}
-
 static void run_cmd(wv_t* v, wcmd_t* c) {
     page_t* p = v->page;
     switch (c->kind) {
@@ -247,31 +235,14 @@ static void run_cmd(wv_t* v, wcmd_t* c) {
         v->render_req = 1;
         break;
     case WC_EVAL: {
-        int rc = -1;
-        if (p && p->js && !v->loading) {
-            interp_t* I = p->js;
-            value_t ev = script_get_global(I, "eval"), arg = v_str(I, c->str), r;
-            if (v_isfunc(ev) && script_call(I, ev, v_undef(), 1, &arg, &r) == 0) {
-                if (c->out && c->cap > 0) value_text(I, r, c->out, c->cap);
-                rc = 0;
-            } else if (c->out && c->cap > 0) {
-                kstrlcpy(c->out, script_error(I), (size_t)c->cap);
-            }
-            after_event(v);
-        }
-        if (c->rc) *c->rc = rc;
-        if (c->done) *c->done = 1;
+        int rc=-1;
+        if(p&&!v->loading){rc=remote_page_eval(p,c->str,c->out,c->cap);after_event(v);}
+        if(c->rc)*c->rc=rc;
+        if(c->done)*c->done=1;
         break;
     }
     case WC_POST:
-        if (p && p->js && !v->loading) {
-            /* window.dispatchEvent(new MessageEvent("message", {data})) */
-            interp_t* I = p->js;
-            value_t me = script_get_global(I, "__banana_deliver");
-            value_t arg = v_str(I, c->str), r;
-            if (v_isfunc(me)) script_call(I, me, v_undef(), 1, &arg, &r);
-            after_event(v);
-        }
+        if(p&&!v->loading){remote_page_post(p,c->str);after_event(v);}
         break;
     }
 }

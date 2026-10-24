@@ -52,4 +52,9 @@ void web_init(void);
 /* its window's geometry, for the window manager (kernel/gui.c) */
 win_geom_t* browser_geom(void);
 
+/* Network broker for restricted workers; scoped credentials and redirects. */
+int browser_worker_fetch(const char* principal,int xhr,const char* url,const char* method,
+    const char* body,unsigned int length,const char* content_type,char** data,unsigned int* size,
+    char* type,int type_cap,char* final,int final_cap,char* error,int error_cap);
+
 #endif

@@ -1,5 +1,6 @@
 /* Builds the vendored stb_image decoder (third_party/stb/stb_image.h,
- * v2.30, public domain / MIT - see THIRD-PARTY-NOTICES) for the kernel:
+ * v2.30, public domain / MIT - see THIRD-PARTY-NOTICES) for kernel package/ZIP inflation only; image codecs live in the
+ * isolated webworker. Historical image configuration:
  * PNG, JPEG (baseline + progressive), BMP and GIF from memory buffers,
  * with every host dependency (stdio, SIMD, floating point HDR paths,
  * thread-locals) compiled out and allocation routed to the kernel heap.
@@ -9,6 +10,8 @@ void* kmalloc(unsigned int size);
 void* krealloc(void* ptr, unsigned int size);
 void  kfree(void* ptr);
 
+#define STBI_ONLY_ZLIB
+#define STBI_SUPPORT_ZLIB
 #define STBI_NO_STDIO
 #define STBI_NO_SIMD
 #define STBI_NO_HDR

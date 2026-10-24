@@ -27,10 +27,13 @@
 #include "bhistory.h"
 #include "shortcut.h"
 #include "explorer.h"
+#include "remote_page.h"
+#include "web_policy.h"
 
 /*
  * The web browser window. Everything that touches a page (loading,
- * scripts, layout, rendering) happens in the "browser" task; the GUI
+ * scripts, layout, rendering) happens in restricted user processes; the
+ * "browser" task brokers requests and keeps validated pixels. The GUI
  * (any task calling gui_poll()) only paints the frame that task left in
  * g_view and queues clicks/commands for it.
  *
@@ -783,6 +786,7 @@ static int fetch_file(const char* path, char** data, uint32_t* len, char* ctype,
     int fi = fs_find_file(p);
     if (fi >= 0) {
         fs_file_t* f = fs_get_file(fi);
+        if(!f || f->size>MAX_DOC){kstrlcpy(err,"file exceeds the 8 MiB page quota",ecap);return -1;}
         char* buf = (char*)kmalloc(f->size + 1);
         if (!buf) { kstrlcpy(err, "out of memory", (size_t)ecap); return -1; }
         memcpy(buf, f->content, f->size);
@@ -931,7 +935,7 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     req.follow_redirects = 1;
     req.max_redirects = 10;
     req.timeout_ms = 15000;
-    req.user_agent = "Mozilla/5.0 (Banana OS) BananaBrowser/1.0";
+    req.user_agent = "Mozilla/5.0 (Banana OS; x86_64) BananaBrowser/2.0";
     req.ctx = &b;
     req.on_body = on_body;
     http_response_t* resp = (http_response_t*)kmalloc(sizeof(http_response_t));
@@ -968,6 +972,54 @@ static int fetch_url(const char* url, const char* method, const char* post, uint
     return 0;
 }
 
+/* A worker's network requests carry a principal fixed by the kernel.
+ * Public cross-origin assets get no cookies; scripts may request only their
+ * own origin. Every redirect and resolved endpoint is checked by http.c. */
+typedef struct {
+    body_t body;                         /* on_body accepts this prefix */
+    const char* principal;
+    int xhr;
+    char headers[8192];
+} worker_http_t;
+static int worker_allow_url(void* ctx,const char* url) {
+    worker_http_t* w=ctx;
+    return web_network_url(url)&&(!w->xhr||web_same_origin(w->principal,url));
+}
+static int worker_allow_address(void* ctx,const char* host,uint16_t port,int family,const void* address) {
+    worker_http_t* w=ctx;return web_endpoint_allowed(w->principal,host,port,family,address);
+}
+static const char* worker_headers(void* ctx,const char* url) {
+    worker_http_t* w=ctx;w->headers[0]=0;
+    if(web_same_origin(w->principal,url))cookie_header(url,w->headers,sizeof(w->headers));
+    return w->headers[0]?w->headers:NULL;
+}
+static void worker_on_headers(void* ctx,const http_response_t* response,const char* raw) {
+    worker_http_t* w=ctx;
+    if(web_same_origin(w->principal,response->final_url))on_headers(&w->body,response,raw);
+}
+int browser_worker_fetch(const char* principal,int xhr,const char* url,const char* method,
+    const char* body,unsigned int length,const char* content_type,char** data,unsigned int* size,
+    char* type,int type_cap,char* final,int final_cap,char* error,int error_cap) {
+    worker_http_t* w=kzalloc(sizeof(*w));http_response_t* response=kmalloc(sizeof(*response));
+    if(!w||!response){kfree(w);kfree(response);return -1;}
+    w->principal=principal;w->xhr=xhr;w->body.limit=MAX_DOC;
+    http_request_t request;memset(&request,0,sizeof(request));
+    request.ctx=w;request.method=method;
+    if(strcmp(method,"GET")){request.body=body;request.body_len=length;request.content_type=content_type;}
+    request.follow_redirects=1;request.max_redirects=6;request.timeout_ms=10000;
+    request.user_agent="Mozilla/5.0 (Banana OS; x86_64) BananaBrowser/2.0";
+    request.on_body=on_body;request.on_headers=worker_on_headers;request.headers_for=worker_headers;
+    request.allow_url=worker_allow_url;request.allow_address=worker_allow_address;request.restricted=1;
+    int rc=http_fetch(url,&request,response,error,error_cap);
+    if(rc==NET_OK&&!w->body.too_big){
+        if(!w->body.buf)w->body.buf=kzalloc(1);
+        *data=w->body.buf;*size=w->body.n;
+        kstrlcpy(type,response->content_type,type_cap);kstrlcpy(final,response->final_url,final_cap);
+        rc=*data?0:-1;
+    }else{if(w->body.buf)kfree(w->body.buf);rc=-1;}
+    kfree(response);kfree(w);return rc;
+}
+
 static int env_fetch(void* ctx, const char* url, char** data, uint32_t* len, char* ctype, int ccap,
                      char* final_url, int fcap, char* err, int ecap) {
     (void)ctx;
@@ -993,7 +1045,7 @@ static int env_read_file(void* ctx, const char* path, char** data, uint32_t* len
     if (fi < 0) return -1;
     fs_pin(fi);
     fs_file_t* f = fs_get_file(fi);
-    if (!f || (!f->content && f->size)) { fs_unpin(fi); return -1; }
+    if (!f || f->size>MAX_DOC || (!f->content && f->size)) { fs_unpin(fi); return -1; }
     char* d = (char*)kmalloc(f->size + 1);
     if (!d) { fs_unpin(fi); return -1; }
     if (f->size) memcpy(d, f->content, f->size);
@@ -1073,10 +1125,8 @@ static void copy_selection(void) {
     set_status("Copied", 0);
 }
 
-/* words typed in the address bar (not an address) are searched for:
- * DuckDuckGo's HTML version works without scripts (Google's results page
- * now needs its anti-bot script to pass, which this browser does not) */
-#define SEARCH_URL "https://html.duckduckgo.com/html/?q="
+/* Keep the existing search provider until Google challenge compatibility passes. */
+#define SEARCH_URL "https://duckduckgo.com/html/?q="
 static int looks_like_address(const char* s) {
     if (strchr(s, ' ')) return 0;
     if (strncasecmp(s, "localhost", 9) == 0) return 1;
@@ -1369,7 +1419,7 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
     if (t->page) { page_free(t->page); t->page = NULL; }
     if (t == cur_tab()) render_view();      /* blank while the new page loads */
     page_t* p = page_new(&g_env, g_page_mem);
-    if (!p) { kfree(data); set_status("out of memory", 1); t->loading = 0; g_status_tab = NULL; return; }
+    if (!p) { kfree(data); set_status("Isolated renderer unavailable (quota or 64-bit kernel required)", 1); t->loading = 0; g_status_tab = NULL; return; }
     p->view_h = g_vh;
     uint32_t t0 = timer_ms();
     page_load(p, final_url, data, len, g_vw);
@@ -1932,9 +1982,7 @@ static void run_commands(void) {
     }
 }
 
-static int  env_media_open(void* ctx, void* owner, const char* url);
-static void env_media_cmd(void* ctx, int id, int cmd, int a, int b, int c);
-static int  env_media_status(void* ctx, int id, page_media_status_t* out);
+
 
 static void env_setup(void) {
     static int done;
@@ -1944,16 +1992,14 @@ static void env_setup(void) {
     dlm_set_cookies(cookie_header);     /* the download manager sends them too */
     g_env.fetch = env_fetch;
     g_env.request = env_request;
-    g_env.decode_image = web_decode_image;
+    g_env.decode_image = NULL;                 /* decoding belongs to the worker */
     g_env.now_ms = timer_ms;
     g_env.yield = task_maybe_yield;     /* a long script must not freeze the desktop */
     web_yield_hook = task_maybe_yield;  /* nor parsing, styling and layout */
     g_env.log = env_log;
     g_env.cookie_get = env_cookie_get;
     g_env.cookie_set = env_cookie_set;
-    g_env.media_open = env_media_open;
-    g_env.media_cmd = env_media_cmd;
-    g_env.media_status = env_media_status;
+    /* Untrusted page media never enters the kernel decoders. */
     g_env.read_file = env_read_file;
     g_env.ctx = NULL;
     /* a page may use a share of the heap (big pages, images, script-heavy
@@ -1989,30 +2035,7 @@ int browser_fetch_media(const char* url_in, char** data, uint32_t* len, char* er
 }
 
 /* <audio> in pages: the media streams (media.c) */
-static int env_media_open(void* ctx, void* owner, const char* url) { (void)ctx; return media_open(owner, url); }
-static void env_media_cmd(void* ctx, int id, int cmd, int a, int b, int c) {
-    (void)ctx;
-    switch (cmd) {
-    case PAGE_MEDIA_PLAY:  media_play(id); break;
-    case PAGE_MEDIA_PAUSE: media_pause(id); break;
-    case PAGE_MEDIA_SEEK:  media_seek(id, (uint32_t)(a < 0 ? 0 : a)); break;
-    case PAGE_MEDIA_SET:   media_set(id, a, b, c); break;
-    case PAGE_MEDIA_CLOSE: media_close(id); break;
-    }
-}
-static int env_media_status(void* ctx, int id, page_media_status_t* out) {
-    (void)ctx;
-    media_status_t st;
-    if (media_status(id, &st) != 0) return -1;
-    out->state = st.state;
-    out->playing = st.playing;
-    out->ended = st.ended;
-    out->pos_ms = st.pos_ms;
-    out->dur_ms = st.dur_ms;
-    out->seq = st.seq;
-    kstrlcpy(out->error, st.error, sizeof(out->error));
-    return 0;
-}
+
 
 int browser_fetch_document(const char* url_in, const char* post, uint32_t post_len,
                            char** data, uint32_t* len, char* final_url, int fcap) {

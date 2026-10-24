@@ -330,7 +330,7 @@ static void run_script(page_t* p, dom_node_t* s) {
     char* fetched = NULL;
     const char* name;
     if (src_attr) {
-        char url[1024], ct[96];
+        char url[PAGE_URL_MAX], ct[96];
         url_resolve(p->base, src_attr, url, sizeof(url));
         if (module) {                               /* fetched (once) and run by jsdom */
             p->cur_script = s;
@@ -353,7 +353,7 @@ static void run_script(page_t* p, dom_node_t* s) {
     p->cur_script = s;
     if (module) jsdom_module(p, p->url, code, len);
     else if (script_run(p->js, code, len, name) != 0) {
-        kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+        if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
         plog(p, "js: %s", p->status);
     }
     if (fetched) kfree(fetched);                    /* the syntax tree does not point into it */
@@ -397,7 +397,7 @@ static void load_images(page_t* p, dom_node_t* n, int* count) {
             img->failed = 1;
             c->img = img;
             if (src && *src && p->env) {                 /* SVG needs no decoder; other formats do */
-                char url[1024], ct[96];
+                char url[PAGE_URL_MAX], ct[96];
                 url_resolve(p->base, src, url, sizeof(url));
                 char* data;
                 uint32_t len;
@@ -642,7 +642,7 @@ void page_load(page_t* p, const char* url, const char* html, uint32_t len, int w
         const char* ol = body ? dom_attr(body, "onload") : NULL;
         jsdom_loaded(p, 0);                      /* DOMContentLoaded */
         if (ol && script_run(p->js, ol, (uint32_t)strlen(ol), "onload") != 0)
-            kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+            if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
         jsdom_loaded(p, 1);                      /* load */
         init_forms(p->doc);
         init_forms_text(p, p->doc);
@@ -681,7 +681,7 @@ static dom_node_t* ancestor(dom_node_t* n, const char* tag) {
 static void navigate(page_t* p, const char* href) {
     if (strncasecmp(href, "javascript:", 11) == 0) {
         if (p->js && script_run(p->js, href + 11, (uint32_t)strlen(href + 11), "link") != 0)
-            kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+            if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
         p->dirty = 1;
         return;
     }
@@ -884,14 +884,14 @@ static void form_fields(dom_node_t* n, dom_node_t* submitter, char* q, int cap) 
     }
 }
 
-static void submit_form(page_t* p, dom_node_t* form, dom_node_t* submitter) {
+void page_submit_form(page_t* p, dom_node_t* form, dom_node_t* submitter, int dispatch_event) {
     if (!form) return;
-    if (jsdom_dispatch(p, form, "submit")) return;          /* preventDefault() / return false */
+    if (dispatch_event && jsdom_dispatch(p, form, "submit")) return;          /* preventDefault() / return false */
     const int qcap = 16384;
     char* q = (char*)arena_alloc(&p->A, qcap);
     form_fields(form, submitter, q, qcap);
     const char* action = dom_attr(form, "action");
-    char base[1024];
+    char base[PAGE_URL_MAX];
     if (action && *action) url_resolve(p->base, action, base, sizeof(base));
     else kstrlcpy(base, p->url, sizeof(base));
     char* qm = strchr(base, '?');
@@ -929,6 +929,10 @@ static void submit_form(page_t* p, dom_node_t* form, dom_node_t* submitter) {
     const char* target = dom_attr(form, "target");
     p->nav_newtab = target && strcasecmp(target, "_blank") == 0;
     p->nav_pending = 1;
+}
+
+static void submit_form(page_t* p, dom_node_t* form, dom_node_t* submitter) {
+    page_submit_form(p,form,submitter,1);
 }
 
 int page_link_at(page_t* p, int x, int y, char* out, int cap) {
@@ -974,7 +978,12 @@ void page_click(page_t* p, int x, int y) {
             return;
         }
     }
-    dom_node_t* n = layout_hit(p->layout, x, y);
+    page_activate(p,layout_hit(p->layout,x,y));
+}
+
+/* Shared HTML activation behavior for physical and scripted clicks. */
+void page_activate(page_t* p, dom_node_t* n) {
+    if(n&&dom_attr(n,"disabled"))return;
     dom_node_t* old_focus = p->focus;
     p->focus = NULL;
     if (!n) { if (old_focus) p->dirty = 1; return; }
@@ -1179,7 +1188,7 @@ int page_tick(page_t* p) {
             r = script_run(p->js, code, (uint32_t)strlen(code), "timer");
         }
         if (r != 0) {
-            kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
+            if(!p->status[0])kstrlcpy(p->status, script_error(p->js), sizeof(p->status));
             tm->active = 0;
         }
         any = 1;

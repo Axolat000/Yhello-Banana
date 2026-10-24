@@ -54,6 +54,12 @@ typedef struct {
     int      address_family;   /* 0: IPv4 then IPv6 if enabled; 4 or 6: force it */
     int      tls_ciphers;      /* TLS_CIPHERS_* (tls.h), 0 = offer all */
 
+    /* Optional broker policy: checked for each redirect and resolved endpoint.
+     * Restricted requests do not share the unrestricted connection pool. */
+    int (*allow_url)(void* ctx, const char* url);
+    int (*allow_address)(void* ctx, const char* host, uint16_t port, int family, const void* address);
+    int restricted;
+
     /* all optional */
     void* ctx;
     /* a response's status line + headers arrived (raw: the header block text) */

@@ -1,0 +1,81 @@
+# Browser isolation: first milestone
+
+The 64-bit browser and SDK web views now create restricted user processes for
+untrusted HTML, CSS, JavaScript, SVG, fonts and raster image decoding. The kernel
+retains the window, validated pixel composition, input forwarding and a resource
+broker. Engine pointers never cross the IPC boundary. Kernel codec entry points
+also delegate to an isolated image worker; the kernel keeps zlib for archives.
+
+Workers cannot open files or sockets, execute commands, create processes or
+threads, or access other applications through normal or raw syscalls. The allowed
+syscalls cover private memory, time, randomness, scheduling and the authenticated
+web IPC channel. IPC associates each channel with both a process ID and its
+generation, so reusing an application slot does not transfer a channel.
+
+## Broker permissions and quotas
+
+- At most four renderer/decoder channels. Each worker has a 256 MiB physical
+  allocation limit, 512 MiB virtual address limit and 256 virtual ranges.
+  Their combined physical pool is capped at 512 MiB or half the kernel heap
+  available when the first worker starts, whichever is smaller.
+- CPU use is limited to 500 ms per one-second window. Page loads and image
+  decoding have a 30-second CPU / 90-second wall limit; other commands have
+  a two-second CPU / ten-second wall limit. Idle workers wait without using
+  their command budget. A fault or exhausted budget terminates that worker.
+- Documents and resource responses are limited to 8 MiB. Each channel has
+  512 resource requests and 64 MiB total fetched data for its lifetime.
+  Images are limited to eight million pixels with checked output dimensions
+  and exact byte counts.
+- Fetches allow HTTP(S) only. Script requests and cookies are scoped to the
+  current origin; cross-origin public assets receive no origin cookies.
+  Redirect targets and resolved addresses are checked. Public sites cannot
+  use DNS rebinding to reach private or loopback addresses.
+- File access requires an exact local document or a file explicitly selected
+  through the host's picker. A remote page cannot navigate into local files.
+- IPC uses bounded chunks and fixed-width fields. Kernel copies validate
+  lengths, offsets, strings and writable user mappings.
+
+These controls reduce the damage from a compromised engine. They do not prove
+the kernel or its networking implementation free of vulnerabilities. Existing
+TLS certificate verification limitations are unchanged.
+
+## Site compatibility and remaining work
+
+GitHub release pages have a user-process reader that presents release notes and
+fetches the release asset fragments, including download and source archive links.
+It does not implement the entire GitHub application.
+
+Google search and manual CAPTCHA compatibility remain unfinished. Live testing
+reaches reCAPTCHA JavaScript, which currently requires missing browser APIs,
+including window.postMessage. No CAPTCHA solver or challenge bypass is included.
+The existing default search provider is retained while this work continues.
+
+Page audio/video hooks are disabled during this milestone so those decoders do
+not run on untrusted browser content inside the kernel. Moving multimedia to a
+restricted process remains necessary. The 32-bit fallback refuses isolated
+browsing rather than reverting to a kernel renderer.
+
+## Verification
+
+Run the sanitized host regressions:
+
+    bash tools/tests/web_worker_ipc.sh
+    bash tools/tests/web_policy.sh
+    bash tools/tests/github_reader.sh
+    python3 tools/test_serialtest.py
+
+In a disposable VM:
+
+    selftest browser isolation
+    selftest browser
+    selftest browser github
+
+The isolation test deliberately faults a worker, runs an endless loop and exhausts
+its memory, checking that another page still evaluates JavaScript and renders.
+It also checks denied direct syscalls, file reads, local navigation, POST form
+activation, image rejection and validated pixel transfers. Only the deliberate
+address-one worker fault is allowed by the serial test harness, and only after
+the isolation test reports its containment and overall success.
+
+The existing offline engine framework tests use trusted bundled fixtures.
+Production browser pages and SDK web views use the restricted worker path.

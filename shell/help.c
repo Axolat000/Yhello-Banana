@@ -531,7 +531,7 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [llvmpipe|virgl|gpu|ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [llvmpipe|virgl|gpu|ring3|memory|ram|sleep [cycle]|limits|cores|clock|malloc|avx|syscall|disk|heap|opencl|browser [swm|isolation|github|google]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
       "ring3, memory, limits, cores, malloc, AVX, syscall, disk, heap, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",

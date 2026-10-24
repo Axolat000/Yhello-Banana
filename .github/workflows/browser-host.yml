@@ -1,0 +1,30 @@
+name: Browser isolation host tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'kernel/**'
+      - 'net/**'
+      - 'web/**'
+      - 'sdk/include/**'
+      - 'apps/webworker/**'
+      - 'tools/tests/web_*'
+      - 'tools/tests/github_reader*'
+      - 'tools/*serialtest*'
+      - '.github/workflows/browser-host.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanitized IPC, origin policy and GitHub reader regressions
+        run: |
+          bash tools/tests/web_worker_ipc.sh
+          bash tools/tests/web_policy.sh
+          bash tools/tests/github_reader.sh
+      - name: Serial failure detection regressions
+        run: python3 tools/test_serialtest.py

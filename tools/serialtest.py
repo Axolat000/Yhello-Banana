@@ -27,7 +27,16 @@ DEFAULT_CMDS = [
 BAD = re.compile(r"PANIC|crashed|was stopped|segmentation fault|stack overflow|general protection", re.I)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
-def command_failure(output):
+def command_failure(output, expected_worker_fault=False):
+    output = ANSI.sub("", output)
+    # Only the dedicated isolation command intentionally faults address 1.
+    # Require its successful containment checks before accepting exactly one
+    # matching worker diagnostic; kernel and unrelated app faults still fail.
+    if expected_worker_fault and re.search(r"selftest: \d+ passed, 0 failed", output) and re.search(
+            r"ok\s+worker CPU fault stays isolated", output):
+        output = re.sub(
+            r"app crashed: web-worker: segmentation fault \(bad memory access\) at address 0x0*1 \(ip [^\n]+\)",
+            "", output, count=1)
     # Successful signal tests name the fault they intentionally recovered
     # from. Actual crash messages and failing checks must still fail the run.
     diagnostics = "\n".join(l for l in output.splitlines() if not re.match(r"\s*ok\s", l))
@@ -154,7 +163,7 @@ def main():
             ok = (wait_text(mark + len(c), expect, a.timeout) if interactive
                   else wait_prompt(mark + len(c), a.timeout))
             out = text[mark:]
-            failure = command_failure(out)
+            failure = command_failure(out, c.strip() == "selftest browser isolation")
             for l in out.splitlines()[1:-1]:
                 print("    " + l)
             why = failure

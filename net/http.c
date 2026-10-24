@@ -302,6 +302,7 @@ static stream_t* open_stream(const url_t* u, const http_request_t* req, http_res
         info(req, "Resolving %s...", u->host);
         if (use6) {
             rc = dns_resolve6(u->host, &ip6, timeout);
+            if (rc == NET_OK && req->allow_address && !req->allow_address(req->ctx,u->host,u->port,6,&ip6)) rc=NET_ERR_PROTO;
             if (rc == NET_OK) {
                 ip6_format(&ip6, ips, sizeof(ips));
                 info(req, "Connecting to [%s]:%u...", ips, u->port);
@@ -310,6 +311,7 @@ static stream_t* open_stream(const url_t* u, const http_request_t* req, http_res
         } else {
             ip4_t ip;
             rc = dns_resolve(u->host, &ip, timeout);
+            if (rc == NET_OK && req->allow_address && !req->allow_address(req->ctx,u->host,u->port,4,&ip)) rc=NET_ERR_PROTO;
             if (rc == NET_OK) {
                 ip4_to_str(ip, ips);
                 info(req, "Connecting to %s:%u...", ips, u->port);
@@ -360,7 +362,7 @@ static int do_request(const url_t* u, const http_request_t* req, http_response_t
     int is_head = strcmp(method, "HEAD") == 0;
     uint32_t timeout = req->timeout_ms ? req->timeout_ms : 20000;
     int rc;
-    stream_t* s = pool_take(u, timeout, req->address_family);
+    stream_t* s = req->restricted ? NULL : pool_take(u, timeout, req->address_family);
     int reused = s != NULL;
     if (reused) {
         info(req, "Re-using the connection to %s", u->host);
@@ -546,7 +548,7 @@ done:
     kfree(raw);
     kfree(line);
     /* a complete answer whose end we know: the connection can be used again */
-    if (rc == NET_OK && !*redirect && !conn_close && !s->eof && s->pos >= s->len &&
+    if (!req->restricted && rc == NET_OK && !*redirect && !conn_close && !s->eof && s->pos >= s->len &&
         (chunked || resp->content_length >= 0 || is_head || resp->status == 204 || resp->status == 304)) {
         pool_put(u, s);
         return rc;
@@ -578,6 +580,10 @@ int http_fetch(const char* url, const http_request_t* req, http_response_t* resp
     int rc = NET_ERR_PROTO;
 
     for (int hop = 0; hop <= max; hop++) {
+        if (req->allow_url && !req->allow_url(req->ctx,w->cur)) {
+            ksnprintf(errmsg,errmsg_len,"browser network permission denied");
+            rc=NET_ERR_PROTO;goto out;
+        }
         if (!url_parse(w->cur, &w->u)) {
             ksnprintf(errmsg, errmsg_len, "unsupported or malformed URL: %s", w->cur);
             rc = NET_ERR_PROTO;
