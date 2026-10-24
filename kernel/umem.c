@@ -499,6 +499,8 @@ void umem_vm_uncharge(umem_t* m,uint32_t bytes) {
     m->reserved-=bytes;pool_give(bytes);
 }
 
+uint32_t umem_committed(umem_t* m) { return m ? __atomic_load_n(&m->reserved,__ATOMIC_RELAXED) : 0; }
+
 uint32_t umem_used(umem_t* m) { return m ? m->used : 0; }
 
 int umem_owns(umem_t* m, const void* p, size_t n) {

@@ -7,3 +7,7 @@ trap 'rm -rf "$out"' EXIT
 gcc -O1 -g -fno-pie -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -fsanitize=address,undefined -I kernel tools/tests/web_memory.c -o "$out/test"
 "$out/test"
+
+gcc -O1 -g -fno-pie -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -fsanitize=address,undefined -I kernel tools/tests/web_loader_memory.c -o "$out/loader-test"
+"$out/loader-test"

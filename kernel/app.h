@@ -47,6 +47,7 @@ void app_pty_close(struct pty* t);
  * accepted from user space. Unsupported on the unprotected 32-bit kernel. */
 int app_spawn_web_worker(const char* path, char* err, int cap);
 uint32_t app_web_generation(int id);
+uint32_t app_web_memory(int id, uint32_t generation);
 int app_web_alive(int id, uint32_t generation);
 int app_web_kill(int id, uint32_t generation);
 void app_web_budget(int id, uint32_t generation, uint32_t wall_ms, uint32_t cpu_ms);

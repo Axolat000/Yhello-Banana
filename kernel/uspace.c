@@ -483,8 +483,23 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
     }
 }
 
-void uvm_limit(uspace_t* us, umem_t* budget, uint64_t bytes, int ranges) {
-    if (us) { us->vm_budget = budget; us->vm_limit = bytes; us->vma_limit = ranges; }
+int uvm_limit(uspace_t* us, umem_t* budget, uint64_t bytes, int ranges) {
+    if (!us || !budget || !bytes || ranges<=0 || us->nvma>ranges) return -1;
+    uintptr_t f=spin_lock_irq(&us->vm_lock);
+    /* The loader populates code, argv and API pages before restrictions attach.
+     * Charge them once too, including compressed pages. Otherwise both the
+     * initial quota and a later munmap's accounting would be incorrect. */
+    uint64_t committed=(us->vm_pages+us->vm_zpages)*4096u;
+    uint64_t mapped=0;
+    for(int i=0;i<us->nvma;i++)mapped+=us->vma[i].end-us->vma[i].start;
+    int bad=us->vm_budget || committed>0xffffffffu || mapped>bytes ||
+            us->nvma>ranges || !umem_vm_charge(budget,(uint32_t)committed);
+    if(!bad){
+        us->vm_budget=budget;us->vm_charged=(uint32_t)committed;
+        us->vm_limit=bytes;us->vma_limit=ranges;
+    }
+    spin_unlock_irq(&us->vm_lock,f);
+    return bad?-1:0;
 }
 
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags) {
