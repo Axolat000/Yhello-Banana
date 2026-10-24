@@ -16,6 +16,7 @@
 /* the keyboard focus value gui_focused_vt() returns while the browser is in front */
 #define BROWSER_VT 1000
 
+int browser_use_libjs(int enabled); /* explicit experimental engine opt-in */
 void browser_open(const char* url);     /* NULL: keep the current page (or the home page) */
 void browser_close(void);
 int  browser_is_open(void);

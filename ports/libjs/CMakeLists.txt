@@ -79,3 +79,10 @@ set_source_files_properties("${LADYBIRD_SOURCE}/Libraries/LibCore/MappedFile.cpp
 add_executable(libjs-probe probe.cpp)
 target_link_libraries(libjs-probe PRIVATE LibJS)
 target_link_options(libjs-probe PRIVATE -Wl,--gc-sections "-Wl,-Map,${CMAKE_BINARY_DIR}/native-map.txt")
+
+add_library(libjs-dom OBJECT dom.cpp)
+target_link_libraries(libjs-dom PRIVATE LibJS)
+
+add_executable(libjs-dom-session-test dom_session_test.cpp)
+target_link_libraries(libjs-dom-session-test PRIVATE LibJS)
+target_link_options(libjs-dom-session-test PRIVATE -Wl,--gc-sections)

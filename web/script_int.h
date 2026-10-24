@@ -134,6 +134,8 @@ struct func {
 enum { CTL_NONE = 0, CTL_BREAK, CTL_CONTINUE, CTL_RETURN, CTL_THROW };
 
 struct interp {
+    const script_backend_t* backend;
+    void* backend_context;
     arena_t*  A;
     int       lang;
     env_t*    global;

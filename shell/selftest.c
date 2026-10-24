@@ -1066,8 +1066,8 @@ int selftest_cmd(int argc, char** argv) {
     if(only && !strcmp(only,"ram") && argc!=2) { terminal_writeln("usage: selftest ram");return 1; }
     if(only && !strcmp(only,"sleep") && (argc>3 || (argc==3 && strcmp(argv[2],"cycle")))) { terminal_writeln("usage: selftest sleep [cycle]");return 1; }
     uint16_t ipv6_port = 80;
-    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm") && strcmp(argv[2],"isolation") && strcmp(argv[2],"google") && strcmp(argv[2],"github") && strcmp(argv[2],"libjs")))) {
-        terminal_writeln("usage: selftest browser [swm|isolation|github|google|libjs]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
+    if(only && !strcmp(only,"browser") && (argc>3 || (argc==3 && strcmp(argv[2],"swm") && strcmp(argv[2],"isolation") && strcmp(argv[2],"google") && strcmp(argv[2],"github") && strcmp(argv[2],"libjs") && strcmp(argv[2],"libjsdom") && strcmp(argv[2],"libjsgoogle") && strcmp(argv[2],"libjsgithub")))) {
+        terminal_writeln("usage: selftest browser [swm|isolation|github|google|libjs|libjsdom|libjsgithub|libjsgoogle]   (swm: live https://swm.mxtpasontop.fr/)");return 1;
     }
     if (only && !strcmp(only, "ipv6") && argc > 3) {
         uint32_t n;
@@ -1135,6 +1135,12 @@ int selftest_cmd(int argc, char** argv) {
         if(argc==3&&!strcmp(argv[2],"isolation")){
             section("browser user-space isolation and hostile inputs");
             browser_isolation_test_run(report);
+        } else if(argc==3&&(!strcmp(argv[2],"libjsgoogle")||!strcmp(argv[2],"libjsgithub"))){
+            section("live LibJS browser compatibility");
+            browser_libjs_live_test_run(!strcmp(argv[2],"libjsgoogle"),report);
+        } else if(argc==3&&!strcmp(argv[2],"libjsdom")){
+            section("LibJS DOM integration");
+            browser_libjs_dom_test_run(report);
         } else if(argc==3&&!strcmp(argv[2],"libjs")){
             section("optional isolated Ladybird LibJS prototype");
             browser_libjs_test_run(report);

@@ -31,8 +31,9 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   Google search and manual CAPTCHA support are still in progress; page
   audio/video is temporarily disabled. See [scope, limits and tests](docs/browser-isolation.md).
   The optional [Ladybird LibJS prototype](ports/libjs/README.md) now runs JavaScript
-  and containment probes in a restricted user process; DOM integration remains
-  in progress.
+  and containment probes in a restricted user process. Its optional DOM worker
+  supports persistent realms, events, timers and rendering via browser --libjs;
+  Google/CAPTCHA compatibility remains in progress.
 
 - **PNG screenshots** - `screenshot [absolute directory]` saves the screen without overwriting previous captures; **Win+Shift+S** captures the completed desktop frame. The default destination is `/home/banana/Pictures`.
 

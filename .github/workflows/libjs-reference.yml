@@ -46,3 +46,11 @@ jobs:
         with:
           name: libjs-reference-log
           path: libjs-reference.log
+      - uses: actions/upload-artifact@v4
+        if: inputs.sdk
+        with:
+          name: experimental-libjs-packages
+          path: |
+            apps/libjsprobe/libjsprobe-x86_64.bpk.z
+            apps/libjsworker/libjsworker-x86_64.bpk.z
+            ports/libjs/build/banana/THIRD_PARTY_NOTICES.txt

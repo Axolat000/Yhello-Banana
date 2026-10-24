@@ -4332,6 +4332,7 @@ void script_def_global(interp_t* I, const char* name, value_t v) {
 }
 
 value_t script_get_global(interp_t* I, const char* name) {
+    if(I->backend&&I->backend->get_global)return I->backend->get_global(I,name);
     var_t* x = env_find_local(I->global, name);
     return x ? x->v : v_undef();
 }
@@ -4487,14 +4488,17 @@ static int run_program(interp_t* I, const char* src, uint32_t len, const char* n
 }
 
 int script_run(interp_t* I, const char* src, uint32_t len, const char* name) {
+    if(I->backend)return I->backend->run(I,src,len,name);
     return run_program(I, src, len, name, NULL, NULL);
 }
 
 void script_checkpoint(interp_t* I) {
     if (I && I->lang == LANG_JS && !I->running) es_run_jobs(I);
+    if(I&&I->backend&&I->backend->checkpoint)I->backend->checkpoint(I);
 }
 
 int script_run_module(interp_t* I, const char* src, uint32_t len, const char* name, const char* url, obj_t* ns) {
+    if(I->backend){kstrlcpy(I->err,"LibJS DOM: modules are not integrated yet",sizeof(I->err));return -1;}
     return run_program(I, src, len, name, url, ns);
 }
 
@@ -4521,4 +4525,14 @@ int script_call(interp_t* I, value_t fn, value_t self, int argc, value_t* argv, 
     leave(I, &st, nested);
     if (!nested && I->jobs && I->lang == LANG_JS) es_run_jobs(I);   /* promise reactions */
     return rc;
+}
+
+
+void script_set_backend(interp_t* I,const script_backend_t* backend,void* ctx){
+    I->backend=backend;I->backend_context=ctx;
+}
+void* script_backend_context(interp_t* I){return I->backend_context;}
+void script_destroy_backend(interp_t* I){
+    if(I&&I->backend&&I->backend->destroy)I->backend->destroy(I);
+    if(I){I->backend=NULL;I->backend_context=NULL;}
 }

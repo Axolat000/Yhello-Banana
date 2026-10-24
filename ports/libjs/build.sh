@@ -25,8 +25,9 @@ cp "$HERE/src/public_suffix_list.dat" "$REF/cache/PublicSuffix/public_suffix_lis
 cmake -G Ninja -S "$HERE" -B "$REF" \
     -DCMAKE_BUILD_TYPE=Release -DLADYBIRD_SOURCE="$SOURCE" \
     -DCMAKE_PREFIX_PATH="$PREFIX" -Dsimdjson_DIR="$PREFIX/lib/cmake/simdjson"
-cmake --build "$REF" -j "$JOBS" --target libjs-probe
+cmake --build "$REF" -j "$JOBS" --target libjs-probe libjs-dom-session-test
 "$REF/libjs-probe"
+"$REF/libjs-dom-session-test"
 
 if [ "$MODE" = target ]; then
     python3 "$HERE/prepare_sdk.py"

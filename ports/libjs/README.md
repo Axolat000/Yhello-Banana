@@ -1,8 +1,8 @@
 # Ladybird LibJS port prototype
 
 This experiment evaluates replacing BananaScript's JavaScript implementation
-inside the restricted web worker. It does not change the browser's active
-engine or add Ladybird to the normal ISO.
+inside the restricted web worker. The normal browser keeps its default engine; the optional DOM worker can be
+selected explicitly. Neither Ladybird package is embedded in the normal ISO.
 
 ## Reference milestone
 
@@ -23,6 +23,11 @@ The sources.json manifest pins the source archives and public suffix data by
 SHA-256. Preparation verifies downloads before extracting and publishes complete
 trees atomically. Existing unverified trees are rejected. Upstream copyright
 and license files remain in the source trees.
+
+The native build also runs 15 DOM session regressions: persistent declarations,
+realm separation, window identity, forged handles, promises, detached callbacks
+VM teardown/recreation and callback arguments collected between conversions. These use the actual adapter with a minimal
+host; HTML/layout/event integration is tested separately in QEMU.
 
 The reference uses ICU 76.1 as supplied by Debian 13 and tests the APIs used
 by this snapshot against it. Upstream specifies ICU 78. The probe includes
@@ -61,8 +66,10 @@ On Debian 13 with GCC 14 and ICU 76.1 development headers:
     JOBS=2 bash ports/libjs/build.sh target
 
 This first runs the native reference, then recompiles the selected libraries
-against SDK C runtime headers and builds apps/libjsprobe/libjsprobe-x86_64.bpk.
-The package is an internal 64-bit worker, omitted from the normal ISO and app
+against SDK C runtime headers and builds two packages: apps/libjsprobe/libjsprobe-x86_64.bpk
+(the standalone probes) and apps/libjsworker/libjsworker-x86_64.bpk (the experimental
+DOM renderer).
+Both are internal 64-bit workers, omitted from the normal ISO and app
 catalog. No host shared library or ELF interpreter is allowed in its image.
 The source tree, generated files, build output and package are ignored by Git.
 
@@ -108,12 +115,61 @@ QEMU TCG, two virtual CPUs, 512 MiB RAM, BIOS and UEFI (live GitHub checked on B
   These are prototype measurements with full ICU data, not optimized shipping
   sizes. The normal ISO does not contain this package.
 
-## Remaining integration
+## DOM integration milestone
 
-This is a standalone engine milestone. Each evaluation currently creates a
-fresh realm; it has no page DOM or granted resources. The browser's active
-engine is unchanged. Persistent realms, DOM bindings, host objects, jobs/events
-and resource access through the existing IPC broker are the next integration
-work. Google search and manual CAPTCHA support remain unfinished and are not
-implied by the semantic probes. The older snapshot must also be updated and
-audited before considering a production browser switch.
+The optional libjsworker uses persistent LibJS realms with the existing C DOM,
+HTML/CSS layout and image decoder. Native getters, setters and functions cross
+a bounded process-local adapter. DOM wrappers and JavaScript callbacks keep
+their identity; VM roots retain callbacks across events and timers. Detached
+realm callbacks use invalidated guards rather than freed session pointers.
+The trusted web API prelude also runs in LibJS, avoiding its duplicate parse
+in the legacy DOM adapter. File and network operations still go through the
+same authenticated kernel IPC broker and quotas.
+
+After installing libjsworker in a disposable 64-bit system, select it with:
+
+    browser --libjs https://github.com/qcom-toolbox/Banana-OS/releases
+
+The desktop must be running. The choice applies to subsequent browser loads;
+SDK webviews keep the default worker. Return to the default engine with:
+
+    browser --default
+
+No settings or engine preference is persisted across a reboot. The Actions
+workflow's optional SDK run uploads the compressed experimental BPKs and
+third-party notices as an artifact; it does not add them to the normal ISO.
+
+Target checks:
+
+    python3 ports/libjs/test_vm.py --dom --memory 512M --live
+    python3 ports/libjs/test_vm.py --dom --memory 512M --uefi --live
+
+The 18 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
+element creation, promise jobs, timers, attributes, denied file fetches, forged
+bridge indices, exceptions, pixel IPC and CPU containment alongside an
+independent renderer. Classic nomodule fallback scripts run because the module
+loader is not yet integrated. The existing 26 isolation, 73 offline framework
+and six memory checks pass. Real GitHub releases pass in both the original
+worker and the optional LibJS worker.
+
+The DOM fixture's charged peak is approximately 59 MiB, including the image.
+Its static PIE is approximately 56 MB and the compressed BPK approximately
+23 MB, with full ICU data and embedded fonts. These are prototype measurements,
+not web-page benchmarks or optimized shipping sizes.
+
+## Remaining compatibility work
+
+This adapter is not Ladybird LibWeb or a complete WebIDL implementation. DOM
+reflection/prototype details, typed host values, ES module loading, cross-frame
+messaging and transferable ports require further work. Existing multimedia
+restrictions and TLS verification limitations are unchanged. The older engine
+snapshot also needs updates and a security audit before a production switch.
+
+Google reaches consent and a verification page, but the live check still fails
+in challenge JavaScript. Search results and manual CAPTCHA completion have not
+passed. Reproduce the diagnostic without counting it as a passing regression:
+
+    python3 ports/libjs/test_vm.py --dom --memory 1G --google
+
+The ordinary standalone probe intentionally creates a fresh realm for each eval;
+the DOM worker retains its realm and is the path for page integration.

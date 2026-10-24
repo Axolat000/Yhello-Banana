@@ -4,6 +4,7 @@
 #include "../web/page.h"
 #include "../web/render.h"
 page_t* remote_page_new(page_env_t*, uint32_t);
+page_t* remote_page_new_libjs(page_env_t*, uint32_t);
 void remote_page_free(page_t*);
 void remote_page_load(page_t*, const char*, const char*, uint32_t, int);
 void remote_page_update(page_t*, int);
@@ -18,6 +19,7 @@ void remote_page_post(page_t*, const char*);
 void remote_render(const layout_t*, uint32_t*, int, int, int, int, int, int, int, int);
 int remote_text_pos(layout_t*, int, int, int*, int*);
 uint32_t remote_text_range(layout_t*, int, int, int, int, char*, uint32_t);
+void web_libjs_dom_tests(void (*report)(const char*,int,const char*));
 void web_libjs_tests(void (*report)(const char*,int,const char*));
 void web_isolation_tests(void (*report)(const char*,int,const char*));
 /* Browser and SDK webviews use only remote proxies. Other trusted engine

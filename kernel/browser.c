@@ -116,6 +116,14 @@ static int        g_cmd_head, g_cmd_tail;
 
 static page_env_t g_env;
 static uint32_t   g_page_mem = 48u << 20;
+static int g_use_libjs;
+int browser_use_libjs(int enabled){
+    if(enabled&&fs_find_file("/apps/libjsworker/app-x86_64")<0)return -1;
+    g_use_libjs=!!enabled;return 0;
+}
+static page_t* browser_new_page(void){
+    return g_use_libjs?remote_page_new_libjs(&g_env,g_page_mem):remote_page_new(&g_env,g_page_mem);
+}
 
 static int view_w(void) { return g_win.w - 2 * VIEW_X - SB_W; }
 static int view_h(void) { return g_win.h - VIEW_Y - STATUS_H - 4; }
@@ -1418,7 +1426,7 @@ static void load(tab_t* t, const char* url_in, const char* post, uint32_t post_l
 
     if (t->page) { page_free(t->page); t->page = NULL; }
     if (t == cur_tab()) render_view();      /* blank while the new page loads */
-    page_t* p = page_new(&g_env, g_page_mem);
+    page_t* p = browser_new_page();
     if (!p) { kfree(data); set_status("Isolated renderer unavailable (quota or 64-bit kernel required)", 1); t->loading = 0; g_status_tab = NULL; return; }
     p->view_h = g_vh;
     uint32_t t0 = timer_ms();
@@ -2082,7 +2090,7 @@ static void engine_crashed(void) {
               "Banana OS was not touched. (%s)", task_crash_msg());
     uint32_t len = 0;
     char* data = error_page(t->addr, why, &len);
-    page_t* np = data ? page_new(&g_env, g_page_mem) : NULL;
+    page_t* np = data ? browser_new_page() : NULL;
     if (np) {
         np->view_h = g_vh;
         page_load(np, "about:crashed", data, len, g_vw);

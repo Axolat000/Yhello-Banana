@@ -224,6 +224,9 @@ static page_t* remote_page_new_worker(page_env_t* env,uint32_t limit,const char*
     if(call(r,WW_INIT,NULL,NULL,NULL,0,NULL,0)<0){remote_page_free(&r->p);return NULL;}
     return &r->p;
 }
+page_t* remote_page_new_libjs(page_env_t* env,uint32_t limit) {
+    return remote_page_new_worker(env,limit,"/apps/libjsworker/app-x86_64");
+}
 page_t* remote_page_new(page_env_t* env,uint32_t limit) {
     return remote_page_new_worker(env,limit,"/apps/webworker/app-x86_64");
 }
@@ -451,5 +454,74 @@ void web_libjs_tests(void (*report)(const char*,int,const char*)) {
         report("another renderer survives hostile LibJS",!rc&&!strcmp(text,"42"),text);
         remote_page_free(canary);
     }else report("independent renderer starts alongside LibJS",0,"worker pool full");
+    remote_page_free(p);
+}
+
+void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
+    page_t* p=remote_page_new_libjs(browser_env(),0);
+    report("LibJS DOM renderer starts",p!=NULL,"optional libjsworker package");
+    if(!p)return;
+    const char* html="<html><head><title>LibJS DOM</title></head><body>"
+        "<button id='go'>Go</button><div id='out'>before</div><script>"
+        "globalThis.count=0;const values=new Set([3,3]);"
+        "document.getElementById('out').textContent='ready '+values.size;"
+        "document.getElementById('go').addEventListener('click',()=>{"
+        "count++;document.getElementById('out').textContent='clicked '+count;});"
+        "</script><script type='module'>throw new Error('module loader unavailable')</script>"
+        "<script nomodule>globalThis.classicFallback=true;</script></body></html>";
+    remote_page_load(p,"https://example.com/",html,strlen(html),640);
+    char text[512];
+    int rc=remote_page_eval(p,"document.getElementById('out').textContent",text,sizeof(text));
+    report("LibJS script changes the rendered DOM",!rc&&!strcmp(text,"ready 1"),text);
+    rc=remote_page_eval(p,"innerWidth===640&&innerHeight>0&&parent===window&&top===window",text,sizeof(text));
+    report("live Window properties cross the DOM bridge",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"classicFallback",text,sizeof(text));
+    report("classic fallback matches module-loader capability",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"window===globalThis&&document.getElementById('out')===document.querySelector('#out')",text,sizeof(text));
+    report("DOM wrappers preserve node and Window identity",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"document.getElementById('go').click();document.getElementById('out').textContent",text,sizeof(text));
+    report("LibJS event callback keeps its realm and closure",!rc&&!strcmp(text,"clicked 1"),text);
+    rc=remote_page_eval(p,"(()=>{const n=document.createElement('span');n.id='added';n.textContent='new';document.body.appendChild(n);return document.getElementById('added').textContent})()",text,sizeof(text));
+    report("LibJS creates and attaches actual DOM nodes",!rc&&!strcmp(text,"new"),text);
+    rc=remote_page_eval(p,"globalThis.job=0;Promise.resolve(9).then(x=>{job=x;document.getElementById('out').textContent='job '+x});true",text,sizeof(text));
+    remote_page_tick(p);
+    rc=remote_page_eval(p,"job+'|'+document.getElementById('out').textContent",text,sizeof(text));
+    report("LibJS promise jobs update the DOM",!rc&&!strcmp(text,"9|job 9"),text);
+    rc=remote_page_eval(p,"globalThis.timerDone=0;setTimeout(()=>{timerDone=7;document.getElementById('out').setAttribute('data-timer','yes')},0);true",text,sizeof(text));
+    remote_page_tick(p);
+    rc=remote_page_eval(p,"timerDone+'|'+document.getElementById('out').getAttribute('data-timer')",text,sizeof(text));
+    report("LibJS timers retain callbacks and modify attributes",!rc&&!strcmp(text,"7|yes"),text);
+    rc=remote_page_eval(p,"(()=>{let n=0;const f=()=>n++;const e=document.getElementById('go');e.addEventListener('click',f);e.removeEventListener('click',f);e.click();return n===0})()",text,sizeof(text));
+    report("event removal preserves LibJS callback identity",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"globalThis.blocked=false;fetch('file:///etc/hostname').catch(()=>blocked=true);true",text,sizeof(text));
+    remote_page_tick(p);
+    rc=remote_page_eval(p,"blocked",text,sizeof(text));
+    report("LibJS fetch promises preserve broker file permissions",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"(()=>{try{__bananaGet(NaN,'body');return false}catch(e){return e instanceof TypeError}})()",text,sizeof(text));
+    report("forged DOM bridge indices are rejected",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"document.getElementById('out').textContent='job 9';throw new Error('contained DOM exception')",text,sizeof(text));
+    report("DOM script exceptions remain in the renderer",rc<0,text);
+    rc=remote_page_eval(p,"document.getElementById('out').textContent",text,sizeof(text));
+    report("DOM remains usable after an exception",!rc&&!strcmp(text,"job 9"),text);
+    remote_page_update(p,640);
+    uint32_t* pixels=kmalloc(640*160*4);
+    if(pixels){
+        remote_render(p->layout,pixels,640,640,160,0,0,640,160,0);
+        int painted=0;for(int i=0;i<640*160;i++)if(pixels[i]!=0xffffff){painted=1;break;}
+        report("LibJS DOM uses validated renderer pixel IPC",painted,p->status);kfree(pixels);
+    }else report("LibJS render buffer",0,"out of memory");
+    char memory_note[96];
+    ksnprintf(memory_note,sizeof(memory_note),"%u KiB charged",((remote_page_t*)p)->peak_memory/1024);
+    report("LibJS DOM memory accounting",((remote_page_t*)p)->peak_memory>0,memory_note);
+    page_t* other=remote_page_new(browser_env(),0);
+    if(other){
+        const char* canary="<script>var answer=42;</script>";
+        remote_page_load(other,"https://example.com/",canary,strlen(canary),640);
+        rc=remote_page_eval(p,"for(;;){}",text,sizeof(text));
+        report("hostile DOM JavaScript hits the CPU quota",rc<0&&((remote_page_t*)p)->dead,p->status);
+        rc=remote_page_eval(other,"answer",text,sizeof(text));
+        report("independent renderer survives hostile LibJS DOM",!rc&&!strcmp(text,"42"),rc?other->status:text);
+        remote_page_free(other);
+    }else report("independent renderer available",0,"worker memory pool");
     remote_page_free(p);
 }

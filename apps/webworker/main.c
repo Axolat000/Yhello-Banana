@@ -247,9 +247,18 @@ static void execute(void) {
         }break;
     default:result=-1;break;
     }
+#ifdef BANANA_LIBJS_WORKER
+    if(page&&page->js)script_checkpoint(page->js);
+#endif
     free(data);snapshot();free(result_data);
 }
+#ifdef BANANA_LIBJS_WORKER
+extern void (*__init_array_start[])(void), (*__init_array_end[])(void);
+#endif
 int main(int argc,char** argv) {
+#ifdef BANANA_LIBJS_WORKER
+    for(void (**f)(void)=__init_array_start;f<__init_array_end;++f)if(*f)(*f)();
+#endif
     (void)argc;(void)argv;
     if(!BANANA_HAS(__banana,web_ipc))return 125;
     memset(&env,0,sizeof(env));env.fetch=fetch;env.request=request;

@@ -285,7 +285,14 @@ static void set_title(page_t* p) {
 
 static int is_js(dom_node_t* s) {
     const char* t = dom_attr(s, "type");
-    if (!t || !*t) return !dom_attr(s, "nomodule");   /* modules work here: skip their fallbacks */
+#ifdef BANANA_LIBJS_WORKER
+    /* The engine understands modules, but this DOM adapter has no module
+     * loader yet. Honor classic nomodule fallbacks instead of claiming it. */
+    if(t&&!strcasecmp(t,"module"))return 0;
+    if(!t||!*t)return 1;
+#else
+    if (!t || !*t) return !dom_attr(s, "nomodule");
+#endif
     return strcasecmp(t, "text/javascript") == 0 || strcasecmp(t, "application/javascript") == 0 ||
            strcasecmp(t, "module") == 0 || strcasecmp(t, "text/ecmascript") == 0;
 }
@@ -579,6 +586,7 @@ void page_free(page_t* p) {
         for (int i = 0; i < p->nmedia; i++) p->env->media_cmd(p->env->ctx, p->media[i], PAGE_MEDIA_CLOSE, 0, 0, 0);
     if (!p) return;
     for (int i = 0; i < p->nframes; i++) page_free(p->frames[i]);   /* <iframe> children */
+    script_destroy_backend(p->js);
     arena_free_all(&p->LA);
     arena_free_all(&p->SA);
     arena_free_all(&p->A);
@@ -610,6 +618,8 @@ void page_update(page_t* p, int width) {
 }
 
 void page_load(page_t* p, const char* url, const char* html, uint32_t len, int width) {
+    script_destroy_backend(p->js);
+    p->js=NULL;
     kstrlcpy(p->url, url, sizeof(p->url));
     kstrlcpy(p->base, url, sizeof(p->base));
     p->width = width;
@@ -629,6 +639,13 @@ void page_load(page_t* p, const char* url, const char* html, uint32_t len, int w
         script_set_limits(p->js, PAGE_JS_STEPS, 120);
         if (p->env && p->env->yield) script_set_yield(p->js, p->env->yield);
         jsdom_install(p);
+#ifdef BANANA_LIBJS_WORKER
+        extern int banana_libjs_install_dom(page_t*);
+        if(banana_libjs_install_dom(p)<0){
+            if(!p->status[0])kstrlcpy(p->status,"LibJS DOM initialization failed",sizeof(p->status));
+            return;
+        }
+#endif
         run_scripts(p);
     }
     p->style_snapshot_valid = 0;

@@ -78,6 +78,16 @@ typedef void (*script_out_fn)(void* ctx, const char* s, uint32_t n);
 /* extra PHP functions from the host: *found = 1 if name is one of them */
 typedef value_t (*script_ext_fn)(interp_t* I, const char* name, int argc, value_t* argv, int* found);
 
+typedef struct script_backend {
+    int (*run)(interp_t*, const char*, uint32_t, const char*);
+    value_t (*get_global)(interp_t*, const char*);
+    void (*checkpoint)(interp_t*);
+    void (*destroy)(interp_t*);
+} script_backend_t;
+void script_set_backend(interp_t*, const script_backend_t*, void*);
+void* script_backend_context(interp_t*);
+void script_destroy_backend(interp_t*);
+
 interp_t* script_new(arena_t* A, int lang);
 void      script_set_output(interp_t* I, script_out_fn out, void* ctx);
 void      script_set_log(interp_t* I, script_out_fn log, void* ctx);

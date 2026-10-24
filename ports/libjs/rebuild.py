@@ -20,6 +20,7 @@ flags+=['-I'+str(out/'include'),'-include',str(here/'include/libjs_compat.h'),
         '-D__BANANA_OS__','-mno-red-zone','-mtls-dialect=gnu','-fno-stack-protector',
         '-fno-asynchronous-unwind-tables','-fdiagnostics-color=never']
 entries=json.loads((ref/'compile_commands.json').read_text())
+entries=[e for e in entries if not e["file"].endswith("/dom_session_test.cpp")]
 all_entries=entries
 if os.environ.get('LIBJS_CORE_ONLY')=='1':
     entries=[e for e in entries if '/LibJS/' in e['file'] or '/AK/' in e['file'] or e['file'].endswith('/probe.cpp')]
@@ -53,6 +54,7 @@ def compile_one(e):
         command+=['-Wno-error=format-nonliteral']
     specific=(here/'probe.h').read_text() if e['file']==str(here/'probe.cpp') else ''
     signature=hashlib.sha256((json.dumps(command)+header_hash+specific).encode()).hexdigest()
+    if original.name=='dom.cpp':signature=hashlib.sha256((signature+(here/'dom.h').read_text()).encode()).hexdigest()
     stamp=obj.with_suffix('.signature')
     if obj.exists() and stamp.exists() and stamp.read_text()==signature and obj.stat().st_mtime>=actual.stat().st_mtime:
         return e['file'],0,'cached'
@@ -68,5 +70,11 @@ with concurrent.futures.ThreadPoolExecutor(int(os.environ.get('JOBS','2'))) as p
             print('FAILED',name,':','; '.join(line.strip() for line in err.splitlines() if 'error:' in line)[:450],flush=True)
         elif i%25==0:print('compiled',i,'/',len(entries),flush=True)
 (out/'failed.json').write_text(json.dumps(failed,indent=2))
+if not failed and not os.environ.get('LIBJS_CORE_ONLY') and not os.environ.get('LIBJS_DEPS_ONLY'):
+    objects=[]
+    for entry in entries:
+        args=shlex.split(entry['command'])
+        objects.append(str(out/'obj'/args[args.index('-o')+1].replace('/','_')))
+    (out/'objects.json').write_text(json.dumps(objects,indent=2))
 print('SDK compilation:',len(entries)-len(failed),'succeeded;',len(failed),'failed',flush=True)
 sys.exit(bool(failed))

@@ -99,5 +99,9 @@ runs semantic and containment probes inside the same restricted user-process
 boundary. It has no file or network grants and is not embedded in the ISO.
 Loaded program pages are charged when the quota is attached, together with
 subsequent heap/mmap pages, so the measured footprint includes the engine
-image. The prototype does not yet replace the browser engine or provide DOM
-bindings; Google and CAPTCHA compatibility remain unfinished.
+image. The optional DOM worker now connects persistent LibJS realms to the C DOM,
+events, promise checkpoints, timers and the existing layout/pixel IPC. It is
+selected explicitly with browser --libjs after installing its optional package;
+SDK webviews and ordinary browser launches retain the default worker. Google
+and manual CAPTCHA compatibility remain unfinished. The module loader is not
+integrated, so the experimental worker honors classic nomodule fallbacks.

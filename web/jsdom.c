@@ -3109,7 +3109,11 @@ void jsdom_install(page_t* p) {
     obj_set(I, meta, "url", v_str(I, p->url));
     obj_set(I, imp.f->statics, "meta", v_obj(meta));
     script_def_global(I, "import", imp);
+    /* The optional LibJS backend runs this trusted prelude in its own realm,
+     * avoiding a second parsed copy in the legacy DOM adapter. */
+#ifndef BANANA_LIBJS_WORKER
     /* URL, URLSearchParams, performance marks: written in script (prelude.js) */
     if (script_run(I, k_prelude, sizeof(k_prelude) - 1, "prelude") != 0 && p->env && p->env->log)
         p->env->log(p->env->ctx, script_error(I));
+#endif
 }

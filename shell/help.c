@@ -408,7 +408,7 @@ static const page_t PAGES[] = {
     { "start", "desktop", "start", "the same as startx", NULL, NULL, NULL, "startx" },
     { "stop", "desktop", "stop", "the same as stopx", NULL, NULL, NULL, "stopx" },
     { "files", "desktop", "files [folder]", "open Files, the file explorer", NULL, NULL, NULL, "ls" },
-    { "browser", "desktop", "browser [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
+    { "browser", "desktop", "browser [--libjs|--default] [address]", "open the web browser", NULL, NULL, "browser example.com", NULL },
     { "notepad", "desktop", "notepad [file]", "open Notepad", NULL, NULL, NULL, "edit" },
     { "notify", "system", "notify TITLE [BODY]", "post a desktop notification",
       "Show a native toast; Win+N opens the last 16 notifications. Use quoted text for multi-word titles and bodies. "

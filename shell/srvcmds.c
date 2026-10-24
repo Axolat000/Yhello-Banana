@@ -19,6 +19,7 @@
 #include "../kernel/passwd.h"
 #include "../kernel/keyboard.h"
 #include "../kernel/gui.h"
+#include "../kernel/browser.h"
 #include "../kernel/task.h"
 #include "../kernel/fs.h"
 
@@ -323,7 +324,15 @@ int srvcmd_dispatch(const char* line) {
     }
     if (strcmp(argv[0], "browser") == 0) {
         /* the desktop's web browser, optionally at an address */
-        if (!gui_open_browser(argc >= 2 ? argv[1] : NULL))
+        int index=1;
+        if(argc>1&&(!strcmp(argv[1],"--libjs")||!strcmp(argv[1],"--default"))){
+            if(browser_use_libjs(!strcmp(argv[1],"--libjs"))<0){
+                terminal_writeln("browser: install the experimental libjsworker package first");return 1;
+            }
+            index++;
+        }
+        if(argc>index+1){terminal_writeln("usage: browser [--libjs|--default] [address]");return 1;}
+        if (!gui_open_browser(argc>index?argv[index]:NULL))
             terminal_writeln("browser: the web browser is part of the desktop - run `startx` first");
         return 1;
     }

@@ -15,7 +15,7 @@ for src,name in [(root/'ports/llvm/compat.c','locale-compat'),(here/'compat.c','
     subprocess.run([*base,'-c',str(src),'-o',str(out/(name+'.o'))],check=True)
 # Keep GNU locale ABI support private and weak; actual SDK functions win.
 subprocess.run(['objcopy','--weaken',str(out/'locale-compat.o')],check=True)
-objects=sorted((out/'obj').glob('*.o'))+sorted((out/'deps').glob('*.o'))
+objects=[Path(p) for p in json.loads((out/'objects.json').read_text())]+sorted((out/'deps').glob('*.o'))
 objects += [out/'locale-compat.o',out/'compat.o']
 if len(objects)<100:raise SystemExit('missing compiled SDK objects')
 archive=out/'libjs-prototype.a';archive.unlink(missing_ok=True)
@@ -40,12 +40,14 @@ for path in [
     notice(path)
 (out/'THIRD_PARTY_NOTICES.txt').write_text('\n'.join(parts))
 subprocess.run(['make','-C',str(root/'apps/libjsprobe'),'-j'+os.environ.get('JOBS','2')],check=True)
-elf=root/'apps/libjsprobe/build/app-x86_64'
-dynamic=subprocess.check_output(['readelf','-d',str(elf)],text=True)
-if '(NEEDED)' in dynamic:raise SystemExit('host shared library dependency in SDK image')
-program=subprocess.check_output(['readelf','-l',str(elf)],text=True)
-if 'INTERP' in program:raise SystemExit('host interpreter in SDK image')
-subprocess.run(['python3',str(root/'sdk/tools/bpkg'), 'check',
-                str(root/'apps/libjsprobe/libjsprobe-x86_64.bpk')],check=True)
-for path in [elf,root/'apps/libjsprobe/libjsprobe-x86_64.bpk',root/'apps/libjsprobe/libjsprobe-x86_64.bpk.z']:
-    print(path.name+': '+str(path.stat().st_size)+' bytes')
+subprocess.run(['make','-C',str(root/'apps/libjsworker'),'-j'+os.environ.get('JOBS','2')],check=True)
+for app in ['libjsprobe','libjsworker']:
+    elf=root/'apps'/app/'build/app-x86_64'
+    dynamic=subprocess.check_output(['readelf','-d',str(elf)],text=True)
+    if '(NEEDED)' in dynamic:raise SystemExit('host shared library dependency in '+app)
+    program=subprocess.check_output(['readelf','-l',str(elf)],text=True)
+    if 'INTERP' in program:raise SystemExit('host interpreter in '+app)
+    package=root/'apps'/app/(app+'-x86_64.bpk')
+    subprocess.run(['python3',str(root/'sdk/tools/bpkg'),'check',str(package)],check=True)
+    for path in [elf,package,package.with_suffix('.bpk.z')]:
+        print(app+'/'+path.name+': '+str(path.stat().st_size)+' bytes')
