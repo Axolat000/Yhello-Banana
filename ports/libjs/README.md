@@ -54,12 +54,66 @@ enum-switch diagnostics are warnings for this compiler. The SDK stack-bounds
 adaptation preserves the actual bounds returned by pthread_getattr_np instead
 of applying Linux/musl's stack-growth adjustment.
 
+## Optional Banana OS package
+
+On Debian 13 with GCC 14 and ICU 76.1 development headers:
+
+    JOBS=2 bash ports/libjs/build.sh target
+
+This first runs the native reference, then recompiles the selected libraries
+against SDK C runtime headers and builds apps/libjsprobe/libjsprobe-x86_64.bpk.
+The package is an internal 64-bit worker, omitted from the normal ISO and app
+catalog. No host shared library or ELF interpreter is allowed in its image.
+The source tree, generated files, build output and package are ignored by Git.
+
+The private runtime bridge keeps genuine GCC RTTI and executes the C++ static
+initializers required by GC type allocators. GNU locale compatibility and the
+large-file stream aliases stay inside this optional program; other SDK apps
+keep their existing runtime. ICU data is embedded; ICU file I/O and dynamic
+loading are disabled. Original third-party notices and GCC runtime licensing
+are included in the package.
+
+Build the normal ISO locally for validation, then run the disposable-VM checks
+(requires QEMU, mtools and OVMF for UEFI):
+
+    python3 ports/libjs/test_vm.py --memory 512M --live
+    python3 ports/libjs/test_vm.py --memory 512M --uefi
+
+The helper installs the BPK from a temporary FAT disk, runs 28 prototype checks,
+the existing 26 browser isolation checks, offline browser tests and memory
+tests. The live option also fetches real GitHub releases. It leaves the serial
+log in ports/libjs/build/banana/vm.serial unless --log selects another path.
+Inside an existing disposable VM, install the package and run:
+
+    selftest browser libjs
+
+The optional workflow_dispatch SDK input in the LibJS reference workflow also
+builds and audits the target package; ordinary pushes run the native reference.
+
+### Measured first target milestone
+
+QEMU TCG, two virtual CPUs, 512 MiB RAM, BIOS and UEFI (live GitHub checked on BIOS):
+
+- All 17 semantic probes execute in the restricted user process.
+- Bounded evaluation IPC, Set.has, syntax errors and JS exceptions pass.
+- Direct file/command/thread syscalls and ungranted broker file/network
+  access are denied.
+- Endless JavaScript reaches the execution quota while another renderer
+  continues to evaluate correctly.
+- 28 prototype, 26 isolation, 73 offline browser, six memory and six live
+  GitHub checks pass.
+- Sampled peak charged memory: 51,172 KiB, including loaded image and committed
+  runtime pages. This is a probe workload, not a web-page memory benchmark.
+- ELF: 44,683,184 bytes; BPK about 45 MB; compressed package about 17 MB.
+  These are prototype measurements with full ICU data, not optimized shipping
+  sizes. The normal ISO does not contain this package.
+
 ## Remaining integration
 
-The SDK build, optional isolated probe package and VM checks are under
-development. Before connecting a page, the port must execute inside Banana OS
-with the existing syscall restrictions, shared memory quota and CPU budgets.
-The C facade is deliberately small; DOM bindings, persistent realms, host
-objects and resource access through the existing IPC broker are separate
-integration work. Full browser compatibility requires those APIs as well as
-the JavaScript engine.
+This is a standalone engine milestone. Each evaluation currently creates a
+fresh realm; it has no page DOM or granted resources. The browser's active
+engine is unchanged. Persistent realms, DOM bindings, host objects, jobs/events
+and resource access through the existing IPC broker are the next integration
+work. Google search and manual CAPTCHA support remain unfinished and are not
+implied by the semantic probes. The older snapshot must also be updated and
+audited before considering a production browser switch.

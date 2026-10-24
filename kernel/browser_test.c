@@ -27,6 +27,7 @@ static void worker(void) {
     if(!kjmp_set(&recovery)) {
         task_set_recover(&recovery);
         if(live_site==2)web_isolation_tests(collect);
+        else if(live_site==5)web_libjs_tests(collect);
         else if(live_site){
             char* data=NULL;uint32_t len=0;char final[8192];
             const char* target=live_site==3?"https://www.google.com/search?gbv=1&q=Banana%20OS":
@@ -117,3 +118,5 @@ void browser_site_test_run(void (*report)(const char*,int,const char*)) {run_tes
 void browser_isolation_test_run(void (*report)(const char*,int,const char*)) {run_tests(report,2);}
 
 void browser_compatibility_test_run(int google,void (*report)(const char*,int,const char*)) {run_tests(report,google?3:4);}
+
+void browser_libjs_test_run(void (*report)(const char*,int,const char*)) {run_tests(report,5);}

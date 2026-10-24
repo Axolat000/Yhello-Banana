@@ -19,7 +19,7 @@ typedef struct remote_page {
     page_t p;                       /* kernel-owned compatibility proxy */
     layout_t layout;
     dom_node_t focus;
-    int app,slot,dead,busy;
+    int app,slot,dead,busy,network_enabled;
     uint32_t generation;
     volatile int stage,resource_ready;
     ww_command_t cmd;
@@ -32,7 +32,7 @@ typedef struct remote_page {
     ww_resource_t* request;
     ww_response_t response;
     char* resource_data;
-    uint32_t transferred,requests;
+    uint32_t transferred,requests,peak_memory;
     page_env_t environment;
     char principal[8192];
     char grants[16][FS_PATH_LEN];
@@ -113,7 +113,7 @@ static void serve(remote_page_t* r) {
     if(r->transferred>=TRANSFER_BUDGET)goto done;
     switch(q->kind){
     case WW_FETCH: case WW_REQUEST:
-        if(web_network_url(q->url)){
+        if(r->network_enabled&&web_network_url(q->url)){
             if(q->kind==WW_REQUEST&&!web_same_origin(r->principal,q->url))break;
             if(strcmp(q->method,"GET")&&strcmp(q->method,"POST"))break;
             int valid=1;for(const char* t=q->type;*t;t++)if((uint8_t)*t<32||*t==127)valid=0;
@@ -196,6 +196,8 @@ static int call(remote_page_t* r,unsigned int op,const int* args,const char* url
     app_web_budget(r->app,r->generation,(op==WW_LOAD||op==WW_DECODE)?90000u:10000u,(op==WW_LOAD||op==WW_DECODE)?30000u:2000u);
     __sync_synchronize();r->stage=1;uint32_t start=timer_ms();
     for(;;){
+        uint32_t memory=app_web_memory(r->app,r->generation);
+        if(memory>r->peak_memory)r->peak_memory=memory;
         if(r->resource_ready==1)serve(r);
         if(r->stage==3)break;
         if(!app_web_alive(r->app,r->generation)||timer_ms()-start>((op==WW_LOAD||op==WW_DECODE)?95000u:12000u)){
@@ -207,7 +209,7 @@ static int call(remote_page_t* r,unsigned int op,const int* args,const char* url
     app_web_budget(r->app,r->generation,0,0);
     return r->state.result;
 }
-page_t* remote_page_new(page_env_t* env,uint32_t limit) {
+static page_t* remote_page_new_worker(page_env_t* env,uint32_t limit,const char* path) {
     (void)limit;int slot=-1;
     for(int i=0;i<WORKERS;i++)if(!workers[i]){slot=i;break;}
     if(slot<0)return NULL;
@@ -215,12 +217,15 @@ page_t* remote_page_new(page_env_t* env,uint32_t limit) {
     r->environment=*env;r->slot=slot;r->app=-1;r->p.env=&r->environment;r->p.layout=&r->layout;
     r->layout.A=(arena_t*)r;r->p.scroll_req=-1;
     char err[128];
-    r->app=app_spawn_web_worker("/apps/webworker/app-x86_64",err,sizeof(err));
+    r->app=app_spawn_web_worker(path,err,sizeof(err));
     if(r->app<0){klog("browser worker: %s\n",err);kfree(r);return NULL;}
     r->generation=app_web_generation(r->app);
     workers[slot]=r;
     if(call(r,WW_INIT,NULL,NULL,NULL,0,NULL,0)<0){remote_page_free(&r->p);return NULL;}
     return &r->p;
+}
+page_t* remote_page_new(page_env_t* env,uint32_t limit) {
+    return remote_page_new_worker(env,limit,"/apps/webworker/app-x86_64");
 }
 void remote_page_free(page_t* p) {
     if(!p)return;remote_page_t* r=(remote_page_t*)p;
@@ -235,6 +240,7 @@ void remote_page_free(page_t* p) {
 }
 void remote_page_load(page_t* p,const char* url,const char* html,uint32_t len,int width) {
     remote_page_t* r=(remote_page_t*)p;
+    r->network_enabled=1;
     kstrlcpy(r->principal,url,sizeof(r->principal));kstrlcpy(p->url,url,sizeof(p->url));
     if(!strncmp(url,"file://",7)&&strlen(url+7)<FS_PATH_LEN){kstrlcpy(r->grants[0],url+7,FS_PATH_LEN);r->ngrants=1;}
     int a[10]={width};call(r,WW_LOAD,a,url,html,len,NULL,0);
@@ -398,4 +404,52 @@ void web_isolation_tests(void (*report)(const char*,int,const char*)) {
         int painted=0;for(int i=0;i<640*200;i++)if(pixels[i]!=0xffffff){painted=1;break;}
         report("validated pixel rendering crosses IPC",painted,canary->status);kfree(pixels);}
     remote_page_free(canary);
+}
+
+/* Optional port probe. No Ladybird code is linked into the kernel or browser. */
+void web_libjs_tests(void (*report)(const char*,int,const char*)) {
+    page_t* p=remote_page_new_worker(browser_env(),0,"/apps/libjsprobe/app-x86_64");
+    report("isolated LibJS prototype starts",p!=NULL,"requires the optional libjsprobe.bpk package");
+    if(!p)return;
+    remote_page_t* r=(remote_page_t*)p;
+    char* results=kzalloc(8192);
+    if(!results){remote_page_free(p);report("LibJS result buffer",0,"out of memory");return;}
+    int rc=call(r,WW_LOAD,NULL,NULL,NULL,0,results,8192);
+    results[8191]=0;
+    int complete=!rc&&strstr(results,"ok LibJS suite passed\n")!=NULL;
+    for(char* line=results;*line;){
+        char* end=strchr(line,'\n');if(end)*end=0;
+        if(!strncmp(line,"ok ",3))report(line+3,1,"LibJS user process");
+        else if(!strncmp(line,"FAIL ",5))report(line+5,0,"LibJS user process");
+        if(!end)break;
+        line=end+1;
+    }
+    report("LibJS engine suite completed",complete,p->status);
+    char note[160],text[256];
+    ksnprintf(note,sizeof(note),"peak charged memory: %u KiB (sampled)",r->peak_memory/1024);
+    report("LibJS memory footprint measured",r->peak_memory>0,note);
+    kfree(results);
+    rc=remote_page_eval(p,"1+2",text,sizeof(text));
+    report("LibJS evaluation crosses bounded IPC",!rc&&!strcmp(text,"3"),text);
+    rc=remote_page_eval(p,"new Set([2]).has(2)",text,sizeof(text));
+    report("LibJS Set.has works through IPC",!rc&&!strcmp(text,"true"),text);
+    rc=remote_page_eval(p,"const = ",text,sizeof(text));
+    report("LibJS syntax errors stay inside the worker",rc<0&&!r->dead,text);
+    rc=remote_page_eval(p,"throw new Error('probe')",text,sizeof(text));
+    report("LibJS thrown exceptions stay inside the worker",rc<0&&!r->dead,text);
+    int a[10]={4};
+    rc=call(r,WW_TEST,a,NULL,NULL,0,NULL,0);
+    report("LibJS direct syscalls and broker file/network permissions enforced",rc==0,p->status);
+    page_t* canary=remote_page_new(browser_env(),0);
+    if(canary){
+        const char* doc="<script>var canary=41;</script>";
+        remote_page_load(canary,"https://example.com/",doc,strlen(doc),640);
+        int alive_before=!r->dead;
+        rc=remote_page_eval(p,"for(;;){}",text,sizeof(text));
+        report("endless LibJS code hits the execution quota",alive_before&&rc<0&&r->dead,p->status);
+        rc=remote_page_eval(canary,"canary+1",text,sizeof(text));
+        report("another renderer survives hostile LibJS",!rc&&!strcmp(text,"42"),text);
+        remote_page_free(canary);
+    }else report("independent renderer starts alongside LibJS",0,"worker pool full");
+    remote_page_free(p);
 }

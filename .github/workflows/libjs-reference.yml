@@ -9,19 +9,24 @@ on:
     paths:
       - 'ports/libjs/**'
       - '.github/workflows/libjs-reference.yml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: Also build and audit the optional Banana SDK package
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   reference:
     runs-on: ubuntu-latest
     container: debian:trixie
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Install reference toolchain
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends ca-certificates git g++ cmake ninja-build python3 pkg-config libicu-dev libssl-dev libtommath-dev libfast-float-dev
+          apt-get install -y --no-install-recommends ca-certificates git g++ make binutils cmake ninja-build python3 pkg-config libicu-dev libssl-dev libtommath-dev libfast-float-dev
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:
@@ -29,9 +34,13 @@ jobs:
           key: libjs-sources-${{ hashFiles('ports/libjs/sources.json') }}
       - name: Build and run the semantic probes
         shell: bash
+        env:
+          BUILD_SDK: ${{ inputs.sdk }}
         run: |
           set -o pipefail
-          JOBS=2 bash ports/libjs/build.sh 2>&1 | tee libjs-reference.log
+          mode=native
+          if [ "$BUILD_SDK" = true ]; then mode=target; fi
+          JOBS=2 bash ports/libjs/build.sh "$mode" 2>&1 | tee libjs-reference.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

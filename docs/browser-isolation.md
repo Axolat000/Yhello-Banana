@@ -29,7 +29,8 @@ generation, so reusing an application slot does not transfer a channel.
   512 resource requests and 64 MiB total fetched data for its lifetime.
   Images are limited to eight million pixels with checked output dimensions
   and exact byte counts.
-- Fetches allow HTTP(S) only. Script requests and cookies are scoped to the
+- Resource access defaults to denied until the host supplies a document principal.
+  Fetches allow HTTP(S) only. Script requests and cookies are scoped to the
   current origin; cross-origin public assets receive no origin cookies.
   Redirect targets and resolved addresses are checked. Public sites cannot
   use DNS rebinding to reach private or loopback addresses.
@@ -89,3 +90,14 @@ the isolation test reports its containment and overall success.
 
 The existing offline engine framework tests use trusted bundled fixtures.
 Production browser pages and SDK web views use the restricted worker path.
+
+
+## Optional Ladybird LibJS experiment
+
+The standalone LibJS prototype in [ports/libjs](../ports/libjs/README.md) now
+runs semantic and containment probes inside the same restricted user-process
+boundary. It has no file or network grants and is not embedded in the ISO.
+Loaded program pages are charged when the quota is attached, together with
+subsequent heap/mmap pages, so the measured footprint includes the engine
+image. The prototype does not yet replace the browser engine or provide DOM
+bindings; Google and CAPTCHA compatibility remain unfinished.

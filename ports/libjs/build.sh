@@ -6,7 +6,11 @@ JOBS=${JOBS:-2}
 PREFIX=${LIBJS_PREFIX:-$HERE/build/prefix}
 REF=${LIBJS_NATIVE_BUILD:-$HERE/build/native}
 SOURCE=${LADYBIRD_SOURCE:-$HERE/src/ladybird-e6669482e693bda4f75cd8a90b2abd292c0f3774}
-[ "$#" -eq 0 ] || { echo 'usage: build.sh (native reference prototype)' >&2; exit 2; }
+MODE=${1:-native}
+[ "$#" -le 1 ] && { [ "$MODE" = native ] || [ "$MODE" = target ]; } || {
+    echo 'usage: build.sh [native|target]' >&2; exit 2;
+}
+python3 -m py_compile "$HERE"/*.py
 python3 "$HERE/prepare_source.py"
 for item in simdutf-7.5.0 simdjson-4.2.4; do
     cmake -G Ninja -S "$HERE/src/$item" -B "$HERE/build/$item-native" \
@@ -23,3 +27,10 @@ cmake -G Ninja -S "$HERE" -B "$REF" \
     -DCMAKE_PREFIX_PATH="$PREFIX" -Dsimdjson_DIR="$PREFIX/lib/cmake/simdjson"
 cmake --build "$REF" -j "$JOBS" --target libjs-probe
 "$REF/libjs-probe"
+
+if [ "$MODE" = target ]; then
+    python3 "$HERE/prepare_sdk.py"
+    python3 "$HERE/rebuild.py" "$REF" "$HERE/build/banana"
+    python3 "$HERE/build_dependencies.py"
+    python3 "$HERE/package.py"
+fi
