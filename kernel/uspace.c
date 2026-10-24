@@ -47,6 +47,8 @@ struct uspace {
     uint64_t*      vm_pdpt[UVM_SLOTS];
     uvma_t*        vma;
     int            nvma, vcap;
+    umem_t*        vm_budget;
+    uint32_t       vm_charged;
     uint64_t       vm_limit;
     int            vma_limit;
     uint64_t       vm_pages;
@@ -188,6 +190,7 @@ void uspace_destroy(uspace_t* us) {
         }
         kfree(pdpt);
     }
+    umem_vm_uncharge(us->vm_budget,us->vm_charged);
     kfree(us->vma);
     kfree(us->pml4);
     kfree(us->pdpt);
@@ -455,6 +458,7 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
             } else if (pte && (*pte & (P_PRESENT | P_KEPT))) {
                 pg[n++] = (void*)(uintptr_t)(*pte & ADDR_MASK);
                 us->vm_pages--;
+                if(us->vm_budget){us->vm_charged-=4096;umem_vm_uncharge(us->vm_budget,4096);}
                 *pte = 0;
                 if (cur) invlpg(a);
             } else if (pte && (*pte & P_ZSW)) {
@@ -467,6 +471,7 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
                     zswap_release(idx);                       /* (in RAM, on the disk, or in between) */
                     us->vm_zpages--;
                 }
+                if(us->vm_budget){us->vm_charged-=4096;umem_vm_uncharge(us->vm_budget,4096);}
                 *pte = 0;
             }
             a = next;
@@ -478,8 +483,8 @@ static void vm_release(uspace_t* us, uint64_t s, uint64_t e) {
     }
 }
 
-void uvm_limit(uspace_t* us, uint64_t bytes, int ranges) {
-    if (us) { us->vm_limit = bytes; us->vma_limit = ranges; }
+void uvm_limit(uspace_t* us, umem_t* budget, uint64_t bytes, int ranges) {
+    if (us) { us->vm_budget = budget; us->vm_limit = bytes; us->vma_limit = ranges; }
 }
 
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags) {
@@ -631,13 +636,19 @@ int uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* o
                 }
             }
         } else if (pte && !(*pte & P_KEPT) && !(prot & UVM_DEV)) {
-            void* pg = upage_alloc();                     /* (kernel/upage.c: given back when unmapped) */
+            int charged=umem_vm_charge(us->vm_budget,4096);
+            void* pg = charged ? upage_alloc() : NULL;
+            if(!charged)ok=4; /* hard quota: reclaiming cannot increase permission */
             if (pg) {
+                if(us->vm_budget)us->vm_charged+=4096;
                 memset(pg, 0, 4096);
                 *pte = (uint64_t)(uintptr_t)pg | prot_bits(prot);
                 us->vm_pages++;
                 ok = 1;
-            } else if (on_disk) ok = 3;
+            } else if(charged) {
+                umem_vm_uncharge(us->vm_budget,4096);
+                if(on_disk)ok=3;
+            }
         }
     }
     spin_unlock_irq(&us->vm_lock, f);
@@ -757,13 +768,15 @@ int uvm_write(uspace_t* us, uintptr_t va, const void* src, uint64_t n) {
         uint8_t* frame = NULL;
         if (pte && (*pte & (P_PRESENT | P_KEPT)) && !(*pte & P_COW)) frame = (uint8_t*)(uintptr_t)(*pte & ADDR_MASK);
         else if (pte && !*pte) {
-            frame = (uint8_t*)upage_alloc();
+            int charged=umem_vm_charge(us->vm_budget,4096);
+            frame = charged ? (uint8_t*)upage_alloc() : NULL;
             if (frame) {
+                if(us->vm_budget)us->vm_charged+=4096;
                 memset(frame, 0, 4096);
                 int prot = us->vma[i].prot;
                 *pte = (uint64_t)(uintptr_t)frame | (prot & (UVM_READ | UVM_WRITE | UVM_EXEC) ? prot_bits(prot) : P_KEPT);
                 us->vm_pages++;
-            }
+            } else if(charged)umem_vm_uncharge(us->vm_budget,4096);
         }
         if (frame) memcpy(frame + off, s, take);
         spin_unlock_irq(&us->vm_lock, f);

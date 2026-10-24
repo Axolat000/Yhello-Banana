@@ -15,9 +15,12 @@ generation, so reusing an application slot does not transfer a channel.
 ## Broker permissions and quotas
 
 - At most four renderer/decoder channels. Each worker has a 256 MiB physical
-  allocation limit, 512 MiB virtual address limit and 256 virtual ranges.
+  committed-memory limit (loader allocations and touched anonymous mmap pages
+  share the same budget), 512 MiB virtual address limit and 256 virtual ranges.
   Their combined physical pool is capped at 512 MiB or half the kernel heap
-  available when the first worker starts, whichever is smaller.
+  available when the first worker starts, whichever is smaller. Compressed or
+  swapped mmap pages keep their charge; unmapping or ending the process returns
+  it. Quota termination also works when a worker faults on another CPU core.
 - CPU use is limited to 500 ms per one-second window. Page loads and image
   decoding have a 30-second CPU / 90-second wall limit; other commands have
   a two-second CPU / ten-second wall limit. Idle workers wait without using
@@ -46,8 +49,12 @@ fetches the release asset fragments, including download and source archive links
 It does not implement the entire GitHub application.
 
 Google search and manual CAPTCHA compatibility remain unfinished. Live testing
-reaches reCAPTCHA JavaScript, which currently requires missing browser APIs,
-including window.postMessage. No CAPTCHA solver or challenge bypass is included.
+reaches reCAPTCHA JavaScript and still fails inside it. Same-window postMessage
+now delivers asynchronous MessageEvents with origin filtering and cloned
+primitives, plain objects and arrays (including cycles). It is bounded to 64
+queued messages, 64 KiB and 128 objects per message. Unsupported clone types
+raise DataCloneError. Cross-frame messaging and transferable ports remain
+unfinished. No CAPTCHA solver or challenge bypass is included.
 The existing default search provider is retained while this work continues.
 
 Page audio/video hooks are disabled during this milestone so those decoders do
@@ -61,6 +68,7 @@ Run the sanitized host regressions:
 
     bash tools/tests/web_worker_ipc.sh
     bash tools/tests/web_policy.sh
+    bash tools/tests/web_memory.sh
     bash tools/tests/github_reader.sh
     python3 tools/test_serialtest.py
 
@@ -73,7 +81,9 @@ In a disposable VM:
 The isolation test deliberately faults a worker, runs an endless loop and exhausts
 its memory, checking that another page still evaluates JavaScript and renders.
 It also checks denied direct syscalls, file reads, local navigation, POST form
-activation, image rejection and validated pixel transfers. Only the deliberate
+activation, asynchronous messages, anonymous mmap quota reclamation, starting a
+replacement after termination, stale process proxies, image rejection and
+validated pixel transfers. Only the deliberate
 address-one worker fault is allowed by the serial test harness, and only after
 the isolation test reports its containment and overall success.
 

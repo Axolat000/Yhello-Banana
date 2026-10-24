@@ -527,14 +527,15 @@ static obj_t* event_proto(page_t* p) {
     return o;
 }
 
-static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const char* keyname, obj_t* given) {
+static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const char* keyname, obj_t* given, int window_target) {
     if (!p->js || !target) return 0;
     interp_t* I = p->js;
     obj_t* ev = given ? given : obj_new(I, OBJ_PLAIN);
     if (!given) ev->proto = event_proto(p);
     obj_set(I, ev, "type", v_str(I, type));
-    obj_set(I, ev, "target", wrap(p, target));
-    obj_set(I, ev, "srcElement", wrap(p, target));
+    value_t destination = window_target ? v_obj(p->win_obj) : wrap(p, target);
+    obj_set(I, ev, "target", destination);
+    obj_set(I, ev, "srcElement", destination);
     obj_set(I, ev, "defaultPrevented", v_bool(0));
     obj_set(I, ev, "cancelBubble", v_bool(0));
     if (!given) obj_set(I, ev, "bubbles", v_bool(1));
@@ -558,7 +559,8 @@ static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const ch
     p->dispatch_depth++;
     for (dom_node_t* n = target; n; n = n->parent) {
         prop_handler(p, n, type);          /* compiles on<type>="" if present */
-        obj_set(I, ev, "currentTarget", wrap(p, n));
+        value_t receiver = window_target ? v_obj(p->win_obj) : wrap(p, n);
+        obj_set(I, ev, "currentTarget", receiver);
         char at[40];
         ksnprintf(at, sizeof(at), "@%s", type);
         for (dom_handler_t* h = n->handlers; h; h = h->next) {
@@ -567,7 +569,7 @@ static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const ch
             value_t fn = *(value_t*)h->fn;
             if (!v_isfunc(fn)) continue;
             value_t ret = v_undef();
-            if (script_call(I, fn, wrap(p, n), 1, &evv, &ret) != 0) {
+            if (script_call(I, fn, receiver, 1, &evv, &ret) != 0) {
                 if(!p->status[0])kstrlcpy(p->status, script_error(I), sizeof(p->status));
                 if (p->env && p->env->log) p->env->log(p->env->ctx, p->status);
             } else if (isprop && ret.t == V_BOOL && !ret.b) {
@@ -583,7 +585,7 @@ static int dispatch_ev(page_t* p, dom_node_t* target, const char* type, const ch
 }
 
 static int dispatch(page_t* p, dom_node_t* target, const char* type, const char* keyname) {
-    return dispatch_ev(p, target, type, keyname, NULL);
+    return dispatch_ev(p, target, type, keyname, NULL, 0);
 }
 
 int jsdom_dispatch(page_t* p, dom_node_t* target, const char* type) { return dispatch(p, target, type, NULL); }
@@ -605,7 +607,7 @@ int jsdom_dispatch_keyev(page_t* p, dom_node_t* target, const char* type, const 
     obj_set(I, ev, "altKey", v_bool((mods >> 2) & 1));
     obj_set(I, ev, "metaKey", v_bool(0));
     obj_set(I, ev, "repeat", v_bool(0));
-    return dispatch_ev(p, target, type, NULL, ev);
+    return dispatch_ev(p, target, type, NULL, ev, 0);
 }
 
 void jsdom_run_handlers_from_attrs(page_t* p) { (void)p; }
@@ -1973,7 +1975,7 @@ static value_t w_dispatchEvent(interp_t* I, value_t self, int argc, value_t* arg
     if (e.t != V_OBJ) return v_bool(1);
     page_t* p = P(I);
     const char* type = v_cstr(I, obj_get(I, e.o, "type"));
-    return v_bool(!dispatch_ev(p, p->doc, type, NULL, e.o));
+    return v_bool(!dispatch_ev(p, p->doc, type, NULL, e.o, 1));
 }
 
 static const host_class_t win_class = { "Window", win_get, win_set };
@@ -2027,6 +2029,107 @@ static value_t loc_get(interp_t* I, obj_t* self, const char* key, int* found) {
     *found = 0;
     return v_undef();
 }
+
+/* Same-window asynchronous messages. A bounded clone preserves object identity
+ * and cycles, without sharing mutable sender objects with the receiver. */
+#define MESSAGE_QUEUE 64
+#define MESSAGE_BYTES 65536u
+#define MESSAGE_OBJECTS 128
+typedef struct {
+    obj_t* from[MESSAGE_OBJECTS];
+    obj_t* to[MESSAGE_OBJECTS];
+    uint32_t count, bytes;
+    int failed;
+} message_clone_t;
+typedef struct { value_t data; const char* origin; } page_message_t;
+struct page_messages { page_message_t entries[MESSAGE_QUEUE]; unsigned head, count; };
+
+static value_t message_clone(interp_t* I,value_t v,message_clone_t* c,unsigned depth) {
+    if(c->failed)return v_undef();
+    uint32_t bytes=sizeof(value_t);
+    if(v.t==V_STR)bytes+=v.s->len;
+    if(bytes>MESSAGE_BYTES-c->bytes||depth>32){c->failed=1;return v_undef();}
+    c->bytes+=bytes;
+    if(v.t==V_FUNC){c->failed=1;return v_undef();}
+    if(v.t!=V_OBJ)return v;
+    obj_t* o=v.o;
+    if(o->kind!=OBJ_PLAIN&&o->kind!=OBJ_ARRAY){c->failed=1;return v_undef();}
+    if(o->kind==OBJ_PLAIN&&o->proto&&o->proto!=I->proto_object){
+        c->failed=1;return v_undef(); /* built-ins/ports need type-specific cloning */
+    }
+    for(unsigned i=0;i<c->count;i++)if(c->from[i]==o)return v_obj(c->to[i]);
+    if(c->count==MESSAGE_OBJECTS){c->failed=1;return v_undef();}
+    obj_t* copy=obj_new(I,o->kind);
+    c->from[c->count]=o;c->to[c->count++]=copy;
+    if(o->len>MESSAGE_BYTES/sizeof(value_t)||o->n>MESSAGE_BYTES/sizeof(prop_t)){
+        c->failed=1;return v_undef();
+    }
+    for(unsigned i=0;i<o->len&&!c->failed;i++)
+        arr_push(I,copy,message_clone(I,o->items[i],c,depth+1));
+    for(unsigned i=0;i<o->n&&!c->failed;i++){
+        if(o->props[i].key->len>MESSAGE_BYTES-c->bytes){c->failed=1;break;}
+        c->bytes+=o->props[i].key->len;
+        obj_set(I,copy,o->props[i].key->s,message_clone(I,o->props[i].v,c,depth+1));
+    }
+    return v_obj(copy);
+}
+static const char* message_origin(interp_t* I,const char* url) {
+    if(strncasecmp(url,"http://",7)&&strncasecmp(url,"https://",8))return "null";
+    const char *host,*path,*search,*hash;int hl,pl,sl,hsl;
+    url_parts(url,&host,&hl,&path,&pl,&search,&sl,&hash,&hsl);
+    uint32_t n=(uint32_t)(host+hl-url);
+    char* origin=arena_alloc(I->A,n+1);
+    for(unsigned i=0;i<n;i++)origin[i]=url[i]>='A'&&url[i]<='Z'?url[i]+32:url[i];
+    origin[n]=0;
+    const char* port=!strncmp(origin,"https://",8)?":443":":80";
+    unsigned pn=strlen(port);
+    if(n>=pn&&!strcmp(origin+n-pn,port))origin[n-pn]=0;
+    return origin;
+}
+static value_t w_postMessage(interp_t* I,value_t self,int argc,value_t* argv) {
+    (void)self;
+    page_t* p=P(I);
+    if(!argc){script_throw(I,"TypeError: postMessage requires a message");return v_undef();}
+    const char* target="/";
+    value_t option=ARG(1);
+    if(option.t==V_OBJ)option=obj_get(I,option.o,"targetOrigin");
+    if(option.t!=V_UNDEF)target=v_cstr(I,option);
+    const char* origin=message_origin(I,p->url);
+    if(strcmp(target,"*")&&strcmp(target,"/")){
+        if(strncasecmp(target,"http://",7)&&strncasecmp(target,"https://",8)){
+            throw_dom(I,"SyntaxError","invalid target origin");return v_undef();
+        }
+        if(strcmp(message_origin(I,target),origin))return v_undef();
+    }
+    if(!p->messages)p->messages=arena_alloc(&p->A,sizeof(*p->messages));
+    struct page_messages* m=p->messages;
+    if(m->count==MESSAGE_QUEUE){script_throw(I,"QuotaExceededError: message queue limit");return v_undef();}
+    message_clone_t c;memset(&c,0,sizeof(c));
+    value_t data=message_clone(I,argv[0],&c,0);
+    if(c.failed){throw_dom(I,"DataCloneError","unsupported or oversized message");return v_undef();}
+    unsigned tail=(m->head+m->count)%MESSAGE_QUEUE;
+    m->entries[tail].data=data;m->entries[tail].origin=origin;m->count++;
+    return v_undef();
+}
+int jsdom_messages(page_t* p) {
+    struct page_messages* m=p->messages;
+    if(!p->js||!m||!m->count)return 0;
+    interp_t* I=p->js;
+    unsigned count=m->count; /* messages posted by a handler wait for the next tick */
+    for(unsigned i=0;i<count;i++){
+        page_message_t msg=m->entries[m->head];
+        m->head=(m->head+1)%MESSAGE_QUEUE;m->count--;
+        obj_t* ev=obj_new(I,OBJ_PLAIN);ev->proto=event_proto(p);
+        obj_set(I,ev,"data",msg.data);obj_set(I,ev,"origin",v_str(I,msg.origin));
+        obj_set(I,ev,"source",v_obj(p->win_obj));obj_set(I,ev,"bubbles",v_bool(0));
+        obj_set(I,ev,"ports",v_obj(obj_new(I,OBJ_ARRAY)));
+        set_prop_handler(p,p->doc,"message",script_get_global(I,"onmessage"));
+        dispatch_ev(p,p->doc,"message",NULL,ev,1);
+        script_checkpoint(I);
+    }
+    return 1;
+}
+
 
 static int loc_set(interp_t* I, obj_t* self, const char* key, value_t v) {
     (void)self;
@@ -2140,7 +2243,7 @@ static value_t m_dispatchEvent(interp_t* I, value_t self, int argc, value_t* arg
     value_t e = ARG(0);
     if (!n || e.t != V_OBJ) return v_bool(1);
     const char* type = v_cstr(I, obj_get(I, e.o, "type"));
-    return v_bool(!dispatch_ev(P(I), n, type, NULL, e.o));
+    return v_bool(!dispatch_ev(P(I), n, type, NULL, e.o, 0));
 }
 
 static value_t m_toggleAttribute(interp_t* I, value_t self, int argc, value_t* argv) {
@@ -2615,7 +2718,7 @@ static const method_t LOC_METHODS[] = {
 };
 
 static const method_t WIN_FUNCS[] = {
-    { "alert", w_alert }, { "confirm", w_confirm }, { "prompt", w_prompt },
+    { "postMessage", w_postMessage }, { "alert", w_alert }, { "confirm", w_confirm }, { "prompt", w_prompt },
     { "setTimeout", w_setTimeout }, { "setInterval", w_setInterval },
     { "clearTimeout", w_clearTimer }, { "clearInterval", w_clearTimer },
     { "requestAnimationFrame", w_requestAnimationFrame }, { "cancelAnimationFrame", w_clearTimer },
@@ -2927,7 +3030,7 @@ void jsdom_install(page_t* p) {
     script_def_global(I, "sessionStorage", v_obj(TABLE(I, STORAGE_METHODS, NULL)));
 
     /* events, network, observers and the other everyday APIs */
-    const char* const evs[] = { "Event", "CustomEvent", "KeyboardEvent", "MouseEvent", "FocusEvent", "InputEvent", "UIEvent" };
+    const char* const evs[] = { "Event", "CustomEvent", "KeyboardEvent", "MouseEvent", "FocusEvent", "InputEvent", "UIEvent", "MessageEvent" };
     for (uint32_t i = 0; i < sizeof(evs) / sizeof(evs[0]); i++) {
         value_t c = v_native(I, evs[i], js_Event);
         c.f->statics = obj_new(I, OBJ_PLAIN);       /* Event.prototype: feature tests ("submitter" in Event.prototype) */

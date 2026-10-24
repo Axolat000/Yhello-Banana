@@ -33,7 +33,7 @@
 
 /* maps len bytes (rounded up to pages) at addr (a hint, or exactly with
  * UVM_FIXED): the address, or 0 */
-void uvm_limit(uspace_t* us, uint64_t bytes, int ranges);
+void uvm_limit(uspace_t* us, umem_t* budget, uint64_t bytes, int ranges);
 uintptr_t uvm_map(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len, int prot, int flags);
 /* unmaps [addr, addr + len): its pages go back to the app's memory; 0, -1 */
 int       uvm_unmap(uspace_t* us, umem_t* m, uintptr_t addr, uint64_t len);
@@ -46,7 +46,8 @@ int       uvm_owns_str(uspace_t* us, const char* s);
  * there (or it was a stale translation) and the access can go on; 2 if the
  * page is in the swap area on the disk (*on_disk: its kernel/zswap.c entry,
  * to read in where the fault may wait - then this again); 3 if there was no
- * memory for the page (on_disk given: make some, then this again); 0 otherwise */
+ * memory for the page (on_disk given: make some, then this again);
+ * 4: hard restricted memory quota, 0 otherwise */
 int       uvm_fault(uspace_t* us, umem_t* m, uintptr_t addr, uint32_t err, uint32_t* on_disk);
 /* maps n given pages - not the app's memory: a GPU buffer's (kernel/gpu_gem.c)
  * - at a free place of the region: the address, or 0. They are never

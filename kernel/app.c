@@ -465,6 +465,13 @@ int app_vm_fault(uintptr_t addr, uint32_t err, int from_user, int ints_on) {
     for (int idle = 0; idle < 400; ) {
         uint32_t idx = 0;
         int r = uvm_fault(p->us, p->mem, addr, err, &idx);
+        if(r==4 && p->web_restricted){
+            if(cpu_id()!=0){
+                if(!from_user)return 0;
+                task_ap_go_home();
+            }
+            p->term_sig=9;__asm__ volatile("sti");leave(p,137);
+        }
         if (r != 2 && r != 3) return r == 1;
 #ifdef __x86_64__
         /* the page is in the swap area on the disk (kernel/zswap.c): read in -
@@ -4499,8 +4506,14 @@ static void discard(app_proc_t* p) {
     kstack_free(p->kstack);
     p->kstack = NULL;
 #endif
-    umem_destroy(p->mem);                  /* its code, stacks, memory, argv */
-    uspace_destroy(p->us);
+    if(p->web_restricted){
+        /* mmap commitments share p->mem's quota: release their pages first. */
+        uspace_destroy(p->us);
+        umem_destroy(p->mem);
+    }else{
+        umem_destroy(p->mem);                  /* its code, stacks, memory, argv */
+        uspace_destroy(p->us);
+    }
     p->mem = NULL;
     p->us = NULL;
 }
@@ -4850,7 +4863,7 @@ int app_spawn_web_worker(const char* path, char* err, int cap) {
     if(umem_limit(p->mem,256u<<20)<0){
         release(p);kstrlcpy(err,"browser memory pool is full",(size_t)cap);return -1;
     }
-    uvm_limit(p->us,512u<<20,256);
+    uvm_limit(p->us,p->mem,512u<<20,256);
     p->pid = -1; p->own_task = 1; p->has_term = 0; p->vt = 0;
     int pid = task_create("web-worker", spawned_entry);
     if (pid < 0) { release(p); return -1; }

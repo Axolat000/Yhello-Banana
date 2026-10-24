@@ -218,6 +218,14 @@ static void execute(void) {
         }break;
     }
     case WW_TEST:
+        if(cmd.a[0]==5){
+            for(int round=0;round<20;round++){
+                volatile char* map=__banana->vm_map(NULL,8u<<20,BANANA_PROT_READ|BANANA_PROT_WRITE,0);
+                if(!map){result=-1;break;}
+                for(unsigned i=0;i<(8u<<20);i+=4096)map[i]=(char)round;
+                if(__banana->vm_unmap((void*)map,8u<<20)<0){result=-1;break;}
+            }
+        }
         if(cmd.a[0]==1){*(volatile int*)(uintptr_t)1=1;}
         if(cmd.a[0]==2){for(;;)__asm__ volatile("":::"memory");}
         if(cmd.a[0]==3){for(;;){volatile char* m=malloc(2u<<20);if(!m)__banana->exit(120);for(unsigned int i=0;i<(2u<<20);i+=4096)m[i]=1;}}

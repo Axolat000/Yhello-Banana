@@ -120,6 +120,7 @@ typedef struct page {
     obj_t*       doc_obj;
     obj_t*       win_obj;
     obj_t*       loc_obj;
+    struct page_messages* messages; /* bounded asynchronous window message queue */
     struct jsdom_mutations* mutations; /* observers/records: owned by the page arena */
     int          view_h;              /* visible height (window.innerHeight) */
     int          media[16];           /* its <audio> streams (closed with the page) */
@@ -172,6 +173,7 @@ int     page_data_url(const char* url, char** data, uint32_t* len, char* ctype, 
 
 /* jsdom.c */
 void    jsdom_install(page_t* p);
+int     jsdom_messages(page_t* p);
 /* Runtime DOM edits only; parsing an initial/detached tree does not notify.
  * Call detach BEFORE unlinking a subtree; children AFTER the edit, with
  * snapshots of the affected nodes and the surrounding siblings. */

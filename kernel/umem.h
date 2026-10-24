@@ -32,6 +32,8 @@ void    umem_free_pages(umem_t* m, void* p, size_t guard);
 size_t  umem_pages_size(umem_t* m, const void* p);
 
 int umem_limit(umem_t* m, uint32_t bytes);
+int umem_vm_charge(umem_t* m, uint32_t bytes);
+void umem_vm_uncharge(umem_t* m, uint32_t bytes);
 
 uint32_t umem_used(umem_t* m);                  /* bytes handed out */
 

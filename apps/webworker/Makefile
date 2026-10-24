@@ -12,3 +12,7 @@ build/fontbin.o: ../../kernel/fontbin.asm $(wildcard ../../fonts/*.ttf)
 	@mkdir -p build
 	cd ../.. && nasm -f elf64 kernel/fontbin.asm -o apps/webworker/$@
 build/app-x86_64: build/fontbin.o
+
+# The SDK tracks SDK headers. The embedded engine also depends on its own
+# structure layouts: rebuild its objects when those headers change.
+$(OBJS_x86_64): $(wildcard ../../web/*.h ../../kernel/*.h) Makefile

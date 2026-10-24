@@ -334,9 +334,38 @@ void web_isolation_tests(void (*report)(const char*,int,const char*)) {
     report("remote page cannot navigate into local files",!canary->nav_pending,canary->status);
     rc=remote_page_eval(canary,"var secret=''; try { var x=new XMLHttpRequest(); x.open('GET','file:///etc/hostname',false); x.send(); secret=x.responseText; } catch(e){}; secret",text,sizeof(text));
     report("remote page cannot read arbitrary local files",rc==0&&text[0]==0,text);
+    rc=remote_page_eval(canary,
+        "var inbox=[]; onmessage=function(e){inbox.push(e.data.n+'|'+(e.data.self===e.data)+'|'+e.origin+'|'+(e.source===window)+'|'+(e.target===window)+'|'+(this===window));};"
+        "var parcel={n:1};parcel.self=parcel;postMessage(parcel,'https://example.com:443/path');parcel.n=9;inbox.length",
+        text,sizeof(text));
+    if(!rc)rc=remote_page_eval(canary,"inbox.length",text,sizeof(text));
+    report("postMessage delivery is asynchronous",!rc&&!strcmp(text,"0"),text);
+    remote_page_tick(canary);
+    rc=remote_page_eval(canary,"inbox.join(',')",text,sizeof(text));
+    report("messages clone cycles and preserve window event identity",!rc&&
+           !strcmp(text,"1|true|https://example.com|true|true|true"),text);
+    remote_page_eval(canary,"postMessage('blocked','https://elsewhere.example');",text,sizeof(text));
+    remote_page_tick(canary);
+    rc=remote_page_eval(canary,"inbox.length",text,sizeof(text));
+    report("message target origin is checked",!rc&&!strcmp(text,"1"),text);
+    rc=remote_page_eval(canary,
+        "var cloneError='';try{postMessage(function(){},'*');}catch(e){cloneError=e.name;}cloneError",
+        text,sizeof(text));
+    if(!rc)rc=remote_page_eval(canary,"cloneError",text,sizeof(text));
+    report("uncloneable message fails explicitly",!rc&&!strcmp(text,"DataCloneError"),text);
+    rc=remote_page_eval(canary,
+        "var quota='';try{for(var mi=0;mi<65;mi++)postMessage(mi,'*');}catch(e){quota=String(e);}quota.indexOf('QuotaExceededError')>=0",
+        text,sizeof(text));
+    if(!rc)rc=remote_page_eval(canary,"quota.indexOf('QuotaExceededError')>=0",text,sizeof(text));
+    report("asynchronous message queue is bounded",!rc&&!strcmp(text,"true"),text);
+    remote_page_eval(canary,"onmessage=null",text,sizeof(text));
+    remote_page_tick(canary);
     int a[10]={4};
     rc=call((remote_page_t*)canary,WW_TEST,a,NULL,NULL,0,NULL,0);
     report("file, command and process syscalls denied",rc==0,canary->status);
+    a[0]=5;
+    rc=call((remote_page_t*)canary,WW_TEST,a,NULL,NULL,0,NULL,0);
+    report("unmapping anonymous pages returns their memory quota",rc==0,canary->status);
     for(int test=1;test<=3;test++){
         page_t* victim=remote_page_new(env,0);
         if(!victim){report("hostile worker starts",0,"no worker slot");break;}
@@ -344,14 +373,24 @@ void web_isolation_tests(void (*report)(const char*,int,const char*)) {
         rc=call((remote_page_t*)victim,WW_TEST,a,NULL,NULL,0,NULL,0);
         report(test==1?"worker CPU fault stays isolated":test==2?"infinite loop hits CPU/time quota":"memory exhaustion hits physical quota",
                rc<0&&((remote_page_t*)victim)->dead,victim->status);
+        uint32_t ended=timer_ms();
+        remote_page_t* stale=(remote_page_t*)victim;
+        while(app_web_alive(stale->app,stale->generation)&&timer_ms()-ended<2000u)task_sleep_ms(1);
+        page_t* replacement=remote_page_new(env,0);
         remote_page_free(victim);
+        if(replacement){
+            remote_page_load(replacement,"https://example.com/","<title>Replacement</title>",26,640);
+            report("new renderer survives freeing a stale process proxy",
+                   !strcmp(replacement->title,"Replacement"),replacement->status);
+            remote_page_free(replacement);
+        }else report("worker memory is reclaimed after termination",0,"cannot start replacement");
         rc=remote_page_eval(canary,"counter+1",text,sizeof(text));
         report("independent renderer survives hostile worker",!rc&&!strcmp(text,"8"),text);
     }
     static const uint8_t broken_png[]={137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,255,255,255,255};
     image_t image;char err[160];
     rc=web_worker_decode(broken_png,sizeof(broken_png),&image,err,sizeof(err));
-    report("malformed decoder input stays isolated",rc<0,err);
+    report("malformed decoder input stays isolated",rc<0&&!strstr(err,"available")&&!strstr(err,"memory"),err);
     rc=remote_page_eval(canary,"counter",text,sizeof(text));
     report("renderer survives a rejected image",!rc&&!strcmp(text,"7"),text);
     uint32_t* pixels=kmalloc(640u*200u*4u);

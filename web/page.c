@@ -1175,6 +1175,7 @@ int page_tick(page_t* p) {
         if (page_tick(p->frames[i])) any = 1;
     if (any) sync_frames(p, p->doc);
     if (!p->js) return any;
+    if (jsdom_messages(p)) any = 1;
     uint32_t t = now(p);
     for (int i = 0; i < PAGE_TIMERS; i++) {
         page_timer_t* tm = &p->timers[i];

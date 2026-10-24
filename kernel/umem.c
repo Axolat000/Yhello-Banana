@@ -487,6 +487,18 @@ void umem_free_pages(umem_t* m, void* p, size_t guard) {
     spin_unlock(&m->lock);
 }
 
+/* Charge anonymous mmap pages to the same restricted budget as loader and
+ * direct allocations. Swapping does not release this commitment. */
+int umem_vm_charge(umem_t* m,uint32_t bytes) {
+    if(!m||!m->limit)return 1;
+    if(bytes>m->limit-m->reserved||!pool_take(bytes))return 0;
+    m->reserved+=bytes;return 1;
+}
+void umem_vm_uncharge(umem_t* m,uint32_t bytes) {
+    if(!m||!m->limit||!bytes)return;
+    m->reserved-=bytes;pool_give(bytes);
+}
+
 uint32_t umem_used(umem_t* m) { return m ? m->used : 0; }
 
 int umem_owns(umem_t* m, const void* p, size_t n) {
