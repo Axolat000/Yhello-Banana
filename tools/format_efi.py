@@ -19,9 +19,12 @@ def data_start(boot):
 
 def main():
     path = sys.argv[1]
-    for reserved in range(1, 9):
-        args = ["mformat", "-i", path, "-v", "BANANA_EFI", "-c", "8", "-R", str(reserved)]
-        if os.path.getsize(path) >= 250 * 1024 * 1024:
+    large = os.path.getsize(path) >= 250 * 1024 * 1024
+    for reserved in (range(32, 40) if large else range(1, 9)):
+        # 2 KiB clusters keep FAT32 above its minimum cluster count even
+        # at the FAT16/FAT32 transition; both choices align ISO extents.
+        args = ["mformat", "-i", path, "-v", "BANANA_EFI", "-c", "4" if large else "8", "-R", str(reserved)]
+        if large:
             args.append("-F")
         subprocess.run(args + ["::"], check=True)
         with open(path, "rb") as f:

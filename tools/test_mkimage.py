@@ -92,6 +92,20 @@ class SharedKernelTests(unittest.TestCase):
             for name, expected in self.files.items():
                 self.assertEqual((dest / name).read_bytes(), expected)
 
+    def test_fat32_transition_and_alignment(self):
+        esp = self.root / "fat32.img"
+        with esp.open("wb") as f:
+            f.truncate(250 * 1024 * 1024)
+        self.run_tool(["python3", str(HERE / "format_efi.py"), str(esp)])
+        self.run_tool(["mmd", "-i", str(esp), "::/boot"])
+        src = self.root / "iso" / "boot" / "kernel.bin"
+        self.run_tool(["mcopy", "-i", str(esp), str(src), "::/boot/"])
+        image = esp.read_bytes()
+        self.assertEqual(struct.unpack_from("<H", image, 22)[0], 0)
+        off, length = fat_file(image, 0, len(image), "boot/kernel.bin")
+        self.assertEqual(off % 2048, 0)
+        self.assertEqual(image[off:off + length], self.files["boot/kernel.bin"])
+
     def test_mismatched_kernel_is_rejected(self):
         bad = bytearray(self.raw)
         lba, _ = iso_find(bad, "boot/kernel.bin")
