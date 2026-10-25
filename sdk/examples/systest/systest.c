@@ -3,8 +3,8 @@
  *
  *   systest ring           0 if the app runs in user mode (ring 3)
  *   systest mem N [high]   allocates N MiB in 4 MiB pieces, fills and checks
- *                          every byte; with "high", every piece must lie above
- *                          4 GiB (the RAM the 64-bit kernel gives apps first)
+ *                          every byte; with "high", use kernel-owned identity
+ *                          mappings and require physical RAM above 4 GiB
  *   systest threads N      N threads at once, each one's result checked
  *   systest files N        N files open at once, written and read back
  *   systest cores          a thread per core calling malloc / free and a lock
@@ -75,15 +75,17 @@ static int t_allocators(void) {
 }
 
 static int t_mem(int mib, int high) {
-    if (t_allocators()) return 4;
+    if (!high && t_allocators()) return 4;
     int n = mib / 4 ? mib / 4 : 1;
     unsigned char** p = calloc((size_t)n, sizeof(*p));
     if (!p) return 1;
     int rc = 0, low = 0;
     for (int i = 0; i < n && !rc; i++) {
-        p[i] = malloc(PIECE);
+        /* Only kernel umem allocations are identity mapped. SDK heap virtual
+         * addresses say nothing about the physical pages backing them. */
+        p[i] = high ? banana_api()->malloc(PIECE) : malloc(PIECE);
         if (!p[i]) { printf("piece %d: out of memory\n", i); rc = 1; break; }
-        if (!((unsigned long long)(unsigned long)p[i] >> 32)) low++;     /* below 4 GiB */
+        if (high && !((unsigned long long)(uintptr_t)p[i] >> 32)) low++;
         unsigned x = 1234u + (unsigned)i;
         for (unsigned k = 0; k < PIECE; k++) p[i][k] = (unsigned char)xs(&x);
     }
@@ -92,11 +94,20 @@ static int t_mem(int mib, int high) {
         for (unsigned k = 0; k < PIECE; k++)
             if (p[i][k] != (unsigned char)xs(&x)) { printf("piece %d: byte %u changed\n", i, k); rc = 2; break; }
     }
-    printf("%d MiB in %d pieces, %d of them below 4 GiB\n", n * 4, n, low);
-    for (int i = 0; i < n; i++) free(p[i]);
+    if (high)
+        printf("kernel umem: %d MiB in %d pieces, %d of them below 4 GiB\n", n * 4, n, low);
+    else
+        printf("SDK heap: %d MiB in %d pieces (virtual addresses)\n", n * 4, n);
+    for (int i = 0; i < n; i++) {
+        if (high) banana_api()->free(p[i]);
+        else free(p[i]);
+    }
     free(p);
     printf("all %d pieces freed\n", n);
-    if (!rc && high && low) rc = 3;
+    if (!rc && high && low) {
+        printf("physical high-RAM check failed: %d pieces below 4 GiB\n", low);
+        rc = 3;
+    }
     return rc;
 }
 

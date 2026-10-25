@@ -348,3 +348,5 @@ maps; those larger guest sizes were not run on this host.
 
 See [sdk-allocator.md](sdk-allocator.md) for the VM contract, accounting semantics,
 host regression command, `systest heap` checks, and remaining qualification scope.
+Retained build and Banana BIOS/UEFI execution evidence, source fingerprints and
+replay commands are in [the allocator validation report](validation/sdk-allocator/README.md).

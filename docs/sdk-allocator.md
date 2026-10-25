@@ -71,6 +71,14 @@ ENOSYS cancellation contract, aligned realloc preservation, kernel-owned buffers
 and decoded-image ownership. `selftest swap` exercises the existing VM swap
 path; it does not by itself prove allocator performance under pressure.
 
+`systest mem N high` deliberately uses `banana_api()->malloc/free` for its
+payloads. Those kernel umem allocations are identity mapped, so their addresses
+can test physical RAM above 4 GiB. Ordinary `systest mem N` and `systest heap`
+exercise the SDK heap separately: its virtual addresses do not identify physical
+backing. The low-memory regression must explicitly reject `systest mem 4 high`
+on a 512 MiB VM, while `selftest memory` skips unavailable high RAM and checks
+ordinary allocation preservation.
+
 The linked planning proposal `base-18-sdk-heap-evaluation` preserves the existing
 base-18 history. It requires independent review and controller validation before
 scheduling. Full memory-pressure/swap/teardown qualification, HTTP ownership,
