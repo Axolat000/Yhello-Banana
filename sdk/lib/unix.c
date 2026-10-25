@@ -602,51 +602,17 @@ wchar_t* wcscat(wchar_t* d, const wchar_t* s) { wcscpy(d + wcslen(d), s); return
 wchar_t* wmemcpy(wchar_t* d, const wchar_t* s, size_t n) { memcpy(d, s, n * sizeof(wchar_t)); return d; }
 wchar_t* wmemset(wchar_t* d, wchar_t c, size_t n) { for (size_t i = 0; i < n; i++) d[i] = c; return d; }
 
-size_t mbrtowc(wchar_t* pwc, const char* s, size_t n, mbstate_t* ps) {
-    (void)ps;
-    if (!s) return 0;
-    if (!n) return (size_t)-2;
-    const unsigned char* u = (const unsigned char*)s;
-    unsigned c = u[0], need = c < 0x80 ? 0 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 9;
-    if (need == 9) { errno = EILSEQ; return (size_t)-1; }
-    if (n < need + 1) return (size_t)-2;
-    unsigned v = need ? c & (0x3F >> need) : c;
-    for (unsigned i = 1; i <= need; i++) {
-        if ((u[i] & 0xC0) != 0x80) { errno = EILSEQ; return (size_t)-1; }
-        v = v << 6 | (u[i] & 0x3F);
-    }
-    if (pwc) *pwc = (wchar_t)v;
-    return v ? need + 1 : 0;
-}
-
-size_t wcrtomb(char* s, wchar_t wc, mbstate_t* ps) {
-    (void)ps;
-    char tmp[4];
-    if (!s) s = tmp;
-    unsigned v = (unsigned)wc;
-    if (v < 0x80) { s[0] = (char)v; return 1; }
-    if (v < 0x800) { s[0] = (char)(0xC0 | v >> 6); s[1] = (char)(0x80 | (v & 63)); return 2; }
-    if (v < 0x10000) { s[0] = (char)(0xE0 | v >> 12); s[1] = (char)(0x80 | ((v >> 6) & 63)); s[2] = (char)(0x80 | (v & 63)); return 3; }
-    if (v < 0x110000) {
-        s[0] = (char)(0xF0 | v >> 18); s[1] = (char)(0x80 | ((v >> 12) & 63));
-        s[2] = (char)(0x80 | ((v >> 6) & 63)); s[3] = (char)(0x80 | (v & 63));
-        return 4;
-    }
-    errno = EILSEQ;
-    return (size_t)-1;
-}
-
-int mbsinit(const mbstate_t* ps) { (void)ps; return 1; }
 int mbtowc(wchar_t* pwc, const char* s, size_t n) { size_t r = mbrtowc(pwc, s, n, NULL); return r > 4 ? -1 : (int)r; }
 int wctomb(char* s, wchar_t wc) { return s ? (int)wcrtomb(s, wc, NULL) : 0; }
 wint_t btowc(int c) { return c >= 0 && c < 0x80 ? (wint_t)c : WEOF; }
 int wctob(wint_t c) { return c < 0x80 ? (int)c : EOF; }
 
 size_t mbstowcs(wchar_t* d, const char* s, size_t n) {
+    mbstate_t state = {0};
     size_t i = 0;
     while (!d || i < n) {
         wchar_t w;
-        size_t r = mbrtowc(&w, s, 4, NULL);
+        size_t r = mbrtowc(&w, s, 4, &state);
         if (r == (size_t)-1 || r == (size_t)-2) return (size_t)-1;
         if (d) d[i] = w;
         if (!r) break;
@@ -1035,19 +1001,23 @@ WNUM(wcstold(const wchar_t* s, wchar_t** end), long double, strtold(b, &e))
 
 size_t mbrlen(const char* s, size_t n, mbstate_t* ps) { return mbrtowc(NULL, s, n, ps); }
 size_t mbsrtowcs(wchar_t* d, const char** s, size_t n, mbstate_t* ps) {
-    (void)ps;
+    static mbstate_t implicit;
+    if (!ps) ps = &implicit;
+    mbstate_t query = {0};
+    query.__state = ps->__state;
+    if (!d) ps = &query;
     size_t k = 0;
     const char* p = *s;
     while (!d || k < n) {
         wchar_t c;
-        size_t r = mbrtowc(&c, p, 4, NULL);
-        if (r == (size_t)-1 || r == (size_t)-2) { errno = EILSEQ; return (size_t)-1; }
+        size_t r = mbrtowc(&c, p, 4, ps);
+        if (r == (size_t)-1 || r == (size_t)-2) { if (d) *s = p; errno = EILSEQ; return (size_t)-1; }
         if (!c) { if (d) { d[k] = 0; *s = NULL; } return k; }
         if (d) d[k] = c;
         k++;
         p += r;
     }
-    *s = p;
+    if (d) *s = p;
     return k;
 }
 size_t wcsrtombs(char* d, const wchar_t** s, size_t n, mbstate_t* ps) {
