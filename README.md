@@ -30,7 +30,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   pages display notes and asset links through a reader in the isolated process.
   Google search and manual CAPTCHA support are still in progress; page
   audio/video is temporarily disabled. See [scope, limits and tests](docs/browser-isolation.md).
-  The optional [Ladybird LibJS prototype](ports/libjs/README.md) now runs JavaScript
+  The [Ladybird LibJS prototype](ports/libjs/README.md) is included in the 64-bit
+  OS as an isolated internal renderer, installed and updated automatically. It runs JavaScript
   and containment probes in a restricted user process. Its optional DOM worker
   supports persistent realms, events, timers, MutationObserver, binary-safe Base64,
   UTF-8 text codecs and rendering via browser --libjs;

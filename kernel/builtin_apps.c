@@ -15,6 +15,7 @@
 extern const uint8_t app_webworker[],app_webworker_end[];
 extern const uint8_t app_mediaplayer[], app_mediaplayer_end[], app_music[], app_music_end[], app_amethyst[], app_amethyst_end[], app_photos[], app_photos_end[], app_code[], app_code_end[], app_store[], app_store_end[], app_terminal[], app_terminal_end[];
 #ifdef __x86_64__
+extern const uint8_t app_libjsworker[], app_libjsworker_end[];
 /* the ports (the Makefile's PORTS64: build/ports64.h) */
 #define PORT(n) extern const uint8_t port_##n[], port_##n##_end[];
 #define OPTPORT PORT
@@ -37,6 +38,7 @@ static const struct { const char* name; const uint8_t* start; const uint8_t* end
     { "store", app_store, app_store_end, 0 },
 #ifdef __x86_64__
     { "webworker", app_webworker, app_webworker_end, 0 },
+    { "libjsworker", app_libjsworker, app_libjsworker_end, 0 },
     { "terminal", app_terminal, app_terminal_end, 0 }, /* (apps/terminal: bash in windows and tabs) */
 #define PORT(n) { #n, port_##n, port_##n##_end, 0 },
 #define OPTPORT(n) { #n, port_##n, port_##n##_end, 1 },  /* (the Makefile's OPTPORTS64: Neovim) */

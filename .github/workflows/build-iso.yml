@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build:
+    needs: libjs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -84,10 +85,19 @@ jobs:
       - name: Test shared BIOS and UEFI image data
         run: python3 tools/test_mkimage.py
 
+      - name: Download the integrated LibJS renderer
+        uses: actions/download-artifact@v4
+        with:
+          name: experimental-libjs-packages
+          path: libjs-packages
+      - name: Verify LibJS package checksums
+        working-directory: libjs-packages
+        run: sha256sum -c LIBJS-SHA256SUMS
+
       - name: Build Banana_OS.iso
         run: |
           make clean
-          make
+          make LIBJS_WORKER_BPK="$PWD/libjs-packages/libjsworker-x86_64.bpk"
           rm -f ~/.banana-secureboot/banana-sb.key
 
       - name: Retain the exact ISO for boot validation
@@ -248,8 +258,8 @@ jobs:
           files: java.bpk
 
 
-  # Build the optional renderer in parallel with the ISO, then attach the raw
-  # installable BPKs to the exact same commit's prerelease.
+  # Build the isolated renderer before embedding it in the 64-bit ISO.
+  # Also publish raw BPKs and notices for the exact same commit.
   libjs:
     uses: ./.github/workflows/libjs-reference.yml
     permissions:

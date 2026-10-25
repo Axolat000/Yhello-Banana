@@ -30,6 +30,10 @@ app_store_end:
 align 16
 %include "build/ports64.inc"               ; (the ports: the Makefile's PORTS64)
 align 16
+global app_libjsworker, app_libjsworker_end
+app_libjsworker: incbin "build/libjsworker-x86_64.bpk.z"
+app_libjsworker_end:
+align 16
 global app_webworker, app_webworker_end
 app_webworker: incbin "apps/webworker/webworker-x86_64.bpk.z"
 app_webworker_end:

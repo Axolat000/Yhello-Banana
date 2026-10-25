@@ -217,7 +217,7 @@ clean:
 	for a in $(APPS) $(APPS64) terminal webworker; do $(MAKE) -s -C apps/$$a clean; done
 	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
-	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin
+	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin build/libjsworker-x86_64.bpk.z
 	rm -rf isoroot
 	rm -f loader/*.o loader/*.so loader/*.bin loader/*.EFI loader/*.unsigned loader/kernel_hashes.h \
 	      loader/keys/*.esl loader/keys/*.auth loader/keys/.nokey
@@ -304,6 +304,23 @@ kernel/builtin_apps.o64: build/ports64.h
 WEBWORKER_BPKZ = apps/webworker/webworker-x86_64.bpk.z
 $(WEBWORKER_BPKZ): $(wildcard apps/webworker/*.c apps/webworker/*.h) apps/webworker/Makefile $(wildcard web/*.c web/*.h) kernel/image.c kernel/image.h kernel/font.c kernel/font.h kernel/fontbin.asm kernel/font8x8.c kernel/ttf.c kernel/ttf.h kernel/types.h $(wildcard fonts/*.ttf third_party/libwebp/src/*/*.c third_party/libwebp/src/*/*.h) web/test/image_stb_host.c $(SDK_DEPS)
 	$(MAKE) -C apps/webworker webworker-x86_64.bpk.z
+# LibJS stays a user-space renderer; only its compressed install package is
+# embedded. CI supplies the audited BPK from the same commit's Debian SDK job.
+# Local builds compile it with the pinned Debian 13/GCC 14 toolchain.
+LIBJS_WORKER_BPK ?=
+LIBJS_WORKER_BPKZ = build/libjsworker-x86_64.bpk.z
+ifeq ($(strip $(LIBJS_WORKER_BPK)),)
+LIBJS_WORKER_DEPS = $(wildcard ports/libjs/*.py ports/libjs/*.sh ports/libjs/*.c ports/libjs/*.cpp ports/libjs/*.h ports/libjs/*.json) ports/libjs/CMakeLists.txt apps/libjsworker/Makefile $(wildcard apps/libjsworker/*.c apps/libjsworker/*.h apps/webworker/*.c apps/webworker/*.h web/*.c web/*.h kernel/*.h ports/llvm/*.c ports/llvm/include/*.h fonts/*.ttf third_party/libwebp/src/*/*.c third_party/libwebp/src/*/*.h) kernel/image.c kernel/font.c kernel/fontbin.asm kernel/font8x8.c kernel/ttf.c web/test/image_stb_host.c $(SDK_DEPS)
+else
+LIBJS_WORKER_DEPS = $(LIBJS_WORKER_BPK) libjs-prebuilt-input
+.PHONY: libjs-prebuilt-input
+libjs-prebuilt-input:
+endif
+$(LIBJS_WORKER_BPKZ): $(LIBJS_WORKER_DEPS) Makefile
+	mkdir -p build
+	$(if $(strip $(LIBJS_WORKER_BPK)),python3 sdk/tools/bpkg check "$(LIBJS_WORKER_BPK)",bash ports/libjs/build.sh target)
+	python3 -c "import sys, zlib; from pathlib import Path; out=Path(sys.argv[2]); tmp=out.with_suffix('.tmp'); tmp.write_bytes(zlib.compress(Path(sys.argv[1]).read_bytes(), 9)); tmp.replace(out)" "$(if $(strip $(LIBJS_WORKER_BPK)),$(LIBJS_WORKER_BPK),apps/libjsworker/libjsworker-x86_64.bpk)" $@
+kernel/appbin.o64 build/builtin-meta-x86_64.bin: $(LIBJS_WORKER_BPKZ)
 kernel/appbin.o64: $(WEBWORKER_BPKZ)
 build/builtin-meta-x86_64.bin: $(WEBWORKER_BPKZ)
 TERMINAL_BPKZ = apps/terminal/terminal-x86_64.bpk.z
@@ -317,7 +334,7 @@ kernel/appbin.o64: $(TERMINAL_BPKZ)
 build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$(a)-%.bpk.z) $(EXAMPLE_BPKZ)
 	mkdir -p build
 	python3 tools/mkbuiltinmeta.py $@ $(foreach a,$(APPS),$(a).bpk=apps/$(a)/$(a)-$*.bpk.z) \
-	    $(if $(filter x86_64,$*),webworker.bpk=$(WEBWORKER_BPKZ) terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64) $(OPTPORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
+	    $(if $(filter x86_64,$*),webworker.bpk=$(WEBWORKER_BPKZ) libjsworker.bpk=$(LIBJS_WORKER_BPKZ) terminal.bpk=$(TERMINAL_BPKZ) $(foreach p,$(PORTS64) $(OPTPORTS64),$(p).bpk=ports/$(p)/build/$(p)-x86_64.bpk.z) \
 	      $(foreach a,$(APPS64),$(a).bpk=apps/$(a)/$(a)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 

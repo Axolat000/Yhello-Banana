@@ -2,7 +2,9 @@
 
 This experiment evaluates replacing BananaScript's JavaScript implementation
 inside the restricted web worker. The normal browser keeps its default engine; the optional DOM worker can be
-selected explicitly. Neither Ladybird package is embedded in the normal ISO.
+selected explicitly. The 64-bit ISO includes the isolated LibJS DOM worker as an
+internal OS component, automatically installed and updated at boot. The standalone
+probe stays optional. Bundling the engine does not run it in kernel space.
 
 ## Reference milestone
 
@@ -70,8 +72,8 @@ This first runs the native reference, then recompiles the selected libraries
 against SDK C runtime headers and builds two packages: apps/libjsprobe/libjsprobe-x86_64.bpk
 (the standalone probes) and apps/libjsworker/libjsworker-x86_64.bpk (the experimental
 DOM renderer).
-Both are internal 64-bit workers, omitted from the normal ISO and app
-catalog. No host shared library or ELF interpreter is allowed in its image.
+Both are internal 64-bit workers, hidden from the application catalog. Only
+libjsworker is embedded in the ISO. No host shared library or ELF interpreter is allowed in its image.
 The source tree, generated files, build output and package are ignored by Git.
 
 The private runtime bridge keeps genuine GCC RTTI and executes the C++ static
@@ -127,7 +129,7 @@ The trusted web API prelude also runs in LibJS, avoiding its duplicate parse
 in the legacy DOM adapter. File and network operations still go through the
 same authenticated kernel IPC broker and quotas.
 
-After installing libjsworker in a disposable 64-bit system, select it with:
+On 64-bit Banana OS, select the included renderer directly with:
 
     browser --libjs https://github.com/qcom-toolbox/Banana-OS/releases
 
@@ -138,15 +140,15 @@ SDK webviews keep the default worker. Return to the default engine with:
 
 No settings or engine preference is persisted across a reboot.
 
-Every ISO workflow also builds and audits LibJS, then attaches these optional
+Every ISO workflow builds and audits LibJS before embedding the renderer, then attaches these
 packages to the same [GitHub prerelease](https://github.com/qcom-toolbox/Banana-OS/releases):
 
 - `libjsworker-x86_64.bpk`: the isolated browser renderer.
 - `libjsprobe-x86_64.bpk`: standalone JavaScript/containment probes.
 - `LIBJS-THIRD-PARTY-NOTICES.txt` and `LIBJS-SHA256SUMS`: licenses and SHA-256 checksums.
 
-Download `libjsworker-x86_64.bpk` into Banana OS or copy it from a mounted drive,
-then install the downloaded file (adjust the path):
+No BPK installation is needed on current 64-bit images. To test a separate
+package build in a disposable VM, download it and install it explicitly:
 
     pkg install /home/banana/Downloads/libjsworker-x86_64.bpk
     browser --libjs https://github.com/qcom-toolbox/Banana-OS/releases
@@ -155,7 +157,15 @@ The optional probe is installed with `pkg install` in the same way.
 These are raw installable BPKs; no decompression is required. They are also
 available in the ISO run's `experimental-libjs-packages` artifact. A manual
 LibJS workflow builds them by default; disable its `sdk` input for native probes
-only. The packages are not embedded in the normal ISO.
+only. The standalone probe is not embedded in the normal ISO.
+
+The root Makefile builds LibJS locally using the Debian prerequisites above.
+CI passes the same commit's audited artifact through `LIBJS_WORKER_BPK=/path/to/libjsworker-x86_64.bpk`.
+Only the worker is embedded, compressed; its third-party notices remain inside its BPK.
+
+Test the integrated renderer without installing a package:
+
+    python3 ports/libjs/test_vm.py --bundled --memory 512M --uefi --live
 
 Target checks:
 

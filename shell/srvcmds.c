@@ -327,7 +327,7 @@ int srvcmd_dispatch(const char* line) {
         int index=1;
         if(argc>1&&(!strcmp(argv[1],"--libjs")||!strcmp(argv[1],"--default"))){
             if(browser_use_libjs(!strcmp(argv[1],"--libjs"))<0){
-                terminal_writeln("browser: install the experimental libjsworker package first");return 1;
+                terminal_writeln("browser: the integrated LibJS renderer is unavailable (requires 64-bit Banana OS)");return 1;
             }
             index++;
         }
