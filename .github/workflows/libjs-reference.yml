@@ -9,12 +9,18 @@ on:
     paths:
       - 'ports/libjs/**'
       - '.github/workflows/libjs-reference.yml'
+  workflow_call:
+    inputs:
+      sdk:
+        description: Build and audit installable Banana SDK packages
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       sdk:
-        description: Also build and audit the optional Banana SDK package
+        description: Also build and audit the installable Banana SDK packages
         type: boolean
-        default: false
+        default: true
 permissions:
   contents: read
 jobs:
@@ -46,11 +52,19 @@ jobs:
         with:
           name: libjs-reference-log
           path: libjs-reference.log
-      - uses: actions/upload-artifact@v4
+      - name: Stage installable LibJS packages
+        if: inputs.sdk
+        shell: bash
+        run: |
+          mkdir -p libjs-packages
+          cp apps/libjsprobe/libjsprobe-x86_64.bpk apps/libjsworker/libjsworker-x86_64.bpk libjs-packages/
+          cp ports/libjs/build/banana/THIRD_PARTY_NOTICES.txt libjs-packages/LIBJS-THIRD-PARTY-NOTICES.txt
+          cd libjs-packages
+          sha256sum *.bpk LIBJS-THIRD-PARTY-NOTICES.txt > LIBJS-SHA256SUMS
+      - name: Upload installable LibJS packages
+        uses: actions/upload-artifact@v4
         if: inputs.sdk
         with:
           name: experimental-libjs-packages
-          path: |
-            apps/libjsprobe/libjsprobe-x86_64.bpk.z
-            apps/libjsworker/libjsworker-x86_64.bpk.z
-            ports/libjs/build/banana/THIRD_PARTY_NOTICES.txt
+          path: libjs-packages/
+          if-no-files-found: error

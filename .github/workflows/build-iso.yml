@@ -246,3 +246,38 @@ jobs:
           prerelease: true
           target_commitish: ${{ github.sha }}
           files: java.bpk
+
+
+  # Build the optional renderer in parallel with the ISO, then attach the raw
+  # installable BPKs to the exact same commit's prerelease.
+  libjs:
+    uses: ./.github/workflows/libjs-reference.yml
+    permissions:
+      contents: read
+    with:
+      sdk: true
+
+  publish-libjs:
+    needs: [build, libjs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installable LibJS packages
+        uses: actions/download-artifact@v4
+        with:
+          name: experimental-libjs-packages
+          path: libjs-packages
+      - name: Verify package checksums
+        working-directory: libjs-packages
+        run: sha256sum -c LIBJS-SHA256SUMS
+      - name: Add LibJS packages to the ISO prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Banana OS build ${{ github.run_number }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: |
+            libjs-packages/*.bpk
+            libjs-packages/LIBJS-THIRD-PARTY-NOTICES.txt
+            libjs-packages/LIBJS-SHA256SUMS

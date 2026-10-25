@@ -136,9 +136,26 @@ SDK webviews keep the default worker. Return to the default engine with:
 
     browser --default
 
-No settings or engine preference is persisted across a reboot. The Actions
-workflow's optional SDK run uploads the compressed experimental BPKs and
-third-party notices as an artifact; it does not add them to the normal ISO.
+No settings or engine preference is persisted across a reboot.
+
+Every ISO workflow also builds and audits LibJS, then attaches these optional
+packages to the same [GitHub prerelease](https://github.com/qcom-toolbox/Banana-OS/releases):
+
+- `libjsworker-x86_64.bpk`: the isolated browser renderer.
+- `libjsprobe-x86_64.bpk`: standalone JavaScript/containment probes.
+- `LIBJS-THIRD-PARTY-NOTICES.txt` and `LIBJS-SHA256SUMS`: licenses and SHA-256 checksums.
+
+Download `libjsworker-x86_64.bpk` into Banana OS or copy it from a mounted drive,
+then install the downloaded file (adjust the path):
+
+    pkg install /home/banana/Downloads/libjsworker-x86_64.bpk
+    browser --libjs https://github.com/qcom-toolbox/Banana-OS/releases
+
+The optional probe is installed with `pkg install` in the same way.
+These are raw installable BPKs; no decompression is required. They are also
+available in the ISO run's `experimental-libjs-packages` artifact. A manual
+LibJS workflow builds them by default; disable its `sdk` input for native probes
+only. The packages are not embedded in the normal ISO.
 
 Target checks:
 
