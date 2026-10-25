@@ -1,6 +1,8 @@
 #include "banana_platform.h"
 #include "banana_transport.h"
 #include "banana_ca.h"
+#include "tls.h"
+#include "net.h"
 #include "rtc.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/hmac_drbg.h"
@@ -31,6 +33,18 @@ int banana_tls_seed(unsigned char* out, size_t len) {
 }
 uint32_t rtc_now_utc(void) { return clock_utc; }
 uint64_t timer_ms64(void) { return 0x100000001ull; }
+uint32_t timer_ms(void) { return 1000u; }
+void klog(const char* fmt, ...) { (void)fmt; }
+const char* net_strerror(int err) {
+    switch (err) {
+    case NET_ERR_TIMEOUT: return "timeout";
+    case NET_ERR_RESET: return "reset";
+    case NET_ERR_CLOSED: return "closed";
+    case NET_ERR_CERT: return "certificate verification failed";
+    case NET_ERR_CLOCK: return "system clock not set";
+    default: return "error";
+    }
+}
 /* Use the real civil-date conversion functions, extracted by run.sh. */
 int tcp_send(tcp_conn_t* c, const void* buf, uint32_t n, uint32_t timeout) {
     (void)c; (void)buf; (void)timeout;
@@ -239,6 +253,82 @@ int main(void) {
 
     /* Restore clock */
     clock_utc = 1709251200u;
+
+    /* ── tls_connect and error mapping verification ── */
+    {
+        int err = 0;
+        char errmsg[128] = "";
+
+        /* Null args -> NET_ERR_PROTO */
+        CHECK(tls_connect(NULL, "example.test", 0, 1000, &err, errmsg, sizeof(errmsg)) == NULL);
+        CHECK(err == NET_ERR_PROTO);
+
+        /* Transport reset during handshake -> NET_ERR_RESET */
+        io_result = NET_ERR_RESET;
+        CHECK(tls_connect((tcp_conn_t*)1, "example.test", 0, 1000, &err, errmsg, sizeof(errmsg)) == NULL);
+        CHECK(err == NET_ERR_RESET);
+
+        /* Transport timeout -> NET_ERR_TIMEOUT */
+        io_result = NET_ERR_TIMEOUT;
+        CHECK(tls_connect((tcp_conn_t*)1, "example.test", 0, 1000, &err, errmsg, sizeof(errmsg)) == NULL);
+        CHECK(err == NET_ERR_TIMEOUT);
+
+        /* Error mapping tests */
+        {
+            int mapped_err = 0;
+            char msg[128] = "";
+
+            /* 1. Expired certificate mapping */
+            extern void map_tls_error(int ret, uint32_t vflags, int last_net_err,
+                                      int* out_err, char* errmsg, uint32_t errmsg_len);
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_EXPIRED, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CERT);
+            CHECK(strstr(msg, "expired") != NULL);
+
+            /* 2. Future certificate mapping */
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_FUTURE, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CERT);
+            CHECK(strstr(msg, "not yet valid") != NULL);
+
+            /* 3. Bad hostname (CN mismatch) mapping */
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_CN_MISMATCH, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CERT);
+            CHECK(strstr(msg, "hostname mismatch") != NULL);
+
+            /* 4. Unknown CA mapping */
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_NOT_TRUSTED, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CERT);
+            CHECK(strstr(msg, "untrusted") != NULL);
+
+            /* 5. Bad key usage mapping */
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_KEY_USAGE, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CERT);
+            CHECK(strstr(msg, "key usage") != NULL);
+
+            /* 6. System clock not set (clock_utc == 0) mapping */
+            clock_utc = 0;
+            map_tls_error(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, MBEDTLS_X509_BADCERT_EXPIRED, 0,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_CLOCK);
+            CHECK(strstr(msg, "system clock not set") != NULL);
+            clock_utc = 1709251200u;
+
+            /* 7. Connection reset mapping */
+            map_tls_error(MBEDTLS_ERR_NET_CONN_RESET, 0, NET_ERR_RESET,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_RESET);
+
+            /* 8. Timeout mapping */
+            map_tls_error(MBEDTLS_ERR_SSL_TIMEOUT, 0, NET_ERR_TIMEOUT,
+                          &mapped_err, msg, sizeof(msg));
+            CHECK(mapped_err == NET_ERR_TIMEOUT);
+        }
+    }
 
     mbedtls_hmac_drbg_free(&rng);
     mbedtls_entropy_free(&entropy);
