@@ -1,0 +1,15 @@
+ok    zero/overflow/huge alignment and VM failure injection
+ok    one thread, no cache: 400000 random malloc / calloc / realloc / free, every byte checked
+ok    one thread, second seed
+ok    aligned blocks (16 B .. 64 KiB alignment, 1 B .. 200 KB)
+ok    kernel memory: free and realloc pass it back
+ok    8 threads: 300000 random ops each, 100000 blocks freed by another thread
+ok    everything freed: 0 bytes in use, 0 MiB of addresses reserved
+malloc: all checks passed (0 failures)
+fallback old-api: passed
+fallback short-api: passed
+fallback no-map: passed
+fallback no-unmap: passed
+
+Command: python3 tools/test_malloc.py
+Exit status: 0

@@ -110,13 +110,13 @@ static void t_memory(void) {
     char note[96];
     if (total < (64ull << 20)) {
         skip("RAM above 4 GiB", "none here (QEMU: MEM=8G tools/dev.sh run)");
-        report("an app gets 64 MiB and every byte holds", run("mem", "64", NULL) == 0, "");
+        report("SDK heap allocates 64 MiB and every byte holds", run("mem", "64", NULL) == 0, "");
         return;
     }
     ksnprintf(note, sizeof(note), "%u MiB found", (uint32_t)(total >> 20));
     report("RAM above 4 GiB", 1, note);
     uint64_t before = hmem_used_bytes();
-    report("an app's 64 MiB come from above 4 GiB", run("mem", "64", "high") == 0, "");
+    report("kernel umem allocates 64 MiB from above 4 GiB", run("mem", "64", "high") == 0, "");
     ksnprintf(note, sizeof(note), "%u MiB in use before, %u after", (uint32_t)(before >> 20), (uint32_t)(hmem_used_bytes() >> 20));
     report("it is given back when the app ends", hmem_used_bytes() <= before, note);
 }

@@ -542,6 +542,12 @@ typedef struct banana_ucontext {
 #define BANANA_HAS(api, field) \
     ((api)->size >= (unsigned long)((const char*)&(api)->field - (const char*)(api)) + sizeof(void*))
 
+/* SDK allocation ownership contract (64-bit): non-fixed vm_map results
+ * are page-aligned and at/above this boundary; kernel-owned allocations
+ * (malloc, HTTP bodies, image buffers) are below it. See docs/sdk-allocator.md.
+ * Keep equal to kernel/uvm.h UVM_BASE; kernel/app.c asserts the equality. */
+#define BANANA_VM_BASE 0x0000640000000000ull
+
 /* vm_map / vm_protect (the same values as kernel/uvm.h) */
 #define BANANA_PROT_NONE  0
 #define BANANA_PROT_READ  1

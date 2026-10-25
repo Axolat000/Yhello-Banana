@@ -487,7 +487,7 @@ void freeifaddrs(struct ifaddrs* i) { free(i); }
 
 /* ── memory ───────────────────────────────────────────────────────── */
 
-size_t malloc_usable_size(void* p) { (void)p; return 0; }
+/* (malloc_usable_size: malloc.c) */
 struct mallinfo mallinfo(void) { struct mallinfo m; memset(&m, 0, sizeof(m)); return m; }
 int malloc_trim(size_t pad) { (void)pad; return 0; }
 

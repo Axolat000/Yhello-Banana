@@ -1,0 +1,5 @@
+# Run with tools/serialtest.py --cmds-file and a freshly rebuilt ISO.
+selftest memory ## 0 failed
+systest mem 4 high ## physical high-RAM check failed: 1 pieces below 4 GiB
+systest heap ## heap lifecycle: passed
+systest heap ## heap lifecycle: passed
