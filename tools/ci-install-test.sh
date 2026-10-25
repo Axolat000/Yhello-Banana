@@ -87,7 +87,8 @@ echo "== 4. Boot updated disk again and verify user data"
 python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --boot-timeout 180 --timeout 180 \
     --cmd 'selftest boot ## 0 failed' \
-    --cmd 'selftest browser libjsdom ## 29 passed, 0 failed' \
+    --cmd 'browser --engine ## browser engine: LibJS' \
+    --cmd 'selftest browser libjsdom ## 30 passed, 0 failed' \
     --cmd 'pkg remove libjsworker ## integrated OS component' \
     --cmd 'pkg info terminal ## Terminal' \
     --cmd 'pkg remove terminal ## integrated OS component' \

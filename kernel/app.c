@@ -3052,6 +3052,8 @@ static int web_syscall_allowed(uint64_t slot) {
     case API_SLOT(realloc): case API_SLOT(ticks_ms): case API_SLOT(sleep_ms):
     case API_SLOT(yield): case API_SLOT(vm_map): case API_SLOT(vm_unmap):
     case API_SLOT(vm_protect): case API_SLOT(tls_set): case API_SLOT(thread_id):
+    /* Read-only UTC/timezone queries back Date/Intl in the SDK runtime. */
+    case API_SLOT(time_utc): case API_SLOT(utc_offset):
     case API_SLOT(localtime): case API_SLOT(random): case API_SLOT(web_ipc):
         return 1;
     default: return 0;
@@ -4851,6 +4853,12 @@ int app_web_alive(int id, uint32_t generation) {
 uint32_t app_web_memory(int id, uint32_t generation) {
     return app_web_alive(id,generation) ? umem_committed(g_procs[id].mem) : 0;
 }
+int app_web_stop_reason(int id, uint32_t generation) {
+    /* Keep the reason after teardown, but never report a reused slot's status. */
+    if(id<0||id>=APP_MAX)return 0;
+    app_proc_t* p=&g_procs[id];
+    return p->web_restricted&&(uint32_t)p->seq==generation?(int)p->web_stop_reason:0;
+}
 int app_web_kill(int id, uint32_t generation) {
     return app_web_alive(id,generation) ? app_kill(id) : -1;
 }
@@ -4873,12 +4881,12 @@ int app_spawn_web_worker(const char* path, char* err, int cap) {
     if (!p) return -1;
     p->web_restricted = 1;
     p->web_window = timer_ms();
-    p->web_deadline = timer_ms() + 15000u;
-    p->web_cpu_limit = 5000u;
-    if(umem_limit(p->mem,256u<<20)<0){
+    p->web_deadline = timer_ms() + 90000u;
+    p->web_cpu_limit = 30000u;
+    if(umem_limit(p->mem,512u<<20)<0){
         release(p);kstrlcpy(err,"browser memory pool is full",(size_t)cap);return -1;
     }
-    if(uvm_limit(p->us,p->mem,512u<<20,256)<0){
+    if(uvm_limit(p->us,p->mem,1024u<<20,512)<0){
         release(p);kstrlcpy(err,"browser loader exceeds memory pool",(size_t)cap);return -1;
     }
     p->pid = -1; p->own_task = 1; p->has_term = 0; p->vt = 0;

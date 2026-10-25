@@ -81,7 +81,7 @@ static int pool_take(uint32_t bytes) {
     if(!g_pool_limit){
         uint32_t free=kheap_total_bytes()-kheap_used_bytes();
         g_pool_limit=free/2u;
-        if(g_pool_limit>(512u<<20))g_pool_limit=512u<<20;
+        if(g_pool_limit>(1024u<<20))g_pool_limit=1024u<<20;
     }
     int ok=bytes<=g_pool_limit-g_pool_used;
     if(ok)g_pool_used+=bytes;

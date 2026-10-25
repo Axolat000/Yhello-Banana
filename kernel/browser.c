@@ -116,7 +116,12 @@ static int        g_cmd_head, g_cmd_tail;
 
 static page_env_t g_env;
 static uint32_t   g_page_mem = 48u << 20;
+#ifdef __x86_64__
+static int g_use_libjs=1;
+#else
 static int g_use_libjs;
+#endif
+int browser_uses_libjs(void){return g_use_libjs;}
 int browser_use_libjs(int enabled){
     if(enabled&&fs_find_file("/apps/libjsworker/app-x86_64")<0)return -1;
     g_use_libjs=!!enabled;return 0;

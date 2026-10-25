@@ -25,7 +25,10 @@ with tempfile.TemporaryDirectory(prefix='banana-libjs-') as temporary:
         subprocess.run(['mcopy','-i',str(disk),str(package),'::/libjsprobe.bpk'],check=True)
     command=[sys.executable,str(root/'tools/serialtest.py'),'--log',str(args.log),
              '--boot-timeout','240','--timeout','240']
-    setup = ['pkg remove libjsworker ## integrated OS component'] if args.bundled else ['mount -a','pkg install /mnt/ide/libjsprobe.bpk ## installed']
+    setup = ['browser --engine ## browser engine: LibJS',
+             'browser --legacy ## startx', 'browser --engine ## browser engine: BananaScript (legacy)',
+             'browser --default ## startx', 'browser --engine ## browser engine: LibJS',
+             'pkg remove libjsworker ## integrated OS component'] if args.bundled else ['mount -a','pkg install /mnt/ide/libjsprobe.bpk ## installed']
     for text in setup + [
                  ('selftest browser libjsdom ## 0 failed' if args.dom else 'selftest browser libjs ## 28 passed, 0 failed'),
                  'selftest browser isolation ## 26 passed, 0 failed',

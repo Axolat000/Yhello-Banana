@@ -8,23 +8,23 @@ also delegate to an isolated image worker; the kernel keeps zlib for archives.
 
 Workers cannot open files or sockets, execute commands, create processes or
 threads, or access other applications through normal or raw syscalls. The allowed
-syscalls cover private memory, time, randomness, scheduling and the authenticated
-web IPC channel. IPC associates each channel with both a process ID and its
+syscalls cover private memory, read-only UTC/local time and timezone queries,
+randomness, scheduling and the authenticated web IPC channel. IPC associates each channel with both a process ID and its
 generation, so reusing an application slot does not transfer a channel.
 
 ## Broker permissions and quotas
 
-- At most four renderer/decoder channels. Each worker has a 256 MiB physical
+- At most four renderer/decoder channels. Each worker has a 512 MiB physical
   committed-memory limit (loader allocations and touched anonymous mmap pages
-  share the same budget), 512 MiB virtual address limit and 256 virtual ranges.
-  Their combined physical pool is capped at 512 MiB or half the kernel heap
+  share the same budget), 1 GiB virtual address limit and 512 virtual ranges.
+  Their combined physical pool is capped at 1 GiB or half the kernel heap
   available when the first worker starts, whichever is smaller. Compressed or
   swapped mmap pages keep their charge; unmapping or ending the process returns
   it. Quota termination also works when a worker faults on another CPU core.
 - CPU use is limited to 500 ms per one-second window. Page loads, image decoding and layout updates have a
-  30-second CPU / 90-second wall limit; other commands have
-  a two-second CPU / ten-second wall limit. Idle workers wait without using
-  their command budget. A fault or exhausted budget terminates that worker.
+  120-second CPU / 300-second wall limit; initialization has a 30-second CPU /
+  90-second wall limit; other commands have a 10-second CPU / 30-second wall limit.
+  Idle workers wait without using their command budget. A fault or exhausted budget terminates that worker.
 - Documents and resource responses are limited to 8 MiB. Each channel has
   512 resource requests and 64 MiB total fetched data for its lifetime.
   Images are limited to eight million pixels with checked output dimensions
@@ -104,8 +104,10 @@ image. The optional DOM worker now connects persistent LibJS realms to the C DOM
 events, promise checkpoints, timers and the existing layout/pixel IPC. It is
 included as an internal component of the 64-bit OS and selected explicitly with
 browser --libjs; no manual package installation is needed. It is installed and
-updated at boot, while its execution remains isolated in user space;
-SDK webviews and ordinary browser launches retain the default worker. Google
+updated at boot, while its execution remains isolated in user space.
+Ordinary desktop browser launches use LibJS by default on 64-bit systems;
+SDK webviews retain the legacy worker. Use browser --legacy for the older desktop
+engine and browser --default to restore LibJS. browser --engine reports the selection. Google
 and manual CAPTCHA compatibility remain unfinished. The module loader is not
 integrated, so the experimental worker honors classic nomodule fallbacks.
 
@@ -118,6 +120,6 @@ clipping/stacking cases. A physical click on Google's consent rejection button
 was verified in the experimental browser.
 
 Layout updates can load newly inserted iframe documents and decode resources.
-They use the same bounded 30-second CPU / 90-second wall budget as document
-loading; eval, timers, input and rendering retain the 2-second CPU / 10-second
+They use the same bounded 120-second CPU / 300-second wall budget as document
+loading; eval, timers, input and rendering use the 10-second CPU / 30-second
 wall budget. The per-second CPU throttle and memory limits apply to both.

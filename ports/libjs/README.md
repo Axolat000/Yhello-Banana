@@ -1,8 +1,8 @@
 # Ladybird LibJS port prototype
 
 This experiment evaluates replacing BananaScript's JavaScript implementation
-inside the restricted web worker. The normal browser keeps its default engine; the optional DOM worker can be
-selected explicitly. The 64-bit ISO includes the isolated LibJS DOM worker as an
+inside the restricted web worker. LibJS is the default desktop browser engine on
+64-bit systems; the legacy renderer remains available with browser --legacy. The 64-bit ISO includes the isolated LibJS DOM worker as an
 internal OS component, automatically installed and updated at boot. The standalone
 probe stays optional. Bundling the engine does not run it in kernel space.
 
@@ -120,7 +120,7 @@ QEMU TCG, two virtual CPUs, 512 MiB RAM, BIOS and UEFI (live GitHub checked on B
 
 ## DOM integration milestone
 
-The optional libjsworker uses persistent LibJS realms with the existing C DOM,
+The integrated libjsworker uses persistent LibJS realms with the existing C DOM,
 HTML/CSS layout and image decoder. Native getters, setters and functions cross
 a bounded process-local adapter. DOM wrappers and JavaScript callbacks keep
 their identity; VM roots retain callbacks across events and timers. Detached
@@ -133,12 +133,21 @@ On 64-bit Banana OS, select the included renderer directly with:
 
     browser --libjs https://github.com/qcom-toolbox/Banana-OS/releases
 
-The desktop must be running. The choice applies to subsequent browser loads;
-SDK webviews keep the default worker. Return to the default engine with:
+The desktop must be running. LibJS is selected at boot for desktop browsing;
+SDK webviews keep their original worker. Switch subsequent browser loads to
+the legacy engine with `browser --legacy`, or restore LibJS with
+`browser --default` (equivalent to `browser --libjs` on 64-bit systems).
+`browser --engine` reports the current selection without opening the desktop.
+The selection resets to the platform default at reboot.
 
-    browser --default
-
-No settings or engine preference is persisted across a reboot.
+Loads, decoding and layout updates now allow 120 seconds of CPU and 300 seconds
+of elapsed time. Interactions/evaluation allow 10 seconds of CPU and 30 seconds
+elapsed; initialization allows 30/90 seconds. Each worker can commit up to
+512 MiB with a 1 GiB shared browser pool, further bounded by half the available
+kernel heap. A machine with less RAM cannot consume those maxima. The 500 ms
+per-second CPU throttle and IPC/origin restrictions remain active. CPU and
+wall-time terminations show distinct errors; crashes are not labelled as proven
+quota failures.
 
 Every ISO workflow builds and audits LibJS before embedding the renderer, then attaches these
 packages to the same [GitHub prerelease](https://github.com/qcom-toolbox/Banana-OS/releases):
@@ -172,7 +181,7 @@ Target checks:
     python3 ports/libjs/test_vm.py --dom --memory 512M --live
     python3 ports/libjs/test_vm.py --dom --memory 512M --uefi --live
 
-The 29 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
+The 30 DOM checks exercise DOM updates, node/Window identity, event callbacks and removal,
 element creation, dynamically inserted iframe execution/rendering, promise jobs,
 timers, attributes, native construction and MutationObserver delivery/disconnection,
 binary-safe Base64 and UTF-8 text codecs, denied file fetches, forged
@@ -180,7 +189,7 @@ bridge indices, exceptions, pixel IPC and CPU containment alongside an
 independent renderer. Classic nomodule fallback scripts run because the module
 loader is not yet integrated. The existing 26 isolation, 76 offline framework
 and six memory checks pass. Real GitHub releases pass in both the original
-worker and the optional LibJS worker.
+worker and the integrated LibJS worker.
 
 The DOM fixture's charged peak is approximately 59 MiB, including the image.
 Its static PIE is approximately 56 MB and the compressed BPK approximately

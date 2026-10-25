@@ -48,6 +48,7 @@ void app_pty_close(struct pty* t);
 int app_spawn_web_worker(const char* path, char* err, int cap);
 uint32_t app_web_generation(int id);
 uint32_t app_web_memory(int id, uint32_t generation);
+int app_web_stop_reason(int id, uint32_t generation); /* 1: CPU, 2: wall; 0: unknown */
 int app_web_alive(int id, uint32_t generation);
 int app_web_kill(int id, uint32_t generation);
 void app_web_budget(int id, uint32_t generation, uint32_t wall_ms, uint32_t cpu_ms);

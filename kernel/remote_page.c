@@ -196,17 +196,26 @@ static int call(remote_page_t* r,unsigned int op,const int* args,const char* url
     r->input=data;r->output=out;r->out_cap=cap;r->out_used=0;
     /* Updating layout can load new iframe documents and decode resources,
      * exactly as the initial document load does. Timers, eval and input keep
-     * the short interaction budget. Both classes remain bounded and throttled. */
+     * the shorter interaction budget; startup has its own initialization budget.
+     * All commands remain bounded and throttled. */
     int loading=op==WW_LOAD||op==WW_DECODE||op==WW_UPDATE;
-    app_web_budget(r->app,r->generation,loading?90000u:10000u,loading?30000u:2000u);
+    uint32_t cpu_ms=loading?120000u:op==WW_INIT?30000u:10000u;
+    uint32_t wall_ms=loading?300000u:op==WW_INIT?90000u:30000u;
+    app_web_budget(r->app,r->generation,wall_ms,cpu_ms);
     __sync_synchronize();r->stage=1;uint32_t start=timer_ms();
     for(;;){
         uint32_t memory=app_web_memory(r->app,r->generation);
         if(memory>r->peak_memory)r->peak_memory=memory;
         if(r->resource_ready==1)serve(r);
         if(r->stage==3)break;
-        if(!app_web_alive(r->app,r->generation)||timer_ms()-start>(loading?95000u:12000u)){
-            crashed(r,"Page stopped: worker crash, memory limit or execution quota");r->busy=0;return -1;
+        int timed_out=timer_ms()-start>wall_ms+5000u;
+        if(!app_web_alive(r->app,r->generation)||timed_out){
+            int reason=app_web_stop_reason(r->app,r->generation);
+            char why[128];
+            if(reason==1)ksnprintf(why,sizeof(why),"Page stopped: CPU limit exceeded (%u seconds)",cpu_ms/1000u);
+            else if(reason==2||timed_out)ksnprintf(why,sizeof(why),"Page stopped: wall time limit exceeded (%u seconds)",wall_ms/1000u);
+            else kstrlcpy(why,"Page stopped: renderer terminated unexpectedly (possible memory exhaustion)",sizeof(why));
+            crashed(r,why);r->busy=0;return -1;
         }
         task_sleep_ms(1);
     }
@@ -537,6 +546,8 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     report("DOM script exceptions remain in the renderer",rc<0,text);
     rc=remote_page_eval(p,"document.getElementById('out').textContent",text,sizeof(text));
     report("DOM remains usable after an exception",!rc&&!strcmp(text,"job 9"),text);
+    rc=remote_page_eval(p,"(()=>{const end=Date.now()+6500;while(Date.now()<end){};return 42})()",text,sizeof(text));
+    report("finite LibJS work survives the former short interaction quota",!rc&&!strcmp(text,"42"),rc?p->status:text);
     remote_page_update(p,640);
     uint32_t* pixels=kmalloc(640*160*4);
     if(pixels){
@@ -565,7 +576,7 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
         const char* canary="<script>var answer=42;</script>";
         remote_page_load(other,"https://example.com/",canary,strlen(canary),640);
         rc=remote_page_eval(p,"for(;;){}",text,sizeof(text));
-        report("hostile DOM JavaScript hits the CPU quota",rc<0&&((remote_page_t*)p)->dead,p->status);
+        report("hostile DOM JavaScript hits the CPU quota",rc<0&&((remote_page_t*)p)->dead&&strstr(p->status,"CPU limit exceeded"),p->status);
         rc=remote_page_eval(other,"answer",text,sizeof(text));
         report("independent renderer survives hostile LibJS DOM",!rc&&!strcmp(text,"42"),rc?other->status:text);
         remote_page_free(other);

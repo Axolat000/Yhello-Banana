@@ -32,9 +32,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   audio/video is temporarily disabled. See [scope, limits and tests](docs/browser-isolation.md).
   The [Ladybird LibJS prototype](ports/libjs/README.md) is included in the 64-bit
   OS as an isolated internal renderer, installed and updated automatically. It runs JavaScript
-  and containment probes in a restricted user process. Its optional DOM worker
+  and containment probes in a restricted user process. Its DOM worker is the
+  default desktop browser engine on 64-bit systems (browser --legacy selects the
+  older renderer; browser --engine reports the selection). It
   supports persistent realms, events, timers, MutationObserver, binary-safe Base64,
-  UTF-8 text codecs and rendering via browser --libjs;
+  UTF-8 text codecs and rendering. Larger bounded CPU/memory budgets accommodate
+  heavier pages; CPU and wall-time exhaustion have distinct diagnostics;
   Google/CAPTCHA compatibility remains in progress.
 
 - **PNG screenshots** - `screenshot [absolute directory]` saves the screen without overwriting previous captures; **Win+Shift+S** captures the completed desktop frame. The default destination is `/home/banana/Pictures`.

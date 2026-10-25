@@ -325,13 +325,22 @@ int srvcmd_dispatch(const char* line) {
     if (strcmp(argv[0], "browser") == 0) {
         /* the desktop's web browser, optionally at an address */
         int index=1;
-        if(argc>1&&(!strcmp(argv[1],"--libjs")||!strcmp(argv[1],"--default"))){
-            if(browser_use_libjs(!strcmp(argv[1],"--libjs"))<0){
+        if(argc==2&&!strcmp(argv[1],"--engine")){
+            terminal_writeln(browser_uses_libjs()?"browser engine: LibJS":"browser engine: BananaScript (legacy)");
+            return 1;
+        }
+        if(argc>1&&(!strcmp(argv[1],"--libjs")||!strcmp(argv[1],"--default")||!strcmp(argv[1],"--legacy"))){
+#ifdef __x86_64__
+            int enabled=strcmp(argv[1],"--legacy")!=0;
+#else
+            int enabled=!strcmp(argv[1],"--libjs");
+#endif
+            if(browser_use_libjs(enabled)<0){
                 terminal_writeln("browser: the integrated LibJS renderer is unavailable (requires 64-bit Banana OS)");return 1;
             }
             index++;
         }
-        if(argc>index+1){terminal_writeln("usage: browser [--libjs|--default] [address]");return 1;}
+        if(argc>index+1){terminal_writeln("usage: browser [--libjs|--default|--legacy] [address] | browser --engine");return 1;}
         if (!gui_open_browser(argc>index?argv[index]:NULL))
             terminal_writeln("browser: the web browser is part of the desktop - run `startx` first");
         return 1;

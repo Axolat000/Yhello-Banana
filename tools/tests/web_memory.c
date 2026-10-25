@@ -12,7 +12,8 @@ static void spin_unlock_irq(spinlock_t* l,uintptr_t f){(void)f;__sync_lock_relea
 extern int printf(const char*,...);
 extern void exit(int);
 static uint32_t mock_heap_used;
-uint32_t kheap_total_bytes(void){return 128u<<20;}
+static uint32_t mock_heap_total=128u<<20;
+uint32_t kheap_total_bytes(void){return mock_heap_total;}
 uint32_t kheap_used_bytes(void){return mock_heap_used;}
 static int checks;
 #define CHECK(x) do{checks++;if(!(x)){printf("FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
@@ -48,6 +49,22 @@ int main(void){
     umem_vm_uncharge(&b,32u<<20);
     CHECK(g_pool_used==(16u<<20));
     CHECK(a.reserved==(8u<<20)&&b.reserved==(8u<<20));
+    /* Large-memory machines get the higher cap, while the half-heap rule
+     * remains authoritative on smaller machines. Exercise the actual ledger. */
+    g_pool_limit=0;g_pool_used=0;mock_heap_used=0;
+    mock_heap_total=3u<<30;
+    umem_web_pool_init();
+    CHECK(g_pool_limit==(1024u<<20));
+    umem_t large={0},peer={0};
+    CHECK(!umem_limit(&large,512u<<20));
+    CHECK(!umem_limit(&peer,512u<<20));
+    CHECK(umem_vm_charge(&large,512u<<20));
+    CHECK(!umem_vm_charge(&large,4096));
+    CHECK(umem_vm_charge(&peer,512u<<20));
+    CHECK(g_pool_used==(1024u<<20));
+    umem_vm_uncharge(&large,512u<<20);
+    umem_vm_uncharge(&peer,512u<<20);
+    CHECK(g_pool_used==0);
     printf("PASS: %d shared direct/mmap memory quota checks\n",checks);
     return 0;
 }
