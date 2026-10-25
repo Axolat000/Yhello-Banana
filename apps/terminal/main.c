@@ -24,14 +24,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "vt.h"
+#include "prefs.h"
 
 #define SCROLLBACK  5000
 #define MAX_WINDOWS 16
 #define TAB_H       28
 #define PAD         4
-#define DEF_FG      0xE5E5E5u
-#define DEF_BG      0x1D232Cu
-#define CURSOR_C    0xF4D35Eu
+#define DEF_FG      g_prefs.fg
+#define DEF_BG      g_prefs.bg
+#define CURSOR_C    g_prefs.cursor_color
 #define SEL_BG      0x3A7BD5u
 #define BAR_BG      0x14181Eu
 #define TAB_BG      0x262D38u
@@ -82,6 +83,14 @@ typedef struct {
 } term_t;
 
 static term_t g_w[MAX_WINDOWS];
+static term_prefs_t g_prefs;
+static bwin_t g_preferences={.id=-1};
+static char g_pref_status[128];
+static int g_pref_edit=-1,g_pref_replace;
+static char g_pref_hex[7];
+static void preferences_open(void);
+static void preferences_draw(void);
+static void preferences_event(const banana_event_t*);
 static int g_font = 15, g_cw = 9, g_ch = 18, g_ascent = 14;
 static char** g_cmd;            /* terminal -e command...: what tabs run (NULL: the selected shell) */
 
@@ -176,6 +185,7 @@ static void child_env(void) {
 /* Read the saved choice for each new tab, so chsh takes effect without
  * replacing the terminal emulator or disturbing existing shells. */
 static const char* default_shell(void) {
+    if(g_prefs.shell){const char* chosen=g_prefs.shell==2?"/bin/zsh":"/bin/bash";return access(chosen,X_OK)==0?chosen:"/bin/bash";}
     char line[128];
     FILE* f = fopen("/etc/settings.conf", "r");
     const char* path = "/bin/bash";
@@ -397,7 +407,7 @@ static void draw_row(term_t* t, int r) {
         if (c.attr & VT_INVISIBLE) fg = bg;
         if (selected(t, abs_line, x)) { bg = SEL_BG; fg = 0xFFFFFF; }
         int is_cur = cur_here && (x == vt->cur.x || (cells == 2 && x + 1 == vt->cur.x));
-        if (is_cur && t->focused) { fg = DEF_BG; bg = CURSOR_C; }
+        if (is_cur && t->focused && g_prefs.cursor==0) { fg = DEF_BG; bg = CURSOR_C; }
         int px = PAD + x * g_cw;
         fill(w, px, y0, cells * g_cw, g_ch, bg);
         if (c.ch > ' ' && c.ch != 0xA0) {
@@ -413,13 +423,15 @@ static void draw_row(term_t* t, int r) {
         }
         if (c.attr & VT_UNDERLINE) fill(w, px, y0 + g_ascent + 1, cells * g_cw, 1, fg);
         if (c.attr & VT_STRIKE) fill(w, px, y0 + g_ch / 2, cells * g_cw, 1, fg);
+        if(is_cur&&t->focused&&g_prefs.cursor==1)fill(w,px,y0+g_ch-2,cells*g_cw,2,CURSOR_C);
+        if(is_cur&&t->focused&&g_prefs.cursor==2)fill(w,px,y0,2,g_ch,CURSOR_C);
         if (is_cur && !t->focused) bwin_rect(w, px, y0, cells * g_cw, g_ch, CURSOR_C);
         if (cells == 2) x++;
     }
 }
 
 static void tab_label(const term_t* t, int i, int* x0, int* x1) {
-    int avail = t->win.w - TAB_H - 4;
+    int avail = t->win.w - 2*TAB_H - 4;
     int tw = t->ntabs ? avail / t->ntabs : avail;
     if (tw > 220) tw = 220;
     *x0 = 2 + i * tw;
@@ -447,9 +459,12 @@ static void draw_bar(term_t* t) {
             do n--; while (n && ((unsigned char)s[n] & 0xC0) == 0x80);
             s[n] = 0;
         }
-        bwin_font(w, x0 + 8, ty + 2, BANANA_FONT_SANS, 13, s, active ? 0xFFFFFF : 0xA8B0BC);
+        bwin_font(w, x0 + 8, ty + 2, BANANA_FONT_SANS, 13, s, active ? DEF_FG : 0xA8B0BC);
         bwin_font(w, x1 - 16, ty + 2, BANANA_FONT_SANS, 13, "\xc3\x97", 0x8890A0);        /* × */
     }
+    /* Sliders: preferences, always available beside the new-tab button. */
+    int gear=w->w-2*TAB_H+6;
+    for(int j=0;j<3;j++){fill(w,gear,8+j*6,14,1,0xA8B0BC);fill(w,gear+3+(j%2)*6,6+j*6,3,5,0xE5E5E5);}
     /* + : a new tab */
     int px = t->win.w - TAB_H + 2;
     fill(w, px, 4, TAB_H - 6, TAB_H - 7, TAB_BG);
@@ -480,6 +495,89 @@ static void draw(term_t* t) {
         snprintf(t->shown_title, sizeof(t->shown_title), "%s", title);
         bwin_title(&t->win, title);
     }
+}
+
+/* ── saved terminal preferences ──────────────────────────────────── */
+static const uint32_t pref_colors[]={0x1D232C,0x101010,0x002B36,0xF8FAFC,0xE5E5E5,0x93A1A1,0xF4D35E,0x2563EB,0x2AA198,0xF38BA8};
+static void preferences_draw(void){
+ bwin_t* w=&g_preferences;if(w->id<0)return;
+ bwin_clear(w,0x171D27);
+ bwin_font(w,20,15,BANANA_FONT_SANS_BOLD,18,"Terminal preferences",0xF1F5F9);
+ const char* labels[]={"Theme","Text size","Background","Text color","Cursor style","Cursor color","Shell for new tabs"};
+ char values[7][48];
+ snprintf(values[0],48,"%s",g_prefs.theme<0?"custom":term_themes[g_prefs.theme]);
+ snprintf(values[1],48,"%d px",g_prefs.font);
+ snprintf(values[2],48,"#%06X",g_prefs.bg);snprintf(values[3],48,"#%06X",g_prefs.fg);
+ snprintf(values[4],48,"%s",term_cursors[g_prefs.cursor]);
+ snprintf(values[5],48,"#%06X",g_prefs.cursor_color);snprintf(values[6],48,"%s",term_shells[g_prefs.shell]);
+ for(int i=0;i<7;i++){
+  int y=52+i*36;
+  bwin_font(w,20,y+7,BANANA_FONT_SANS,14,labels[i],0xC5CFDD);
+  bwin_fill_rect(w,210,y,226,29,0x283345);
+  bwin_font(w,219,y+6,BANANA_FONT_SANS,14,"<",0x93C5FD);
+  if(i==g_pref_edit)snprintf(values[i],48,"#%s_",g_pref_hex);
+  bwin_font(w,244,y+6,BANANA_FONT_SANS,14,values[i],i==g_pref_edit?0x93C5FD:0xF1F5F9);
+  bwin_font(w,418,y+6,BANANA_FONT_SANS,14,">",0x93C5FD);
+ }
+ bwin_fill_rect(w,20,312,416,42,g_prefs.bg);
+ bwin_font(w,30,321,BANANA_FONT_MONO,16,"banana@pc:~$ echo hello",g_prefs.fg);
+ bwin_fill_rect(w,275,g_prefs.cursor==1?338:321,g_prefs.cursor==2?2:9,g_prefs.cursor==1?2:20,g_prefs.cursor_color);
+ const char* note=g_pref_status[0]?g_pref_status:g_pref_edit>=0?"Six hex digits. Enter applies; Esc cancels.":"Saved automatically. Existing shells keep running.";
+ bwin_font(w,20,368,BANANA_FONT_SANS,12,note,g_pref_status[0]?0xFDA4AF:0x94A3B8);
+ bwin_update(w);
+}
+static void preferences_open(void){
+ if(g_preferences.id>=0)return;
+ if(bwin_open(&g_preferences,"Terminal preferences",456,400)<0)return;
+ preferences_draw();
+}
+static void preferences_commit(term_prefs_t next){
+ g_pref_status[0]=0;
+ if(next.shell==2&&access("/bin/zsh",X_OK)<0){snprintf(g_pref_status,sizeof(g_pref_status),"Zsh is not installed");preferences_draw();return;}
+ int resized=next.font!=g_font;
+ g_prefs=next;if(resized)set_font(g_prefs.font);
+ for(int i=0;i<MAX_WINDOWS;i++)if(g_w[i].open){if(resized)resize_tabs(&g_w[i]);g_w[i].dirty=2;g_w[i].bar_dirty=1;}
+ if(term_prefs_save(&g_prefs)<0)snprintf(g_pref_status,sizeof(g_pref_status),"Could not save preferences");
+ preferences_draw();
+}
+static void preferences_event(const banana_event_t* ev){
+ if(ev->type==BANANA_EV_KEY&&g_pref_edit>=0){
+  int k=ev->key;size_t n=strlen(g_pref_hex);
+  if(k==27){g_pref_edit=-1;g_pref_status[0]=0;preferences_draw();return;}
+  if(k=='\n'||k=='\r'){
+   if(n!=6){snprintf(g_pref_status,sizeof(g_pref_status),"Enter six hexadecimal digits");preferences_draw();return;}
+   term_prefs_t next=g_prefs;
+   term_prefs_set(&next,g_pref_edit==2?"background":g_pref_edit==3?"foreground":"cursor_color",g_pref_hex);
+   g_pref_edit=-1;preferences_commit(next);return;
+  }
+  if(k==8||k==127){if(g_pref_replace)g_pref_hex[0]=0;else if(n)g_pref_hex[n-1]=0;g_pref_replace=0;}
+  else if((k>='0'&&k<='9')||(k>='a'&&k<='f')||(k>='A'&&k<='F')){
+   if(g_pref_replace){n=0;g_pref_hex[0]=0;g_pref_replace=0;}
+   if(n<6){g_pref_hex[n]=(char)k;g_pref_hex[n+1]=0;}
+  }
+  preferences_draw();return;
+ }
+ if(ev->type==BANANA_EV_CLOSE||(ev->type==BANANA_EV_KEY&&ev->key==27)){bwin_close(&g_preferences);g_preferences.id=-1;g_pref_edit=-1;return;}
+ if(ev->type!=BANANA_EV_MOUSE_DOWN||ev->button!=1||ev->x<210||ev->x>=436||ev->y<52||ev->y>=304)return;
+ int row=(ev->y-52)/36,dir=ev->x<239?-1:1;
+ if((row==2||row==3||row==5)&&ev->x>=239&&ev->x<410){
+  g_pref_edit=row;g_pref_replace=1;g_pref_status[0]=0;
+  snprintf(g_pref_hex,sizeof(g_pref_hex),"%06X",row==2?g_prefs.bg:row==3?g_prefs.fg:g_prefs.cursor_color);
+  preferences_draw();return;
+ }
+ g_pref_edit=-1;
+ term_prefs_t next=g_prefs;
+ if(row==0)term_prefs_set(&next,"theme",term_themes[((g_prefs.theme<0?(dir>0?-1:0):g_prefs.theme)+dir+4)%4]);
+ else if(row==1){int f=next.font+dir;if(f>=8&&f<=40)next.font=f;}
+ else if(row==4)next.cursor=(next.cursor+dir+3)%3;
+ else if(row==6)next.shell=(next.shell+dir+3)%3;
+ else{
+  uint32_t* c=row==2?&next.bg:row==3?&next.fg:&next.cursor_color;
+  int n=sizeof(pref_colors)/sizeof(pref_colors[0]),at=dir>0?-1:0;
+  for(int i=0;i<n;i++)if(pref_colors[i]==*c){at=i;break;}
+  *c=pref_colors[(at+dir+n)%n];if(row!=5)next.theme=-1;
+ }
+ preferences_commit(next);
 }
 
 /* ── selection and the clipboard ───────────────────────────────────── */
@@ -571,7 +669,9 @@ static void scroll_view(term_t* t, int lines) {
 }
 
 static void set_zoom(int size) {
-    set_font(size);
+    set_font(size);g_prefs.font=g_font;
+    if(term_prefs_save(&g_prefs)<0)snprintf(g_pref_status,sizeof(g_pref_status),"Could not save preferences");
+    if(g_preferences.id>=0)preferences_draw();
     for (int i = 0; i < MAX_WINDOWS; i++) if (g_w[i].open) { resize_tabs(&g_w[i]); g_w[i].dirty = 2; }
 }
 
@@ -582,6 +682,7 @@ static void key(term_t* t, int k) {
     int mods = vt_mods();
     int ctrl = mods & VT_MOD_CTRL, shift = mods & VT_MOD_SHIFT;
     /* the terminal's own keys */
+    if(ctrl&&shift&&(k==','||k=='<')){preferences_open();return;}
     if (ctrl && shift && k < 0x100) {
         switch (k) {
         case 3: copy_selection(t); return;                    /* C */
@@ -680,6 +781,7 @@ static void event(term_t* t, const banana_event_t* ev) {
         if (ev->y < TAB_H) {
             if (ev->button != 1 && ev->button != 3) return;
             if (ev->x >= t->win.w - TAB_H) { add_tab(t); return; }
+            if (ev->x >= t->win.w - 2*TAB_H) { preferences_open();return; }
             for (int i = 0; i < t->ntabs; i++) {
                 int x0, x1;
                 tab_label(t, i, &x0, &x1);
@@ -764,7 +866,7 @@ static void event(term_t* t, const banana_event_t* ev) {
 
 static int any_open(void) {
     for (int i = 0; i < MAX_WINDOWS; i++) if (g_w[i].open) return 1;
-    return 0;
+    return g_preferences.id>=0;
 }
 
 /* the program of a tab ended: its tab goes */
@@ -781,10 +883,27 @@ static void reap(void) {
 }
 
 int main(int argc, char** argv) {
+    term_prefs_load(&g_prefs);
+    if(argc==2&&!strcmp(argv[1],"--help")){
+        puts("Terminal: --preferences | --show-config | --set KEY VALUE | -e COMMAND...");
+        puts("Preferences: theme, font (8..40), foreground, background, cursor_color (#RRGGBB), cursor, shell");
+        puts("Themes: midnight, light, solarized, mono; cursors: block, underline, bar; shells: system, bash, zsh");
+        puts("Ctrl+Shift+, opens preferences. F11 toggles application fullscreen.");
+        return 0;
+    }
+    if(argc==2&&!strcmp(argv[1],"--show-config")){term_prefs_print(&g_prefs,stdout);return 0;}
+    if(argc==4&&!strcmp(argv[1],"--set")){
+        if(term_prefs_set(&g_prefs,argv[2],argv[3])<0){fprintf(stderr,"terminal: invalid preference or value\n");return 1;}
+        if(g_prefs.shell==2&&access("/bin/zsh",X_OK)<0){fprintf(stderr,"terminal: Zsh is not installed\n");return 1;}
+        if(term_prefs_save(&g_prefs)<0){perror("terminal preferences");return 1;}
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "-e")) g_cmd = argv + 2;
     signal(SIGPIPE, SIG_IGN);
-    set_font(15);
-    if (!win_new()) {
+    set_font(g_prefs.font);
+    int preferences_only=argc==2&&!strcmp(argv[1],"--preferences");
+    if(preferences_only)preferences_open();
+    if ((preferences_only&&g_preferences.id<0)||(!preferences_only&&!win_new())) {
         printf("terminal: cannot open a window (is the desktop running? startx)\n");
         return 1;
     }
@@ -799,6 +918,7 @@ int main(int argc, char** argv) {
             banana_event_t ev;
             while (g_w[i].open && bwin_event(&g_w[i].win, &ev)) { event(&g_w[i], &ev); busy = 1; }
         }
+        if(g_preferences.id>=0){banana_event_t ev;while(g_preferences.id>=0&&bwin_event(&g_preferences,&ev)){preferences_event(&ev);busy=1;}}
         /* the programs' output */
         int n = 0;
         for (int i = 0; i < MAX_WINDOWS; i++) {

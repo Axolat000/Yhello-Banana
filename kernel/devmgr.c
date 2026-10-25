@@ -512,7 +512,7 @@ uint32_t devmgr_signature(void) {
         g_check_ms = timer_ms();
         if (hw_signature() != g_hw_sig) rescan();
     }
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ i18n_generation();
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ i18n_generation();
 }
 
 void devmgr_draw(const fb_info_t* fi) {

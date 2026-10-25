@@ -1307,6 +1307,21 @@ static int wm_target(int h) {
     return h;
 }
 
+static int fullscreen_active(void) {
+    int h=wm_target(win_front()),k=h>>8,i=h&255;
+    if(k==WK_APPWIN)return appwin_fullscreen(i);
+    win_geom_t* g=k==WK_APP?app_geom(i):NULL;
+    return g&&g->fullscreen;
+}
+static void toggle_max_term(const fb_info_t*, term_win_t*);
+static void fullscreen_toggle(void) {
+    int h=wm_target(win_front()),k=h>>8,i=h&255;
+    if(k==WK_APPWIN)appwin_toggle_fullscreen(i);
+    else if(k==WK_APP){win_geom_t* g=app_geom(i);if(g)win_toggle_fullscreen(g);}
+    else if(k==WK_TERM)toggle_max_term(fb_info(),&g_terms[i]);
+    g_menu_open=0;ctxmenu_close();cal_close();nettray_close();g_force_redraw=1;
+}
+
 /* maximized / snapped */
 static void wm_state(int h, int* maxed, int* snapped) {
     int k = h >> 8, i = h & 0xFF;
@@ -1347,7 +1362,7 @@ static void wm_place(int h, char where) {
         if (where) term_snap(fi, &g_terms[i], &r, z); else term_unsnap(fi, &g_terms[i]);
     } else if (k == WK_APP) {
         win_geom_t* g = app_geom(i);
-        if (g) { if (where) win_snap(g, &r, z); else win_unsnap(g); }
+        if (g) { if(g->fullscreen)win_toggle_fullscreen(g); if (where) win_snap(g, &r, z); else win_unsnap(g); }
     } else if (k == WK_APPWIN) {
         appwin_snap(i, &r, where ? z : SNAP_NONE);
     }
@@ -1449,6 +1464,7 @@ static int wm_alt_drag(int mx, int my) {
     win_geom_t* g = app_geom(i);
     if (!g) return 0;
     raise_app(i);
+    if(g->fullscreen)return 1;
     g->dragging = 1;
     g->dx = mx - g->x;
     g->dy = my - g->y;
@@ -2500,6 +2516,7 @@ static void gui_fkeys(const fb_info_t* fi) {
             if (gui_media_key(c)) continue;          /* the music player, wherever it is */
         }
         if (g_menu_open || ctxmenu_is_open()) continue;
+        if (c == KEYF_F1 + 10 && !(k & (KEYF_ALT|KEYF_CTRL|KEYF_SHIFT))) { fullscreen_toggle();continue; }
         if (g_front_app >= 0 && app_visible(g_front_app)) {
             switch (g_front_app) {
             case APP_FILES:   explorer_fkey(k); break;
@@ -2574,7 +2591,7 @@ static void render_desktop(const fb_info_t* fi, int mx, int my) {
         }
     }
 
-    draw_taskbar_fb(fi);
+    if(!fullscreen_active())draw_taskbar_fb(fi);
     nettray_draw();                                 /* the network panel, over the windows */
     cal_draw();                                     /* the calendar (a click on the clock) */
     if (g_desk_osd) {                               /* "Desktop 2", after switching */
@@ -3226,7 +3243,7 @@ static void gui_poll_body(void) {
         if (my > (int)fi->height - 1) my = (int)fi->height - 1;
 
         uint32_t sec = timer_ticks() / 100u;
-        int bar_y = (int)fi->height - BAR_H;
+        int bar_y = (int)fi->height - (fullscreen_active()?0:BAR_H);
 
         /* mouse click handling (rising edge) */
         int left = ms.btn_left ? 1 : 0;

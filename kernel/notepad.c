@@ -446,7 +446,7 @@ uint32_t notepad_signature(void) {
     if (!g_open) return 0;
     /* the caret blinks while Notepad has the keyboard */
     uint32_t blink = gui_notepad_focused() ? (timer_ms() / 500) & 1 : 0;
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ blink ^
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^ blink ^
            (g_fc ? fc_generation() * 40503u : 0);       /* (the Open / Save As dialog) */
 }
 

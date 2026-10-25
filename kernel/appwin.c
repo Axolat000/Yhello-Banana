@@ -38,6 +38,7 @@ typedef struct {
     int       resizing, rdx, rdy;
     int       pending, pw, ph;     /* a new client size, applied when the app reads BANANA_EV_RESIZE */
     int       maxed, sx, sy, sw, sh;
+    int       fullscreen, fx, fy, fw, fh;
     int       snapped;             /* in a half or quarter of the screen (sx.. restore it) */
     int       hidden;              /* on another virtual desktop (kernel/gui.c): not shown */
     uint32_t  title_ms;
@@ -61,8 +62,10 @@ static int      g_new_window;         /* a window opened since appwin_take_new()
 
 static int scr_w(void) { const fb_info_t* fi = fb_info(); return fi && fi->width ? (int)fi->width : 800; }
 static int scr_h(void) { const fb_info_t* fi = fb_info(); return fi && fi->height ? (int)fi->height : 600; }
-static int outer_w(const awin_t* w) { return w->cw + 2 * BORDER; }
-static int outer_h(const awin_t* w) { return w->ch + TITLE_H + 2 * BORDER; }
+static int client_x(const awin_t* w){return w->fullscreen?(scr_w()-w->cw)/2:w->x+BORDER;}
+static int client_y(const awin_t* w){return w->fullscreen?(scr_h()-w->ch)/2:w->y+TITLE_H+BORDER;}
+static int outer_w(const awin_t* w) { return w->fullscreen ? scr_w() : w->cw + 2 * BORDER; }
+static int outer_h(const awin_t* w) { return w->fullscreen ? scr_h() : w->ch + TITLE_H + 2 * BORDER; }
 
 static awin_t* get(int id, int owner) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used || g_w[id].owner != owner) return NULL;
@@ -297,8 +300,9 @@ int appwin_event(int id, int owner, banana_event_t* ev) {
 static void request_resize(awin_t* w, int cw, int ch) {
     if (cw < w->min_w) cw = w->min_w;
     if (ch < w->min_h) ch = w->min_h;
-    if (cw > max_cw()) cw = max_cw();
-    if (ch > max_ch()) ch = max_ch();
+    int limit_w=w->fullscreen?scr_w():max_cw(),limit_h=w->fullscreen?scr_h():max_ch();
+    if (cw > limit_w) cw = limit_w;
+    if (ch > limit_h) ch = limit_h;
     if (cw == w->cw && ch == w->ch && !w->pending) return;
     int had = w->pending;
     w->pending = 1;
@@ -383,7 +387,7 @@ int appwin_drop(int mx, int my, const char (*paths)[FS_PATH_LEN], int n) {
     w->drop = d;
     w->ndrop = n;
     raise(id);
-    int cx = mx - w->x - BORDER, cy = my - w->y - TITLE_H - BORDER;
+    int cx = mx - client_x(w), cy = my - client_y(w);
     if (cx < 0) cx = 0;
     if (cy < 0) cy = 0;
     if (cx >= w->cw) cx = w->cw - 1;
@@ -442,6 +446,7 @@ void appwin_draw(const fb_info_t* fi) {
     for (int i = 0; i < g_norder; i++) {
         awin_t* w = &g_w[g_order[i]];
         if (w->min || w->hidden) continue;
+        if(w->fullscreen){gfx_fill_rect(0,0,scr_w(),scr_h(),0);blit(w,client_x(w),client_y(w));continue;}
         int active = g_focused && w == front();
         int W = outer_w(w), H = outer_h(w);
         bevel(w->x, w->y, W, H, C_PANEL, TC(0x505D72), TC(0x10141C));
@@ -465,6 +470,23 @@ void appwin_draw(const fb_info_t* fi) {
             gfx_fill_rect(w->x + ow - 2, w->y, 2, oh, TC(0xF4D35E));
         }
     }
+}
+
+int appwin_fullscreen(int id) {
+    return id>=0&&id<APPWIN_MAX&&g_w[id].used&&g_w[id].fullscreen;
+}
+void appwin_toggle_fullscreen(int id) {
+    if(id<0||id>=APPWIN_MAX||!g_w[id].used)return;
+    awin_t* w=&g_w[id];
+    if(!w->fullscreen){
+        w->fx=w->x;w->fy=w->y;w->fw=w->pending?w->pw:w->cw;w->fh=w->pending?w->ph:w->ch;
+        w->fullscreen=1;w->x=w->y=0;
+        if(w->resizable)request_resize(w,scr_w(),scr_h());
+    }else{
+        w->fullscreen=0;w->x=w->fx;w->y=w->fy;
+        if(w->resizable)request_resize(w,w->fw,w->fh);
+    }
+    w->dragging=w->resizing=0;g_gen++;
 }
 
 static void toggle_maximize(awin_t* w) {
@@ -508,8 +530,8 @@ int appwin_get_rect(int id, int* x, int* y, int* w, int* h) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return 0;
     awin_t* a = &g_w[id];
     *x = a->x; *y = a->y;
-    *w = a->pending ? a->pw + 2 * BORDER : outer_w(a);
-    *h = a->pending ? a->ph + TITLE_H + 2 * BORDER : outer_h(a);
+    *w = a->fullscreen ? scr_w() : a->pending ? a->pw + 2 * BORDER : outer_w(a);
+    *h = a->fullscreen ? scr_h() : a->pending ? a->ph + TITLE_H + 2 * BORDER : outer_h(a);
     return 1;
 }
 
@@ -524,6 +546,7 @@ int appwin_state(int id, int* maxed, int* snapped, int* resizable) {
 void appwin_snap(int id, const win_rect_t* r, int where) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
     awin_t* w = &g_w[id];
+    if(w->fullscreen)appwin_toggle_fullscreen(id);
     if (where == SNAP_NONE) {                         /* back to its own size */
         if (!w->maxed && !w->snapped) return;
         w->x = w->sx; w->y = w->sy;
@@ -537,6 +560,7 @@ void appwin_snap(int id, const win_rect_t* r, int where) {
 
 void appwin_move(int id, int x, int y) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
+    if(g_w[id].fullscreen)return;
     g_w[id].x = x;
     g_w[id].y = y;
     g_gen++;
@@ -545,6 +569,7 @@ void appwin_move(int id, int x, int y) {
 void appwin_start_drag(int id, int mx, int my) {
     if (id < 0 || id >= APPWIN_MAX || !g_w[id].used) return;
     awin_t* w = &g_w[id];
+    if(w->fullscreen)return;
     raise(id);
     w->dragging = 1;
     w->ddx = mx - w->x;
@@ -556,7 +581,7 @@ void appwin_start_drag(int id, int mx, int my) {
 /* the window under (mx, my), -1; *title: the point is on its title bar */
 int appwin_at(int mx, int my, int* title) {
     int id = win_at(mx, my);
-    if (title) *title = id >= 0 && my < g_w[id].y + TITLE_H + 2;
+    if (title) *title = id >= 0 && !g_w[id].fullscreen && my < g_w[id].y + TITLE_H + 2;
     return id;
 }
 
@@ -566,7 +591,7 @@ void appwin_click(int mx, int my) {
     awin_t* w = &g_w[id];
     raise(id);
     int W = outer_w(w);
-    if (my < w->y + TITLE_H + 2) {
+    if (!w->fullscreen && my < w->y + TITLE_H + 2) {
         int tbtn = win_button_hit(w->x + W, w->y + 5, 14, w->resizable, mx, my);
         if (tbtn == WIN_BTN_MAX) { toggle_maximize(w); return; }
         if (tbtn == WIN_BTN_CLOSE) {
@@ -594,7 +619,7 @@ void appwin_click(int mx, int my) {
         w->ddy = my - w->y;
         return;
     }
-    if (w->resizable && mx >= w->x + W - GRIP && my >= w->y + outer_h(w) - GRIP) {
+    if (!w->fullscreen && w->resizable && mx >= w->x + W - GRIP && my >= w->y + outer_h(w) - GRIP) {
         w->resizing = 1;
         w->maxed = 0;
         w->pw = w->cw;
@@ -603,7 +628,7 @@ void appwin_click(int mx, int my) {
         w->rdy = w->y + outer_h(w) - my;
         return;
     }
-    int cx = mx - w->x - BORDER, cy = my - w->y - TITLE_H - BORDER;
+    int cx = mx - client_x(w), cy = my - client_y(w);
     if (cx >= 0 && cy >= 0 && cx < w->cw && cy < w->ch) {
         push_simple(w, BANANA_EV_MOUSE_DOWN, cx, cy, 1, 0);
         w->inside_down = 1;
@@ -615,7 +640,7 @@ void appwin_rclick(int mx, int my) {
     if (id < 0) return;
     awin_t* w = &g_w[id];
     raise(id);
-    int cx = mx - w->x - BORDER, cy = my - w->y - TITLE_H - BORDER;
+    int cx = mx - client_x(w), cy = my - client_y(w);
     if (cx >= 0 && cy >= 0 && cx < w->cw && cy < w->ch) {
         push_simple(w, BANANA_EV_MOUSE_DOWN, cx, cy, 2, 0);
         push_simple(w, BANANA_EV_MOUSE_UP, cx, cy, 2, 0);
@@ -663,7 +688,7 @@ void appwin_mouse(int mx, int my, int left) {
                 request_resize(w, w->pw, w->ph);
             }
         }
-        int cx = mx - w->x - BORDER, cy = my - w->y - TITLE_H - BORDER;
+        int cx = mx - client_x(w), cy = my - client_y(w);
         int in = cx >= 0 && cy >= 0 && cx < w->cw && cy < w->ch;
         if (!left && w->last_left && w->inside_down) {
             push_simple(w, BANANA_EV_MOUSE_UP, cx, cy, 1, 0);

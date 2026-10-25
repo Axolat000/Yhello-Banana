@@ -1895,7 +1895,7 @@ uint32_t settings_signature(void) {
         uint32_t s = timer_ms() / (g_page == PG_STARTUP || g_page == PG_ABOUT ? 500 : 1000);
         if (s != g_tick_s) { g_tick_s = s; g_gen++; }
     }
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
            (uint32_t)g_page << 28 ^ (uint32_t)audio_get_volume() << 8 ^ (uint32_t)mouse_get_speed() << 15 ^ wallpaper_generation() ^ (uint32_t)gfx_smooth_text() << 27 ^
            (fc_active() ? fc_generation() * 40503u : 0);
 }

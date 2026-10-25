@@ -24,6 +24,15 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Terminal preferences and application fullscreen** - the integrated Terminal
+  now saves themes, custom colors, font size, cursor style and a Bash/Zsh/System
+  shell choice for new tabs. Open the sliders button or Ctrl+Shift+,.
+  F11 toggles fullscreen for desktop applications and restores the previous
+  window size and placement. The recent Task Manager styles have calmer colors,
+  clearer rows and graphs, and columns that adapt to narrower windows.
+  See [Terminal preferences](apps/terminal/README.md).
+
+
 - **Isolated browser and image decoding (first milestone)** - HTML/CSS/JavaScript,
   fonts, SVG and raster decoding now run in restricted 64-bit user processes,
   with bounded IPC, origin/file permissions and CPU/memory quotas. GitHub release

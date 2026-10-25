@@ -8,6 +8,13 @@
 void win_clamp(win_geom_t* g) {
     const fb_info_t* fi = fb_info();
     int sw = fi ? (int)fi->width : 800, sh = fi ? (int)fi->height - WIN_TASKBAR : 572;
+    if (g->fullscreen) {
+        /* The shared frame is 3 px around a 20 px title bar. Clip it offscreen. */
+        if(sw>2560)sw=2560;
+        if(sh>1600-WIN_TASKBAR)sh=1600-WIN_TASKBAR;
+        g->x=-3;g->y=-23;g->w=sw+6;g->h=sh+WIN_TASKBAR+26;
+        return;
+    }
     if (sw > 2560) sw = 2560;               /* the desktop's backbuffer (kernel/gui.c) */
     if (sh > 1600 - WIN_TASKBAR) sh = 1600 - WIN_TASKBAR;
     if (g->w < g->min_w) g->w = g->min_w;
@@ -18,6 +25,14 @@ void win_clamp(win_geom_t* g) {
     if (g->y + g->h > sh) g->y = sh - g->h;
     if (g->x < 0) g->x = 0;
     if (g->y < 0) g->y = 0;
+}
+
+void win_toggle_fullscreen(win_geom_t* g) {
+    if(!g)return;
+    if(!g->fullscreen){g->fx=g->x;g->fy=g->y;g->fw=g->w;g->fh=g->h;g->fullscreen=1;}
+    else {g->fullscreen=0;g->x=g->fx;g->y=g->fy;g->w=g->fw;g->h=g->fh;}
+    g->dragging=g->resizing=0;
+    win_clamp(g);
 }
 
 /* ── snapping ───────────────────────────────────────────────────────── */
@@ -128,6 +143,7 @@ void winframe_shadow(int x, int y, int w, int h) {
 }
 
 int win_title_press(win_geom_t* g, int mx, int my) {
+    if(g->fullscreen)return 0;
     uint32_t now = timer_ms();
     if (now - g->title_ms < 400) {
         g->title_ms = 0;
@@ -153,6 +169,7 @@ int win_title_press(win_geom_t* g, int mx, int my) {
 }
 
 int win_grip_press(win_geom_t* g, int mx, int my) {
+    if(g->fullscreen)return 0;
     if (mx < g->x + g->w - WIN_GRIP || my < g->y + g->h - WIN_GRIP) return 0;
     g->resizing = 1;
     g->maxed = 0;
@@ -162,6 +179,7 @@ int win_grip_press(win_geom_t* g, int mx, int my) {
 }
 
 int win_mouse(win_geom_t* g, int mx, int my, int left) {
+    if(g->fullscreen)return 0;
     if (!left) {
         int changed = 0;
         if (g->dragging) {                    /* let go over a snap zone: it goes there */

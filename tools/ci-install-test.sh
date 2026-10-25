@@ -95,7 +95,20 @@ python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --cmd 'pkg remove bash ## integrated OS component' \
     --cmd 'pkg remove zsh ## integrated OS component' \
     --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
+    --cmd '/apps/terminal/app-x86_64 --set theme solarized' \
+    --cmd '/apps/terminal/app-x86_64 --set font 18' \
+    --cmd '/apps/terminal/app-x86_64 --set shell zsh' \
+    --cmd 'sync' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-after-update.log"
+
+echo "== 5. Reboot and verify terminal preferences survive on disk"
+python3 tools/serialtest.py --log "$logs/serial-preferences.log" \
+    --boot-timeout 180 --timeout 180 \
+    --cmd '/apps/terminal/app-x86_64 --show-config ## theme=solarized' \
+    --cmd '/apps/terminal/app-x86_64 --show-config ## font=18' \
+    --cmd 'cat /home/banana/.config/banana-terminal.conf ## shell=zsh' \
+    -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
+    2>&1 | tee "$logs/results-preferences.log"
 
 echo "== All installation, disk boot, and update checks passed on $firmware"

@@ -42,7 +42,7 @@
 #define TITLE_H  20
 #define RAIL_W   150
 #define ITEM_H   34
-#define ROW_H    20
+#define ROW_H    ((g_style==TM_STYLE_WIN10||g_style==TM_STYLE_WIN11)?24:20)
 #define HIST     60
 #define MAX_ROWS 96
 #define MAX_CORE 16
@@ -73,16 +73,18 @@ static int   g_style = TM_STYLE_WIN11;
 static void set_style(void) {
     g_style = theme_taskmgr_style();
     if (g_style == TM_STYLE_WIN10) {         /* Windows 10: light (themed as a window drawn light) */
-        pal_t p = { TCL(0xFFFFFF), TCL(0xF0F0F0), TCL(0xF5F5F5), TCL(0xDADADA), TCL(0xE5F3FF), TCL(0x1A1A1A), TCL(0x6D6D6D),
-                    TCL(0x0078D7), TCL(0xCCE8FF), 0x00117DBBu, 0x008B12AEu, 0x004DA60Cu, 0x00A74F01u, 0x000078D7u,
+        pal_t p = { TCL(0xF8FAFC), TCL(0xEEF2F7), TCL(0xFFFFFF), TCL(0xD5DDE8), TCL(0xE8F0FB), TCL(0x1E293B), TCL(0x64748B),
+                    TCL(0x2563EB), TCL(0xDBEAFE), 0x00117DBBu, 0x008B12AEu, 0x004DA60Cu, 0x00A74F01u, 0x000078D7u,
                     TCL(0xFFF8E1), TCL(0xFFF4C4), TCL(0xF9C35C), TCL(0x1A1A1A) };
         g_pal = p;
     } else {                                  /* Windows 11: dark */
-        pal_t p = { TC(0x202020), TC(0x1A1A1A), TC(0x272727), TC(0x383838), TC(0x2D2D2D), TC(0xF2F2F2), TC(0xA8A8A8),
-                    TC(0x60CDFF), TC(0x334E66), TC(0x17A2E8), TC(0xA066D0), TC(0x4DB858), TC(0xD88A3C), TC(0xD0506A),
+        pal_t p = { TC(0x17202C), TC(0x121923), TC(0x1E2937), TC(0x344256), TC(0x26374D), TC(0xE7EEF8), TC(0xA2B0C4),
+                    TC(0x80B7FF), TC(0x304D70), TC(0x17A2E8), TC(0xA066D0), TC(0x4DB858), TC(0xD88A3C), TC(0xD0506A),
                     TC(0x2A2716), TC(0x332E19), TC(0x866A12), TC(0xFFD080) };
         g_pal = p;
     }
+    /* Quiet cells at rest; only actual activity adds a tint. */
+    g_pal.heat0=g_pal.bg;g_pal.heat_lo=g_pal.bg;g_pal.heat_hi=g_pal.sel;g_pal.hot_text=g_pal.text;
 }
 static int w10(void) { return g_style == TM_STYLE_WIN10; }
 
@@ -151,9 +153,9 @@ static uint32_t heat(int pct) {
 
 static void button(int x, int y, int w, const char* label, int enabled) {
     kbnav_add(&g_nav, x, y, w, 24);
-    uint32_t bg = w10() ? (enabled ? TCL(0xE1E1E1) : TCL(0xEFEFEF)) : (enabled ? TC(0x2D2D2D) : TC(0x252525));
-    uint32_t ln = w10() ? (enabled ? TCL(0xADADAD) : TCL(0xD5D5D5)) : (enabled ? TC(0x464646) : TC(0x303030));
-    uint32_t fg = enabled ? C_TEXT : (w10() ? TCL(0xA0A0A0) : TC(0x686868));
+    uint32_t bg = enabled?C_PANEL:C_BG;
+    uint32_t ln = enabled?C_LINE:mix(C_BG,C_LINE,100);
+    uint32_t fg = enabled ? C_TEXT : C_DIM;
     frame(x, y, w, 24, bg, ln);
     gfx_draw_text(x + (w - (int)strlen(label) * 8) / 2, y + 8, label, fg, bg);
 }
@@ -382,7 +384,7 @@ uint32_t taskmgr_signature(void) {
         build_rows();
         g_gen++;
     }
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4);
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4);
 }
 
 /* ── layout: Windows 11 a rail at the left; Windows 10 a menu bar and tabs on top ── */
@@ -418,7 +420,7 @@ static int w10_tab_x(int i, int* w) {
 #define COL_DISK 86
 #define COL_MEM  96
 #define COL_CPU  66
-#define COL_STAT 100
+#define COL_STAT (content_w()<600?0:100)
 static int col_x(int i) {        /* 0 status, 1 cpu, 2 mem, 3 disk, 4 net */
     int r = content_x() + content_w();
     int w[5] = { COL_STAT, COL_CPU, COL_MEM, COL_DISK, COL_NET };
@@ -676,7 +678,7 @@ static void draw_processes(void) {
     char t[24];
     int cpu = last(g_cpu_hist), mem = last(g_mem_hist), dsk = last(g_disk_hist);
     gfx_draw_text(cx + 8, table_y() + 19, _("Name"), C_DIM, C_BG);
-    col_head(col_x(0), COL_STAT, NULL, _("Status"), -1);
+    if(COL_STAT)col_head(col_x(0), COL_STAT, NULL, _("Status"), -1);
     ksnprintf(t, sizeof(t), "%d%%", cpu);       col_head(col_x(1), COL_CPU, t, _("CPU"), cpu);
     ksnprintf(t, sizeof(t), "%d%%", mem);       col_head(col_x(2), COL_MEM, t, _("Memory"), mem);
     ksnprintf(t, sizeof(t), "%d%%", dsk);       col_head(col_x(3), COL_DISK, t, _("Disk"), dsk);
@@ -699,7 +701,8 @@ static void draw_processes(void) {
         int sel = ri == g_sel;
         uint32_t bg = sel ? C_SEL : C_BG;
         kbnav_add(&g_nav, cx, ry, cw, ROW_H);
-        if (sel) gfx_fill_rect(cx, ry, cw, ROW_H, bg);
+        if (sel) {gfx_fill_rect(cx, ry, cw, ROW_H, bg);gfx_fill_rect(cx,ry,2,ROW_H,C_ACCENT);}
+        else gfx_fill_rect(cx,ry+ROW_H-1,cw,1,mix(C_BG,C_LINE,80));
         /* its icon: blue a window, amber an app, grey a kernel task */
         uint32_t ic = r->kind == R_WINDOW ? TC(0x3A7BD5) : r->kind == R_APP ? TC(0xD0A030) : TC(0x707A88);
         frame(cx + 10, ry + 5, 10, 10, ic, mix(ic, TC(0xFFFFFF), 80));
@@ -708,7 +711,7 @@ static void draw_processes(void) {
         int maxc = (col_x(0) - (cx + 30) - 6) / 8;
         if (maxc > 0 && maxc < (int)sizeof(nm) && (int)strlen(nm) > maxc) { nm[maxc] = 0; if (maxc > 1) nm[maxc - 1] = '.'; }
         gfx_draw_text(cx + 30, ry + 6, nm, C_TEXT, bg);
-        gfx_draw_text(col_x(0) + 8, ry + 6, r->status, C_DIM, bg);
+        if(COL_STAT)gfx_draw_text(col_x(0) + 8, ry + 6, r->status, C_DIM, bg);
         /* the busy columns: tinted by how much */
         uint32_t hb;
         hb = sel ? bg : heat(r->cpu < 0 ? 0 : r->cpu);
@@ -733,9 +736,9 @@ static void draw_processes(void) {
 
 /* a graph of a history: values 0..max, the newest at the right, filled under its line */
 static void big_graph(int x, int y, int w, int h, const uint8_t* h8, const uint32_t* h32, uint32_t max, uint32_t color) {
-    uint32_t fill = mix(C_PANEL, color, 70), grid = mix(C_PANEL, color, 40);
-    frame(x, y, w, h, C_PANEL, color);
-    for (int g = 1; g < 10; g++) gfx_fill_rect(x + 1, y + h * g / 10, w - 2, 1, grid);
+    uint32_t fill = mix(C_PANEL, color, 36), grid = mix(C_PANEL, C_LINE, 100);
+    frame(x, y, w, h, C_PANEL, C_LINE);
+    for (int g = 1; g < 5; g++) gfx_fill_rect(x + 1, y + h * g / 5, w - 2, 1, grid);
     for (int g = 1; g < 6; g++) gfx_fill_rect(x + w * g / 6, y + 1, 1, h - 2, grid);
     if (!g_hist_n || !max) return;
     int prev = -1;
@@ -772,22 +775,19 @@ static void dev_name(int d, char* out, int cap) {
 }
 
 static void dev_value(int d, char* out, int cap) {
-    char a[24], b[24];
+    char a[24];
     meminfo_t m;
     switch (d) {
     case D_CPU: ksnprintf(out, (size_t)cap, "%d%%", last(g_cpu_hist)); break;
     case D_MEM:
         meminfo_get(&m);
         human_kb(m.used_kb - m.cached_kb, a, sizeof(a));
-        human_kb(m.total_kb, b, sizeof(b));
-        ksnprintf(out, (size_t)cap, "%s/%s (%d%%)", a, b, last(g_mem_hist));
+        ksnprintf(out, (size_t)cap, "%d%% %s", last(g_mem_hist),a);
         break;
     case D_DISK: ksnprintf(out, (size_t)cap, "%d%%", last(g_disk_hist)); break;
     case D_NET:
         if (!net_dev()) { kstrlcpy(out, "Not connected", (size_t)cap); break; }
-        bits(g_tx_rate, a, sizeof(a));
-        bits(g_rx_rate, b, sizeof(b));
-        ksnprintf(out, (size_t)cap, "S: %s R: %s", a, b);
+        bits(g_tx_rate+g_rx_rate,out,cap);
         break;
     default: { gpu_t* g = gpu_active(); kstrlcpy(out, g ? g->driver : "framebuffer", (size_t)cap); }
     }
@@ -842,13 +842,13 @@ static void draw_performance(void) {
         gfx_fill_rect(cx, y, 196, 56, bg);
         if (on) gfx_fill_rect(cx, y + 14, 3, 28, C_ACCENT);
         uint32_t c = dev_color(d);
-        if (d == D_GPU) frame(cx + 8, y + 8, 64, 40, C_PANEL, c);
+        if (d == D_GPU) frame(cx + 8, y + 8, 64, 40, C_PANEL, C_LINE);
         else if (d == D_NET) big_graph(cx + 8, y + 8, 64, 40, NULL, g_net_hist, net_max(), c);
         else big_graph(cx + 8, y + 8, 64, 40, d == D_CPU ? g_cpu_hist : d == D_MEM ? g_mem_hist : g_disk_hist, NULL, 100, c);
         char n[24], v[48];
         dev_name(d, n, sizeof(n));
         dev_value(d, v, sizeof(v));
-        if ((int)strlen(v) > 14) v[14] = 0;
+        if ((int)strlen(v) > 14) {v[11]=v[12]=v[13]='.';v[14]=0;}
         gfx_draw_text(cx + 80, y + 16, n, C_TEXT, bg);
         gfx_draw_text(cx + 80, y + 32, v, C_DIM, bg);
     }
@@ -1039,7 +1039,8 @@ static void draw_details(void) {
     if (!w10()) gfx_draw_text(cx + cw - 39 * 8, head_y() + 10, _("Right-click a task: its priority"), C_DIM, C_BG);
     snap_tasks();
     gfx_fill_rect(cx, table_y() + 12, cw, ROW_H, C_PANEL);
-    gfx_draw_text(cx + 8, table_y() + 18, _("Name                    PID  Status     Core  CPU   CPU time  Prio"), C_DIM, C_PANEL);
+    int compact=cw<580;
+    gfx_draw_text(cx + 8, table_y() + 18, compact?_("Name              PID Status      CPU  CPU time Prio"):_("Name                    PID  Status     Core  CPU   CPU time  Prio"), C_DIM, C_PANEL);
     int row = 0, maxr = rows_max(), skip = g_scroll;
     char line[128];
     for (int i = 0; i < g_ntasks && row < maxr; i++) {
@@ -1051,6 +1052,8 @@ static void draw_details(void) {
         if (g_tasks[i].cpu >= 0) ksnprintf(core, sizeof(core), "%d", g_tasks[i].cpu); else kstrlcpy(core, "-", sizeof(core));
         ksnprintf(line, sizeof(line), "%-23s %-4u %-10s %-4s %3u%%  %3u:%02u:%02u  %3d", g_tasks[i].name, g_tasks[i].pid, st, core,
                   g_tasks[i].cpu_pct, s / 3600, s / 60 % 60, s % 60, g_tasks[i].nice);
+        if(compact)ksnprintf(line,sizeof(line),"%-17.17s %-4u %-10.10s %3u%% %3u:%02u:%02u %3d",g_tasks[i].name,g_tasks[i].pid,st,g_tasks[i].cpu_pct,s/3600,s/60%60,s%60,g_tasks[i].nice);
+        int limit=(cw-16)/8;if(limit>0&&limit<(int)sizeof(line))line[limit]=0;
         int ry = rows_y() + row * ROW_H;
         if (g_tasks[i].cpu_pct) gfx_fill_rect(cx, ry, cw, ROW_H - 1, heat((int)g_tasks[i].cpu_pct));
         gfx_draw_text(cx + 8, ry + 6, line, g_tasks[i].cpu_pct >= 50 ? g_pal.hot_text : C_TEXT, g_tasks[i].cpu_pct ? heat((int)g_tasks[i].cpu_pct) : C_BG);
@@ -1637,6 +1640,8 @@ void taskmgr_draw(const fb_info_t* fi) {
     (void)fi;
     if (!g_open) return;
     set_style();
+    g_win.min_w=g_style==TM_STYLE_WIN11?680:g_style==TM_STYLE_WIN10?640:560;
+    win_clamp(&g_win);
     kbnav_begin(&g_nav);
     if (g_style == TM_STYLE_CLASSIC) { classic_draw(); return; }
     if (g_style == TM_STYLE_BANANA) { banana_draw(); return; }

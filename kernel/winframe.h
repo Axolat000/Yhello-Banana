@@ -22,6 +22,7 @@ typedef struct {
     uint32_t title_ms;              /* last title-bar click (double-click) */
     int snapped;                    /* put in a half / quarter of the screen (sx.. restore it) */
     int px, py;                     /* where a drag started */
+    int fullscreen, fx, fy, fw, fh; /* separate from maximize/snap restore geometry */
 } win_geom_t;
 
 /* ── snapping, like Windows' Aero Snap ─────────────────────────────────
@@ -85,5 +86,6 @@ int  win_grip_press(win_geom_t* g, int mx, int my);
 int  win_mouse(win_geom_t* g, int mx, int my, int left);
 /* keeps the window on screen and at least its minimum size */
 void win_clamp(win_geom_t* g);
+void win_toggle_fullscreen(win_geom_t* g);
 
 #endif

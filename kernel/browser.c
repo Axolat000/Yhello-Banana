@@ -2189,7 +2189,7 @@ int browser_contains(int mx, int my) {
 
 uint32_t browser_signature(void) {
     if (!g_open) return 0;
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
            (uint32_t)gui_browser_focused() * 977u ^ (uint32_t)g_cur * 131u;
 }
 

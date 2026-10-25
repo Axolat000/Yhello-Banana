@@ -118,7 +118,7 @@ int launcher_contains(int mx, int my) { return g_open && inside(mx, my, g_win.x,
 uint32_t launcher_signature(void) {
     if (!g_open) return 0;
     if (timer_ms() - g_scan_ms > 1500) rescan();          /* apps installed meanwhile */
-    return g_gen * 2654435761u ^ (uint32_t)(g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
+    return g_gen * 2654435761u ^ (uint32_t)((uint32_t)g_win.x << 16 | g_win.y) ^ (uint32_t)(g_win.w << 20 | g_win.h << 4) ^
            (uint32_t)g_napps * 7919u;
 }
 

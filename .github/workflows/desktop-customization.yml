@@ -1,0 +1,25 @@
+name: Desktop customization tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'apps/terminal/**'
+      - 'kernel/winframe.*'
+      - 'kernel/appwin.*'
+      - 'kernel/gui.c'
+      - 'kernel/taskmgr.c'
+      - 'tools/tests/desktop_customization.sh'
+      - 'tools/tests/terminal_prefs.c'
+      - 'tools/tests/window_fullscreen.c'
+      - '.github/workflows/desktop-customization.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Saved preferences and fullscreen geometry regressions
+        run: bash tools/tests/desktop_customization.sh
