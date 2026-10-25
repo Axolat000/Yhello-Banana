@@ -456,6 +456,8 @@ static void fmt_rate(uint32_t bytes, uint32_t ms, char* out, uint32_t cap) {
 
 /* curl's exit codes for the common failures */
 static int curl_code(int rc, int tls_failed) {
+    if (rc == NET_ERR_CERT) return 60;
+    if (rc == NET_ERR_CLOCK) return 60;
     if (tls_failed) return 35;
     switch (rc) {
     case NET_ERR_DNS:      return 6;
