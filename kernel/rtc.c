@@ -51,9 +51,11 @@ static int cmos_datetime(rtc_datetime_t* out) {
     int guard = 10000;
 
     while (guard-- > 0) {
-        while (cmos_read(0x0A) & 0x80) { /* update-in-progress */ }
+        unsigned spins=100000;
+        while (cmos_read(0x0A) & 0x80) if(!--spins)return -1;
         rtc_read_raw(&a, &reg_b);
-        while (cmos_read(0x0A) & 0x80) { }
+        spins=100000;
+        while (cmos_read(0x0A) & 0x80) if(!--spins)return -1;
         rtc_read_raw(&b, &reg_b);
 
         if (a.second == b.second &&
@@ -202,6 +204,8 @@ uint32_t rtc_now(void) {
     if (!r) return 0;
     return g_utc ? tz_to_local(r) : r;
 }
+
+int rtc_read_hardware(rtc_datetime_t* out) { return cmos_datetime(out); }
 
 int rtc_read_datetime(rtc_datetime_t* out) {
     uint32_t t = rtc_now();
