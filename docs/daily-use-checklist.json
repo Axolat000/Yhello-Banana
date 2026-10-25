@@ -2445,5 +2445,38 @@
       "Execute QEMU multi-core selftest suites and verify monotonic timestamps across migrating worker threads.",
       "Measure sampling error and drift over time and verify fallback when qualification thresholds are exceeded."
     ]
+  },
+  {
+    "id": "base-12-sdk-utf8-qualification",
+    "priority": "P1",
+    "domain": "Applications",
+    "title": "Qualify SDK restartable UTF-8 encoding and conversion state ABI",
+    "evidence": "Upstream commit c8ddcc75df2e introduced restartable UTF-8 encoding/decoding in sdk/lib/utf8.c and comprehensive scalar and byte split tests. Upstream additionally proposed enlarging mbstate_t to 8 bytes and importing a heavy LLVMpipe/C++ runtime port. The adapted solution preserves the existing 4-byte mbstate_t public ABI, encodes restart state in bits 0-24, and fixes string conversion wrappers (mbsrtowcs, mbstowcs).",
+    "planningReason": "Following adaptation of upstream commit c8ddcc75df2e with the alternative design (preserving the 4-byte public mbstate_t layout and omitting premature LLVMpipe/C++ stream ports), this task formalizes continuous qualification of SDK UTF-8 conversion correctness, thread-local state isolation, and binary compatibility across SDK consumers without modifying started base-12 tasks.",
+    "goal": "Ensure all SDK and OS consumers benefit from conformant, restartable UTF-8 encoding and decoding without ABI regressions or memory corruptions across threads.",
+    "acceptance": "Full Unicode scalar space (U+0000..U+10FFFF excluding surrogates), all prefix cuts/splits, overlong encodings, surrogates, and out-of-range codepoints pass with AddressSanitizer and UndefinedBehaviorSanitizer; 4-byte mbstate_t layout is preserved on i686 and x86_64; string conversion wrappers update source pointers and error state faithfully.",
+    "deliverable": "SDK UTF-8 test harness and regression test scripts in tools/test_sdk_utf8.py and tools/tests/test_sdk_utf8.c.",
+    "depends": [
+      "base-12"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "sdk/lib/utf8.c",
+      "sdk/lib/unix.c",
+      "sdk/include/wchar.h",
+      "tools/test_sdk_utf8.py",
+      "tools/tests/test_sdk_utf8.c"
+    ],
+    "steps": [
+      "Verify restartable UTF-8 decoding (mbrtowc) and encoding (wcrtomb) across all 1,112,064 Unicode codepoints and fragmented byte splits.",
+      "Validate bounds checking, overlong sequence rejection, surrogate exclusion, and out-of-range error handling with EILSEQ errno semantics.",
+      "Verify public 4-byte mbstate_t ABI stability on i686 and x86_64 and thread-local state isolation."
+    ],
+    "tests": [
+      "Run tools/test_sdk_utf8.py under AddressSanitizer and UndefinedBehaviorSanitizer.",
+      "Verify clean compilation of 32-bit (i686) and 64-bit (x86_64) SDK applications against sdk/banana.mk.",
+      "Verify mbsinit() state reporting and string conversion wrappers (mbsrtowcs, mbstowcs)."
+    ],
+    "rank": 46
   }
 ]
