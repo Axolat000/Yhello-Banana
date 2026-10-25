@@ -134,13 +134,15 @@ static const page_t PAGES[] = {
       "-d|destination directory\n-q|quiet, no desktop notification",
       "screenshot\nscreenshot -d /home/banana/Desktop", "clip, startx" },
     { "backup", "files", "backup [-v [mnt]] [-c] [-all] [--default [arc]] <arc.bba> <src>...", "versioned backup archive (.bba)",
-      "Creates or verifies a versioned backup archive (BBA1 format) preserving paths, sizes, SHA-256 hashes, "
+      "Creates, verifies, or restores a versioned backup archive (BBA1 format) preserving paths, sizes, SHA-256 hashes, "
       "permissions, uid/gid, symlinks and dates. Explicitly ignores temporary files and cache directories (.cache, /tmp, *.tmp, *.bak, *~). "
       "--default backs up /home and system configurations (/etc). "
       "-v stores a copy onto a distinct external volume (/mnt/...). "
-      "-verify validates trailer, CRC32 and SHA-256 integrity without modifying files. -c enables deflate compression. -all disables exclusions.",
-      "-v [mnt]|write directly onto external volume\n-c|compress file entries (deflate)\n--default [arc]|backup /home and /etc\n-all|include temporary/cache files\n-verify arc|verify archive integrity and hashes",
-      "backup --default /tmp/home_backup.bba\nbackup /tmp/mybackup.bba ~/Documents\nbackup -v /mnt/usb ~/Documents\nbackup -verify /tmp/mybackup.bba", "zip, stat, fstest" },
+      "-verify validates trailer, CRC32 and SHA-256 integrity without modifying files. "
+      "-restore restores an archive into an alternative destination directory or fresh installation, verifying integrity before overwriting files (-f to overwrite). "
+      "-c enables deflate compression. -all disables exclusions.",
+      "-v [mnt]|write directly onto external volume\n-c|compress file entries (deflate)\n--default [arc]|backup /home and /etc\n-all|include temporary/cache files\n-verify arc|verify archive integrity and hashes\n-restore [-f] arc [dir]|restore archive into target directory (-f overwrite)",
+      "backup --default /tmp/home_backup.bba\nbackup /tmp/mybackup.bba ~/Documents\nbackup -v /mnt/usb ~/Documents\nbackup -verify /tmp/mybackup.bba\nbackup -restore /tmp/mybackup.bba /tmp/restored", "zip, stat, fstest" },
     /* ── text ── */
     { "cat", "text", "cat <file>", "print a file",
       "Prints a text file. Binary files are refused (they would fill the screen with noise).", NULL,

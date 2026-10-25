@@ -783,3 +783,211 @@ int backup_system_default(const char* dest_archive_path, uint32_t flags,
     }
     return 0;
 }
+
+static int make_parent_dirs(const char* path) {
+    char dir[FS_PATH_LEN];
+    kstrlcpy(dir, path, sizeof(dir));
+    char* slash = strrchr(dir, '/');
+    if (!slash || slash == dir) return 0;
+    *slash = '\0';
+    if (fs_find_dir(dir) >= 0) return 0;
+    return fs_mkdir_p(dir);
+}
+
+int backup_restore(const char* archive_path, const char* target_dest_dir,
+                   uint32_t flags, backup_cb_t cb, void* ctx,
+                   backup_stats_t* st, char* err, int errcap) {
+    if (!archive_path || !target_dest_dir) {
+        set_err(err, errcap, "invalid arguments to backup_restore");
+        return -1;
+    }
+
+    /* Phase 1: verify archive integrity completely before modifying target */
+    backup_stats_t verify_st;
+    int vrc = backup_verify(archive_path, NULL, NULL, &verify_st, err, errcap);
+    if (vrc != 0) {
+        /* Error description already set by backup_verify */
+        return -1;
+    }
+
+    int fi = fs_find_file(archive_path);
+    if (fi < 0) {
+        set_err(err, errcap, "archive file not found");
+        return -1;
+    }
+    fs_file_t* fl = fs_get_file(fi);
+    if (!fl || !fl->content || fl->size < 48) {
+        set_err(err, errcap, "archive corrupted or inaccessible");
+        return -1;
+    }
+
+    const uint8_t* buf = (const uint8_t*)fl->content;
+    uint32_t len = fl->size;
+    uint32_t entry_count = get32_le(buf + 12);
+
+    /* Normalize target destination directory */
+    char dest_root[FS_PATH_LEN];
+    kstrlcpy(dest_root, target_dest_dir, sizeof(dest_root));
+    int dlen = (int)strlen(dest_root);
+    while (dlen > 1 && dest_root[dlen - 1] == '/') {
+        dest_root[--dlen] = '\0';
+    }
+
+    /* If destination is not "/" and does not exist, create it */
+    if (strcmp(dest_root, "/") != 0) {
+        if (fs_find_dir(dest_root) < 0) {
+            if (fs_mkdir_p(dest_root) < 0) {
+                set_err(err, errcap, "cannot create destination restore directory");
+                return -1;
+            }
+        }
+    }
+
+    backup_stats_t local_st;
+    memset(&local_st, 0, sizeof(local_st));
+    if (!st) st = &local_st;
+    else memset(st, 0, sizeof(*st));
+
+    /* Phase 2: Unpack entries */
+    uint32_t off = BBA_HDR_LEN;
+    for (uint32_t i = 0; i < entry_count; i++) {
+        backup_entry_t e;
+        memset(&e, 0, sizeof(e));
+        e.type = get16_le(buf + off); off += 2;
+        e.flags = get16_le(buf + off); off += 2;
+        e.mode = get32_le(buf + off); off += 4;
+        e.uid = get32_le(buf + off); off += 4;
+        e.gid = get32_le(buf + off); off += 4;
+        e.mtime = get32_le(buf + off); off += 4;
+        e.ctime = get32_le(buf + off); off += 4;
+        e.size = get64_le(buf + off); off += 8;
+        e.csize = get64_le(buf + off); off += 8;
+        memcpy(e.sha256, buf + off, 32); off += 32;
+
+        uint16_t plen = get16_le(buf + off); off += 2;
+        uint16_t llen = get16_le(buf + off); off += 2;
+
+        memcpy(e.path, buf + off, plen);
+        e.path[plen] = '\0';
+        off += plen;
+
+        memcpy(e.link_target, buf + off, llen);
+        e.link_target[llen] = '\0';
+        off += llen;
+
+        const uint8_t* payload = buf + off;
+        off += (uint32_t)e.csize;
+
+        /* Construct full target path */
+        char full_dest[FS_PATH_LEN];
+        if (strcmp(dest_root, "/") == 0) {
+            ksnprintf(full_dest, sizeof(full_dest), "/%s", e.path);
+        } else {
+            ksnprintf(full_dest, sizeof(full_dest), "%s/%s", dest_root, e.path);
+        }
+
+        if (e.type == BBA_ENTRY_DIR) {
+            int didx = fs_find_dir(full_dest);
+            if (didx < 0) {
+                didx = fs_mkdir_p(full_dest);
+                if (didx < 0) {
+                    set_err(err, errcap, "failed creating restored directory");
+                    return -1;
+                }
+            }
+            if (e.mode != 0 || e.uid != 0 || e.gid != 0) {
+                fs_set_meta(1, didx, e.mode, e.uid, e.gid, e.mtime ? e.mtime : rtc_now());
+            }
+            if (e.mtime != 0) {
+                fs_set_times(1, didx, e.mtime, e.ctime ? e.ctime : e.mtime);
+            }
+            st->dir_count++;
+        } else if (e.type == BBA_ENTRY_FILE) {
+            int existing_fi = fs_find_file(full_dest);
+            if (existing_fi >= 0) {
+                if (!(flags & BBA_RESTORE_OVERWRITE)) {
+                    /* Without overwrite flag, do not overwrite */
+                    st->skipped_count++;
+                    if (cb) cb(&e, ctx);
+                    continue;
+                }
+            }
+
+            if (make_parent_dirs(full_dest) != 0) {
+                set_err(err, errcap, "failed creating parent directory for restored file");
+                return -1;
+            }
+
+            char* uncomp_data = NULL;
+            const uint8_t* write_data = payload;
+            uint32_t write_sz = (uint32_t)e.size;
+
+            if (e.flags & BBA_FLAG_DEFLATE) {
+                uncomp_data = (char*)kmalloc((size_t)e.size + 1);
+                if (!uncomp_data && e.size > 0) {
+                    set_err(err, errcap, "out of memory restoring deflated file");
+                    return -1;
+                }
+                int got = stbi_zlib_decode_noheader_buffer(uncomp_data, (int)e.size, (const char*)payload, (int)e.csize);
+                if (got < 0 || (uint64_t)got != e.size) {
+                    if (uncomp_data) kfree(uncomp_data);
+                    set_err(err, errcap, "failed decompressing file payload");
+                    return -1;
+                }
+                write_data = (const uint8_t*)uncomp_data;
+            }
+
+            int nfi = fs_write_path(full_dest, write_data, write_sz);
+            if (uncomp_data) kfree(uncomp_data);
+
+            if (nfi < 0) {
+                set_err(err, errcap, "failed writing restored file");
+                return -1;
+            }
+
+            if (e.mode != 0 || e.uid != 0 || e.gid != 0) {
+                fs_set_meta(0, nfi, e.mode, e.uid, e.gid, e.mtime ? e.mtime : rtc_now());
+            }
+            if (e.mtime != 0) {
+                fs_set_times(0, nfi, e.mtime, e.ctime ? e.ctime : e.mtime);
+            }
+
+            st->file_count++;
+            st->total_uncompressed_bytes += e.size;
+        } else if (e.type == BBA_ENTRY_SYMLINK) {
+            int existing_fi = fs_find_file(full_dest);
+            if (existing_fi >= 0) {
+                if (!(flags & BBA_RESTORE_OVERWRITE)) {
+                    st->skipped_count++;
+                    if (cb) cb(&e, ctx);
+                    continue;
+                }
+                fs_delete(full_dest, 0);
+            }
+
+            if (make_parent_dirs(full_dest) != 0) {
+                set_err(err, errcap, "failed creating parent directory for restored symlink");
+                return -1;
+            }
+
+            int si = fs_symlink(e.link_target, full_dest);
+            if (si >= 0) {
+                if (e.mode != 0 || e.uid != 0 || e.gid != 0) {
+                    fs_set_meta(0, si, e.mode, e.uid, e.gid, e.mtime ? e.mtime : rtc_now());
+                }
+                if (e.mtime != 0) {
+                    fs_set_times(0, si, e.mtime, e.ctime ? e.ctime : e.mtime);
+                }
+                st->symlink_count++;
+            } else {
+                set_err(err, errcap, "failed creating restored symlink");
+                return -1;
+            }
+        }
+
+        if (cb) cb(&e, ctx);
+    }
+
+    st->archive_bytes = (uint64_t)len;
+    return 0;
+}

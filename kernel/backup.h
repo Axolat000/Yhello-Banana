@@ -55,6 +55,7 @@ enum {
 
 #define BBA_FLAG_DEFLATE 1u
 #define BBA_FLAG_NO_EXCLUDE 2u /* disable default cache/temporary files exclusion */
+#define BBA_RESTORE_OVERWRITE 1u /* allow overwriting existing destination files */
 
 typedef struct {
     char     path[FS_PATH_LEN];
@@ -125,5 +126,16 @@ int backup_find_external_volume(char* dest_vol_path, int dest_cap, uint64_t requ
 int backup_to_volume(const char* external_mnt, const char* const* sources, int num_sources,
                      uint32_t flags, char* out_archive_path, int out_cap,
                      backup_stats_t* st, char* err, int errcap);
+
+/* Restore a versioned backup archive (.bba) into a destination directory
+ * (e.g. an alternative target directory "/tmp/restore" or root "/").
+ * Validates whole archive integrity (magic, header CRC32, trailer EBBA and stream CRC32,
+ * entry bounds and SHA-256 digests) before overwriting any existing destination files.
+ * If destination directory is empty or does not exist, it is created.
+ * flags: BBA_RESTORE_OVERWRITE allows replacing existing files.
+ * Returns 0 on success, or -1 on error (with message in err). */
+int backup_restore(const char* archive_path, const char* target_dest_dir,
+                   uint32_t flags, backup_cb_t cb, void* ctx,
+                   backup_stats_t* st, char* err, int errcap);
 
 #endif /* BACKUP_H */
