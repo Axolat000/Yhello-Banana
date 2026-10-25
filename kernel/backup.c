@@ -56,6 +56,60 @@ static void sanitize_rel_path(const char* in, char* out, int outlen) {
     out[pos] = '\0';
 }
 
+/* Explicitly ignore temporary and cache files/directories:
+ * Directories ignored: /tmp, /var/tmp, /proc, /dev, /sys, .cache, .tmp, .Trash, cache
+ * Files ignored: *.tmp, *.bak, *~, .swp
+ */
+int backup_is_excluded(const char* path, int is_dir) {
+    if (!path || !path[0]) return 0;
+
+    /* Normalize absolute prefix */
+    const char* p = path;
+    if (p[0] == '/') {
+        if (!strcmp(p, "/var/tmp") || !strncmp(p, "/var/tmp/", 9)) return 1;
+        if (!strcmp(p, "/dev") || !strncmp(p, "/dev/", 5)) return 1;
+        if (!strcmp(p, "/proc") || !strncmp(p, "/proc/", 6)) return 1;
+        if (!strcmp(p, "/sys") || !strncmp(p, "/sys/", 5)) return 1;
+    } else {
+        if (!strcmp(p, "var/tmp") || !strncmp(p, "var/tmp/", 8)) return 1;
+        if (!strcmp(p, "dev") || !strncmp(p, "dev/", 4)) return 1;
+        if (!strcmp(p, "proc") || !strncmp(p, "proc/", 5)) return 1;
+        if (!strcmp(p, "sys") || !strncmp(p, "sys/", 4)) return 1;
+    }
+
+    /* Check component names in path */
+    const char* cur = path;
+    while (*cur) {
+        while (*cur == '/') cur++;
+        if (!*cur) break;
+        const char* next = strchr(cur, '/');
+        size_t len = next ? (size_t)(next - cur) : strlen(cur);
+        int component_is_dir = next != NULL || is_dir;
+
+        /* Check directory names */
+        if (component_is_dir) {
+            if (len == 6 && !memcmp(cur, ".cache", 6)) return 1;
+            if (len == 5 && !memcmp(cur, "cache", 5)) return 1;
+            if (len == 4 && !memcmp(cur, ".tmp", 4)) return 1;
+            if (len == 6 && !memcmp(cur, ".Trash", 6)) return 1;
+        }
+
+        /* Check leaf filename if this is the last component and it's a file */
+        if (!next && !is_dir) {
+            if (len >= 4 && !memcmp(cur + len - 4, ".tmp", 4)) return 1;
+            if (len >= 4 && !memcmp(cur + len - 4, ".bak", 4)) return 1;
+            if (len >= 1 && cur[len - 1] == '~') return 1;
+            if (len >= 4 && !memcmp(cur + len - 4, ".swp", 4)) return 1;
+            if (len >= 7 && !memcmp(cur, ".Trash-", 7)) return 1;
+        }
+
+        if (!next) break;
+        cur = next;
+    }
+
+    return 0;
+}
+
 typedef struct {
     backup_cb_t cb;
     void* ctx;
@@ -234,6 +288,14 @@ static int add_tree_recursive(backup_ctx_t* bc, const char* abs_dir, const char*
         char sub_abs[FS_PATH_LEN], sub_rel[FS_PATH_LEN];
         ksnprintf(sub_abs, sizeof(sub_abs), "%s/%s", abs_dir, fnames[i]);
         ksnprintf(sub_rel, sizeof(sub_rel), "%s/%s", rel_prefix, fnames[i]);
+
+        if (!(bc->flags & BBA_FLAG_NO_EXCLUDE)) {
+            if (backup_is_excluded(sub_abs, 0) || backup_is_excluded(sub_rel, 0)) {
+                bc->st->skipped_count++;
+                continue;
+            }
+        }
+
         if (add_one_entry(bc, sub_abs, sub_rel) != 0) {
             kfree(fnames);
             kfree(idx);
@@ -252,6 +314,14 @@ static int add_tree_recursive(backup_ctx_t* bc, const char* abs_dir, const char*
         char sub_abs[FS_PATH_LEN], sub_rel[FS_PATH_LEN];
         ksnprintf(sub_abs, sizeof(sub_abs), "%s/%s", abs_dir, dnames[i]);
         ksnprintf(sub_rel, sizeof(sub_rel), "%s/%s", rel_prefix, dnames[i]);
+
+        if (!(bc->flags & BBA_FLAG_NO_EXCLUDE)) {
+            if (backup_is_excluded(sub_abs, 1) || backup_is_excluded(sub_rel, 1)) {
+                bc->st->skipped_count++;
+                continue;
+            }
+        }
+
         if (add_tree_recursive(bc, sub_abs, sub_rel) != 0) {
             kfree(dnames);
             kfree(idx);
@@ -646,6 +716,70 @@ int backup_to_volume(const char* external_mnt, const char* const* sources, int n
 
     if (out_archive_path && out_cap > 0) {
         kstrlcpy(out_archive_path, arc_path, (size_t)out_cap);
+    }
+    return 0;
+}
+
+int backup_system_default(const char* dest_archive_path, uint32_t flags,
+                          char* out_path, int out_cap,
+                          backup_stats_t* st, char* err, int errcap) {
+    /* Collect standard sources: /home and chosen configurations under /etc and user configs */
+    const char* default_sources[] = {
+        "/home",
+        "/etc",
+        "/home/banana/.config"
+    };
+    int num_sources = 3;
+
+    /* Filter sources that actually exist */
+    const char* active_sources[4];
+    int nactive = 0;
+    for (int i = 0; i < num_sources; i++) {
+        fs_stat_t sst;
+        if (fs_stat(default_sources[i], 0, &sst) == 0) {
+            /* Avoid duplicates if /home covers /home/banana/.config */
+            if (i == 2 && nactive > 0 && !strcmp(active_sources[0], "/home")) {
+                continue;
+            }
+            active_sources[nactive++] = default_sources[i];
+        }
+    }
+
+    if (nactive == 0) {
+        set_err(err, errcap, "no standard home or configuration directories found");
+        return -1;
+    }
+
+    char final_dest[FS_PATH_LEN];
+    if (dest_archive_path && dest_archive_path[0]) {
+        kstrlcpy(final_dest, dest_archive_path, sizeof(final_dest));
+        int rc = backup_create(final_dest, active_sources, nactive, flags, NULL, NULL, st, err, errcap);
+        if (rc != 0) return -1;
+        rc = backup_verify(final_dest, NULL, NULL, NULL, err, errcap);
+        if (rc != 0) {
+            fs_delete(final_dest, 0);
+            return -1;
+        }
+    } else {
+        /* Try external volume first, fall back to /banana_backup_YYYYMMDD_HHMMSS.bba */
+        char target_mnt[FS_PATH_LEN];
+        uint32_t now = rtc_now();
+        if (backup_find_external_volume(target_mnt, sizeof(target_mnt), 0) == 0) {
+            ksnprintf(final_dest, sizeof(final_dest), "%s/banana_backup_%u.bba", target_mnt, now);
+        } else {
+            ksnprintf(final_dest, sizeof(final_dest), "/banana_backup_%u.bba", now);
+        }
+        int rc = backup_create(final_dest, active_sources, nactive, flags, NULL, NULL, st, err, errcap);
+        if (rc != 0) return -1;
+        rc = backup_verify(final_dest, NULL, NULL, NULL, err, errcap);
+        if (rc != 0) {
+            fs_delete(final_dest, 0);
+            return -1;
+        }
+    }
+
+    if (out_path && out_cap > 0) {
+        kstrlcpy(out_path, final_dest, (size_t)out_cap);
     }
     return 0;
 }

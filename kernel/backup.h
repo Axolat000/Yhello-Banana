@@ -54,6 +54,7 @@ enum {
 };
 
 #define BBA_FLAG_DEFLATE 1u
+#define BBA_FLAG_NO_EXCLUDE 2u /* disable default cache/temporary files exclusion */
 
 typedef struct {
     char     path[FS_PATH_LEN];
@@ -74,6 +75,7 @@ typedef struct {
     uint32_t file_count;
     uint32_t dir_count;
     uint32_t symlink_count;
+    uint32_t skipped_count; /* files/directories explicitly excluded */
     uint64_t total_uncompressed_bytes;
     uint64_t archive_bytes;
 } backup_stats_t;
@@ -81,12 +83,29 @@ typedef struct {
 /* Progress / inspection callback */
 typedef void (*backup_cb_t)(const backup_entry_t* e, void* ctx);
 
+/* Test whether a relative or absolute path represents temporary/cache files
+ * that should be explicitly ignored during backup (e.g. /tmp, /var/tmp,
+ * /proc, /dev, .cache, .tmp, *.bak, *~, desktop-icons.tmp).
+ * Returns 1 if excluded, 0 if included. */
+int backup_is_excluded(const char* path, int is_dir);
+
 /* Create a versioned backup archive of sources into archive_path.
- * flags: 0 = uncompressed, BBA_FLAG_DEFLATE = compressed entries.
+ * flags: 0 = uncompressed, BBA_FLAG_DEFLATE = compressed entries,
+ *        BBA_FLAG_NO_EXCLUDE = include all files without cache/temp exclusions.
  * Returns 0 on success, or -1 with err message. */
 int backup_create(const char* archive_path, const char* const* sources, int num_sources,
                   uint32_t flags, backup_cb_t cb, void* ctx, backup_stats_t* st,
                   char* err, int errcap);
+
+/* Perform a standard system and user backup covering /home and selected
+ * configuration files (/etc, /home/banana/.config), explicitly excluding
+ * caches and temporary files.
+ * If dest_archive_path is provided, writes to that path; if NULL or empty,
+ * stores onto an external volume found under /mnt, or default /backup_YYYYMMDD_HHMMSS.bba.
+ * Returns 0 on success, or -1 on error. */
+int backup_system_default(const char* dest_archive_path, uint32_t flags,
+                          char* out_path, int out_cap,
+                          backup_stats_t* st, char* err, int errcap);
 
 /* Verify an archive's header, trailer, CRC32, and entry SHA-256 hashes without modifying filesystem.
  * Returns 0 on success, or -1 with err. */
