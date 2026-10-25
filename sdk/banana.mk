@@ -16,6 +16,7 @@
 #     ICON        = icon.png              # optional: a 64x64 PNG for Apps and the App Store
 #     UNPACK      = java.zip:/usr/java    # optional: a DATA zip pkg install unpacks into a
 #                                         # folder of the app's own under /usr (removed with it)
+#     LIB         = libfoo.so             # optional: package files linked into /lib
 #     BIN         = ps,pgrep              # optional: commands in /bin, links to the program
 #                                         # (or to a DATA file of that name)
 #     USE_GL      = 1                     # optional: OpenGL 1.x (#include <GL/bgl.h>)
@@ -46,6 +47,8 @@ DEPENDS     ?=
 ICON        ?=
 UNPACK      ?=
 BIN         ?=
+# Shared library basenames exported from /apps/<app> into /lib.
+LIB         ?=
 USE_GL      ?= 0
 USE_GL3     ?= 0
 USE_EGL     ?= 0
@@ -178,6 +181,7 @@ $(BUILD)/manifest: $(MAKEFILE_LIST)
 	    '$(call sq,$(DESCRIPTION))' '$(call sq,$(AUTHOR))' '$(call sq,$(CATEGORY))' '$(call sq,$(DEPENDS))' > $@
 	@$(if $(UNPACK),printf 'unpack=%s\n' '$(call sq,$(UNPACK))' >> $@,true)
 	@$(if $(BIN),printf 'bin=%s\n' '$(call sq,$(BIN))' >> $@,true)
+	@$(if $(LIB),printf 'lib=%s\n' '$(call sq,$(LIB))' >> $@,true)
 
 ICON_FILE = $(if $(ICON),icon.png=$(ICON))
 

@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 firmware="${1:?usage: bash tools/ci-boot.sh bios|uefi}"
 logs="build/logs/boot-$firmware"
 mkdir -p "$logs"
-args=(-accel tcg -cdrom Banana_OS.iso -boot d -m 512M -smp 4 -nic none)
+memory=512M
+if [ "${MESA_ISO:-0}" = 1 ]; then memory=1G; fi
+args=(-accel tcg -cdrom Banana_OS.iso -boot d -m "$memory" -smp 4 -nic none)
 case "$firmware" in
     bios) ;;
     uefi)
@@ -31,10 +33,24 @@ esac
     printf '\n'
 } > "$logs/provenance.txt"
 
+mesa_checks=()
+if [ "${MESA_ISO:-0}" = 1 ]; then
+    mesa_checks=(--cmd 'glinfo ## glinfo: every check passed'
+                 --cmd 'gpu3d on'
+                 --cmd 'glinfo ## glinfo: every check passed'
+                 --cmd 'gpu3d off'
+                 --cmd 'readlink /lib/libOSMesa.so ## /apps/mesa/libOSMesa.so'
+                 --cmd 'pkg remove mesa ## removed Mesa Graphics Runtime'
+                 --cmd 'test ! -L /lib/libOSMesa.so && echo mesa-link-removed ## mesa-link-removed'
+                 --cmd 'apt install mesa'
+                 --cmd 'glinfo ## glinfo: every check passed')
+fi
+
 # Reaching a prompt and completing commands catches hangs that a timed boot
 # with nonempty serial output would otherwise treat as success. No Internet.
 python3 tools/serialtest.py --log "$logs/serial.log" \
     --boot-timeout 180 --timeout 180 \
+    "${mesa_checks[@]}" \
     --cmd 'selftest boot ## 0 failed' \
     --cmd 'browser --engine ## browser engine: LibJS' \
     --cmd 'selftest browser libjsdom ## 30 passed, 0 failed' \

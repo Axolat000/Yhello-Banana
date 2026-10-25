@@ -16,6 +16,8 @@
  * program for one or both CPUs: "app-i686", "app-x86_64". Any other file
  * is app data. `pkg install` unpacks it all into /apps/<name>/.
  *
+ * lib=<name>[,<name>...]: shared files exported as /lib/<name> symlinks,
+ * removed with their owning package (like bin= commands).
  * unpack=<file>:<folder> (optional): <file>, a ZIP in the package, is
  * unpacked into <folder> - one of the package's own under /usr (the
  * java package: OpenJDK into /usr/java) - and removed from /apps/<name>.

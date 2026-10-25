@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   build:
-    needs: libjs
-    runs-on: ubuntu-latest
+    needs: [libjs, mesa]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [standard, mesa]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,38 +98,44 @@ jobs:
         working-directory: libjs-packages
         run: sha256sum -c LIBJS-SHA256SUMS
 
+      - name: Download Intel Mesa runtime
+        if: matrix.variant == 'mesa'
+        uses: actions/download-artifact@v4
+        with:
+          name: mesa-intel-runtime
+          path: mesa-packages
+      - name: Verify Intel Mesa runtime
+        if: matrix.variant == 'mesa'
+        working-directory: mesa-packages
+        run: sha256sum -c MESA-SHA256SUMS
+
       - name: Build Banana_OS.iso
         run: |
           make clean
-          make LIBJS_WORKER_BPK="$PWD/libjs-packages/libjsworker-x86_64.bpk"
+          mesa_args=()
+          if [ "${{ matrix.variant }}" = mesa ]; then
+            mesa_args+=(MESA_BPK="$PWD/mesa-packages/mesa-x86_64.bpk")
+          fi
+          make LIBJS_WORKER_BPK="$PWD/libjs-packages/libjsworker-x86_64.bpk" "${mesa_args[@]}"
           rm -f ~/.banana-secureboot/banana-sb.key
+
+      - name: Name the Mesa ISO
+        if: matrix.variant == 'mesa'
+        run: mv Banana_OS.iso Banana_OS-mesa.iso
 
       - name: Retain the exact ISO for boot validation
         uses: actions/upload-artifact@v4
         with:
-          name: boot-iso-${{ github.sha }}
-          path: Banana_OS.iso
+          name: boot-iso-${{ matrix.variant }}-${{ github.sha }}
+          path: ${{ matrix.variant == 'mesa' && 'Banana_OS-mesa.iso' || 'Banana_OS.iso' }}
           if-no-files-found: error
           retention-days: 3
-
-      - name: Set release tag
-        id: tag
-        run: echo "tag=build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Banana OS build ${{ github.run_number }}
-          prerelease: true
-          target_commitish: ${{ github.sha }}
-          files: Banana_OS.iso
 
   # Java for Banana OS (64-bit): java.bpk (ports/openjdk/package.sh) - the java
   # app, and /usr/java, which `pkg install java.bpk` unpacks: jdk/ (ports/openjdk),
   # lib/libOSMesa.so (ports/mesa: OpenGL 3.3) and lwjgl/ (ports/lwjgl)
   boot:
-    name: Validate ${{ matrix.firmware }} upgrade from build ${{ matrix.install_build }}
+    name: Validate ${{ matrix.variant }} ${{ matrix.firmware }} upgrade from build ${{ matrix.install_build }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -134,6 +144,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        variant: [standard, mesa]
         firmware: [bios, uefi]
         install_build: [212, 218]
     steps:
@@ -142,7 +153,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc e2fsprogs
       - uses: actions/download-artifact@v4
         with:
-          name: boot-iso-${{ github.sha }}
+          name: boot-iso-${{ matrix.variant }}-${{ github.sha }}
+      - name: Select Mesa ISO for validation
+        if: matrix.variant == 'mesa'
+        run: mv Banana_OS-mesa.iso Banana_OS.iso
       - name: Download previous installation fixture (build ${{ matrix.install_build }})
         run: |
           curl -fL --retry 3 -o previous.iso https://github.com/qcom-toolbox/Banana-OS/releases/download/build-${{ matrix.install_build }}/Banana_OS.iso
@@ -155,6 +169,7 @@ jobs:
       - name: Boot, install, update and verify persistence
         env:
           BASE_ISO: previous.iso
+          MESA_ISO: ${{ matrix.variant == 'mesa' && '1' || '0' }}
         run: |
           python3 tools/test_serialtest.py
           bash tools/ci-boot.sh "${{ matrix.firmware }}"
@@ -163,7 +178,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-${{ matrix.firmware }}-from-${{ matrix.install_build }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: boot-${{ matrix.variant }}-${{ matrix.firmware }}-from-${{ matrix.install_build }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             build/logs/**/*.log
             build/logs/**/provenance.txt
@@ -240,7 +255,7 @@ jobs:
 
   # next to the ISO, in the same pre-release (once both are built)
   publish-java:
-    needs: [ build, java ]
+    needs: [ publish-isos, java ]
     runs-on: ubuntu-latest
     steps:
       - name: Download java.bpk
@@ -268,7 +283,7 @@ jobs:
       sdk: true
 
   publish-libjs:
-    needs: [build, libjs]
+    needs: [publish-isos, libjs]
     runs-on: ubuntu-latest
     steps:
       - name: Download installable LibJS packages
@@ -291,3 +306,79 @@ jobs:
             libjs-packages/*.bpk
             libjs-packages/LIBJS-THIRD-PARTY-NOTICES.txt
             libjs-packages/LIBJS-SHA256SUMS
+
+  mesa:
+    name: Intel Mesa runtime (Crocus and Iris)
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y ca-certificates git gcc-multilib g++ make binutils python3 curl xz-utils cmake \
+            meson ninja-build flex bison python3-mako python3-yaml pkg-config libdrm-dev zlib1g-dev spirv-tools \
+            llvm-17-dev libclang-17-dev libclang-cpp17-dev libclc-17-dev libllvmspirvlib-17-dev mtools fdisk
+      - uses: actions/checkout@v4
+      - name: Mesa build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ports/mesa/src
+            ports/mesa/build-crocus-iris
+          key: mesa-intel-trixie-v1-${{ hashFiles('ports/mesa/**', '!ports/mesa/src/**', '!ports/mesa/build*/**', 'sdk/lib/**', 'sdk/include/**', 'sdk/banana.mk', 'sdk/tools/**') }}
+      - name: Build Intel drivers and runtime package
+        run: |
+          CROCUS=1 IRIS=1 JOBS=2 sh ports/mesa/build.sh
+          make -C ports/mesa/runtime mesa-x86_64.bpk
+          mkdir -p mesa-packages
+          cp ports/mesa/runtime/mesa-x86_64.bpk mesa-packages/
+          (cd mesa-packages && sha256sum mesa-x86_64.bpk > MESA-SHA256SUMS)
+      - name: Test pristine Mesa patching
+        run: python3 tools/tests/mesa_patch.py
+      - name: Test Intel kernel interface
+        run: |
+          cc -O1 -no-pie -w -I kernel -I tools/tests tools/tests/test_i915.c kernel/gpu_i915.c kernel/gpu_i915_lrc.c kernel/gpu_gem.c -o /tmp/i915
+          /tmp/i915
+      - name: Test both Mesa drivers on Intel models
+        env:
+          MESA_REF: ${{ github.workspace }}/ports/mesa/build-crocus-iris/ref
+        run: |
+          sh tools/tests/crocus_host/run.sh 30
+          sh tools/tests/iris_host/run.sh 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-intel-runtime
+          path: mesa-packages/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-isos:
+    name: Publish validated standard and Mesa ISOs
+    needs: [build, boot]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: boot-iso-*-${{ github.sha }}
+          merge-multiple: true
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Banana OS build ${{ github.run_number }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: |
+            Banana_OS.iso
+            Banana_OS-mesa.iso
+          body: |
+            - **Banana_OS.iso**: standard BIOS/UEFI image.
+            - **Banana_OS-mesa.iso**: the same OS with the 64-bit Mesa runtime, Intel Crocus/Iris (Core 1st–10th generation), VirGL and software fallback. The combined Mesa/LibJS profile is tested with 1 GiB RAM.
+
+            Intel acceleration is experimental and has not been validated on physical Intel GPUs. Run `gpu3d test`, then `gpu3d on` and `glinfo`; `gpu3d off` restores software rendering.
+
+            [Graphics setup and limits](https://github.com/qcom-toolbox/Banana-OS/blob/${{ github.sha }}/GPU.md#mesa-iso-in-prereleases)

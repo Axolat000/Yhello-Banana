@@ -265,6 +265,12 @@ PORTS64    = bash coreutils grep sed findutils diffutils gawk ncurses less zsh n
 # optional ones: built in the same way, but installed only when asked for
 # (`apt install neovim`, the App Store: the builtin: source)
 OPTPORTS64 = neovim
+# Optional Intel Mesa ISO: the same OS plus the user-space GL runtime.
+# Empty for the standard ISO; pass the audited runtime BPK for the Mesa ISO.
+MESA_BPK ?=
+ifneq ($(strip $(MESA_BPK)),)
+PORTS64 += mesa
+endif
 PORT_BPKZ  = $(foreach p,$(PORTS64) $(OPTPORTS64),ports/$(p)/build/$(p)-x86_64.bpk.z)
 CROSS_DEPS = sdk/tools/banana-cc sdk/tools/banana-configure sdk/tools/banana-config.site ports/port.sh
 define PORT_RULE
@@ -273,7 +279,15 @@ ports/$(1)/build/$(1)-x86_64.bpk: $$(filter-out %/src %/build,$$(wildcard ports/
 ports/$(1)/build/$(1)-x86_64.bpk.z: ports/$(1)/build/$(1)-x86_64.bpk
 	python3 -c "import sys, zlib; open(sys.argv[2], 'wb').write(zlib.compress(open(sys.argv[1], 'rb').read(), 9))" $$< $$@
 endef
-$(foreach p,$(PORTS64) $(OPTPORTS64),$(eval $(call PORT_RULE,$(p))))
+$(foreach p,$(filter-out mesa,$(PORTS64)) $(OPTPORTS64),$(eval $(call PORT_RULE,$(p))))
+ifneq ($(strip $(MESA_BPK)),)
+.PHONY: mesa-prebuilt-input
+mesa-prebuilt-input:
+ports/mesa/build/mesa-x86_64.bpk.z: $(MESA_BPK) mesa-prebuilt-input
+	mkdir -p $(@D)
+	python3 sdk/tools/bpkg check "$(MESA_BPK)"
+	python3 -c "import sys,zlib; from pathlib import Path; out=Path(sys.argv[2]); tmp=out.with_suffix('.tmp'); tmp.write_bytes(zlib.compress(Path(sys.argv[1]).read_bytes(),9)); tmp.replace(out)" "$(MESA_BPK)" $@
+endif
 # (vi is Vim's tiny build, from ports/vim's source and script)
 ports/vi/build/vi-x86_64.bpk: ports/vim/build.sh
 # (less, zsh, nano, vim and vi are linked with ncurses' library)
@@ -291,13 +305,17 @@ $(foreach a,$(APPS64),$(eval $(call APP64_RULE,$(a))))
 apps/kcmd/kcmd-x86_64.bpk.z: shell/help.c
 kernel/appbin.o64: $(APPS64_BPKZ)
 build/builtin-meta-x86_64.bin: $(APPS64_BPKZ)
-build/ports64.inc: Makefile
+.PHONY: ports-config-input
+ports-config-input:
+build/ports64.inc: Makefile ports-config-input
 	mkdir -p build
 	{ $(foreach p,$(PORTS64) $(OPTPORTS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "ports/%s/build/%s-x86_64.bpk.z"\nport_%s_end:\n' $(p) $(p) $(p) $(p) $(p) $(p);) \
-	  $(foreach a,$(APPS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "apps/%s/%s-x86_64.bpk.z"\nport_%s_end:\n' $(a) $(a) $(a) $(a) $(a) $(a);) } > $@
-build/ports64.h: Makefile
+	  $(foreach a,$(APPS64),printf 'global port_%s, port_%s_end\nalign 16\nport_%s: incbin "apps/%s/%s-x86_64.bpk.z"\nport_%s_end:\n' $(a) $(a) $(a) $(a) $(a) $(a);) } > $@.tmp
+	cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+build/ports64.h: Makefile ports-config-input
 	mkdir -p build
-	{ $(foreach p,$(PORTS64) $(APPS64),echo 'PORT($(p))';) $(foreach p,$(OPTPORTS64),echo 'OPTPORT($(p))';) } > $@
+	{ $(foreach p,$(PORTS64) $(APPS64),echo 'PORT($(p))';) $(foreach p,$(OPTPORTS64),echo 'OPTPORT($(p))';) } > $@.tmp
+	cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 kernel/builtin_apps.o64: build/ports64.h
 
 # the Terminal app (apps/terminal): bash in windows and tabs, 64-bit only too
@@ -324,7 +342,7 @@ kernel/appbin.o64 build/builtin-meta-x86_64.bin: $(LIBJS_WORKER_BPKZ)
 kernel/appbin.o64: $(WEBWORKER_BPKZ)
 build/builtin-meta-x86_64.bin: $(WEBWORKER_BPKZ)
 TERMINAL_BPKZ = apps/terminal/terminal-x86_64.bpk.z
-build/builtin-meta-x86_64.bin: $(PORT_BPKZ) $(TERMINAL_BPKZ)
+build/builtin-meta-x86_64.bin: $(PORT_BPKZ) $(TERMINAL_BPKZ) build/ports64.h
 $(TERMINAL_BPKZ): $(wildcard apps/terminal/*.c apps/terminal/*.h) apps/terminal/Makefile apps/terminal/icon.png $(SDK_DEPS)
 	$(MAKE) -C apps/terminal terminal-x86_64.bpk.z
 kernel/appbin.o64: $(TERMINAL_BPKZ)

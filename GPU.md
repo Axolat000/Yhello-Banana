@@ -172,3 +172,49 @@ cc -O1 -no-pie -w -I kernel -I tools/tests tools/tests/test_i915.c kernel/gpu_i9
 
 No hardware contexts: every batch re-emits the whole state (the Banana patch
 in `crocus_batch.c`). No aperture (GTT) maps, no PRIME or flink, no BLT ring.
+
+## Mesa ISO in prereleases
+
+Each prerelease ships two bootable BIOS/UEFI images: `Banana_OS.iso` (standard)
+and `Banana_OS-mesa.iso` (the same OS plus the 64-bit Mesa runtime).
+The Mesa image installs `/apps/mesa/libOSMesa.so` and the `glinfo` CLI command.
+It adds no desktop or Start-menu launcher. OpenGL/EGL apps prefer this runtime
+over Java's bundled software-only copy. The package owns a /lib/libOSMesa.so
+symlink, so existing applications work without recompilation; removal clears
+that link only while it still points to this package. The runtime persists across installation
+and updates like other built-in packages; it can be inspected in the package manager.
+
+Both Intel Mesa drivers are included: Crocus for 1st–4th generation Core
+(Ironlake through Haswell), Iris for 5th–10th generation (Broadwell through
+Comet Lake and Ice Lake), including supported desktop and laptop PCI IDs.
+Core processor generations differ from GPU generations (gen5 through gen11).
+VirGL and softpipe remain available for virtual machines and software fallback.
+The 32-bit kernel does not gain Mesa.
+CI tests the Mesa profile with 1 GiB RAM (the standard ISO with 512 MiB).
+At 512 MiB an installed Mesa system can exhaust memory when starting LibJS
+after OpenGL use; allocate at least 1 GiB for this combined profile and more
+for demanding pages.
+
+Intel acceleration is experimental, tested against register/command-streamer
+models, not physical Intel machines. On hardware, inspect `lsgpu` and run
+`gpu3d test` before `gpu3d on`. Then start a new GL app or run `glinfo` to see
+the actual renderer. `gpu3d off` restores software rendering and is saved.
+Unsupported hardware keeps the firmware display and software renderer;
+this image does not add Vulkan or hardware video decoding.
+
+Build the same variant locally:
+
+```sh
+CROCUS=1 IRIS=1 JOBS=2 sh ports/mesa/build.sh
+make -C ports/mesa/runtime mesa-x86_64.bpk
+make MESA_BPK="$PWD/ports/mesa/runtime/mesa-x86_64.bpk"
+mv Banana_OS.iso Banana_OS-mesa.iso
+```
+
+Supply `LIBJS_WORKER_BPK=...` as usual when reusing a prebuilt LibJS renderer.
+Omit `MESA_BPK` to return to the standard variant; the generated package list
+is refreshed in both directions. CI compiles Mesa with Debian 13 and LLVM 17
+(only the build-time Intel shader compiler uses LLVM). It checks both Intel
+driver models, live ISO boot and software fallback, then BIOS/UEFI upgrades
+from builds 212 and 218 and the installed runtime after reboot. Both ISOs
+are published only after the boot/upgrade matrix passes.

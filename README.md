@@ -1,8 +1,10 @@
 # 🍌 Banana OS 0.6
 
-Hybrid images share the BIOS and UEFI kernel data, reducing the current ISO
-from about 157 MiB to 80 MiB so older 128 MiB boot areas can update while
-preserving user files. New installations reserve at least 1 GiB and require
+**Mesa ISO:** prereleases also include `Banana_OS-mesa.iso` with Intel Crocus/Iris (Core 1st–10th generation), VirGL and software OpenGL. The combined Mesa/LibJS profile is tested with 1 GiB RAM. Intel acceleration remains experimental: see [GPU.md](GPU.md#mesa-iso-in-prereleases) for setup, tests and hardware limits.
+
+Hybrid images share the BIOS and UEFI kernel data to avoid storing duplicate
+kernels and keep images small enough for legacy boot areas. Upgrade tests
+verify that user files survive. New installations reserve at least 1 GiB and require
 50% image growth room (at least 256 MiB). CI checks BIOS and UEFI upgrades
 from both legacy 128 MiB and newer 256 MiB installations.
 

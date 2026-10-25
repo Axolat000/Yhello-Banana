@@ -15,10 +15,14 @@
 # Needs: gcc, meson, ninja, flex, bison, python3-mako, python3-yaml, mtools,
 # sfdisk (in /sbin); with CROCUS=1 or IRIS=1 also libdrm's headers (libdrm-dev);
 # with IRIS=1 also LLVM 17, clang, libclc and SPIRV-LLVM-Translator (llvm-17-dev,
-# libclang-17-dev, libclang-cpp17-dev, libclc-17-dev, libllvmspirvlib-17-dev):
+# libclang-17-dev, libclang-cpp17-dev, libclc-17-dev, libllvmspirvlib-17-dev,
+# spirv-tools, zlib1g-dev, cmake):
 # iris's internal shaders are OpenCL, compiled at build time by Mesa's
 # intel_clc - built first, on its own, so libOSMesa.so itself needs no LLVM.
 set -e
+# Non-root SSH sessions on Debian may omit the partitioning tools.
+PATH=$PATH:/usr/sbin:/sbin
+export PATH
 HERE=$(cd "$(dirname "$0")" && pwd)
 LLVMPIPE=${LLVMPIPE:-0}
 CROCUS=${CROCUS:-0}                      # 1: Mesa's crocus too, for Intel GPUs (gen 4 - 7.5: gpu3d)

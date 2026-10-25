@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 """Apply the Banana-only OSMesa winsys to the pinned Mesa source, idempotently."""
 from pathlib import Path
-import shutil, sys
+import re, shutil, sys
 root = Path(sys.argv[1]); here = Path(__file__).resolve().parent
 def write(path, text):
  if path.read_text() != text: path.write_text(text)
@@ -22,7 +22,9 @@ if 'inc_virtio' not in s: s=s.replace('inc_gallium_drivers,', 'inc_gallium_drive
 if 'driver_crocus' not in s: s=s.replace('driver_virgl, dep_ws2_32,', 'driver_virgl, driver_crocus, dep_ws2_32,')
 # iris (gen 8+) beside it
 if "'banana_iris.c'" not in s: s=s.replace("'banana_crocus.c',", "'banana_crocus.c', 'banana_iris.c',")
-if 'driver_iris' not in s: s=s.replace('driver_crocus, dep_ws2_32,', 'driver_crocus, driver_iris, dep_ws2_32,')
+# A fresh tree may have driver_virgl between crocus and dep_ws2_32.
+# Match the dependency itself, not an assumed ordering of adjacent drivers.
+if 'driver_iris' not in s: s=s.replace('dep_ws2_32,', 'driver_iris, dep_ws2_32,')
 write(p, s)
 dst=p.parent/'banana_virgl.c'; source=(here/'banana/virgl_winsys.c').read_text()
 if not dst.exists() or dst.read_text() != source: dst.write_text(source)
@@ -86,7 +88,10 @@ if 'Banana OS: no hardware contexts' not in s:
 ''')
 write(p, s)
 p=root/'src/gallium/drivers/virgl/meson.build';s=p.read_text().replace('if not with_platform_windows\n', "if not with_platform_windows and not get_option('osmesa')\n");write(p, s)
-p=root/'src/gallium/auxiliary/target-helpers/inline_sw_helper.h';s=p.read_text().replace('#if defined(GALLIUM_VIRGL)', '#if defined(GALLIUM_VIRGL) && !defined(BANANA_MESA_OSMESA)');write(p, s)
+p=root/'src/gallium/auxiliary/target-helpers/inline_sw_helper.h';s=p.read_text()
+s=re.sub(r'(?m)^#if defined\(GALLIUM_VIRGL\)(?: && !defined\(BANANA_MESA_OSMESA\))*$',
+         '#if defined(GALLIUM_VIRGL) && !defined(BANANA_MESA_OSMESA)', s)
+write(p, s)
 
 p=root/'src/gallium/drivers/virgl/virgl_context.c';s=p.read_text().replace('#ifndef _WIN32\n#include <libsync.h>', '#if !defined(_WIN32) && !defined(__BANANA_OS__)\n#include <libsync.h>')
 # Mesa's own copy: the sync-file dependency that gave <libsync.h> its include

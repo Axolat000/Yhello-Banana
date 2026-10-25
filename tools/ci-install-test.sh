@@ -35,7 +35,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-base_qemu=(-accel tcg -m 512M -smp 4 -nic none "${extra_qemu[@]}")
+mesa_checks=()
+if [ "${MESA_ISO:-0}" = 1 ]; then
+    mesa_checks=(--cmd 'readlink /lib/libOSMesa.so ## /apps/mesa/libOSMesa.so'
+                 --cmd 'pkg info mesa ## Mesa Graphics Runtime'
+                 --cmd 'glinfo ## glinfo: every check passed')
+fi
+
+memory=512M
+if [ "${MESA_ISO:-0}" = 1 ]; then memory=1G; fi
+base_qemu=(-accel tcg -m "$memory" -smp 4 -nic none "${extra_qemu[@]}")
 
 {
     printf 'commit=%s\nfirmware=%s\n' "$(git rev-parse HEAD)" "$firmware"
@@ -86,6 +95,7 @@ python3 tools/serialtest.py --log "$logs/serial-update.log" \
 echo "== 4. Boot updated disk again and verify user data"
 python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --boot-timeout 180 --timeout 180 \
+    "${mesa_checks[@]}" \
     --cmd 'selftest boot ## 0 failed' \
     --cmd 'browser --engine ## browser engine: LibJS' \
     --cmd 'selftest browser libjsdom ## 30 passed, 0 failed' \
@@ -105,6 +115,7 @@ python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
 echo "== 5. Reboot and verify terminal preferences survive on disk"
 python3 tools/serialtest.py --log "$logs/serial-preferences.log" \
     --boot-timeout 180 --timeout 180 \
+    "${mesa_checks[@]}" \
     --cmd '/apps/terminal/app-x86_64 --show-config ## theme=solarized' \
     --cmd '/apps/terminal/app-x86_64 --show-config ## font=18' \
     --cmd 'cat /home/banana/.config/banana-terminal.conf ## shell=zsh' \

@@ -162,20 +162,21 @@ static int bin_name_ok(const char* n, int l) {
     return 1;
 }
 
-/* calls fn(name, path of /bin/name) for each valid name of bin= */
-static void each_bin(const char* mf, uint32_t len, const char* app,
-                     void (*fn)(const char* app, const char* link)) {
+/* bin= and lib=: package-owned links in /bin or /lib. */
+static void each_link(const char* mf, uint32_t len, const char* app,
+                      const char* key, const char* prefix,
+                      void (*fn)(const char* app, const char* link)) {
     char link[FS_PATH_LEN];
     char* v = (char*)kmalloc(4096);             /* (coreutils: 105 commands) */
     if (!v) return;
-    mf_get(mf, len, "bin", v, 4096);
+    mf_get(mf, len, key, v, 4096);
     for (char* p = v; *p;) {
         char* e = p;
         while (*e && *e != ',') e++;
         int l = (int)(e - p);
         while (l && p[l - 1] == ' ') l--;
         if (bin_name_ok(p, l)) {
-            kstrlcpy(link, "/bin/", sizeof(link));
+            kstrlcpy(link, prefix, sizeof(link));
             memcpy(link + 5, p, (size_t)l);
             link[5 + l] = 0;
             fn(app, link);
@@ -186,8 +187,11 @@ static void each_bin(const char* mf, uint32_t len, const char* app,
     kfree(v);
 }
 
+#define each_bin(mf,len,app,fn) each_link(mf,len,app,"bin","/bin/",fn)
+#define each_lib(mf,len,app,fn) each_link(mf,len,app,"lib","/lib/",fn)
+
 static void bin_target(const char* app, const char* link, char* out, int cap) {
-    ksnprintf(out, (size_t)cap, "%s/%s/%s", PKG_DIR, app, link + 5);        /* (link: /bin/<name>) */
+    ksnprintf(out, (size_t)cap, "%s/%s/%s", PKG_DIR, app, link + 5);        /* (/bin/<name> or /lib/<name>) */
     if (fs_find_file(out) < 0) ksnprintf(out, (size_t)cap, "%s/%s/app-%s", PKG_DIR, app, BANANA_ARCH);
 }
 
@@ -202,6 +206,15 @@ static void bin_add(const char* app, const char* link) {
         fs_delete(link, 0);
     }
     if (fs_symlink(target, link) < 0) klog("pkg: %s: cannot make %s\n", app, link);
+}
+
+/* A library must exist in the package; never link to its CLI executable. */
+static void lib_add(const char* app, const char* link) {
+    char target[FS_PATH_LEN];
+    ksnprintf(target, sizeof(target), "%s/%s/%s", PKG_DIR, app, link + 5);
+    if (fs_find_file(target) < 0) return;
+    fs_mkdir_p("/lib");
+    bin_add(app, link);
 }
 
 /* only a link that is still this package's */
@@ -288,6 +301,7 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
         int ofi = fs_find_file(path);
         fs_file_t* of = ofi >= 0 ? fs_get_file(ofi) : NULL;
         if (of && of->content) each_bin(of->content, of->size, info.name, bin_remove);
+        if (of && of->content) each_lib(of->content, of->size, info.name, bin_remove);
         fs_delete(dir, 1);
     }
     if (fs_mkdir_p(dir) < 0) { kstrlcpy(msg, "cannot create the app folder in /apps", (size_t)mcap); kfree(d); return -1; }
@@ -334,6 +348,7 @@ int pkg_install_mem(const uint8_t* data, uint32_t size, char* msg, int mcap) {
     fs_file_t* mff = mfi >= 0 ? fs_get_file(mfi) : NULL;
     if (mff && mff->content) each_bin(mff->content, mff->size, info.name, bin_add);
     if (mff && mff->content) bin_default(mff->content, mff->size, &info, 1);
+    if (mff && mff->content) each_lib(mff->content, mff->size, info.name, lib_add);
     if (!strcmp(info.type, "driver")) {             /* a driver: loaded right away (and at every boot) */
         char err[96];
         if (driver_load_package(info.name, err, sizeof(err)) == 0)
@@ -410,6 +425,7 @@ int pkg_remove(const char* name, char* msg, int mcap) {
         fs_delete(udest, 1);
     if (f && f->content) each_bin(f->content, f->size, name, bin_remove);       /* and its /bin links */
     if (f && f->content) bin_default(f->content, f->size, &info, 0);
+    if (f && f->content) each_lib(f->content, f->size, name, bin_remove);
     fs_delete(dir, 1);
     ksnprintf(msg, (size_t)mcap, "removed %s", info.title);
     return 0;

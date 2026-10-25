@@ -116,6 +116,9 @@ def check(path):
     for b in [x.strip() for x in mf.get("bin", "").split(",") if x.strip()]:
         if not re.fullmatch(r"[A-Za-z0-9_.+\[-]{1,32}", b) or b in (".", ".."):
             die(f"{path}: bad command name '{b}' in bin=")
+    for lib in [x.strip() for x in mf.get("lib", "").split(",") if x.strip()]:
+        if not re.fullmatch(r"[A-Za-z0-9_.+\[-]{1,32}", lib) or lib in (".", "..") or lib not in files:
+            die(f"{path}: bad or missing library '{lib}' in lib=")
     names = ("driver-i686", "driver-x86_64") if kind == "driver" else ("app-i686", "app-x86_64")
     progs = [p for p in names if p in files]
     if not progs:
