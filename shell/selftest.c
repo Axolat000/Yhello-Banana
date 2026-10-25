@@ -664,6 +664,77 @@ static void t_backup(void) {
     rc = backup_verify("/tmp/btest/backup_default.bba", NULL, NULL, &vst, err, sizeof(err));
     report("verify default backup integrity and contents", rc == 0 && vst.file_count == def_st.file_count, err);
 
+    /* Test restoring into an alternative target directory */
+    backup_stats_t rst;
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/restored_alt", 0, NULL, NULL, &rst, err, sizeof(err));
+    report("restore backup into alternative target directory",
+           rc == 0 && rst.file_count == 2 && rst.symlink_count == 1, err);
+
+    /* Verify restored file content, accented filenames, and symlink target */
+    int rfi1 = fs_find_file("/tmp/btest/restored_alt/tree/docs/file1.txt");
+    fs_file_t* rfl1 = rfi1 >= 0 ? fs_get_file(rfi1) : NULL;
+    int rfi2 = fs_find_file("/tmp/btest/restored_alt/tree/accentué_répertoire/fichier_fêté.txt");
+    fs_file_t* rfl2 = rfi2 >= 0 ? fs_get_file(rfi2) : NULL;
+    char link_tgt[FS_PATH_LEN] = "";
+    int rlnk = fs_readlink("/tmp/btest/restored_alt/tree/link_to_file1", link_tgt, sizeof(link_tgt));
+    int content_match = rfl1 && rfl1->content && !strcmp(rfl1->content, txt1) &&
+                        rfl2 && rfl2->content && !strcmp(rfl2->content, txt2) &&
+                        rlnk > 0 && !strcmp(link_tgt, "docs/file1.txt");
+    report("verify restored contents, accented paths, and symbolic links", content_match, "");
+
+    /* Test corrupted archive detection before overwriting destination */
+    /* Create a target file that should NOT be modified when corrupt archive is passed */
+    fs_mkdir_p("/tmp/btest/safe_target");
+    fs_write_path("/tmp/btest/safe_target/important.txt", "unmodified_original", 19);
+
+    /* Tamper with backup.bba and attempt restore into safe_target */
+    if (fl && fl->content && fl->size > 50) {
+        char bak_copy[512];
+        uint32_t cpy_sz = fl->size < sizeof(bak_copy) ? fl->size : sizeof(bak_copy);
+        memcpy(bak_copy, fl->content, cpy_sz);
+
+        ((uint8_t*)fl->content)[40] ^= 0x55;
+        err[0] = '\0';
+        rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/safe_target", BBA_RESTORE_OVERWRITE, NULL, NULL, &rst, err, sizeof(err));
+        report("reject corrupt archive before restoring or overwriting destination", rc != 0, err);
+
+        /* Verify safe_target/important.txt was preserved and untouched */
+        int sfi = fs_find_file("/tmp/btest/safe_target/important.txt");
+        fs_file_t* sfl = sfi >= 0 ? fs_get_file(sfi) : NULL;
+        report("destination preserved untouched on corrupt archive detection",
+               sfl && sfl->content && !strcmp(sfl->content, "unmodified_original"), "");
+
+        memcpy(fl->content, bak_copy, cpy_sz);
+    }
+
+    /* Test truncated archive detection before overwriting destination */
+    if (fl && fl->content && fl->size > 20) {
+        uint32_t orig_sz = fl->size;
+        fl->size -= 10;
+        err[0] = '\0';
+        rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/safe_target", BBA_RESTORE_OVERWRITE, NULL, NULL, &rst, err, sizeof(err));
+        report("reject truncated archive before destination modification", rc != 0, err);
+        fl->size = orig_sz;
+    }
+
+    /* Test compressed (deflate) archive restore */
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup_comp.bba", "/tmp/btest/restored_comp", 0, NULL, NULL, &rst, err, sizeof(err));
+    int crfi1 = fs_find_file("/tmp/btest/restored_comp/tree/docs/file1.txt");
+    fs_file_t* crfl1 = crfi1 >= 0 ? fs_get_file(crfi1) : NULL;
+    report("restore compressed backup and verify inflated file contents",
+           rc == 0 && crfl1 && crfl1->content && !strcmp(crfl1->content, txt1), err);
+
+    /* Test fresh root / installation restore simulation */
+    /* Delete the original /tmp/btest/tree directory completely, then restore backup.bba to /tmp/btest/tree */
+    fs_delete("/tmp/btest/tree", 1);
+    int gone = (fs_find_dir("/tmp/btest/tree") < 0);
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest", 0, NULL, NULL, &rst, err, sizeof(err));
+    int restored_back = (fs_find_file("/tmp/btest/tree/docs/file1.txt") >= 0);
+    report("recover deleted directory tree from backup archive", gone && rc == 0 && restored_back, err);
+
     fs_delete("/tmp/btest", 1);
 }
 

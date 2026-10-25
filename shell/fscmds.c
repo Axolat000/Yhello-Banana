@@ -507,6 +507,41 @@ static void cmd_backup(int argc, char** argv) {
         terminal_writeln("usage: backup [-v <mnt>] [-c] [-all] <archive.bba> <source> [source2 ...]");
         terminal_writeln("       backup [-c] [-v [mnt]] --default [archive.bba]   (backs up /home & /etc configs)");
         terminal_writeln("       backup -verify <archive.bba>");
+        terminal_writeln("       backup -restore [-f] <archive.bba> [target_dir]");
+        return;
+    }
+
+    if (!strcmp(argv[1], "-restore") || !strcmp(argv[1], "-x")) {
+        if (argc < 3) {
+            terminal_writeln("usage: backup -restore [-f] <archive.bba> [target_dir]");
+            return;
+        }
+        int overwrite = 0;
+        int arg_idx = 2;
+        if (!strcmp(argv[arg_idx], "-f") || !strcmp(argv[arg_idx], "--force")) {
+            overwrite = 1;
+            arg_idx++;
+        }
+        if (arg_idx >= argc) {
+            terminal_writeln("usage: backup -restore [-f] <archive.bba> [target_dir]");
+            return;
+        }
+        const char* arc = argv[arg_idx++];
+        const char* dest = (arg_idx < argc) ? argv[arg_idx] : "/";
+        char err[128] = "";
+        backup_stats_t st;
+        uint32_t rflags = overwrite ? BBA_RESTORE_OVERWRITE : 0;
+        if (backup_restore(arc, dest, rflags, NULL, NULL, &st, err, sizeof(err)) == 0) {
+            char msg[FS_PATH_LEN + 160];
+            ksnprintf(msg, sizeof(msg), "backup: restored %s into %s (%u files, %u dirs, %u symlinks, %u skipped, %u bytes)",
+                      arc, dest, st.file_count, st.dir_count, st.symlink_count, st.skipped_count, (uint32_t)st.total_uncompressed_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: restore failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
         return;
     }
 
