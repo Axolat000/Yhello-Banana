@@ -18,6 +18,7 @@
 #include "../kernel/hmem.h"
 #include "../kernel/smp.h"
 #include "../kernel/zip.h"
+#include "../kernel/backup.h"
 #include "../kernel/clipboard.h"
 #include "../kernel/screenshot.h"
 #include "../kernel/session.h"
@@ -576,10 +577,69 @@ static void t_session(void) {
     report("session restore configuration toggle", enabled && disabled && session_restore_is_enabled(), "");
 }
 
+static void t_backup(void) {
+    section("versioned backup archives (BBA format, metadata, distinct volume)");
+    if (fs_find_dir("/tmp/btest") >= 0) fs_delete("/tmp/btest", 1);
+    fs_mkdir_p("/tmp/btest/tree/docs");
+    fs_mkdir_p("/tmp/btest/tree/accentué_répertoire");
+
+    const char* txt1 = "Banana OS daily-use backup test payload 1";
+    const char* txt2 = "Second document with special characters: éàèçù and newlines\n";
+    fs_write_path("/tmp/btest/tree/docs/file1.txt", txt1, (uint32_t)strlen(txt1));
+    fs_write_path("/tmp/btest/tree/accentué_répertoire/fichier_fêté.txt", txt2, (uint32_t)strlen(txt2));
+    fs_symlink("docs/file1.txt", "/tmp/btest/tree/link_to_file1");
+
+    char err[128] = "";
+    backup_stats_t st;
+    const char* sources[1] = { "/tmp/btest/tree" };
+
+    int rc = backup_create("/tmp/btest/backup.bba", sources, 1, 0, NULL, NULL, &st, err, sizeof(err));
+    report("create uncompressed versioned backup archive", rc == 0 && st.file_count == 2 && st.symlink_count == 1, err);
+
+    backup_stats_t vst;
+    rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify archive metadata, SHA-256 hashes and trailer", rc == 0 && vst.file_count == 2 && vst.symlink_count == 1, err);
+
+    /* Test compressed backup */
+    backup_stats_t cst;
+    rc = backup_create("/tmp/btest/backup_comp.bba", sources, 1, BBA_FLAG_DEFLATE, NULL, NULL, &cst, err, sizeof(err));
+    report("create compressed (deflate) versioned backup archive", rc == 0 && cst.file_count == 2, err);
+    rc = backup_verify("/tmp/btest/backup_comp.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify compressed archive checksums and inflated payloads", rc == 0 && vst.file_count == 2, err);
+
+    /* Test corruption detection */
+    int fi = fs_find_file("/tmp/btest/backup.bba");
+    fs_file_t* fl = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (fl && fl->content && fl->size > 50) {
+        char bak_copy[512];
+        uint32_t cpy_sz = fl->size < sizeof(bak_copy) ? fl->size : sizeof(bak_copy);
+        memcpy(bak_copy, fl->content, cpy_sz);
+
+        /* Flip byte in middle of payload to trigger checksum mismatch */
+        ((uint8_t*)fl->content)[40] ^= 0x55;
+        rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+        report("detect tampered payload (CRC/SHA-256 mismatch)", rc != 0, "");
+
+        /* Restore original data */
+        memcpy(fl->content, bak_copy, cpy_sz);
+    }
+
+    /* Test truncation detection */
+    if (fl && fl->content && fl->size > 20) {
+        uint32_t orig_sz = fl->size;
+        fl->size -= 10;
+        rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+        report("detect truncated archive (missing/bad trailer)", rc != 0, "");
+        fl->size = orig_sz;
+    }
+
+    fs_delete("/tmp/btest", 1);
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "backup") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | backup | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -616,6 +676,8 @@ int selftest_cmd(int argc, char** argv) {
         t_ram();
     } else if (only && !strcmp(only, "zip")) {
         t_zip();
+    } else if (only && !strcmp(only, "backup")) {
+        t_backup();
     } else if (only && !strcmp(only, "clipboard")) {
         t_clip();
     } else if (only && !strcmp(only, "keyboard")) {
@@ -657,6 +719,7 @@ int selftest_cmd(int argc, char** argv) {
             t_ram();
             t_posix(NULL);
             t_zip();
+            t_backup();
             t_clip();
             t_session();
             t_swap();
@@ -666,6 +729,7 @@ int selftest_cmd(int argc, char** argv) {
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }
         if (only && !strcmp(only, "session")) t_session();
+        if (only && !strcmp(only, "backup")) t_backup();
     }
 
     char line[96];

@@ -1193,7 +1193,7 @@ static const char* const known_cmds[] = {
     /* shell/moncmds.c */
     "free", "swap", "latency", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
-    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
+    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck", "zip", "unzip", "clip", "screenshot", "backup",
     /* kernel/vmtools.c */
     "vmtools",
     /* shell/help.c */
