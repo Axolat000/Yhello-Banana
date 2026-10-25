@@ -633,6 +633,37 @@ static void t_backup(void) {
         fl->size = orig_sz;
     }
 
+    /* Test exclusion of caches and temporary files */
+    fs_mkdir_p("/tmp/btest/tree/.cache");
+    fs_mkdir_p("/tmp/btest/tree/tmp");
+    fs_write_path("/tmp/btest/tree/.cache/cached_blob.bin", "cached_data", 11);
+    fs_write_path("/tmp/btest/tree/tmp/scratch.tmp", "temp_data", 9);
+    fs_write_path("/tmp/btest/tree/docs/notes.txt~", "editor_backup", 13);
+    fs_write_path("/tmp/btest/tree/docs/old.bak", "old_backup", 10);
+    fs_write_path("/tmp/btest/tree/docs/real.txt", "valid_document", 14);
+
+    backup_stats_t xst;
+    err[0] = '\0';
+    rc = backup_create("/tmp/btest/backup_filtered.bba", sources, 1, 0, NULL, NULL, &xst, err, sizeof(err));
+    report("explicitly ignore caches and temporary files (.cache, tmp, *.bak, *~)",
+           rc == 0 && xst.file_count == 3 && xst.skipped_count >= 4, err);
+
+    err[0] = '\0';
+    rc = backup_verify("/tmp/btest/backup_filtered.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify filtered archive preserves valid files and omits caches",
+           rc == 0 && vst.file_count == 3 && vst.symlink_count == 1, err);
+
+    /* Test default backup of /home and selected configs */
+    backup_stats_t def_st;
+    err[0] = '\0';
+    rc = backup_system_default("/tmp/btest/backup_default.bba", 0, NULL, 0, &def_st, err, sizeof(err));
+    report("backup /home and system configurations (--default)",
+           rc == 0 && def_st.file_count > 0, err);
+
+    err[0] = '\0';
+    rc = backup_verify("/tmp/btest/backup_default.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify default backup integrity and contents", rc == 0 && vst.file_count == def_st.file_count, err);
+
     fs_delete("/tmp/btest", 1);
 }
 

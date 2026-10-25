@@ -504,8 +504,9 @@ static void cmd_screenshot(int argc, char** argv) {
 
 static void cmd_backup(int argc, char** argv) {
     if (argc < 2) {
-        terminal_writeln("usage: backup [-v <mnt>] [-c] [-verify <archive>] <archive.bba> <source> [source2 ...]");
-        terminal_writeln("       backup -v [/mnt/drive] <source> [source2 ...]");
+        terminal_writeln("usage: backup [-v <mnt>] [-c] [-all] <archive.bba> <source> [source2 ...]");
+        terminal_writeln("       backup [-c] [-v [mnt]] --default [archive.bba]   (backs up /home & /etc configs)");
+        terminal_writeln("       backup -verify <archive.bba>");
         return;
     }
 
@@ -530,11 +531,15 @@ static void cmd_backup(int argc, char** argv) {
 
     const char* vol_mnt = NULL;
     uint32_t flags = 0;
+    int is_default = 0;
     int arg_start = 1;
 
     while (arg_start < argc && argv[arg_start][0] == '-') {
         if (!strcmp(argv[arg_start], "-c")) {
             flags |= BBA_FLAG_DEFLATE;
+            arg_start++;
+        } else if (!strcmp(argv[arg_start], "-all") || !strcmp(argv[arg_start], "--no-exclude")) {
+            flags |= BBA_FLAG_NO_EXCLUDE;
             arg_start++;
         } else if (!strcmp(argv[arg_start], "-v")) {
             arg_start++;
@@ -543,9 +548,31 @@ static void cmd_backup(int argc, char** argv) {
             } else {
                 vol_mnt = ""; /* auto-detect */
             }
+        } else if (!strcmp(argv[arg_start], "--default") || !strcmp(argv[arg_start], "-default")) {
+            is_default = 1;
+            arg_start++;
         } else {
             break;
         }
+    }
+
+    if (is_default) {
+        const char* dest_arc = (arg_start < argc) ? argv[arg_start] : NULL;
+        char out_path[FS_PATH_LEN] = "";
+        char err[128] = "";
+        backup_stats_t st;
+        if (backup_system_default(dest_arc, flags, out_path, sizeof(out_path), &st, err, sizeof(err)) == 0) {
+            char msg[FS_PATH_LEN + 160];
+            ksnprintf(msg, sizeof(msg), "backup: default backup created %s (%u files, %u dirs, %u symlinks, %u skipped, %u bytes)",
+                      out_path, st.file_count, st.dir_count, st.symlink_count, st.skipped_count, (uint32_t)st.archive_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: default backup failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
+        return;
     }
 
     if (vol_mnt) {
