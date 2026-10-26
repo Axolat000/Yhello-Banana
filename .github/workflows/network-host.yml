@@ -3,11 +3,14 @@ on:
   pull_request:
     paths:
       - 'net/**'
+      - 'crypto/**'
       - 'kernel/*.h'
       - 'usb/usbcore.c'
       - 'tools/tests/net_*.c'
       - 'tools/tests/usb_ethernet.c'
       - 'tools/test_network_drivers.py'
+      - 'tools/test_wifi_*.py'
+      - 'tools/tests/wifi_*.c'
       - '.github/workflows/network-host.yml'
   workflow_call: {}
   workflow_dispatch: {}
@@ -18,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib python3-cryptography
       - name: Network policy and USB driver models under sanitizers
         run: python3 tools/test_network_drivers.py --sanitize
       - name: Network models on the 32-bit fallback
@@ -31,3 +34,7 @@ jobs:
         run: |
           cc -O1 -no-pie -w -I tools/tests/r8169 -I kernel -I net tools/tests/test_r8169.c net/r8169.c -o /tmp/test-r8169
           /tmp/test-r8169
+      - name: WPA2 independent cryptographic vectors
+        run: python3 tools/test_wifi_crypto.py --sanitize && python3 tools/test_wifi_crypto.py --32
+      - name: Wi-Fi association, handshake, replay and malformed frame tests
+        run: python3 tools/test_wifi_station.py --sanitize && python3 tools/test_wifi_station.py --32

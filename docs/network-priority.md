@@ -61,7 +61,11 @@ physical validation. Unknown versions (including 7420/8153D) are declined.
 
 The requested Wi-Fi chipsets (Intel AX200/AX210/BE200/7260, Atheros AR9280/AR9380,
 Realtek RTL8188EUS/RTL8811CU and MediaTek MT7601U) do **not** yet have working
-radio/association/security drivers in Banana OS. Wi-Fi priority is infrastructure
+radio drivers in Banana OS. A native station core now implements passive 2.4 GHz
+discovery, open-system association, WPA2-PSK/CCMP handshake, group rekey and
+software CCMP. It is tested against an independent simulated access point,
+including retransmissions, key-reinstallation/replay attempts, invalid MICs,
+timeouts and malformed frames. It is not yet connected to a physical radio. Wi-Fi priority is infrastructure
 for those drivers, not a claim that Wi-Fi already works. A future radio must
 report carrier only after association/authentication; an unconnected radio or
 one without a carrier callback cannot win automatic selection.
@@ -84,3 +88,9 @@ virtio-net-pci, usb-ecm and multi. The multi model removes/restores a preferred
 e1000 link through QMP, checks fallback to RTL8139 and return to e1000, and
 verifies downloads across both links. These tests gate ISO publication in CI.
 QEMU cannot establish that unmodeled physical controllers work.
+
+The Wi-Fi station and crypto tests require Python's `cryptography` package:
+`python3 tools/test_wifi_crypto.py --sanitize` and
+`python3 tools/test_wifi_station.py --sanitize` (also `--32`).
+Fixtures use independent Python HMAC/PBKDF2, AES key wrap and AESCCM rather than
+round trips through the implementation being tested.
