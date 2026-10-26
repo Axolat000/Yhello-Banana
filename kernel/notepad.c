@@ -658,3 +658,12 @@ void notepad_fkey(int k) {
 
 /* the window manager (kernel/gui.c) moves, snaps and maximizes it through its geometry */
 win_geom_t* notepad_geom(void) { return &g_win; }
+
+const char* notepad_get_path(char* out, int cap) {
+    if (out && cap > 0) kstrlcpy(out, g_path, (size_t)cap);
+    return g_path;
+}
+
+int notepad_is_dirty(void) {
+    return g_tb_ready ? g_tb.dirty : 0;
+}

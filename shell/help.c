@@ -366,6 +366,10 @@ static const page_t PAGES[] = {
       NULL, NULL, "wallpaper list\nwallpaper ~/Pictures/beach.jpg fill", NULL },
     { "resolution", "desktop", "resolution [WxH|auto]", "the screen's modes, or switch",
       "Without a graphics driver for the card, the size changes from the next start.", NULL, "resolution 1920x1080", "lsgpu" },
+    { "session", "desktop", "session [status|save|restore|clear|enable|disable]", "desktop session restoration and unsaved document signaling",
+      "Manages persistent desktop sessions: captures open windows, documents, and running apps, restores them across reboots, "
+      "and warns about unsaved edits rather than pretending to restore full volatile memory state.",
+      NULL, "session status\nsession save\nsession restore", "settings" },
     { "exit", "desktop", "exit", "close this terminal window (or end an SSH session)", NULL, NULL, NULL, NULL },
     /* ── hardware ── */
     { "lsusb", "hardware", "lsusb", "USB controllers and devices", NULL, NULL, NULL, "usb" },

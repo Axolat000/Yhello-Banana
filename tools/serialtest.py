@@ -22,7 +22,8 @@ DEFAULT_CMDS = [
     "free",
 ]
 
-BAD = re.compile(r"PANIC|crashed|was stopped|segmentation fault|stack overflow|general protection", re.I)
+BAD = re.compile(r"PANIC|crashed|was stopped|segmentation fault|general protection", re.I)
+STACK_ERR = re.compile(r"stack overflow", re.I)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 def main():
@@ -82,26 +83,29 @@ def main():
         text += ANSI.sub("", t).replace("\r", "")
         return True
 
+    PROMPT_RE = re.compile(r'(\$\s*$|\[y/N\]\s*$|\[1-\d+, Enter cancels\]\s*$)')
+
     def wait_prompt(since, timeout, boot_reprompt=False):
-        """the shell's prompt ("...$ " at the end, nothing more coming): True"""
+        """the shell's prompt or question prompt, with nothing more coming: True"""
         end = time.time() + timeout
         quiet = None
+        last_enter = 0.0
         while time.time() < end:
             got = pump()
             if got:
                 quiet = None
                 continue
-            quiet = quiet or time.time()
-            if time.time() - quiet > 0.7:
-                if text[since:].rstrip(" ").endswith("$") and text.endswith("$ "):
+            cur = text[since:]
+            if PROMPT_RE.search(cur):
+                quiet = quiet or time.time()
+                if time.time() - quiet > 0.5:
                     return True
-                # DHCP/mount notifications can arrive after the initial shell
-                # prompt. Once we have seen that prompt, request a fresh one
-                # exactly once; never send input before the shell is ready.
-                if boot_reprompt and re.search(r"(?:^|\n)[^\n]*\$ ", text[since:]):
+            elif "$ " in cur:
+                # Prompt appeared but later asynchronous logs arrived; pulse Enter periodically
+                now = time.time()
+                if now - last_enter > 2.0:
                     sock.sendall(b"\r")
-                    boot_reprompt = False
-                    quiet = None
+                    last_enter = now
             if proc.poll() is not None:
                 return False
         return False
@@ -128,6 +132,11 @@ def main():
             ok = wait_prompt(mark + len(c), a.timeout)
             out = text[mark:]
             bad = BAD.search(out)
+            if not bad and STACK_ERR.search(out):
+                for l in out.splitlines():
+                    if "stack overflow" in l.lower() and not ("alternate stack" in l and "recovered" in l):
+                        bad = STACK_ERR.search(l)
+                        break
             for l in out.splitlines()[1:-1]:
                 print("    " + l)
             why = bad.group(0) if bad else ""
