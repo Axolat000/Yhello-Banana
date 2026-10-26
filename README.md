@@ -31,7 +31,8 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   interface, with fallback and a three-second stability check. USB hotplug
   keeps interface names unique; interface changes renew DHCP and notify TCP
   applications to reconnect. Experimental native ASIX AX88179 and CDC-NCM
-  drivers have protocol-model tests; physical hardware validation and the
+  drivers and a separate RTL8153/RTL8156 driver have protocol-model tests;
+  RTL8152 retains its hardware-tested path. New-driver physical validation and the
   requested Wi-Fi drivers remain pending. See [network status and tests](docs/network-priority.md).
 
 - **Terminal preferences and application fullscreen** - the integrated Terminal

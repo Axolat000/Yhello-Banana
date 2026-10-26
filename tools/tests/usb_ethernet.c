@@ -9,6 +9,7 @@ extern int printf(const char*,...);
 extern void* calloc(size_t,size_t);
 extern void free(void*);
 extern void abort(void);
+extern int fflush(void*);
 static void* allocations[256];
 static unsigned nalloc, checks, received, registered, submits, irqs;
 static uint32_t now=5000, txlen;
@@ -19,7 +20,11 @@ static usbnet_t* device;
 static usb_device_t* active;
 static int format_calls, input_calls, filter_calls, interface_calls;
 static uint32_t input_limit;
-#define CHECK(c) do { checks++; if(!(c)) { printf("FAIL line %d: %s\n",__LINE__,#c); abort(); } } while(0)
+static uint8_t rtl_pla[65536],rtl_usb[65536],rtl_ocp[65536];
+static uint16_t rtl_bank;
+static int rtl_stuck_reset,rtl_no_boot,rtl_no_phy;
+static uint32_t rtl_controls;
+#define CHECK(c) do { checks++; if(!(c)) { printf("FAIL line %d: %s\n",__LINE__,#c); fflush(0); abort(); } } while(0)
 void* kmalloc(size_t n) {
     void* p=calloc(1,n);
     if(p) { CHECK(nalloc<256); allocations[nalloc++]=p; }
@@ -83,6 +88,27 @@ int usb_control(usb_device_t* d,uint8_t type,uint8_t req,uint16_t value,uint16_t
     CHECK(d->present);
     if(req==fail_request) return -1;
     if(type==USB_RECIP_IFACE && req==USB_REQ_SET_INTERFACE) { interface_calls++; return 0; }
+    if(proto==3 && (type&0x60)==USB_TYPE_VENDOR) {
+        CHECK(req==5); CHECK(n==4 || n==8); CHECK(!(value&3));
+        rtl_controls++;
+        uint8_t* regs=index&0x100?rtl_pla:rtl_usb;
+        uint32_t off=value;
+        if((index&0x100) && value>=0xb000 && value<0xc000) {
+            regs=rtl_ocp; off=rtl_bank+(value&0xfff);
+        }
+        CHECK(off+n<=65536);
+        if(type&USB_DIR_IN) {
+            if(!rtl_stuck_reset) rtl_pla[0xe813]&=~0x10;
+            if(rtl_no_boot) rtl_pla[0xe004]=0;
+            if(rtl_no_phy) put16(rtl_ocp+0xa420,0);
+            memcpy(data,regs+off,n); return short_read?n-1:n;
+        }
+        if(bad_write) return -1;
+        const uint8_t* src=data;
+        for(unsigned i=0;i<n;i++) if(index&(1u<<(i%8))) regs[off+i]=src[i];
+        rtl_bank=rtl_pla[0xe86c]|(uint16_t)rtl_pla[0xe86d]<<8;
+        return n;
+    }
     if(proto==1 && (type&0x60)==USB_TYPE_VENDOR) {
         uint8_t* regs=req==1?macregs:phyregs;
         uint32_t off=req==1?value:index*2;
@@ -116,6 +142,7 @@ int usb_control(usb_device_t* d,uint8_t type,uint8_t req,uint16_t value,uint16_t
 #include "../../net/cdc_ncm.c"
 #include "../../net/cdc_ecm.c"
 #include "../../net/r8152.c"
+#include "../../net/r8153.c"
 
 static uint8_t vendor_config[]={
     9,2,32,0,1,1,0,0x80,50,
@@ -139,9 +166,9 @@ static void reset(usb_device_t* d,int protocol) {
     memset(d,0,sizeof(*d)); memset(macregs,0,sizeof(macregs)); memset(phyregs,0,sizeof(phyregs));
     d->present=1; d->speed=USB_SPEED_SUPER;
     d->desc.idVendor=0x0b95; d->desc.idProduct=0x1790; d->active_config=0;
-    d->configs[0]=protocol==1?vendor_config:ncm_config;
+    d->configs[0]=protocol==2?ncm_config:vendor_config;
     /* Keep declared lengths tied to actual descriptor sizes. */
-    put16(d->configs[0]+2,protocol==1?sizeof(vendor_config):sizeof(ncm_config));
+    put16(d->configs[0]+2,protocol==2?sizeof(ncm_config):sizeof(vendor_config));
     proto=protocol; received=registered=submits=irqs=0; device=0; active=d;
     short_read=bad_write=ep_fail=0; fail_request=-1; formats=3;
     format_calls=input_calls=filter_calls=interface_calls=0; input_limit=0;
@@ -232,8 +259,74 @@ static void test_ncm(void) {
     reset(&d,2); formats=1; fail_request=0x84;
     CHECK(cdc_ncm_driver.attach(&d)==0 && format_calls==0); /* NTB16-only devices need no SET */
 }
+static void reset_realtek(usb_device_t* d,uint16_t version) {
+    reset(d,3);
+    memset(rtl_pla,0,sizeof(rtl_pla)); memset(rtl_usb,0,sizeof(rtl_usb));
+    memset(rtl_ocp,0,sizeof(rtl_ocp)); rtl_bank=0; rtl_controls=0;
+    rtl_stuck_reset=rtl_no_boot=rtl_no_phy=0;
+    d->desc.idVendor=0x0bda;
+    d->desc.idProduct=version<0x5000?0x8152:version>=0x7000?0x8156:0x8153;
+    put16(rtl_pla+0xe612,version);
+    put16(rtl_pla+0xe004,2); /* boot autoload done */
+    put16(rtl_ocp+0xa420,3); /* LAN_ON */
+    put16(rtl_pla+0xe000,0x100); /* ALDPS acknowledged */
+    rtl_pla[0xe84f]=2; /* OOB link list ready */
+    uint8_t mac[8]={2,0x11,0x22,0x33,0x44,0x55,0,0};
+    memcpy(rtl_pla+0xd000,mac,8); memcpy(rtl_pla+0xc000,mac,8);
+}
+static void test_realtek(void) {
+    const uint16_t versions[]={0x4c00,0x4c10,0x5c00,0x5c10,0x5c20,0x5c30,
+                               0x6000,0x6010,0x7020,0x7030,0x7410};
+    for(unsigned v=0;v<sizeof(versions)/sizeof(versions[0]);v++) {
+        usb_device_t d; reset_realtek(&d,versions[v]);
+        int old=versions[v]<0x5000;
+        const usb_driver_t* driver=old?&r8152_driver:&r8153_driver;
+        CHECK(driver->probe(&d)==0);
+        CHECK((old?r8153_driver.probe(&d):r8152_driver.probe(&d))<0);
+        CHECK(driver->attach(&d)==0 && registered==1);
+        d.driver=driver;
+        CHECK(!link_at_registration);
+        put16(rtl_pla+0xe908,0x12); now+=1100;
+        CHECK(device->nd.link_up(&device->nd));
+        uint8_t frame[1514]; memset(frame,0x69,sizeof(frame));
+        CHECK(device->nd.send(&device->nd,frame,1514)==0 && txlen==1522);
+        CHECK((ure_le32(txdata)&0xc0007fff)==(0xc0000000u|1514));
+        CHECK(!memcmp(txdata+8,frame,1514));
+        uint8_t rx[176]={0};
+        put32(rx,64); memcpy(rx+24,frame,60);
+        put32(rx+88,64); memcpy(rx+112,frame,60);
+        receive(device,rx,sizeof(rx)); CHECK(received==2 && !memcmp(last_rx,frame,60));
+        if(!old) {
+            put32(rx+88,3000); receive(device,rx,sizeof(rx)); CHECK(received==2);
+            put32(rx+88,64);
+            CHECK(device->nd.send(&device->nd,frame,1515)<0);
+            if(v==2) fuzz_packets(device,rx,sizeof(rx));
+            CHECK((rtl_ocp[0xa413]&2)!=0); /* advertise 1000 full duplex */
+            if(versions[v]>=0x7000) CHECK(rtl_ocp[0xa5d4]&0x80);
+        }
+        put16(rtl_pla+0xe908,0); now+=1100; CHECK(!device->nd.link_up(&device->nd));
+        driver->detach(&d); CHECK(!device->nd.present);
+    }
+    usb_device_t d;
+    reset_realtek(&d,0x5c00); short_read=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered && rtl_controls==1);
+    reset_realtek(&d,0x5c00); bad_write=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered);
+    reset_realtek(&d,0x5c00); rtl_stuck_reset=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered && rtl_controls<2000);
+    reset_realtek(&d,0x5c00); rtl_no_boot=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered && rtl_controls<600);
+    reset_realtek(&d,0x7410); rtl_no_phy=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered && rtl_controls<2000);
+    reset_realtek(&d,0x7420);
+    CHECK(r8153_driver.attach(&d)<0 && !registered && rtl_controls==1);
+    reset_realtek(&d,0x5c00); rtl_pla[0xd000]=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered);
+    reset_realtek(&d,0x5c00); ep_fail=1;
+    CHECK(r8153_driver.attach(&d)<0 && !registered);
+}
 int main(void) {
-    test_ax(); test_ncm();
+    test_ax(); test_ncm(); test_realtek();
     usb_device_t d; reset(&d,1);
     printf("USB Ethernet models: %u checks passed\n",checks);
     return 0;

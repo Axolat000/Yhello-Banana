@@ -50,6 +50,15 @@ use the class driver when its selected USB configuration exposes CDC-NCM or
 CDC-ECM; its vendor-specific protocol is not claimed. The old RTL8152 and
 CDC-ECM bindings remain separate.
 
+RTL8153/RTL8153B (5c00/5c10/5c20/5c30/6000/6010) and RTL8156/RTL8156B
+(7020/7030/7410) now have a separate experimental native vendor driver.
+It handles boot/PHY readiness, family-specific reset and FIFO setup, MAC filters,
+10/100/1000/2500 autonegotiation, aggregated RX and link renegotiation.
+Both existing RTL8152 revisions and all nine new revisions run through the
+register/USB models in 32-bit and sanitizer builds. RTL8152 is already reported
+working on physical hardware by the project owner; the new revisions still need
+physical validation. Unknown versions (including 7420/8153D) are declined.
+
 The requested Wi-Fi chipsets (Intel AX200/AX210/BE200/7260, Atheros AR9280/AR9380,
 Realtek RTL8188EUS/RTL8811CU and MediaTek MT7601U) do **not** yet have working
 radio/association/security drivers in Banana OS. Wi-Fi priority is infrastructure
@@ -58,7 +67,7 @@ report carrier only after association/authentication; an unconnected radio or
 one without a carrier callback cannot win automatic selection.
 
 Intel I219/I211 and Realtek RTL8111/8168 use existing drivers. The requested
-I225/I226, RTL8125, BCM5720, AQC107 and USB RTL8153/RTL8156 are still pending.
+I225/I226, RTL8125, BCM5720, AQC107 are still pending.
 A matching device ID alone is not sufficient to declare these supported.
 
 ## Validation
