@@ -2478,5 +2478,38 @@
       "Verify mbsinit() state reporting and string conversion wrappers (mbsrtowcs, mbstowcs)."
     ],
     "rank": 46
+  },
+  {
+    "id": "base-29-virtio-scsi-qualification",
+    "priority": "P2",
+    "domain": "Données",
+    "title": "Qualify virtio-scsi storage controller and disk durability",
+    "evidence": "Adapted upstream virtio-scsi support from commit bf5c5f99cd732c514675511283f0db4ba1b0d6c2 with bounded read/write, atomic locking, completion validation, DMA buffer quarantine on timeout, and truthful cache flush semantics without unapproved renderer or SDHCI ADMA2/eMMC changes.",
+    "planningReason": "Following adaptation of upstream commit bf5c5f99cd73 according to the analyst alternative, this follow-up under base-29 tracks qualification of virtio-scsi disk discovery, installation, multi-target/LUN configurations, fault injection, and filesystem durability paths.",
+    "goal": "Ensure virtio-scsi storage devices are fully qualified for installation, multi-target LUN topologies, and crash-consistent durability under QEMU and KVM.",
+    "acceptance": "QEMU legacy and modern virtio-scsi configurations pass partition discovery, multi-target/LUN access, bounded block transfers, error recovery, and ext4 durability verification without data corruption.",
+    "deliverable": "Virtio-SCSI integration test suite and qualification evidence.",
+    "depends": [
+      "base-29"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "kernel/virtio_scsi.c",
+      "kernel/virtio_scsi.h",
+      "tools/test_scsi.py",
+      "tools/tests/test_virtio_scsi.c"
+    ],
+    "steps": [
+      "Build both 32-bit and 64-bit kernels and verify virtio-scsi device detection on legacy and modern PCI transports.",
+      "Validate multi-target and non-zero LUN topologies (such as Proxmox default SCSI single at LUN 1).",
+      "Inject delayed, missing, malformed, and short completions to verify DMA buffer quarantine and controller fail-safe behavior.",
+      "Verify truthful SYNCHRONIZE CACHE error handling and integration with fd_sync and filesystem durability contracts."
+    ],
+    "tests": [
+      "Run python3 tools/test_scsi.py to verify request layout, timeout quarantine, used descriptor validation, resid checking, and truthful flush.",
+      "Boot QEMU with virtio-scsi-pci drive attached and verify disk discovery and partition scanning.",
+      "Verify regression of IDE, AHCI, NVMe, virtio-blk, and SD operation."
+    ],
+    "rank": 47
   }
 ]

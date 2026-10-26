@@ -1756,8 +1756,8 @@ static void cmd_install(const char* args) {
 
     if (found == 0) {
         terminal_write_color(
-            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe or virtio disk\n"
-            "to the VM - besides the boot CD - then try again.\n",
+            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe, virtio or SCSI\n"
+            "disk to the VM - besides the boot CD - then try again.\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
