@@ -79,3 +79,30 @@ The Python tests need `python3-cryptography`. Independent hashlib/HMAC,
 AES key-wrap and AESCCM implementations produce the expected access-point
 messages and ciphertext. Sanitizer errors fail the tests rather than merely
 printing diagnostics. These checks run in GitHub Actions before ISO publication.
+
+
+## Taskbar Wi-Fi menu
+
+Click the network icon in the taskbar, then **Wi-Fi networks...**. The flyout
+shows a compatible radio's state, nearby SSIDs, security and signal strength.
+It starts a passive scan when the selected radio is disconnected; **Scan**
+refreshes it, **Next radio** selects another adapter, and **Disconnect** ends
+the selected radio's connection. Connected radios must disconnect before
+scanning again.
+
+Select a network, enter its WPA2 password and press Enter or **Connect (WPA2)**.
+Open networks require an explicit **Connect (open)** click. Passwords are masked
+and erased on submission, closing, scanning, changing selection/radio or
+unplugging the radio; they are not saved by this menu. Unsupported security and
+hidden SSIDs cannot connect through the flyout. **Wi-Fi settings...** opens the
+existing full page. Tab/arrows/Enter and Escape support keyboard use.
+
+The flyout uses the same station core and driver limits as Settings; it does not
+add hardware support. It does not override the saved Ethernet/Wi-Fi priority
+when authenticating a radio. The adapter overview is paged so all 16 registered
+adapters remain accessible without overflowing a 640x480 desktop.
+
+Native flyout tests (`tools/test_nettray.py --sanitize` and `--32`) cover actions
+with simulated radios, key input, stale scan results, hot unplug, password
+erasure, paging and layout. They complement the station/driver tests; physical
+Wi-Fi validation is still pending.

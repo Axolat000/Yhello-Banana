@@ -9,8 +9,9 @@
  * opens: every network adapter with its state, the active one's address,
  * gateway, DNS and traffic, and a button to use another one. The panel is
  * built from a list of connections (kernel/nettray.c) where each adapter
- * is one entry with its kind - wired, USB, and later Wi-Fi with its signal -
- * so more adapters and kinds only add entries.
+ * is one entry with its kind - wired, USB, and Wi-Fi with its signal -
+ * so more adapters and kinds only add entries. The Wi-Fi page scans, selects
+ * SSIDs and accepts a masked password through the native station core.
  */
 
 #define NETTRAY_ICON_W 20
@@ -27,8 +28,11 @@ int  nettray_is_open(void);
 int  nettray_contains(int mx, int my);
 void nettray_draw(void);
 
-/* a click in the panel: NETTRAY_SETTINGS (open Settings > Network), or 0 */
+/* Panel actions open Settings > Network / Wi-Fi, or return 0. */
 #define NETTRAY_SETTINGS 1
+#define NETTRAY_WIFI_SETTINGS 2
+/* Consumes ASCII or KB_* input while open, returns an optional Settings action. */
+int nettray_key(int code);
 int  nettray_click(int mx, int my);
 void nettray_hover(int mx, int my);
 

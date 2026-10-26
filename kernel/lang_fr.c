@@ -429,5 +429,18 @@ const i18n_pair_t I18N_FR[] = {
     { "Deleted", "Supprimé" },
     { "Mounted at", "Monté sur" },
     { "Unmounted - safe to remove", "Démonté - peut être retiré" },
+    { "Wi-Fi networks...", "Réseaux Wi-Fi..." },
+    { "Wi-Fi settings...", "Paramètres Wi-Fi..." },
+    { "Next adapters", "Autres cartes" },
+    { "Next radio", "Autre carte" },
+    { "Scan", "Scanner" },
+    { "Disconnect", "Déconnecter" },
+    { "Connect (open)", "Connexion libre" },
+    { "Connect (WPA2)", "Connexion WPA2" },
+    { "Network / security / signal", "Réseau / sécurité / signal" },
+    { "Password (WPA2)", "Mot de passe (WPA2)" },
+    { "Scanning...", "Recherche..." },
+    { "No networks. Try Scan.", "Aucun réseau. Lancez une recherche." },
+    { "No supported Wi-Fi radio detected.", "Aucune carte Wi-Fi compatible." },
 };
 const int I18N_FR_N = (int)(sizeof(I18N_FR) / sizeof(I18N_FR[0]));

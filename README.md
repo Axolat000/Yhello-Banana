@@ -26,6 +26,11 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Taskbar Wi-Fi controls** - the network flyout lists nearby networks, accepts
+  a masked WPA2 password and connects/disconnects compatible radios. It shares
+  Settings' station core, supports multiple radios and keyboard input, and erases
+  entered passwords. See [Wi-Fi setup and limits](docs/wifi.md).
+
 - **Experimental RTL8125/A/B/D Ethernet** - a separate native PCI driver uses
   Realtek/OpenBSD MAC/PHY initialization and microcode, 32-byte descriptor rings
   and per-card polling. Register/firmware/DMA models pass on 32-bit and under

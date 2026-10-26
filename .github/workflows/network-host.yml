@@ -12,6 +12,10 @@ on:
       - 'crypto/**'
       - 'firmware/mediatek/**'
       - 'kernel/*.h'
+      - 'kernel/nettray.c'
+      - 'kernel/gui.c'
+      - 'tools/test_nettray.py'
+      - 'tools/tests/nettray.c'
       - 'usb/usbcore.c'
       - 'tools/tests/net_*.c'
       - 'tools/tests/usb_ethernet.c'
@@ -54,3 +58,5 @@ jobs:
         run: python3 tools/test_igc.py --sanitize && python3 tools/test_igc.py --32
       - name: RTL8125 A/B/D native MAC, PHY, firmware and DMA model
         run: python3 tools/test_r8125.py --sanitize && python3 tools/test_r8125.py --32
+      - name: Taskbar Wi-Fi actions, password erasure, hotplug and layout
+        run: python3 tools/test_nettray.py --sanitize && python3 tools/test_nettray.py --32

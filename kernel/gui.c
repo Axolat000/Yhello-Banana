@@ -2991,6 +2991,17 @@ static void explorer_rclick_menu(int mx, int my) {
     explorer_rclick(mx, my);
 }
 
+/* Network flyout owns its input, including over a terminal/app window. */
+static void nettray_action(int action) {
+    if(action!=NETTRAY_SETTINGS && action!=NETTRAY_WIFI_SETTINGS) return;
+    settings_open_page(action==NETTRAY_WIFI_SETTINGS?SETTINGS_PAGE_WIFI:SETTINGS_PAGE_NETWORK);
+    g_app_min[APP_SETTINGS]=0;raise_app(APP_SETTINGS);
+}
+static int nettray_arrow_code(char c) {
+    return c=='A'?KB_UP:c=='B'?KB_DOWN:c=='C'?KB_RIGHT:c=='D'?KB_LEFT:
+           c=='H'?KB_HOME:c=='F'?KB_END:c=='I'?KB_PGUP:c=='G'?KB_PGDN:c=='P'?KB_DEL:0;
+}
+
 /* ── the desktop loop ───────────────────────────────────────────────── */
 
 int gui_appwin_focused(void) {
@@ -3020,7 +3031,7 @@ static void gui_poll_body(void) {
         appwin_release_mouse();
         vmtools_capture_pointer(0);
         g_in_lock = 1;
-        g_menu_open = 0;
+        g_menu_open = 0;nettray_close();
         login_lock(&g_cur_mx, &g_cur_my);
         g_mouse_from_lock = 1;
         g_ptr_drawn_x = -1;              /* (the lock screen was on the screen) */
@@ -3066,7 +3077,7 @@ static void gui_poll_body(void) {
          * while one is in front, keys are handed to it from here (Ctrl+T
          * and the Start menu first). Apps and Task Manager read no keys
          * (Esc closes them). */
-        if (g_ask.open || gui_notepad_focused() || gui_appwin_focused() || (kb_modal() && g_front_app >= 0) ||
+        if (nettray_is_open() || g_ask.open || gui_notepad_focused() || gui_appwin_focused() || (kb_modal() && g_front_app >= 0) ||
             ((g_front_app == APP_LAUNCHER || g_front_app == APP_TASKMGR || g_front_app == APP_FILES || g_front_app == APP_SETTINGS || g_front_app == APP_INSTALLER || g_front_app == APP_DEVMGR || g_front_app == APP_DISKMGR) &&
              app_visible(g_front_app) && tty_current() < 0)) {
             for (int k = 0; k < 64; k++) {
@@ -3079,6 +3090,19 @@ static void gui_poll_body(void) {
                     }
                     ask_key(c);
                     continue;
+                }
+                if(nettray_is_open()) {
+                    int code=(unsigned char)c;
+                    if(c==27) {
+                        char c2=keyboard_try_getchar();
+                        if(c2=='[') {
+                            char c3=keyboard_try_getchar();
+                            if(c3>='0' && c3<='9') keyboard_try_getchar();
+                            code=nettray_arrow_code(c3);
+                        }
+                    } else if(c=='\t' && (keyboard_mods()&1)) code=KB_BACKTAB;
+                    if(code) nettray_action(nettray_key(code));
+                    g_force_redraw=1;continue;
                 }
                 /* the switcher, task view, taskbar focus, a right-click menu: theirs */
                 if (kb_modal() && !g_menu_open) {
@@ -3330,11 +3354,7 @@ static void gui_poll_body(void) {
         /* the network panel: its buttons, or a click elsewhere closes it */
         if ((click || rclick) && nettray_is_open() && !net_icon_at(fi, mx, my)) {
             if (click && nettray_contains(mx, my)) {
-                if (nettray_click(mx, my) == NETTRAY_SETTINGS) {
-                    settings_open_page(SETTINGS_PAGE_NETWORK);
-                    g_app_min[APP_SETTINGS] = 0;
-                    raise_app(APP_SETTINGS);
-                }
+                nettray_action(nettray_click(mx,my));
                 click = 0;
             } else nettray_close();
             g_force_redraw = 1;
@@ -3911,6 +3931,9 @@ int gui_browser_focused(void) {
 static int desk_arrow(char code);
 
 int gui_handle_arrow(char esc_code) {
+    if(gfx_available() && g_gui_enabled && nettray_is_open()) {
+        nettray_action(nettray_key(nettray_arrow_code(esc_code)));g_force_redraw=1;return 1;
+    }
     if (g_ask.open && gfx_available() && g_gui_enabled) return 1;     /* (the dialog: its field takes no arrows) */
     if (gfx_available() && g_gui_enabled && !g_menu_open) {
         if (kb_modal()) {
@@ -3940,6 +3963,10 @@ int gui_handle_arrow(char esc_code) {
 int gui_handle_key(char c) {
     if (gfx_available() && !g_gui_enabled) return 0;
     if (gfx_available() && g_ask.open) { ask_key(c); return 1; }     /* a dialog (New shortcut...) has the keys */
+    if(gfx_available() && nettray_is_open()) {
+        int code=c=='\t' && (keyboard_mods()&1)?KB_BACKTAB:(unsigned char)c;
+        nettray_action(nettray_key(code));g_force_redraw=1;return 1;
+    }
     if (gfx_available() && kb_modal() && !g_menu_open && c != 20) {
         int code = c == '\n' ? KB_ENTER : c == 27 ? KB_ESC : c == '\t' ? ((keyboard_mods() & 1) ? KB_BACKTAB : KB_TAB) : c == ' ' ? KB_SPACE : 0;
         if (!code && g_cb_open && c > ' ' && c < 127) code = c;
