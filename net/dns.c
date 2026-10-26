@@ -23,6 +23,8 @@ typedef struct {
 
 static dns_cache_t g_cache[DNS_CACHE];
 
+void dns_flush_cache(void) { memset(g_cache, 0, sizeof(g_cache)); }
+
 /* the one outstanding query (resolution is synchronous per caller, and
  * each waiting task polls its own id) */
 typedef struct {

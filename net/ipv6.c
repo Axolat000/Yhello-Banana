@@ -549,3 +549,15 @@ void ip6_format(const ip6_t* a, char* out, int cap) {
 }
 
 void ipv6_rx(const uint8_t* p, uint32_t len) { ipv6_input(p, len, 0); }
+
+void ipv6_network_changed(void) {
+    memset(g_mac, 0, sizeof(g_mac));
+    memset(&g_ll, 0, sizeof(g_ll));
+    g_have_global = g_have_router = g_have_dns = 0;
+    memset(g_nc, 0, sizeof(g_nc));
+    g_rs_left = g_echo_n = 0;
+    for (int i = 0; i < IP6_QUEUE; i++) {
+        kfree(g_pending[i].pkt); g_pending[i].pkt = NULL;
+    }
+    if (g_on) addresses();
+}

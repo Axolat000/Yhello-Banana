@@ -355,9 +355,44 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  network-host:
+    uses: ./.github/workflows/network-host.yml
+    permissions:
+      contents: read
+
+  network:
+    name: Network regression (${{ matrix.model }})
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [e1000, e1000e, igb, pcnet, rtl8139, virtio-net-pci, usb-ecm, multi]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 python3
+      - uses: actions/download-artifact@v4
+        with:
+          name: boot-iso-standard-${{ github.sha }}
+      - name: DHCP, ping, verified 30 MiB download and link failover
+        run: python3 tools/test_network_vm.py --model ${{ matrix.model }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: network-${{ matrix.model }}-${{ github.sha }}
+          path: |
+            build/logs/network-${{ matrix.model }}/*.log
+            build/logs/network-${{ matrix.model }}/*.txt
+            build/logs/network-${{ matrix.model }}/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
   publish-isos:
     name: Publish validated standard and Mesa ISOs
-    needs: [build, boot]
+    needs: [build, boot, network, network-host]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

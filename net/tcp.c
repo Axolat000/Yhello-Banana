@@ -1170,3 +1170,17 @@ void tcp_info(const tcp_conn_t* c, tcp_info_t* i) {
 void tcp_stats(tcp_stats_t* s) { *s = g_stats; }
 
 void tcp_test_loss(uint32_t every) { g_loss_every = every; g_loss_n = 0; }
+
+/* A new default interface cannot carry the old TCP 4-tuple. Notify owners
+ * promptly instead of retransmitting old sessions on an unrelated network.
+ * Never free a connection still held by its application. */
+void tcp_network_changed(void) {
+    for (int i = 0; i < TCP_MAX_CONN; i++) {
+        tcp_conn_t* c = &g_conns[i];
+        if (!c->used || (c->ipv6 ? ip6_is_loopback(&c->rip6) : (c->rip >> 24) == 127)) continue;
+        if (c->listener || c->user_closed) { conn_free(c); continue; }
+        c->err = NET_ERR_NOTREADY;
+        c->state = TCP_CLOSED;
+        c->timer_on = c->ack_pending = c->fin_pending = 0;
+    }
+}

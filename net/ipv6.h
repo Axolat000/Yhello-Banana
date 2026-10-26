@@ -21,6 +21,7 @@ int  ipv6_enabled(void);
 void ipv6_enable(int on);                   /* and remember it */
 void ipv6_set_runtime(int on);              /* tests: do not change saved settings */
 void ipv6_rx(const uint8_t* p, uint32_t len);
+void ipv6_network_changed(void);
 void ipv6_timer(void);                      /* every ~10 ms (net_poll) */
 void ipv6_loopback_drain(void);
 int ipv6_source(const ip6_t* dst, ip6_t* src); /* NET_OK or NET_ERR_* */

@@ -108,6 +108,7 @@ python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --cmd '/apps/terminal/app-x86_64 --set theme solarized' \
     --cmd '/apps/terminal/app-x86_64 --set font 18' \
     --cmd '/apps/terminal/app-x86_64 --set shell zsh' \
+    --cmd 'ifconfig priority wifi ## Network priority: wifi' \
     --cmd 'sync' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-after-update.log"
@@ -119,6 +120,7 @@ python3 tools/serialtest.py --log "$logs/serial-preferences.log" \
     --cmd '/apps/terminal/app-x86_64 --show-config ## theme=solarized' \
     --cmd '/apps/terminal/app-x86_64 --show-config ## font=18' \
     --cmd 'cat /home/banana/.config/banana-terminal.conf ## shell=zsh' \
+    --cmd 'ifconfig priority ## Network priority: wifi' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-preferences.log"
 

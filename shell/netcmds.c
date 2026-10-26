@@ -87,7 +87,7 @@ static void show_device(netdev_t* d) {
 
     terminal_write_color(d->ifname, active ? VGA_COLOR_LIGHT_GREEN : VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     printf_line(": flags=<%sBROADCAST%s>  mtu 1500%s\n", active ? "UP," : "",
-                d->link_up(d) ? ",RUNNING" : ",NO-CARRIER",
+                (d->link_up ? d->link_up(d) : !d->is_wifi) ? ",RUNNING" : ",NO-CARRIER",
                 active ? "" : "   (inactive - `ifconfig <name> up` to use it)");
     if (!active) {
         /* nothing else to show for a standby card */
@@ -139,6 +139,25 @@ static netdev_t* find_ifname(const char* name) {
 }
 
 static void cmd_ifconfig(int argc, char** argv) {
+    if (argc >= 2 && !strcmp(argv[1], "priority")) {
+        if (argc == 3) {
+            int priority = !strcmp(argv[2], "auto") ? NET_PRIORITY_AUTO :
+                           !strcmp(argv[2], "ethernet") ? NET_PRIORITY_ETHERNET :
+                           !strcmp(argv[2], "wifi") ? NET_PRIORITY_WIFI : -1;
+            if (priority < 0) { terminal_writeln("usage: ifconfig priority [auto|ethernet|wifi]"); return; }
+            saved_note(netconf_set_priority(priority));
+            terminal_writeln("Priority applied; DHCP enabled and explicit interface pin removed.");
+        } else if (argc != 2) {
+            terminal_writeln("usage: ifconfig priority [auto|ethernet|wifi]"); return;
+        }
+        int priority = netconf_priority();
+        printf_line("Network priority: %s; active: %s; cards: %d\n",
+                    priority == NET_PRIORITY_WIFI ? "wifi" :
+                    priority == NET_PRIORITY_ETHERNET ? "ethernet" : "auto",
+                    net_if()->dev ? net_if()->dev->ifname : "(none)", net_device_count());
+        if (netconf_pins_iface()) printf_line("Explicit interface: %s\n", netconf_pinned_iface());
+        return;
+    }
     netdev_t* named = argc >= 2 ? find_ifname(argv[1]) : NULL;
     if (argc <= 1 || (argc == 2 && named)) {
         if (named) show_device(named);
@@ -148,6 +167,7 @@ static void cmd_ifconfig(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "reset") == 0) {
         /* forget the saved settings: DHCP on the default card again */
         int disk = netconf_forget();
+        net_reselect();
         if (net_if()->dev) net_select_device(net_if()->dev);
         printf_line("ifconfig: saved settings removed (%s)%s - back to DHCP\n", CFG_NETWORK,
                     disk ? ", disk updated" : "");
@@ -198,7 +218,7 @@ static void cmd_dhcp(void) {
     if (!need_device("dhcp")) return;
     terminal_writeln("dhcp: requesting a lease...");
     dhcp_start();
-    int disk = netconf_save_dhcp(net_if()->dev);
+    int disk = netconf_use_dhcp();
     if (!net_wait_configured(15000)) {
         err("dhcp", "no answer from a DHCP server (still trying in the background)");
         return;

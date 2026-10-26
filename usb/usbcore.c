@@ -16,6 +16,8 @@ int ohci_init_controller(const pci_dev_t* pd);
 
 /* device drivers, tried in this order */
 extern const usb_driver_t r8152_driver;
+extern const usb_driver_t ax88179_driver;
+extern const usb_driver_t cdc_ncm_driver;
 extern const usb_driver_t cdc_ecm_driver;
 extern const usb_driver_t hid_driver;
 extern const usb_driver_t xpad_driver;
@@ -24,7 +26,7 @@ extern const usb_driver_t adb_driver;
 extern const usb_driver_t usb_storage_driver;
 extern const usb_driver_t hub_driver;
 static const usb_driver_t* const g_drivers[] = {
-    &hub_driver, &r8152_driver, &cdc_ecm_driver, &xpad_driver, &uaudio_driver, &adb_driver, &hid_driver, &usb_storage_driver,
+    &hub_driver, &r8152_driver, &cdc_ncm_driver, &ax88179_driver, &cdc_ecm_driver, &xpad_driver, &uaudio_driver, &adb_driver, &hid_driver, &usb_storage_driver,
 };
 #define DRIVER_COUNT ((int)(sizeof(g_drivers) / sizeof(g_drivers[0])))
 

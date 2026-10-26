@@ -47,6 +47,7 @@ void tcp_close(tcp_conn_t* c);
 
 /* Immediate close with RST. */
 void tcp_abort(tcp_conn_t* c);
+void tcp_network_changed(void); /* fail external connections; retain listeners/loopback */
 
 /* ── server side (passive open) ─────────────────────────────────
  * tcp_listen() starts answering SYNs on a local port; connections that

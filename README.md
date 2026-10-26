@@ -26,6 +26,14 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Network priority and multiple adapters** - Settings > Network and
+  `ifconfig priority auto|ethernet|wifi` select the preferred connected
+  interface, with fallback and a three-second stability check. USB hotplug
+  keeps interface names unique; interface changes renew DHCP and notify TCP
+  applications to reconnect. Experimental native ASIX AX88179 and CDC-NCM
+  drivers have protocol-model tests; physical hardware validation and the
+  requested Wi-Fi drivers remain pending. See [network status and tests](docs/network-priority.md).
+
 - **Terminal preferences and application fullscreen** - the integrated Terminal
   now saves themes, custom colors, font size, cursor style and a Bash/Zsh/System
   shell choice for new tabs. Open the sliders button or Ctrl+Shift+,.

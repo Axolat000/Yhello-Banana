@@ -338,9 +338,9 @@ static const page_t PAGES[] = {
       "--set changes UTC explicitly; this is a step, not gradual discipline. Ordinary NTP is unauthenticated; "
       "the local whole-second clock makes the offset approximate.", "--set|set UTC after a validated reply",
       "ntp\nntp --set pool.ntp.org", "date" },
-    { "ifconfig", "network", "ifconfig [<if> <ip> [netmask m] [gw g] [dns d] | <if> up | reset]", "network settings",
+    { "ifconfig", "network", "ifconfig [priority [auto|ethernet|wifi] | <if> <ip> [netmask m] [gw g] [dns d] | <if> up | reset]", "network settings",
       "Shows the interfaces, or sets one up with a fixed address (saved in /etc/network.conf). "
-      "ifconfig eth1 up makes another card the active one; ifconfig reset goes back to DHCP.", NULL,
+      "ifconfig eth1 up pins a card; priority auto/ethernet/wifi selects connected links with DHCP. Auto prefers Ethernet. Changing priority removes a pin/static address. A preferred link must stay ready for 3 seconds; existing connections may need to reconnect. ifconfig reset restores defaults.", NULL,
       "ifconfig\nifconfig eth0 192.168.1.50 netmask 255.255.255.0 gw 192.168.1.1 dns 1.1.1.1", "dhcp, ping" },
     { "dhcp", "network", "dhcp", "ask for a new address (DHCP)", NULL, NULL, NULL, "ifconfig" },
     { "ping", "network", "ping [-c N] [-s size] [-i sec] <host>", "is that host there?",

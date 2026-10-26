@@ -110,6 +110,7 @@ void arp_queue_packet(ip4_t next_hop, const uint8_t* ip_pkt, uint32_t len);
 void arp_timer(void);
 void arp_dump(void);
 void arp_flush(void);
+void dns_flush_cache(void);
 
 /* ── IPv4 ─────────────────────────────────────────────────────── */
 #define IP_PROTO_ICMP 1

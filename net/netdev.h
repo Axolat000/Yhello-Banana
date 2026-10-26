@@ -28,6 +28,7 @@ typedef struct netdev {
     /* every multicast frame in too (IPv6 neighbor discovery); NULL if the
      * card takes them anyway */
     void (*set_multicast)(struct netdev* nd, int all);
+    int is_wifi; /* link_up requires successful association and authentication */
 } netdev_t;
 
 /* Drivers: each returns a ready-to-use device, or NULL if its hardware
@@ -42,7 +43,7 @@ netdev_t* virtio_net_probe(void); /* virtio-net, legacy or modern (VirtualBox, Q
 void net_rx(netdev_t* nd, const uint8_t* frame, uint32_t len);
 
 /* Drivers found at runtime (USB adapters) announce/withdraw themselves.
- * A newly registered USB adapter becomes the active interface. */
+ * Selection follows the saved media preference and carrier state. */
 void net_register_device(netdev_t* nd);
 void net_unregister_device(netdev_t* nd);
 

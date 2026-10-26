@@ -20,7 +20,7 @@ static uint32_t g_waiters;          /* bitmask of pids sleeping in net_wait() */
 static uint32_t g_last_timer_ms;
 static int      g_in_poll;
 
-#define NET_MAX_DEVS 4
+#define NET_MAX_DEVS 16
 static netdev_t* g_devs[NET_MAX_DEVS];
 static int       g_ndevs;
 
@@ -175,29 +175,28 @@ int net_interrupted(void) {
     return keyboard_try_getchar() == 3;
 }
 
-/* a card's cable: plugged in (drivers that cannot tell: yes) */
-static int link_of(netdev_t* d) { return d && d->present && (!d->link_up || d->link_up(d) != 0); }
-
-/* The card in use has no cable (for 3 s): another one
- * that has a cable takes over, with DHCP - even when the saved
- * configuration names the first (a laptop's empty Ethernet port must not
- * keep a USB adapter with a cable off the network). A USB adapter first. */
+/* An alternative must remain the best choice for three seconds before
+ * switching. Re-evaluate upward preferences too, so plugging Ethernet back
+ * in restores it. Equal-ranked links keep the current connection. */
+static netdev_t* g_candidate;
+static uint32_t g_candidate_since;
+static netdev_t* preferred(void) {
+    return netpolicy_choose(g_devs, g_ndevs, g_if.dev,
+                            netconf_priority(), netconf_pinned_iface());
+}
+void net_reselect(void) {
+    netdev_t* best = preferred();
+    g_candidate = NULL;
+    if (!best || best == g_if.dev) return;
+    if (netconf_claims(best)) netconf_apply_to(best);
+    else net_select_device(best);
+}
 static void failover(void) {
-    static uint32_t since;
-    netdev_t* cur = g_if.dev;
-    if (cur && link_of(cur)) { since = 0; return; }
-    if (!since) { since = timer_ms() | 1; return; }
-    if ((uint32_t)(timer_ms() - since) < 3000) return;
-    netdev_t* best = NULL;
-    for (int i = 0; i < g_ndevs; i++) {
-        netdev_t* d = g_devs[i];
-        if (d == cur || !d->present || !d->link_up || !d->link_up(d)) continue;   /* (a known cable only) */
-        if (!best || (d->is_usb && !best->is_usb)) best = d;
-    }
-    since = 0;
-    if (!best) return;
-    klog("net: %s has no cable - %s takes over\n", cur ? cur->ifname : "(none)", best->ifname);
-    net_select_device(best);
+    netdev_t* best = preferred();
+    if (!best || best == g_if.dev) { g_candidate = NULL; return; }
+    uint32_t now = timer_ms();
+    if (best != g_candidate) { g_candidate = best; g_candidate_since = now; return; }
+    if ((uint32_t)(now - g_candidate_since) >= 3000) net_reselect();
 }
 
 static void netd_entry(void) {
@@ -228,10 +227,14 @@ int net_device_count(void) { return g_ndevs; }
 netdev_t* net_device_at(int i) { return (i >= 0 && i < g_ndevs) ? g_devs[i] : NULL; }
 
 void net_select_device(netdev_t* nd) {
+    int changed = g_if.dev != nd;
+    if (changed) tcp_network_changed();
     g_if.dev = nd;
     g_if.configured = 0;
-    g_if.ip = 0;
+    g_if.ip = g_if.netmask = g_if.gateway = g_if.dns = 0;
+    g_if.lease_s = 0;
     arp_flush();                       /* neighbours of the old network */
+    if (changed) { ipv6_network_changed(); dns_flush_cache(); }
     if (!nd) { dhcp_stop(); return; }
     klog("net: using %s (%s)\n", nd->ifname, nd->model);
     dhcp_start();
@@ -239,19 +242,31 @@ void net_select_device(netdev_t* nd) {
 
 void net_register_device(netdev_t* nd) {
     if (g_ndevs >= NET_MAX_DEVS) return;
-    int n = 0;
-    for (int i = 0; i < g_ndevs; i++) if (g_devs[i]->is_usb == nd->is_usb) n++;
-    ksnprintf(nd->ifname, sizeof(nd->ifname), "%s%d", nd->is_usb ? "usb" : "eth", n);
+    /* Pick an unused name, including after a USB unplug/replug hole. */
+    const char* prefix = nd->is_wifi ? "wlan" : nd->is_usb ? "usb" : "eth";
+    for (int n = 0; n < NET_MAX_DEVS; n++) {
+        ksnprintf(nd->ifname, sizeof(nd->ifname), "%s%d", prefix, n);
+        int used = 0;
+        for (int i = 0; i < g_ndevs; i++)
+            if (!strcmp(g_devs[i]->ifname, nd->ifname)) used = 1;
+        if (!used) break;
+    }
     nd->present = 1;
     g_devs[g_ndevs++] = nd;
     random_add_entropy(nd->mac, 6);
     klog("net: %s: %s, mac %02x:%02x:%02x:%02x:%02x:%02x\n", nd->ifname, nd->model,
          nd->mac[0], nd->mac[1], nd->mac[2], nd->mac[3], nd->mac[4], nd->mac[5]);
-    /* the saved configuration (/etc/network.conf) names this card: use it
-     * with its saved addresses. Otherwise a USB adapter plugged in on
-     * purpose is used - unless the configuration pins another card. */
-    if (netconf_claims(nd)) { netconf_apply_to(nd); return; }
-    if (!g_if.dev || (nd->is_usb && !netconf_pins_iface())) net_select_device(nd);
+    if (!g_if.dev) {
+        netdev_t* best = preferred();
+        /* Keep an unconnected wired card visible for DHCP retries. Never
+         * activate an unauthenticated radio as a fallback. */
+        if (!best && !nd->is_wifi) best = nd;
+        if (best) {
+            if (netconf_claims(best)) netconf_apply_to(best);
+            else net_select_device(best);
+        }
+    }
+    /* Connected hotplug candidates use the same debounce as cable changes. */
 }
 
 void net_unregister_device(netdev_t* nd) {
@@ -259,7 +274,8 @@ void net_unregister_device(netdev_t* nd) {
     for (int i = 0; i < g_ndevs; i++) if (g_devs[i] != nd) g_devs[k++] = g_devs[i];
     g_ndevs = k;
     nd->present = 0;
-    if (g_if.dev == nd) net_select_device(g_ndevs ? g_devs[0] : NULL);
+    if (g_candidate == nd) g_candidate = NULL;
+    if (g_if.dev == nd) { net_select_device(NULL); net_reselect(); }
 }
 
 void net_init(void) {

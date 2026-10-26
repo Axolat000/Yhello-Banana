@@ -1045,6 +1045,12 @@ static void ipf_fill(netif_t* nf) {
 static void draw_network(void) {
     int x = cx0(), y = cy0();
     label(x, y, _("Network"), C_HEAD);
+    label(x, y + 28, _("Priority:"), C_TEXT);
+    int priority = netconf_priority();
+    button(x + 110, y + 24, 80, _("Auto"), priority == NET_PRIORITY_AUTO);
+    button(x + 196, y + 24, 110, _("Ethernet"), priority == NET_PRIORITY_ETHERNET);
+    button(x + 312, y + 24, 100, _("Wi-Fi"), priority == NET_PRIORITY_WIFI);
+    y += 32;
     netif_t* nf = net_if();
     char a[16], line[96];
     if (!nf || !nf->dev) {
@@ -1057,9 +1063,9 @@ static void draw_network(void) {
     /* A static address or an unexpired lease says nothing about the cable.
      * Drivers without a carrier callback cannot establish physical link. */
     int link = nf->dev->link_up ? nf->dev->link_up(nf->dev) != 0 : -1;
-    ksnprintf(line, sizeof(line), "Link: %s; IP: %s",
+    ksnprintf(line, sizeof(line), "Link: %s; IP: %s; cards: %d",
               link < 0 ? "unknown" : link ? "up" : "down",
-              nf->configured ? "configured" : "not configured");
+              nf->configured ? "configured" : "not configured", net_device_count());
     label(x, y + 42, line, link == 1 && nf->configured ? TC(0x80E080) : TC(0xE0A060));
     if (nf->dhcp) ksnprintf(line, sizeof(line), "Mode: DHCP (%s)", dhcp_state_str());
     else kstrlcpy(line, "Mode: manual (static address)", sizeof(line));
@@ -1801,6 +1807,17 @@ void settings_click(int mx, int my) {
     } else if (g_page == PG_STARTUP) {
         click_startup(mx, my);
     } else if (g_page == PG_NETWORK) {
+        for (int priority = NET_PRIORITY_AUTO; priority <= NET_PRIORITY_WIFI; priority++) {
+            const int bx[] = {110, 196, 312}, bw[] = {80, 110, 100};
+            if (inside(mx, my, x + bx[priority], y + 24, bw[priority], 20)) {
+                int disk = netconf_set_priority(priority);
+                g_net_manual = 0; g_ipf_focus = -1;
+                kstrlcpy(g_status, disk < 0 ? "Priority applied; settings could not be saved" :
+                         "Priority applied (DHCP); disconnected links use a fallback", sizeof(g_status));
+                return;
+            }
+        }
+        y += 32;
         netif_t* nf = net_if();
         if (!nf || !nf->dev) return;
         g_ipf_focus = -1;
@@ -1815,7 +1832,7 @@ void settings_click(int mx, int my) {
                 if (inside(mx, my, x + NET_FX, y + 98 + f * 26, 160, 20)) { g_ipf_focus = f; return; }
             if (inside(mx, my, x + NET_FX, y + 204, 100, 20)) { ipf_apply(); return; }
         } else if (inside(mx, my, x, y + 176, 200, 20)) {                                         /* renew / back to DHCP */
-            if (!nf->dhcp) netconf_save_dhcp(nf->dev);
+            if (!nf->dhcp) netconf_use_dhcp();
             nf->configured = 0;
             dhcp_start();
             kstrlcpy(g_status, "Asking the network for an address...", sizeof(g_status));

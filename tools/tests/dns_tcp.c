@@ -144,9 +144,14 @@ int main(void) {
     reset(); mode = 0; CHECK(query(1000) == NET_OK && connects == 0);
     reset(); chunk = 1; CHECK(query(1000) == NET_OK && connects == 1);
     CHECK(query(1000) == NET_OK && connects == 1 && udp_sends == 1); /* cached */
+    ip4_t cached;
+    CHECK(cache_get("example.test", 1, &cached));
+    dns_flush_cache();
+    CHECK(!cache_get("example.test", 1, &cached));
     reset(); over6 = 1; chunk = 1;
     ip6_t out; CHECK(dns_resolve6("example.test", &out, 1000) == NET_OK);
     CHECK(!memcmp(&out, &server6, 16) && closes == 1 && !cb6 && allocations == 0);
+    dns_flush_cache(); CHECK(!cache_get("example.test", 28, &out));
     reset(); over6 = 0; CHECK(dns_resolve6("example.test", &out, 1000) == NET_OK);
     CHECK(!memcmp(&out, &server6, 16) && closes == 1); /* AAAA over IPv4 */
     reset(); fail_connect = 1; CHECK(query(1000) == NET_ERR_TIMEOUT);

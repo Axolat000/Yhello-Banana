@@ -11,6 +11,7 @@
 
 static struct {
     int   loaded;
+    int   priority;
     char  iface[8];
     int   is_static;
     ip4_t ip, mask, gw, dns;
@@ -28,6 +29,10 @@ static void load(void) {
     memset(&g_cfg, 0, sizeof(g_cfg));
     g_cfg.loaded = 1;
     char v[20];
+    if (cfg_get(CFG_NETWORK, "priority", v, sizeof(v))) {
+        if (!strcmp(v, "wifi")) g_cfg.priority = NET_PRIORITY_WIFI;
+        else if (!strcmp(v, "ethernet")) g_cfg.priority = NET_PRIORITY_ETHERNET;
+    }
     if (cfg_get(CFG_NETWORK, "iface", v, sizeof(v))) kstrlcpy(g_cfg.iface, v, sizeof(g_cfg.iface));
     if (cfg_get(CFG_NETWORK, "mode", v, sizeof(v)) && strcmp(v, "static") == 0) {
         g_cfg.ip = get_ip("ip");
@@ -64,6 +69,7 @@ void netconf_apply_to(netdev_t* nd) {
 
 void netconf_boot(void) {
     load();
+    net_reselect();
     if (fs_find_file(CFG_NETWORK) < 0) return;
     netdev_t* target = NULL;
     for (int i = 0; i < net_device_count(); i++) {
@@ -72,7 +78,7 @@ void netconf_boot(void) {
     }
     if (!target && !g_cfg.iface[0]) target = net_if()->dev;
     if (target) netconf_apply_to(target);
-    else klog("net: %s not present (yet) - %s applies once it is plugged in\n", g_cfg.iface, CFG_NETWORK);
+    else klog("net: %s not present (yet) - %s applies once it is plugged in\n", g_cfg.iface[0] ? g_cfg.iface : "network interface", CFG_NETWORK);
 }
 
 static int save(const netdev_t* nd, int is_static, ip4_t ip, ip4_t mask, ip4_t gw, ip4_t dns) {
@@ -101,4 +107,31 @@ int netconf_forget(void) {
     if (fs_find_file(CFG_NETWORK) >= 0) fs_delete(CFG_NETWORK, 0);
     load();
     return cfg_persist();
+}
+
+int netconf_priority(void) { return g_cfg.priority; }
+const char* netconf_pinned_iface(void) { return g_cfg.iface; }
+
+int netconf_set_priority(int priority) {
+    if (priority < NET_PRIORITY_AUTO || priority > NET_PRIORITY_WIFI) return -1;
+    const char* name = priority == NET_PRIORITY_WIFI ? "wifi" :
+                       priority == NET_PRIORITY_ETHERNET ? "ethernet" : "auto";
+    int bad = cfg_set(CFG_NETWORK, "priority", name, HEADER);
+    int disk = save(NULL, 0, 0, 0, 0, 0);
+    /* Even if the chosen link stays active, discard its previous static
+     * configuration: the preference applies to DHCP networks. */
+    net_select_device(net_if()->dev);
+    net_reselect();
+    return bad ? -1 : disk;
+}
+
+/* A lease renewal must not pin a temporary fallback interface or replace
+ * the user's media preference. Explicit selection uses save_dhcp(nd). */
+int netconf_use_dhcp(void) {
+    int bad = cfg_set(CFG_NETWORK, "mode", "dhcp", HEADER);
+    const char* keys[] = {"ip", "netmask", "gateway", "dns"};
+    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        bad |= cfg_set(CFG_NETWORK, keys[i], NULL, HEADER);
+    load();
+    return bad ? -1 : cfg_persist();
 }

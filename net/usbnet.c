@@ -87,8 +87,8 @@ int usbnet_start(usbnet_t* u) {
     u->nd.poll = usbnet_poll;
     u->nd.link_up = usbnet_link_up;
     u->nd.irq = 0xFF;
-    u->link = 1;
-    u->link_checked_ms = 0;
+    u->link = u->get_link ? u->get_link(u) : 1;
+    u->link_checked_ms = timer_ms();
     net_register_device(&u->nd);
     return 0;
 }
