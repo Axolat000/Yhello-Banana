@@ -245,6 +245,34 @@ static int t_cores(void) {
     return 100 + cores;
 }
 
+/* A serialized stream of clock reads from migrating user threads. */
+static banana_mutex_t clock_lock = BANANA_MUTEX_INIT;
+static unsigned clock_last;
+static volatile unsigned long long clock_seen;
+static int clock_worker(void* arg) {
+    (void)arg;int bad=0;
+    for(int i=0;i<20000;i++) {
+        banana_lock(&clock_lock);
+        unsigned now=banana_ticks();
+        if((int)(now-clock_last)<0)bad=1;
+        clock_last=now;
+        banana_unlock(&clock_lock);
+        int cpu=core_id();if(cpu<64)__sync_fetch_and_or(&clock_seen,1ull<<cpu);
+        if(!(i%256))banana_sleep(1);
+    }
+    return bad;
+}
+static int t_clock(void) {
+    int n=banana_cpus();if(n<2)n=2;if(n>8)n=8;
+    int ids[8],bad=0;clock_last=banana_ticks();unsigned start=clock_last;
+    for(int i=0;i<n;i++){ids[i]=banana_thread(clock_worker,NULL);if(ids[i]<=0)bad=1;}
+    for(int i=0;i<n;i++)if(ids[i]>0 && banana_join(ids[i]))bad=1;
+    unsigned elapsed=banana_ticks()-start;int cores=0;
+    for(int i=0;i<64;i++)if(clock_seen&(1ull<<i))cores++;
+    printf("clock: %d threads, %d serialized reads, %d cores, %u ms; %s\n",n,n*20000,cores,elapsed,bad?"clock moved backwards":"monotonic");
+    return bad?1:100+cores;
+}
+
 /* page i of the swap test: zeros (1 in 4), text (compresses), or noise (1 in 8: does not) */
 static void swap_page(unsigned char* p, unsigned i) {
     if (i % 4 == 0) { memset(p, 0, 4096); return; }
@@ -371,9 +399,10 @@ int main(int argc, char** argv) {
     if (!strcmp(m, "threads")) return t_threads(a > 0 ? a : 8);
     if (!strcmp(m, "files")) return t_files(a > 0 ? a : 8);
     if (!strcmp(m, "cores")) return t_cores();
+    if (!strcmp(m, "clock")) return t_clock();
     if (!strcmp(m, "idle")) { banana_sleep(a > 0 ? (unsigned)a : 1000); return 0; }
     if (!strcmp(m, "swap")) return t_swap(a > 0 ? a : 32, argc > 3 ? atoi(argv[3]) : 3000);
-    printf("usage: systest heap | ring | mem N [high] | threads N | files N | cores | idle MS | swap N MS\n"
+    printf("usage: systest heap | ring | mem N [high] | threads N | files N | cores | clock | idle MS | swap N MS\n"
            "(the app half of the shell's `selftest`)\n");
     return 1;
 }
