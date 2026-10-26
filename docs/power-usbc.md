@@ -23,7 +23,12 @@ usbc role 1 source      # request supplying power, if firmware permits it
 ```
 
 A role request is asynchronous. Re-run `usbc` to inspect the actual role.
-The PPM and connected partner may reject a swap. Capabilities and connection
+The PPM and connected partner may reject a swap. The last request result and
+last command failure remain visible in `usbc`. GET_ERROR_STATUS retrieves firmware
+causes such as partner refusal, policy conflict, CC communication failure and
+overcurrent; the complete error mask is retained. Settings shows the last error.
+An accepted command is not a guarantee that the requested role is already active.
+Capabilities and connection
 state are checked before sending SET_PDR. Automatic power-role changes,
 raw voltage/current requests and connector hard resets are not sent at boot.
 PPM_RESET resets the UCSI command interface; PD negotiation stays in firmware.
@@ -87,6 +92,10 @@ a 20 V / 3 A contract and both power-role changes. It verifies the licence and
 boot selftests too. QEMU/OVMF uses 32-bit AML on this machine model, so the fixture
 keeps its dynamically addressed BAR below 4 GiB; high memory resource handling
 has separate host-model coverage. ISO SHA-256 and VM arguments are recorded.
+A `--reject-role` fixture also rejects both swaps and reports a partner refusal
+through GET_ERROR_STATUS; it verifies the actual role stays unchanged and that
+normal polling continues. Malformed/error replies to GET_ERROR_STATUS and failed
+connector acknowledgements have separate host-model coverage.
 These host and VM checks gate prerelease publication.
 
 References:

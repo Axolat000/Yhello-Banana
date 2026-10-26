@@ -16,6 +16,10 @@ typedef struct {
     uint32_t (*now)(void*);
     void (*wait)(void*,unsigned ms);
 } ucsi_transport_t;
+typedef enum {
+    UCSI_ERROR_NONE, UCSI_ERROR_IO, UCSI_ERROR_TIMEOUT,
+    UCSI_ERROR_UNSUPPORTED, UCSI_ERROR_REPLY, UCSI_ERROR_FIRMWARE
+} ucsi_error_t;
 typedef struct {
     const ucsi_transport_t* ops;
     void* ctx;
@@ -23,10 +27,16 @@ typedef struct {
     uint8_t num_ports,role_capabilities[UCSI_PORT_MAX];
     uint32_t attributes,last_cci,errors,last_ms;
     int ready,busy,failed;
+    ucsi_error_t last_error;
+    uint16_t ppm_error;
+    uint8_t error_command,role_port,role_source;
+    int role_result; /* 0: none, 1: command accepted, -1: request failed */
     ucsi_port_t ports[UCSI_PORT_MAX];
 } ucsi_t;
 int ucsi_init(ucsi_t*,const ucsi_transport_t*,void*);
 int ucsi_refresh(ucsi_t*);
 int ucsi_power_role(ucsi_t*,unsigned port,int source);
 void ucsi_decode_contract(ucsi_port_t*);
+const char* ucsi_error_text(ucsi_error_t);
+const char* ucsi_ppm_error_text(uint16_t);
 #endif

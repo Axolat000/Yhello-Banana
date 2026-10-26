@@ -49,6 +49,12 @@ void cmd_usbc(const char* args) {
         return;
     }
     line("UCSI %x, USB PD %x, Type-C %x, %u connector(s)%s\n",u->version,u->pd_version,u->typec_version,u->num_ports,u->failed?" (transport failed)":"");
+    if(u->role_result) line("Last role request: port %u %s, %s\n",u->role_port,
+        u->role_source?"source":"sink",u->role_result>0?"command accepted (check actual role below)":"failed");
+    if(u->last_error) {
+        line("Last command failure: 0x%x, %s\n",u->error_command,ucsi_error_text(u->last_error));
+        if(u->last_error==UCSI_ERROR_FIRMWARE) line("  PPM 0x%x: %s\n",u->ppm_error,ucsi_ppm_error_text(u->ppm_error));
+    }
     for(unsigned i=0;i<u->num_ports;i++) {
         ucsi_port_t* c=&u->ports[i];
         if(!c->valid) { line("USB-C %u: status unavailable\n",i+1);continue; }

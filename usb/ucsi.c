@@ -22,6 +22,7 @@
 #define CMD_POWER_ROLE 11u
 #define CMD_PDOS 16u
 #define CMD_STATUS 18u
+#define CMD_ERROR 19u
 static uint16_t le16(const uint8_t* b) { return b[0]|(uint16_t)b[1]<<8; }
 static uint32_t le32(const uint8_t* b) { return le16(b)|(uint32_t)le16(b+2)<<16; }
 static int cci_read(ucsi_t* u,uint32_t* cci) {
@@ -46,23 +47,75 @@ static int acknowledge(ucsi_t* u,int connector) {
     if(u->ops->write(u->ctx,cmd)<0 || await(u,CCI_ACK,1000,&cci)<0) return -1;
     return (cci&(CCI_ERROR|CCI_UNSUPPORTED))?-1:0;
 }
-static int command(ucsi_t* u,uint64_t cmd,void* out,unsigned capacity,unsigned minimum,int connector_ack) {
+/* Keep the low-level exchange separate so GET_ERROR_STATUS never recurses. */
+static int exchange(ucsi_t* u,uint64_t cmd,void* out,unsigned capacity,unsigned minimum,int connector_ack,ucsi_error_t* error) {
     uint32_t cci;
-    if(u->ops->write(u->ctx,cmd)<0) { u->failed=1;return -1; }
+    *error=UCSI_ERROR_NONE;
+    if(u->ops->write(u->ctx,cmd)<0) { u->failed=1;*error=UCSI_ERROR_IO;return -1; }
     if(await(u,CCI_COMPLETE|CCI_ERROR|CCI_UNSUPPORTED,2000,&cci)<0) {
         /* Cancel only the UCSI mailbox command, never the PD contract. */
         if(u->ops->write(u->ctx,CMD_CANCEL)<0 || await(u,CCI_CANCEL,1000,&cci)<0)
             u->failed=1;
         else if(acknowledge(u,0)<0) u->failed=1;
+        *error=UCSI_ERROR_TIMEOUT;
         return -1;
     }
     unsigned n=(cci>>8)&255;
-    int result=0;
-    if(cci&(CCI_ERROR|CCI_UNSUPPORTED)) result=-1;
-    else if(n<minimum || n>capacity) result=-1;
-    else if(n && (!out || u->ops->read(u->ctx,16,out,n)<0)) result=-1;
-    if(acknowledge(u,connector_ack)<0) { u->failed=1;return -1; }
-    return result<0?-1:(int)n;
+    if(cci&CCI_UNSUPPORTED) *error=UCSI_ERROR_UNSUPPORTED;
+    else if(cci&CCI_ERROR) *error=UCSI_ERROR_FIRMWARE;
+    else if(n<minimum || n>capacity) *error=UCSI_ERROR_REPLY;
+    else if(n && (!out || u->ops->read(u->ctx,16,out,n)<0)) *error=UCSI_ERROR_IO;
+    /* Preserve connector changes when the command or reply was rejected. */
+    if(acknowledge(u,*error==UCSI_ERROR_NONE?connector_ack:0)<0) {
+        u->failed=1;*error=UCSI_ERROR_IO;return -1;
+    }
+    return *error!=UCSI_ERROR_NONE?-1:(int)n;
+}
+static void failure(ucsi_t* u,uint64_t cmd,ucsi_error_t error) {
+    u->errors++;u->error_command=(uint8_t)cmd;u->last_error=error;u->ppm_error=0;
+}
+static int command(ucsi_t* u,uint64_t cmd,void* out,unsigned capacity,unsigned minimum,int connector_ack) {
+    ucsi_error_t error;
+    int result=exchange(u,cmd,out,capacity,minimum,connector_ack,&error);
+    if(result>=0) return result;
+    failure(u,cmd,error);
+    if(error==UCSI_ERROR_FIRMWARE && !u->failed) {
+        uint8_t status[16]={0};ucsi_error_t ignored;
+        /* In UCSI 1.1/1.2 GET_ERROR_STATUS has no connector parameter.
+         * Read once, after ACK; even a broken error command cannot recurse. */
+        if(exchange(u,CMD_ERROR,status,sizeof(status),2,0,&ignored)>=2)
+            u->ppm_error=le16(status);
+    }
+    return -1;
+}
+const char* ucsi_error_text(ucsi_error_t e) {
+    switch(e) {
+    case UCSI_ERROR_IO:return "mailbox IO or acknowledgement failed";
+    case UCSI_ERROR_TIMEOUT:return "firmware command timed out";
+    case UCSI_ERROR_UNSUPPORTED:return "command not supported";
+    case UCSI_ERROR_REPLY:return "invalid firmware reply length";
+    case UCSI_ERROR_FIRMWARE:return "firmware rejected command";
+    default:return "none";
+    }
+}
+const char* ucsi_ppm_error_text(uint16_t e) {
+    /* A PPM can report several bits; prefer the electrical fault first.
+     * The caller also prints the complete mask, retaining other causes. */
+    if(e&(1u<<7)) return "overcurrent reported";
+    if(e&(1u<<13)) return "reverse-current protection";
+    if(e&(1u<<5)) return "dead battery reported";
+    if(e&(1u<<4)) return "CC communication failed";
+    if(e&(1u<<6)) return "PD contract negotiation failed";
+    if(e&(1u<<9)) return "partner rejected power-role swap";
+    if(e&(1u<<11)) return "firmware power policy conflict";
+    if(e&(1u<<12)) return "power-role swap rejected";
+    if(e&(1u<<14)) return "sink path request rejected";
+    if(e&(1u<<3)) return "incompatible partner";
+    if(e&(1u<<10)) return "PD hard reset reported";
+    if(e&(1u<<2)) return "invalid command argument";
+    if(e&(1u<<1)) return "invalid connector";
+    if(e&1u) return "unrecognized command";
+    return e?"unspecified firmware error":"details unavailable";
 }
 void ucsi_decode_contract(ucsi_port_t* p) {
     p->millivolts=p->milliamps=p->milliwatts=0;p->contract_valid=0;
@@ -113,7 +166,7 @@ static int refresh_locked(ucsi_t* u) {
         uint8_t data[16]={0};
         ucsi_port_t p;memset(&p,0,sizeof(p));
         int n=command(u,CMD_STATUS|((uint64_t)(i+1)<<16),data,sizeof(data),9,0);
-        if(n<0) { u->ports[i].valid=0;u->errors++;continue; }
+        if(n<0) { u->ports[i].valid=0;continue; }
         p.change=le16(data);
         uint16_t flags=le16(data+2);
         p.connected=(flags&8)!=0;p.source=(flags&16)!=0;p.mode=flags&7;
@@ -124,13 +177,15 @@ static int refresh_locked(ucsi_t* u) {
         /* Clear the connector indication after the snapshot has been read. */
         if(p.change) {
             uint32_t cci;
-            if(u->ops->write(u->ctx,CMD_ACK|(1ull<<16))<0 || await(u,CCI_ACK,1000,&cci)<0)
-                u->failed=1;
+            if(u->ops->write(u->ctx,CMD_ACK|(1ull<<16))<0 || await(u,CCI_ACK,1000,&cci)<0 ||
+               (cci&(CCI_ERROR|CCI_UNSUPPORTED))) {
+                u->failed=1;failure(u,CMD_ACK,UCSI_ERROR_IO);
+            }
         }
     }
     if(u->failed) for(unsigned i=0;i<u->num_ports;i++) u->ports[i].valid=0;
     u->last_ms=u->ops->now(u->ctx);
-    return success==(unsigned)u->num_ports?0:-1;
+    return !u->failed && success==(unsigned)u->num_ports?0:-1;
 }
 int ucsi_init(ucsi_t* u,const ucsi_transport_t* ops,void* ctx) {
     if(!u || !ops || !ops->read || !ops->write || !ops->now || !ops->wait) return -1;
@@ -163,9 +218,9 @@ int ucsi_power_role(ucsi_t* u,unsigned port,int source) {
     if(!u || !u->ready || u->failed || u->busy || !port || port>u->num_ports) return -1;
     if(!u->ports[port-1].valid || !u->ports[port-1].connected ||
        !(u->role_capabilities[port-1]&(source?(1u<<4):(1u<<5)))) return -1;
-    u->busy=1;
+    u->busy=1;u->role_port=(uint8_t)port;u->role_source=source!=0;u->role_result=-1;
     uint64_t cmd=CMD_POWER_ROLE|((uint64_t)port<<16)|((uint64_t)(source?1:2)<<23)|(1ull<<25);
     int ret=command(u,cmd,NULL,0,0,0);
-    if(ret>=0) ret=refresh_locked(u);
+    if(ret>=0) { u->role_result=1;ret=refresh_locked(u); }
     u->busy=0;return ret<0?-1:0;
 }

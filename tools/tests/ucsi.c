@@ -3,13 +3,17 @@
 #include "../../kernel/kstring.h"
 extern int printf(const char*,...);
 extern void abort(void);
+extern int fflush(void*);
 static unsigned checks;
-#define CHECK(c) do { checks++;if(!(c)){printf("FAIL %d: %s\n",__LINE__,#c);abort();} }while(0)
+#define CHECK(c) do { checks++;if(!(c)){printf("FAIL %d: %s\n",__LINE__,#c);fflush(0);abort();} }while(0)
 typedef struct {
     uint32_t cci,now,commands,acks,cancels,resets;
     uint8_t data[16];
     unsigned delay,remaining;uint32_t pending_cci;
     int freeze_clock,source,connected,fail_read,fail_write,stuck,bad_length,unsupported,ack_fail,cancel_fail;
+    int reject_role,error_fail,error_length,connector_ack_error;
+    uint16_t firmware_error;
+    unsigned error_reads;
 } model_t;
 static void put32(uint8_t* b,uint32_t n) { for(unsigned i=0;i<4;i++) b[i]=(uint8_t)(n>>(i*8)); }
 static int read(void* ctx,unsigned off,void* data,unsigned n) {
@@ -28,12 +32,24 @@ static int read(void* ctx,unsigned off,void* data,unsigned n) {
 static int write(void* ctx,uint64_t cmd) {
     model_t* m=ctx;unsigned op=(unsigned)cmd&255;m->commands++;
     if(m->fail_write) return -1;
-    CHECK(op==1 || op==2 || op==4 || op==5 || op==6 || op==7 || op==11 || op==16 || op==18);
+    CHECK(op==1 || op==2 || op==4 || op==5 || op==6 || op==7 || op==11 || op==16 || op==18 || op==19);
     /* No connector reset, raw voltage request or alt-mode command. */
     memset(m->data,0,sizeof(m->data));
     if(op==1) { m->resets++;m->cci=1u<<27;return 0; }
     if(op==2) { m->cancels++;m->cci=m->cancel_fail?0:1u<<26;return 0; }
-    if(op==4) { m->acks++;m->cci=m->ack_fail?0:1u<<29;return 0; }
+    if(op==4) {
+        m->acks++;m->cci=m->ack_fail?0:1u<<29;
+        if(m->connector_ack_error && (cmd&(1ull<<16))) m->cci|=1u<<30;
+        return 0;
+    }
+    if(op==19) {
+        CHECK(cmd==19);m->error_reads++;
+        m->data[0]=(uint8_t)m->firmware_error;m->data[1]=(uint8_t)(m->firmware_error>>8);
+        m->cci=(1u<<31)|((unsigned)(m->error_length?m->error_length:16)<<8);
+        if(m->error_fail) m->cci|=1u<<30;
+        return 0;
+    }
+    if(op==11 && m->reject_role) { m->cci=(1u<<31)|(1u<<30);return 0; }
     if(m->stuck) { m->cci=1u<<28;return 0; }
     if(m->unsupported) { m->cci=(1u<<31)|(1u<<25);return 0; }
     m->cci=1u<<31;
@@ -69,6 +85,7 @@ int main(void) {
     CHECK(u.ports[0].contract_valid && u.ports[0].millivolts==20000 &&
           u.ports[0].milliamps==3000 && u.ports[0].milliwatts==60000);
     CHECK(!ucsi_power_role(&u,1,1) && u.ports[0].source && m.source);
+    CHECK(u.role_result==1 && u.role_port==1 && u.role_source);
     CHECK(ucsi_power_role(&u,0,1)<0 && ucsi_power_role(&u,2,1)<0);
     CHECK(m.resets==1 && !m.cancels);
     m.connected=0;CHECK(!ucsi_refresh(&u));
@@ -91,6 +108,36 @@ int main(void) {
     memset(&m,0,sizeof(m));m.connected=1;m.freeze_clock=1;
     CHECK(!ucsi_init(&u,&ops,&m));m.stuck=1;
     CHECK(ucsi_refresh(&u)<0 && m.cancels==1 && m.now==0);
+    /* Partner refuses a swap: one bounded GET_ERROR_STATUS, original command
+     * retained across normal polling and a subsequent accepted request. */
+    memset(&m,0,sizeof(m));m.connected=1;
+    CHECK(!ucsi_init(&u,&ops,&m));
+    m.reject_role=1;m.firmware_error=1u<<9;
+    CHECK(ucsi_power_role(&u,1,1)<0 && !u.failed && u.role_result==-1);
+    CHECK(u.last_error==UCSI_ERROR_FIRMWARE && u.error_command==11 && u.ppm_error==(1u<<9));
+    CHECK(m.error_reads==1 && !m.source && u.errors==1);
+    CHECK(!strcmp(ucsi_ppm_error_text(u.ppm_error),"partner rejected power-role swap"));
+    CHECK(!ucsi_refresh(&u) && u.last_error==UCSI_ERROR_FIRMWARE && u.ppm_error==(1u<<9));
+    m.reject_role=0;
+    CHECK(!ucsi_power_role(&u,1,1) && u.role_result==1 && u.ports[0].source);
+    m.reject_role=1;m.error_fail=1;
+    CHECK(ucsi_power_role(&u,1,0)<0 && m.error_reads==2 && !u.failed);
+    CHECK(u.ppm_error==0 && u.error_command==11); /* No recursive error command */
+    m.error_fail=0;m.error_length=1;
+    CHECK(ucsi_power_role(&u,1,0)<0 && m.error_reads==3 && !u.ppm_error);
+    m.error_length=255;
+    CHECK(ucsi_power_role(&u,1,0)<0 && m.error_reads==4 && !u.ppm_error);
+    m.error_length=2;m.firmware_error=(1u<<7)|(1u<<9);
+    CHECK(ucsi_power_role(&u,1,0)<0 && u.ppm_error==m.firmware_error);
+    CHECK(!strcmp(ucsi_ppm_error_text(u.ppm_error),"overcurrent reported"));
+    m.reject_role=0;m.unsupported=1;
+    CHECK(ucsi_power_role(&u,1,0)<0 && u.last_error==UCSI_ERROR_UNSUPPORTED && !u.ppm_error);
+    CHECK(m.error_reads==5);
+    memset(&m,0,sizeof(m));m.connected=1;CHECK(!ucsi_init(&u,&ops,&m));
+    m.connector_ack_error=1;
+    CHECK(ucsi_refresh(&u)<0 && u.failed && !u.ports[0].valid);
+    CHECK(u.last_error==UCSI_ERROR_IO && u.error_command==4);
+    CHECK(strcmp(ucsi_error_text(UCSI_ERROR_TIMEOUT),"none")!=0);
     ucsi_port_t p={.connected=1,.mode=3,.nr_pdos=1};
     p.source_pdos[0]=(3u<<30)|(210u<<17)|(33u<<8)|60; /* PPS 3.3–21V, 3A */
     p.rdo=(1u<<28)|(450u<<9)|40;ucsi_decode_contract(&p);

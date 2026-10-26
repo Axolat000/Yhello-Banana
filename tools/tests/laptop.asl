@@ -73,6 +73,7 @@ DefinitionBlock ("", "SSDT", 2, "BANANA", "PWRTEST", 1)
                 Return (CRSB)
             }
             Name (SOUR, Zero)
+            Name (RJSW, Zero) // Test runner may enable partner refusal.
             OperationRegion (MBOX, SystemMemory, BASE (), 0x1000)
             Field (MBOX, AnyAcc, NoLock, Preserve) {
                 VERS,16, Offset (4), CCI0,32, CTRL,32, CTHI,32,
@@ -117,7 +118,12 @@ DefinitionBlock ("", "SSDT", 2, "BANANA", "PWRTEST", 1)
                         Store (0x80000800,CCI0)
                     } Else { Store (0x80000000,CCI0) }
                 }
+                ElseIf (LEqual (Local0,19)) {
+                    Store (0x0200,MSG0) // Partner rejected swap.
+                    Store (0x80001000,CCI0)
+                }
                 ElseIf (LEqual (Local0,11)) {
+                    If (RJSW) { Store (0xC0000000,CCI0) Return (Zero) }
                     Store (LEqual (And (ShiftRight (CTRL,23),3),One),SOUR)
                     Store (0x80000000,CCI0)
                 }

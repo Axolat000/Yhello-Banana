@@ -1054,7 +1054,11 @@ static void draw_power(void) {
         } else if(c->mode==3) label(x,y+316,_("Contract details not reported"),C_DIM);
         label(x,y+338,c->charging==1?_("Battery charging normally"):c->charging==2?_("Slow charging"):c->charging==3?_("Trickle charging"):_("Battery not charging"),C_DIM);
     }
-    label(x,y+364,_("Power negotiation is managed by the controller."),C_DIM);
+    if(u->last_error) {
+        const char* reason=u->last_error==UCSI_ERROR_FIRMWARE?ucsi_ppm_error_text(u->ppm_error):ucsi_error_text(u->last_error);
+        ksnprintf(line,sizeof(line),"Last USB-C error: %s",reason);
+        label(x,y+364,line,C_DIM);
+    } else label(x,y+364,_("Power negotiation is managed by the controller."),C_DIM);
 }
 
 /* Wi-Fi uses the same station core as the CLI; passwords are masked,

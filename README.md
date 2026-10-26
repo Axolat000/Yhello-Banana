@@ -32,6 +32,11 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   sanitizers; physical validation is pending. Existing RTL8111/8168 and RTL8152
   drivers are unchanged. See [network status](docs/network-priority.md).
 
+- **USB-C PD diagnostics** - `usbc` retains power-role request results and reads
+  firmware error details (partner refusal, policy conflict, CC and electrical
+  faults); Settings shows the last error. Firmware rejection and failed connector
+  acknowledgements are tested separately from successful role changes.
+
 - **Laptop power and USB-C PD firmware services (experimental)** - a native uACPI
   interpreter reads ACPI battery capacity/state, AC adapter and lid information,
   with ACPI panel-brightness fallback and Settings > Power & USB-C. The `laptop`,

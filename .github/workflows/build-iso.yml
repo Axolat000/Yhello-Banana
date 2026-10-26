@@ -420,6 +420,7 @@ jobs:
           args=()
           if [ "${{ matrix.bits }}" = 32 ]; then args+=(--32); fi
           python3 tools/test_laptop_vm.py --firmware "${{ matrix.firmware }}" "${args[@]}"
+          python3 tools/test_laptop_vm.py --firmware "${{ matrix.firmware }}" "${args[@]}" --reject-role
       - uses: actions/upload-artifact@v4
         if: always()
         with:

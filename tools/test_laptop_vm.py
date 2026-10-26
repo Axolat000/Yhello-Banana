@@ -7,12 +7,16 @@ root=Path(__file__).resolve().parents[1]
 ap=argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--firmware',choices=['bios','uefi'],default='bios')
 ap.add_argument('--32',dest='bits32',action='store_true')
+ap.add_argument('--reject-role',action='store_true',help='PPM rejects swaps, reports partner refusal')
 a=ap.parse_args()
 if a.bits32 and a.firmware=='uefi':ap.error('64-bit UEFI firmware requires a 64-bit CPU')
-out=root/'build/logs'/('laptop-'+a.firmware+('-32' if a.bits32 else '-64'))
+out=root/'build/logs'/('laptop-'+a.firmware+('-32' if a.bits32 else '-64')+('-reject' if a.reject_role else ''))
 out.mkdir(parents=True,exist_ok=True)
 prefix=out/'laptop'
-subprocess.run(['iasl','-p',str(prefix),'tools/tests/laptop.asl'],cwd=root,check=True)
+fixture=(root/'tools/tests/laptop.asl').read_text()
+if a.reject_role:fixture=fixture.replace('Name (RJSW, Zero)','Name (RJSW, One)')
+prefix.with_suffix('.asl').write_text(fixture)
+subprocess.run(['iasl','-p',str(prefix),str(prefix.with_suffix('.asl'))],cwd=root,check=True)
 mailbox=out/'mailbox';mailbox.write_bytes(bytes(4096))
 qemu=['-accel','tcg','-cdrom','Banana_OS.iso','-m','512M','-smp','4','-nic','none',
       '-acpitable','file='+str(prefix.with_suffix('.aml')),
@@ -30,7 +34,7 @@ if a.firmware=='uefi':
     qemu+=['-drive','if=pflash,format=raw,readonly=on,file='+str(code),
            '-drive','if=pflash,format=raw,file='+str(variables)]
 commands=out/'commands.txt'
-commands.write_text("""#wait 5
+script="""#wait 5
 laptop ## 50%, discharging
 usbc ## contract: 20000 mV, 3000 mA, 60000 mW
 brightness ## 60%
@@ -45,12 +49,18 @@ usbc role 1 sink ## power-role request queued
 usbc ## sink (receiving power)
 cat /usr/share/licenses/uacpi/LICENSE ## Daniil Tatianin
 selftest boot ## 0 failed
-""")
+"""
+if a.reject_role:
+    script=script.replace('usbc ## sink (receiving power)',
+        'usbc ## Last role request: port 1 sink, failed')
+    script=script.replace('usbc ## source (supplying power)',
+        'usbc ## partner rejected power-role swap\nusbc ## sink (receiving power)')
+commands.write_text(script)
 with (root/'Banana_OS.iso').open('rb') as iso:
     digest=hashlib.file_digest(iso,'sha256').hexdigest()
 provenance={'commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
             'iso_sha256':digest,'firmware':a.firmware,'bits':32 if a.bits32 else 64,'qemu_args':qemu,
-            'fixture_sha256':hashlib.sha256((root/'tools/tests/laptop.asl').read_bytes()).hexdigest()}
+            'reject_role':a.reject_role,'fixture_sha256':hashlib.sha256(fixture.encode()).hexdigest()}
 (out/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
 sys.exit(subprocess.run([sys.executable,'tools/serialtest.py','--timeout','120','--boot-timeout','180',
                          '--log',str(out/'serial.log'),'--cmds-file',str(commands),'--',*qemu],cwd=root).returncode)
