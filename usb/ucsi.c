@@ -66,7 +66,8 @@ static int command(ucsi_t* u,uint64_t cmd,void* out,unsigned capacity,unsigned m
 }
 void ucsi_decode_contract(ucsi_port_t* p) {
     p->millivolts=p->milliamps=p->milliwatts=0;p->contract_valid=0;
-    if(!p->connected || p->mode!=3) return;
+    if(!p->connected || p->mode!=3 || (p->rdo&0x80000000u)) return;
+    /* This decoder handles 3-bit SPR object positions, not EPR requests. */
     unsigned position=(p->rdo>>28)&7;
     if(!position || position>p->nr_pdos) return;
     uint32_t pdo=p->source_pdos[position-1],type=pdo>>30;
@@ -80,7 +81,10 @@ void ucsi_decode_contract(ucsi_port_t* p) {
         uint32_t mw=((p->rdo>>10)&1023)*250;
         if(mw && mw<=100000 && ((pdo>>10)&1023)>=100 && ((pdo>>20)&1023)<=400 && ((pdo>>10)&1023)<=((pdo>>20)&1023) && mw<=(pdo&1023)*250) { p->milliwatts=mw;p->contract_valid=1; }
     } else if(type==3 && ((pdo>>28)&3)==0) {
-        uint32_t mv=((p->rdo>>9)&4095)*20,ma=(p->rdo&127)*50;
+        /* PPS reserves bits 7..8 and 20..22; do not mask invalid input
+         * into an apparently valid voltage/current request. */
+        if(p->rdo&((3u<<7)|(7u<<20))) return;
+        uint32_t mv=((p->rdo>>9)&2047)*20,ma=(p->rdo&127)*50;
         uint32_t min=((pdo>>8)&255)*100,max=((pdo>>17)&255)*100;
         if(mv<min || mv>max || min<3300 || max>21000 || !ma || (pdo&127)*50>5000 || ma>(pdo&127)*50) return;
         p->millivolts=mv;p->milliamps=ma;p->milliwatts=mv*ma/1000;p->contract_valid=1;

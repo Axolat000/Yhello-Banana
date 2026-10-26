@@ -95,6 +95,9 @@ int main(void) {
     p.source_pdos[0]=(3u<<30)|(210u<<17)|(33u<<8)|60; /* PPS 3.3–21V, 3A */
     p.rdo=(1u<<28)|(450u<<9)|40;ucsi_decode_contract(&p);
     CHECK(p.contract_valid && p.millivolts==9000 && p.milliamps==2000 && p.milliwatts==18000);
+    p.rdo|=1u<<20;ucsi_decode_contract(&p);CHECK(!p.contract_valid);
+    p.rdo=(1u<<28)|(450u<<9)|40|(1u<<7);ucsi_decode_contract(&p);CHECK(!p.contract_valid);
+    p.rdo=(1u<<28)|(450u<<9)|40|(1u<<31);ucsi_decode_contract(&p);CHECK(!p.contract_valid);
     p.rdo=(1u<<28)|(1100u<<9)|40;ucsi_decode_contract(&p);CHECK(!p.contract_valid);
     p.source_pdos[0]=(1u<<30)|(400u<<20)|(100u<<10)|240; /* battery PDO max60W */
     p.rdo=(1u<<28)|(180u<<10);ucsi_decode_contract(&p);CHECK(p.contract_valid && p.milliwatts==45000 && !p.millivolts);
