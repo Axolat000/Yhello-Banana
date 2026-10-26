@@ -1,0 +1,27 @@
+name: ACPI and USB-C Power Delivery host tests
+on:
+  pull_request:
+    paths:
+      - 'kernel/aml_host.*'
+      - 'kernel/laptop.*'
+      - 'usb/ucsi.*'
+      - 'third_party/uacpi/**'
+      - 'tools/test_power_host.py'
+      - 'tools/test_ucsi.py'
+      - 'tools/tests/power_host.c'
+      - 'tools/tests/ucsi.c'
+      - '.github/workflows/power-host.yml'
+  workflow_call: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y gcc-multilib
+      - name: Native ACPI host callbacks and embedded-controller protocol
+        run: python3 tools/test_power_host.py --sanitize && python3 tools/test_power_host.py --32
+      - name: UCSI command failures and USB-PD contract decoding
+        run: python3 tools/test_ucsi.py --sanitize && python3 tools/test_ucsi.py --32

@@ -78,6 +78,8 @@ static const rsdp_t* find_rsdp(void) {
     return r ? r : scan_rsdp(0xE0000, 0x100000);                /* the BIOS area */
 }
 
+uintptr_t acpi_rsdp_address(void) { return (uintptr_t)find_rsdp(); }
+
 static const sdt_t* table_at(uint64_t a, const char* sig) {
     if (a < 4096 || a > (4ull << 30)-sizeof(sdt_t)) return NULL; /* low 4 GiB, excluding the NULL guard */
     const sdt_t* t = (const sdt_t*)(uintptr_t)a;

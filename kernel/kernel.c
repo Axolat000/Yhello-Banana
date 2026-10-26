@@ -28,6 +28,7 @@
 #include "sdhci.h"
 #include "virtio_scsi.h"
 #include "acpi.h"
+#include "laptop.h"
 #include "virtio_blk.h"
 #include "paging.h"
 #include "fpu.h"
@@ -130,6 +131,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info) {
     acpi_power_button_init();   /* VirtualBox's ACPI Shutdown, QEMU's system_powerdown, the PC's button */
     STEP("usb");
     usb_stack_init(); /* xHCI/EHCI: USB network adapters, keyboards, mice, sticks */
+    laptop_init();
     STEP("services");
     daemon_init();
     gui_init();

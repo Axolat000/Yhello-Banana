@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define VT_KERNEL 1
+#include "powercmds.h"
 #include "../apps/terminal/vt.h"
 #include "../kernel/vcons.h"
 #include "shell.h"
@@ -1261,7 +1262,7 @@ static const char* const known_cmds[] = {
     /* shell/syscmds.c */
     "mount", "umount", "eject", "fstest", "selftest", "crashtest", "pkg", "apt", "apt-get", "adb", "fastboot", "apps", "taskmgr", "settings", "notify", "play", "beep", "volume", "lsaudio",
     /* shell/moncmds.c */
-    "free", "swap", "latency", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "gpubench", "brightness", "resolution", "drivers", "driver",
+    "laptop", "usbc", "free", "swap", "latency", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "gpubench", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
     "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck", "screenshot",
     /* kernel/vmtools.c */
@@ -2744,6 +2745,9 @@ static void dispatch_plain(const char* line, int persona) {
     }
     if (k_strcmp(line, "resolution") == 0) { cmd_resolution(""); return; }
     if (k_strncmp(line, "resolution ", 11) == 0) { cmd_resolution(line + 11); return; }
+    if (k_strcmp(line, "laptop") == 0) { cmd_laptop(""); return; }
+    if (k_strcmp(line, "usbc") == 0) { cmd_usbc(""); return; }
+    if (k_strncmp(line, "usbc ", 5) == 0) { cmd_usbc(line + 5); return; }
     if (k_strcmp(line, "brightness") == 0) { cmd_brightness(""); return; }
     if (k_strncmp(line, "brightness ", 11) == 0) { cmd_brightness(line + 11); return; }
     if (k_strncmp(line, "hw_info ", 8) == 0) { cmd_hw_info(k_skip_spaces(line+8)); return; }

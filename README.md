@@ -26,6 +26,15 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Laptop power and USB-C PD firmware services (experimental)** - a native uACPI
+  interpreter reads ACPI battery capacity/state, AC adapter and lid information,
+  with ACPI panel-brightness fallback and Settings > Power & USB-C. The `laptop`,
+  `brightness` and `usbc` commands expose status and supported power-role requests.
+  ACPI UCSI 1.1/1.2 reports PD contracts (fixed, battery and PPS PDOs) and lets the
+  firmware negotiate power. Software models and synthetic firmware tests are
+  separate from physical validation. USB4/Thunderbolt, display Alt Modes, EPR/AVS
+  and non-UCSI PD controllers still require drivers. See [power and USB-C status](docs/power-usbc.md).
+
 - **Experimental Intel I225-V / I226-V Ethernet** - separate native PCI driver
   with per-card DMA queues, Intel/OpenBSD PHY/NVM initialization and link
   negotiation. Host register/DMA models pass on 32-bit and under sanitizers;

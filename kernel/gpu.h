@@ -69,6 +69,7 @@ int    gpu_cursor_image(const uint32_t* argb, int w, int h, int hot_x, int hot_y
 void   gpu_cursor_move(int x, int y, int visible);
 int    gpu_has_hw_cursor(void);
 void   gpu_wait_vblank(void);
+int    gpu_backlight_step(int delta); /* next firmware level, or a native 0..100 step */
 int    gpu_backlight(int percent);     /* percent < 0 reads; -1 without one */
 
 /* Telemetry is separate from gpu_t: loadable driver ABI stays stable. */

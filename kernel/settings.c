@@ -45,6 +45,8 @@
 #include "task.h"
 #include "tz.h"
 #include "acpi_sleep.h"
+#include "laptop.h"
+#include "gpu.h"
 
 void shell_power(int reboot);
 
@@ -62,8 +64,8 @@ void shell_power(int reboot);
 #define C_ACCENT TC(0x3A7BD5)
 #define C_SEL    TC(0x2C3E5C)
 
-enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_LANGUAGE, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_WIFI, PG_COUNT };
-static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Language", "Mouse", "Network", "Date & time", "Startup", "Apps", "About", "Wi-Fi" };
+enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_LANGUAGE, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_WIFI, PG_POWER, PG_COUNT };
+static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Language", "Mouse", "Network", "Date & time", "Startup", "Apps", "About", "Wi-Fi", "Power & USB-C" };
 
 #define KB_ROW 20                           /* Keyboard: a row of the layout list (two columns) */
 
@@ -91,6 +93,11 @@ static int        g_muted, g_vol_before_mute = 80;
 static int        g_dragging_vol, g_dragging_speed;
 static uint32_t   g_tick_s;
 
+static int sidebar_item_h(void) {
+    int h=(g_win.h-BODY_Y-34)/PG_COUNT;
+    return h<26?h:26;
+}
+static unsigned g_power_battery,g_power_port;
 static int inside(int mx, int my, int x, int y, int w, int h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
 
 static void bevel(int x, int y, int w, int h, uint32_t base, uint32_t hi, uint32_t lo) {
@@ -996,6 +1003,60 @@ static void click_startup(int mx, int my) {
 }
 
 /* typing into the password fields */
+static void draw_power(void) {
+    int x=cx0(),y=cy0();char line[160];
+    laptop_info_t p;laptop_get_info(&p);
+    label(x,y,_("Power & USB-C"),C_HEAD);
+    label(x,y+24,p.runtime?_("Firmware power services ready"):_("Firmware power information unavailable"),C_DIM);
+    ksnprintf(line,sizeof(line),"AC power: %s   Lid: %s",!p.ac_present?"not reported":p.ac_online?"connected":"disconnected",
+              p.lid<0?"not reported":p.lid?"open":"closed");
+    label(x,y+44,line,C_TEXT);
+    label(x,y+72,_("Battery"),C_HEAD);
+    if(p.battery_count>1) button(x+cw()-110,y+68,110,_("Next battery"),0);
+    if(!p.battery_count) label(x,y+96,_("No battery reported by the firmware."),C_DIM);
+    else {
+        laptop_battery_t* b=&p.batteries[g_power_battery%(unsigned)p.battery_count];
+        if(!b->present) label(x,y+96,_("Battery absent"),C_DIM);
+        else if(!b->valid) label(x,y+96,_("Battery telemetry unavailable"),C_DIM);
+        else {
+            ksnprintf(line,sizeof(line),"%d%% - %s%s",b->percent,b->state&2?"Charging":b->state&1?"On battery":"Idle",b->state&4?" (critical)":"");
+            label(x,y+96,line,C_TEXT);
+            ksnprintf(line,sizeof(line),"%s  |  %u / %u %s",b->model,b->remaining,b->full,b->unit?"mAh":"mWh");
+            label(x,y+116,line,C_DIM);
+            if(b->minutes>=0) {
+                ksnprintf(line,sizeof(line),"Estimated time remaining: %d h %d min",b->minutes/60,b->minutes%60);
+                label(x,y+136,line,C_DIM);
+            }
+        }
+    }
+    int current=gpu_backlight(-1);
+    ksnprintf(line,sizeof(line),current>=0?"Screen brightness: %d%%":"Screen brightness: unavailable",current);
+    label(x,y+172,line,C_HEAD);
+    if(current>=0) {
+        button(x,y+198,80,_("Dimmer"),0);button(x+90,y+198,80,_("Brighter"),0);
+        if(p.brightness_pending) label(x+184,y+202,_("Applying..."),C_DIM);
+    }
+    label(x,y+246,_("USB-C Power Delivery"),C_HEAD);
+    ucsi_t* u=&p.usbc;
+    if(!u->ready) { label(x,y+272,_("No compatible USB-C firmware interface."),C_DIM);return; }
+    if(u->num_ports>1) button(x+cw()-90,y+242,90,_("Next port"),0);
+    unsigned port=g_power_port%u->num_ports;ucsi_port_t* c=&u->ports[port];
+    if(!c->valid || u->failed) ksnprintf(line,sizeof(line),"Port %u: status unavailable",port+1);
+    else if(!c->connected) ksnprintf(line,sizeof(line),"Port %u: disconnected",port+1);
+    else ksnprintf(line,sizeof(line),"Port %u: %s",port+1,c->source?"Supplying power":"Receiving power");
+    label(x,y+272,line,C_TEXT);
+    if(c->valid && c->connected && !u->failed) {
+        label(x,y+294,c->mode==3?_("USB Power Delivery active"):c->mode==4?_("Type-C current: 1.5 A"):c->mode==5?_("Type-C current: 3 A"):_("USB / Battery Charging power"),C_TEXT);
+        if(c->contract_valid) {
+            if(c->millivolts) ksnprintf(line,sizeof(line),"Contract: %u.%02u W (%u mV, %u mA)",c->milliwatts/1000,c->milliwatts%1000/10,c->millivolts,c->milliamps);
+            else ksnprintf(line,sizeof(line),"Contract: %u mW",c->milliwatts);
+            label(x,y+316,line,C_TEXT);
+        } else if(c->mode==3) label(x,y+316,_("Contract details not reported"),C_DIM);
+        label(x,y+338,c->charging==1?_("Battery charging normally"):c->charging==2?_("Slow charging"):c->charging==3?_("Trickle charging"):_("Battery not charging"),C_DIM);
+    }
+    label(x,y+364,_("Power negotiation is managed by the controller."),C_DIM);
+}
+
 /* Wi-Fi uses the same station core as the CLI; passwords are masked,
  * held only while editing and wiped on submit/page change/close. */
 static int g_wifi_index,g_wifi_page,g_wifi_ap=-1,g_wifi_focus;
@@ -1716,11 +1777,12 @@ void settings_draw(const fb_info_t* fi) {
     /* the pages, on the left */
     gfx_fill_rect(x + 6, y + BODY_Y, SIDE_W, H - BODY_Y - 26, C_SIDE);
     for (int i = 0; i < PG_COUNT; i++) {
-        int iy = y + BODY_Y + 4 + i * ITEM_H;
+        int row=sidebar_item_h();
+        int iy = y + BODY_Y + 4 + i * row;
         uint32_t bg = i == g_page ? C_SEL : C_SIDE;
-        gfx_fill_rect(x + 8, iy, SIDE_W - 4, ITEM_H - 4, bg);
-        kbnav_add(&g_nav, x + 8, iy, SIDE_W - 4, ITEM_H - 4);
-        if (i == g_page) gfx_fill_rect(x + 8, iy, 3, ITEM_H - 4, C_ACCENT);
+        gfx_fill_rect(x + 8, iy, SIDE_W - 4, row - 4, bg);
+        kbnav_add(&g_nav, x + 8, iy, SIDE_W - 4, row - 4);
+        if (i == g_page) gfx_fill_rect(x + 8, iy, 3, row - 4, C_ACCENT);
         gfx_draw_text(x + 18, iy + 7, _(PAGE_NAMES[i]), i == g_page ? C_HEAD : C_DIM, bg);
     }
 
@@ -1742,6 +1804,7 @@ void settings_draw(const fb_info_t* fi) {
     case PG_MOUSE:    draw_mouse(); break;
     case PG_NETWORK:  draw_network(); break;
     case PG_WIFI: draw_wifi(); break;
+    case PG_POWER: draw_power(); break;
     case PG_TIME:     draw_time(); break;
     case PG_STARTUP:  draw_startup(); break;
     case PG_APPS:     draw_apps(); break;
@@ -1790,13 +1853,22 @@ void settings_click(int mx, int my) {
 
     /* sidebar */
     if (lx >= 8 && lx < 8 + SIDE_W - 4) {
-        int i = (ly - BODY_Y - 4) / ITEM_H;
+        int i = (ly - BODY_Y - 4) / sidebar_item_h();
         if (ly >= BODY_Y + 4 && i >= 0 && i < PG_COUNT) { wifi_clear_password(); g_page = i; g_pc_focus = 0; fc_close(); }
         return;
     }
     if (fc_active()) { fc_click(mx, my); return; }
 
     int x = cx0(), y = cy0();
+    if(g_page==PG_POWER) {
+        laptop_info_t p;laptop_get_info(&p);
+        if(inside(mx,my,x+cw()-110,y+68,110,20) && p.battery_count>1) g_power_battery++;
+        if(inside(mx,my,x+cw()-90,y+242,90,20) && p.usbc.num_ports>1) g_power_port++;
+        int current=gpu_backlight(-1);
+        if(current>=0 && inside(mx,my,x,y+198,80,20)) gpu_backlight_step(-10);
+        if(current>=0 && inside(mx,my,x+90,y+198,80,20)) gpu_backlight_step(10);
+        g_gen++;return;
+    }
     if (g_page == PG_ABOUT) {
         int fw = cw() - 100;
         if (inside(mx, my, x, y + 52, fw, 22)) {
@@ -2041,7 +2113,7 @@ uint32_t settings_signature(void) {
     if (!g_open) return 0;
     /* the clock, uptime and network status change by themselves */
     if (g_page == PG_APPS && timer_ms() - g_al_scanned > 2000) apps_scan();     /* installed or removed meanwhile */
-    if (g_page == PG_WIFI || g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
+    if (g_page == PG_POWER || g_page == PG_WIFI || g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
         uint32_t s = timer_ms() / (g_page == PG_STARTUP || g_page == PG_ABOUT ? 500 : 1000);
         if (s != g_tick_s) { g_tick_s = s; g_gen++; }
     }

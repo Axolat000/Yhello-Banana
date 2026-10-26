@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Graphics drivers: the active display, and what goes through it (see gpu.h) */
 #include "gpu.h"
+#include "laptop.h"
 #include "fb.h"
 #include "gfx.h"
 #include "kstring.h"
@@ -183,7 +184,20 @@ void gpu_cursor_move(int x, int y, int visible) {
 }
 int gpu_has_hw_cursor(void) { return g_active && g_active->cursor_image && g_active->cursor_move; }
 void gpu_wait_vblank(void) { if (g_active && g_active->wait_vblank) g_active->wait_vblank(g_active); }
-int gpu_backlight(int percent) { return g_active && g_active->backlight ? g_active->backlight(g_active, percent) : -1; }
+int gpu_backlight_step(int delta) {
+    if(g_active && g_active->backlight) {
+        int current=g_active->backlight(g_active,-1);
+        if(current>=0) {
+            int next=current+delta;
+            return g_active->backlight(g_active,next<0?0:next>100?100:next);
+        }
+    }
+    return laptop_backlight_step(delta);
+}
+int gpu_backlight(int percent) {
+    int value=g_active && g_active->backlight?g_active->backlight(g_active,percent):-1;
+    return value>=0?value:laptop_backlight(percent);
+}
 
 /* ── probing ──────────────────────────────────────────────────────── */
 static int (*const BUILTIN[])(const pci_dev_t*) = {

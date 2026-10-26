@@ -211,3 +211,9 @@ Intel Corp and Rubicon Communications, LLC (Netgate), BSD-3-Clause.
 Native queue setup references Nicole Graziano/Netgate OpenBSD if_igc.c,
 BSD-2-Clause. Full notices: third_party/igc/NOTICES; installed at
 /usr/share/licenses/igc/NOTICES. See third_party/igc/README.md for changes.
+
+uACPI AML interpreter (third_party/uacpi):
+Copyright (c) 2022-2026 Daniil Tatianin, MIT.
+Pinned commit c0edecef62bcac6ce3f783540099190bafadadda.
+Full licence: third_party/uacpi/LICENSE; installed as
+/usr/share/licenses/uacpi/LICENSE.

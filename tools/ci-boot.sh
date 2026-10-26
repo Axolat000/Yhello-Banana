@@ -51,6 +51,8 @@ fi
 python3 tools/serialtest.py --log "$logs/serial.log" \
     --boot-timeout 180 --timeout 180 \
     "${mesa_checks[@]}" \
+    --cmd 'laptop ## ACPI AML: ready' \
+    --cmd 'usbc ## no ready ACPI UCSI interface' \
     --cmd 'wifi ## no supported radio detected' \
     --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     --cmd 'cat /usr/share/licenses/igc/NOTICES ## Copyright 2021 Intel Corp' \

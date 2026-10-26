@@ -61,6 +61,7 @@ int  smp_x2apic(void);              /* the local APICs run in x2APIC mode */
 
 /* an ACPI table by its 4-letter signature ("FACP", "APIC"...), NULL if none;
  * one at a physical address, if it has that signature (kernel/acpi.c) */
+uintptr_t acpi_rsdp_address(void);
 const void* acpi_find_table(const char* sig);
 const void* acpi_find_table_n(const char* sig, int n);   /* the n-th one (SSDTs) */
 const void* acpi_table_at(uint64_t addr, const char* sig);

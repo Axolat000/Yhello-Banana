@@ -34,7 +34,7 @@ WEBP_SRCS = $(wildcard third_party/libwebp/src/dec/*.c third_party/libwebp/src/d
 
 C_SRCS   = $(wildcard kernel/*.c) $(wildcard shell/*.c) $(wildcard net/*.c) \
            $(wildcard crypto/*.c) $(wildcard usb/*.c) $(wildcard web/*.c) $(wildcard media/*.c) \
-           third_party/stb/stb_image_impl.c $(wildcard third_party/igc/*.c)
+           third_party/stb/stb_image_impl.c $(wildcard third_party/igc/*.c) $(wildcard third_party/uacpi/source/*.c)
 ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/s3_resume.asm
 ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm kernel/s3_resume.asm
 kernel/frameworkbin.o kernel/frameworkbin.o64: $(wildcard web/fixtures/* web/fixtures/astro/* web/fixtures/astro/_astro/*) $(wildcard web/test/cases/mutation_observer*.html)
@@ -68,6 +68,13 @@ all: Banana_OS.iso
 
 %.o64: %.asm
 	$(AS) -f elf64 $< -o $@
+
+# Portable AML interpreter, using native kernel callbacks and freestanding types.
+UACPI_FLAGS = -I third_party/uacpi/include -I third_party/uacpi/platform \
+              -DUACPI_OVERRIDE_TYPES -DUACPI_USE_BUILTIN_STRING \
+              -DUACPI_DEFAULT_LOOP_TIMEOUT_SECONDS=2 -DUACPI_DEFAULT_MAX_CALL_STACK_DEPTH=64
+$(patsubst %.c,%.o,$(wildcard third_party/uacpi/source/*.c)) kernel/aml_host.o kernel/laptop.o: CFLAGS += $(UACPI_FLAGS)
+$(patsubst %.c,%.o64,$(wildcard third_party/uacpi/source/*.c)) kernel/aml_host.o64 kernel/laptop.o64: CFLAGS64 += $(UACPI_FLAGS)
 
 # the libc routines themselves must never be "optimized" into calls to
 # themselves (GCC turns copy/fill loops into memcpy/memset calls)
@@ -373,6 +380,8 @@ sdk: $(EXAMPLE_BPKS)
 -include $(DEPS)
 
 # Embedded driver notices and firmware are inputs for both architectures.
+kernel/aml_host.o kernel/aml_host.o64: third_party/uacpi/LICENSE
+
 net/igc.o net/igc.o64: third_party/igc/NOTICES
 
 net/mt7601u.o net/mt7601u.o64: firmware/mediatek/mt7601u.bin firmware/mediatek/NOTICES

@@ -390,9 +390,50 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  power-host:
+    uses: ./.github/workflows/power-host.yml
+    permissions:
+      contents: read
+
+  power:
+    name: Laptop ACPI and USB-C PD (${{ matrix.firmware }}, ${{ matrix.bits }}-bit)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {firmware: bios, bits: 64}
+          - {firmware: bios, bits: 32}
+          - {firmware: uefi, bits: 64}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 ovmf acpica-tools python3
+      - uses: actions/download-artifact@v4
+        with:
+          name: boot-iso-standard-${{ github.sha }}
+      - name: Battery, backlight, PD contracts and power-role changes via AML
+        run: |
+          args=()
+          if [ "${{ matrix.bits }}" = 32 ]; then args+=(--32); fi
+          python3 tools/test_laptop_vm.py --firmware "${{ matrix.firmware }}" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: laptop-${{ matrix.firmware }}-${{ matrix.bits }}-${{ github.sha }}
+          path: |
+            build/logs/laptop-*/*.log
+            build/logs/laptop-*/*.txt
+            build/logs/laptop-*/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
   publish-isos:
     name: Publish validated standard and Mesa ISOs
-    needs: [build, boot, network, network-host]
+    needs: [build, boot, network, network-host, power, power-host]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

@@ -35,6 +35,7 @@ void settings_open(void);
 #define SETTINGS_PAGE_APPS    12
 #define SETTINGS_PAGE_ABOUT   13
 #define SETTINGS_PAGE_WIFI    14
+#define SETTINGS_PAGE_POWER   15
 /* the Apps page, with this installed app selected (the launcher's Details) */
 void settings_show_app(const char* name);
 void settings_show_status(const char* msg);

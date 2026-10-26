@@ -490,6 +490,8 @@ static const page_t PAGES[] = {
     { "gpubench", "hardware", "gpubench", "offscreen framebuffer bandwidth and GPU counters",
       "Measures CPU copies in RAM, checks pixels and reports presentation counters. This is not GPU 3D performance.", NULL, NULL, "lsgpu, selftest" },
     { "gpu_info", "hardware", "gpu_info [-n -r -b -p -m]", "the framebuffer", NULL, NULL, NULL, "lsgpu" },
+    { "laptop", "hardware", "laptop", "ACPI battery, adapter, lid and panel information", NULL, NULL, NULL, NULL },
+    { "usbc", "hardware", "usbc [role PORT source|sink]", "USB-C Power Delivery contracts and firmware power roles", NULL, NULL, NULL, NULL },
     { "brightness", "hardware", "brightness [0-100]", "a laptop panel's backlight (Intel graphics)", NULL, NULL, NULL, NULL },
     { "keyboardctl", "hardware", "keyboardctl [layout]", "the keyboard layout",
       "Shows or sets it: EN (Default) - the US keyboard -, UK, US-Intl (US international: dead accents), FR (AZERTY), BE (Belgian AZERTY), fr_CH, de_CH (Swiss), DE (QWERTZ), ES, IT, PT, BEPO, fr_CA (Canadian French), LatAm, BR (ABNT2), NL, SE, FI, NO, DK, PL (programmer), CZ, HU, HR (Croatian, Slovene), RO, TR (Q), GR (Greek), RU (Russian), UA (Ukrainian), Dvorak, Colemak. On the desktop Win+Space switches to EN and back (for Russian or Greek, to type commands). Every key is read by its position, with AltGr (the right Alt key, or Ctrl+Alt) and the dead accents (^ then e: ê). Settings > Keyboard does the same; the layout is kept for the next start. loadctl is the same.", NULL, "keyboardctl FR\nkeyboardctl UK", NULL },
