@@ -228,7 +228,19 @@ int fdatasync(int fd) {
 void sync(void) {
     /* POSIX sync() is fire-and-forget advisory flush across filesystems */
 }
-int flock(int fd, int op) { (void)fd; (void)op; return 0; }
+
+int flock(int fd, int op) {
+    if (!__banana || !BANANA_HAS(__banana, flock) || !__banana->flock) {
+        errno = ENOSYS;
+        return -1;
+    }
+    int rc = __banana->flock(fd, op);
+    if (rc < 0) {
+        errno = -rc;
+        return -1;
+    }
+    return 0;
+}
 
 int ftruncate(int fd, off_t len) {
     off_t cur = lseek(fd, 0, SEEK_CUR), end = lseek(fd, 0, SEEK_END);

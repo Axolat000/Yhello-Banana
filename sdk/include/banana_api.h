@@ -17,7 +17,7 @@
  */
 
 #define BANANA_API_MAGIC   0x414E4142u     /* "BANA" */
-#define BANANA_API_VERSION 22u
+#define BANANA_API_VERSION 23u
 
 /* open() flags */
 #define BANANA_O_READ    0x01
@@ -30,6 +30,12 @@
 #define BANANA_SEEK_SET 0
 #define BANANA_SEEK_CUR 1
 #define BANANA_SEEK_END 2
+
+/* flock() ops */
+#define BANANA_LOCK_SH 1
+#define BANANA_LOCK_EX 2
+#define BANANA_LOCK_NB 4
+#define BANANA_LOCK_UN 8
 
 /* a package (repo_list) */
 #define BANANA_PKG_INSTALLED  1    /* installed (installed: its version) */
@@ -493,6 +499,10 @@ typedef struct banana_api {
      * -5: storage failure. Currently regular files return -38 until the
      * storage backend is connected. Check BANANA_HAS before calling. */
     int   (*fd_sync)(int fd);
+    /* v23: advisory file locking (flock: LOCK_SH, LOCK_EX, LOCK_UN, LOCK_NB).
+     * 0 on success, or negative errno: -9 EBADF, -22 EINVAL, -11 EWOULDBLOCK.
+     * Locks are per-open-file-identity across processes/threads and release on close/exit. */
+    int   (*flock)(int fd, int op);
 } banana_api_t;
 
 #define BANANA_SIG_DEFAULT 0

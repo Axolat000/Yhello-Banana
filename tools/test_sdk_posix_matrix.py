@@ -13,8 +13,11 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS_PATH = os.path.join(REPO_ROOT, "docs", "posix-sdk-status.md")
 
+EXPECTED_IMPLEMENTED_FUNCS = [
+    ("flock", "sdk/lib/unix.c", "Advisory file locking via kernel ABI v23 (LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN)"),
+]
+
 EXPECTED_FAKE_SUCCESS_FUNCS = [
-    ("flock", "sdk/lib/unix.c", "Constant 0 (no locking effect)"),
     ("fchmod", "sdk/lib/unix.c", "Constant 0 (ignores mode and descriptor)"),
     ("fchown", "sdk/lib/unix.c", "Constant 0 (ignores ownership and descriptor)"),
     ("sync", "sdk/lib/unix.c", "Empty stub (no storage flush performed)"),
@@ -95,6 +98,17 @@ def main():
         doc_content = f.read()
 
     # 2. Check source implementations in C files
+    for fn, rel_file, desc in EXPECTED_IMPLEMENTED_FUNCS:
+        path = check_file_exists(rel_file)
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        if not re.search(r'\b' + fn + r'\s*\(', src):
+            print(f"FAIL: Expected implemented function {fn} not found in {rel_file}")
+            sys.exit(1)
+        if not is_func_documented(fn, doc_content):
+            print(f"FAIL: Implemented function {fn} not documented in {DOCS_PATH}")
+            sys.exit(1)
+
     for fn, rel_file, desc in EXPECTED_FAKE_SUCCESS_FUNCS:
         path = check_file_exists(rel_file)
         with open(path, "r", encoding="utf-8") as f:

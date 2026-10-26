@@ -27,7 +27,7 @@ This inventory categorizes each function into one of four distinct contract stat
 
 | Function | Source | Current Status | Observable Behavior & Risks | Planned Target (base-05 Steps 2 & 3) |
 |---|---|---|---|---|
-| `flock(int fd, int op)` | `sdk/lib/unix.c` | **Fake Success** (Constant 0) | Always returns `0` regardless of `fd` validity or `op` flags (`LOCK_SH`, `LOCK_EX`, `LOCK_NB`, `LOCK_UN`). Callers believe they hold exclusive lock while concurrent processes/threads write concurrently. | Step 2: Implement kernel file identity locking table supporting `LOCK_SH`, `LOCK_EX`, `LOCK_NB`, `LOCK_UN`; release on close/death; return `EWOULDBLOCK`/`EAGAIN`. |
+| `flock(int fd, int op)` | `sdk/lib/unix.c` | **Implemented** (Kernel ABI v23) | Fully implements advisory file locking via kernel syscall `flock` (ABI version 23). Supports `LOCK_SH`, `LOCK_EX`, `LOCK_NB`, `LOCK_UN` across processes/threads on common file identity `(mnt, node)` or `(0, fidx)`. Automatically released on descriptor close or process death. Returns `EWOULDBLOCK` / `EAGAIN` on conflict when `LOCK_NB` is set. | Implemented in Step 2. Tested in `tools/tests/test_flock.c` and `tools/test_flock.py`. |
 | `pread(int fd, void* buf, size_t n, off_t off)` | `sdk/lib/unix.c` | **Partial Implementation** | Saves file offset with `lseek(SEEK_CUR)`, moves to `off`, reads, and restores original offset. **Critical race condition**: concurrent readers/writers on the same descriptor or fork/dup alter each other's offsets during the non-atomic seek-read-seek sequence. | Step 3: Implement atomic offset-based read syscall / descriptor position isolation so the shared file offset is never altered. |
 | `pwrite(int fd, const void* buf, size_t n, off_t off)` | `sdk/lib/unix.c` | **Partial Implementation** | Saves file offset with `lseek(SEEK_CUR)`, moves to `off`, writes, and restores original offset. Same severe race condition as `pread`. | Step 3: Implement atomic offset-based write without moving or corrupting shared descriptor position. |
 | `ftruncate(int fd, off_t len)` | `sdk/lib/unix.c` | **Partial Implementation** | Zero-extends files by writing zero chunks; fails with `ENOTSUP` on shrink (`len < end`). Alters file seek position and restores it. | Keep explicit error on shrink until filesystem truncation ABI is added; avoid seek cursor disruption. |
@@ -111,14 +111,12 @@ This inventory categorizes each function into one of four distinct contract stat
 
 ## Detailed Focus for base-05 Substeps
 
-### Flock and File Locking (Step 2 Focus)
-- `flock` in `sdk/lib/unix.c` currently does:
-  ```c
-  int flock(int fd, int op) { (void)fd; (void)op; return 0; }
-  ```
-- This is completely ineffective. When two apps open `/tmp/lockfile`, both acquire the lock concurrently.
-- Step 2 requires introducing a common file identity (e.g. device + inode number or canonical path lookup in `kernel/fs.c` / `kernel/app.c`), tracking shared locks (`LOCK_SH`) and exclusive locks (`LOCK_EX`), supporting non-blocking attempts (`LOCK_NB` returning `EWOULDBLOCK`/`EAGAIN`), and unlocking (`LOCK_UN`).
-- Critical cleanup rule: Locks must automatically be released when the file descriptor is closed and when the process terminates.
+### Flock and File Locking (Step 2 Implementation)
+- `flock` in `sdk/lib/unix.c` delegates to kernel syscall `banana_api_t.flock(int fd, int op)` (ABI v23).
+- Implements common file identity matching on `(mnt, node)` for mounted/disk files and `(mnt, fidx)` for RAM disk files.
+- Supports shared locks (`LOCK_SH`), exclusive locks (`LOCK_EX`), non-blocking flag (`LOCK_NB` returning `EWOULDBLOCK`/`EAGAIN`), and unlocking (`LOCK_UN`).
+- Automatically releases locks when the file descriptor is closed (`a_close`) or when the process terminates (`release`).
+- Verified via `tools/test_flock.py` covering multi-process mutual exclusion, lock upgrades/downgrades, close/death release, and RAM file identity.
 
 ### Permissions and Metadata (chmod, fchmod, chown, fchown) (Step 3 Focus)
 - `chmod` and `chown` currently verify path existence via `access(path, 0)` but do not modify inode permissions.
