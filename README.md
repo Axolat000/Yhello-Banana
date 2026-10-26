@@ -26,6 +26,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental RTL8125/A/B/D Ethernet** - a separate native PCI driver uses
+  Realtek/OpenBSD MAC/PHY initialization and microcode, 32-byte descriptor rings
+  and per-card polling. Register/firmware/DMA models pass on 32-bit and under
+  sanitizers; physical validation is pending. Existing RTL8111/8168 and RTL8152
+  drivers are unchanged. See [network status](docs/network-priority.md).
+
 - **Laptop power and USB-C PD firmware services (experimental)** - a native uACPI
   interpreter reads ACPI battery capacity/state, AC adapter and lid information,
   with ACPI panel-brightness fallback and Settings > Power & USB-C. The `laptop`,

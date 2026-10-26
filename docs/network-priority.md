@@ -79,7 +79,17 @@ through the Intel/OpenBSD shared HAL, negotiates 10/100/1000/2500 and uses
 bounded polling with advanced DMA descriptors. MTU is 1500, one queue,
 software checksums; no MSI/MSI-X, RSS, jumbo frames or performance claims.
 Cards without the expected PHY, valid loaded flash NVM/MAC, or completed reset
-are declined. Physical validation is pending. RTL8125, BCM5720 and AQC107 are still pending.
+are declined. Physical validation is pending.
+
+RTL8125/A/B/D now has a separate experimental native `r8125` driver:
+PCI 10ec:8125, hardware revisions 60900000 / 64100000 / 68800000 / 68900000.
+It initializes MAC, EPHY and PHY, loads Realtek microcode and verifies the PHY
+RAM version, negotiates 10/100/1000/2500, and uses independent 32-byte DMA rings
+per card. Polling, MTU 1500, software checksums and memory BAR2 are required.
+Unknown revisions, IO-only cards and RTL8126/8127 are not bound. There is no
+jumbo/VLAN/offload/RSS or hardware-performance claim; physical testing is pending.
+The old RTL8111/8168 and RTL8152 drivers are unchanged. BCM5720 and AQC107 remain
+pending.
 A matching device ID alone is not sufficient to declare these supported.
 
 ## Validation
@@ -109,3 +119,13 @@ cards, PCI matching, NVM checksum/MAC/PHY initialization, ring wrap and full
 TX queues, RX length/error/fragment bounds, link loss/recovery, failed MDIC
 transactions, missing firmware autoload, reset stalls and stuck semaphores.
 They verify no NVM programming occurs. Hardware remains untested.
+
+
+`python3 tools/test_r8125.py --sanitize` and `--32` run the actual native
+frontend and extracted OpenBSD/Realtek hardware code with four independent
+A/B/D controller models, cold/warm microcode initialization and expected PHY
+RAM versions. They cover traffic/ring wrap/full queues, RX/FCS/error bounds,
+link changes, stuck MAC/PHY/EPHY/CSI/reset/patch handshakes, dropped version
+writes, invalid MAC and unknown revision. Failed initialization stops PCI bus
+mastering and registers no interface. The pinned firmware data hash is checked.
+Firmware writes are modeled, not executed by a physical PHY/MCU.

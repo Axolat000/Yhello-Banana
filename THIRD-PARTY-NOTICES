@@ -217,3 +217,8 @@ Copyright (c) 2022-2026 Daniil Tatianin, MIT.
 Pinned commit c0edecef62bcac6ce3f783540099190bafadadda.
 Full licence: third_party/uacpi/LICENSE; installed as
 /usr/share/licenses/uacpi/LICENSE.
+
+RTL8125 MAC/PHY hardware layer (third_party/rge):
+Kevin Lo / OpenBSD, ISC. Realtek firmware carries its own distribution notice.
+Full notices: third_party/rge/NOTICES; installed as
+/usr/share/licenses/r8125/NOTICES. Provenance: third_party/rge/BANANA.md.
