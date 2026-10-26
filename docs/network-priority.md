@@ -73,7 +73,13 @@ report carrier only after association/authentication; an unconnected radio or
 one without a carrier callback cannot win automatic selection.
 
 Intel I219/I211 and Realtek RTL8111/8168 use existing drivers. The requested
-I225/I226, RTL8125, BCM5720, AQC107 are still pending.
+I225-V (8086:15f3) and I226-V (8086:125c) now use a separate experimental
+`igc` driver. It probes multiple cards independently, initializes PHY/NVM
+through the Intel/OpenBSD shared HAL, negotiates 10/100/1000/2500 and uses
+bounded polling with advanced DMA descriptors. MTU is 1500, one queue,
+software checksums; no MSI/MSI-X, RSS, jumbo frames or performance claims.
+Cards without the expected PHY, valid loaded flash NVM/MAC, or completed reset
+are declined. Physical validation is pending. RTL8125, BCM5720 and AQC107 are still pending.
 A matching device ID alone is not sufficient to declare these supported.
 
 ## Validation
@@ -96,3 +102,10 @@ The Wi-Fi station and crypto tests require Python's `cryptography` package:
 `python3 tools/test_wifi_station.py --sanitize` (also `--32`).
 Fixtures use independent Python HMAC/PBKDF2, AES key wrap and AESCCM rather than
 round trips through the implementation being tested.
+
+`python3 tools/test_igc.py --sanitize` and `--32` execute the actual Intel HAL
+and native DMA frontend against a register model. They cover two simultaneous
+cards, PCI matching, NVM checksum/MAC/PHY initialization, ring wrap and full
+TX queues, RX length/error/fragment bounds, link loss/recovery, failed MDIC
+transactions, missing firmware autoload, reset stalls and stuck semaphores.
+They verify no NVM programming occurs. Hardware remains untested.

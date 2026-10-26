@@ -205,3 +205,9 @@ Unmodified MT7601U firmware comes from linux-firmware, SHA-256
 Its separate redistribution terms are in
 firmware/mediatek/LICENCE.ralink_a_mediatek_company_firmware.
 The ISO installs the complete notices at /usr/share/licenses/mt7601u/NOTICES.
+
+Intel I225/I226 hardware abstraction layer (third_party/igc):
+Intel Corp and Rubicon Communications, LLC (Netgate), BSD-3-Clause.
+Native queue setup references Nicole Graziano/Netgate OpenBSD if_igc.c,
+BSD-2-Clause. Full notices: third_party/igc/NOTICES; installed at
+/usr/share/licenses/igc/NOTICES. See third_party/igc/README.md for changes.

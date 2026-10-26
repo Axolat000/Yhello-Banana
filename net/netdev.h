@@ -34,6 +34,7 @@ typedef struct netdev {
 /* Drivers: each returns a ready-to-use device, or NULL if its hardware
  * isn't present. */
 netdev_t* e1000_probe(void);
+void igc_probe_all(void);       /* independent I225-V/I226-V contexts */
 netdev_t* rtl8139_probe(void);
 netdev_t* r8169_probe(void);      /* Realtek RTL8111/8168, RTL8169, RTL8101/8102 */
 netdev_t* pcnet_probe(void);     /* AMD PCnet-PCI II / PCnet-FAST III (VirtualBox) */

@@ -26,6 +26,11 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental Intel I225-V / I226-V Ethernet** - separate native PCI driver
+  with per-card DMA queues, Intel/OpenBSD PHY/NVM initialization and link
+  negotiation. Host register/DMA models pass on 32-bit and under sanitizers;
+  physical validation is pending. Existing e1000/igb and RTL8152 paths are retained.
+
 - **Experimental MT7601U Wi-Fi** - native USB radio initialization and embedded
   firmware connect to a WPA2-CCMP station core, with scan/join controls in
   Settings > Wi-Fi and the `wifi` command. Initial scope is legacy b/g on
@@ -720,7 +725,7 @@ ifconfig usb0 up      # use the USB adapter
   (QEMU needs permission to the device node: run it as root or add a udev rule for `0bda:8152`.)
 - **VirtualBox:** install the Extension Pack, **Settings → USB → USB 2.0 (EHCI) or USB 3.0 (xHCI) Controller**, then add a USB device filter for *Realtek USB 10/100 LAN*.
 
-> ⚠️ The RTL8152 driver was written from the chip's register documentation in OpenBSD's `ure(4)` driver; QEMU cannot emulate this chip, so it has been tested in emulation only up to the USB layer. If it does not come up, `lsusb` and the boot messages (`r8152: ...`) tell what happened.
+> The project owner reports RTL8152 working and tested on physical hardware. Its existing driver remains unchanged; register/USB models also protect it against regressions.
 
 Limitations: no USB hubs (plug devices directly into a root port), no UHCI/OHCI controllers - on EHCI-only machines full/low-speed devices (most keyboards and mice) are handed to the companion controller and stay on PS/2 emulation; only FAT32 sticks with 512-byte sectors are mounted (not FAT12/16, exFAT or NTFS).
 
