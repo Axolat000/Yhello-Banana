@@ -4,23 +4,20 @@
 #include "tcp.h"
 
 /*
- * TLS 1.3 client (RFC 8446) over a connected TCP stream, for HTTPS.
+ * TLS 1.2 client using Mbed TLS over a connected TCP stream, for HTTPS.
  *
- * Key exchange: X25519, or NIST P-256 when the server asks for it with a
- * HelloRetryRequest (Mojang's servers, some CDNs). Ciphers: TLS_AES_128_GCM_SHA256 and
- * TLS_CHACHA20_POLY1305_SHA256. The handshake transcript, Finished MACs
- * and all record protection are fully verified - but the server's
- * certificate chain is NOT validated (Banana OS ships no CA store), so
- * this protects against eavesdropping, not against an active
- * man-in-the-middle. Equivalent to `curl --insecure`.
+ * Enforces mandatory X.509 certificate verification against the system CA store
+ * (/etc/ssl/certs/ca-certificates.crt) with strict hostname, validity period,
+ * CertificateVerify, and digitalSignature/serverAuth key usage validation.
+ * Supports TLS 1.2 ECDHE key exchange with ChaCha20-Poly1305.
  */
 
 typedef struct tls_conn tls_conn_t;
 
 /* ciphers to offer (curl --tls13-ciphers) */
 #define TLS_CIPHERS_ALL    0
-#define TLS_CIPHERS_AES    1   /* TLS_AES_128_GCM_SHA256 only */
-#define TLS_CIPHERS_CHACHA 2   /* TLS_CHACHA20_POLY1305_SHA256 only */
+#define TLS_CIPHERS_AES    1   /* TLS_AES_128_GCM_SHA256 (not supported in current scalar profile) */
+#define TLS_CIPHERS_CHACHA 2   /* TLS_ECDHE_RSA/ECDSA_WITH_CHACHA20_POLY1305_SHA256 */
 
 /* Performs the handshake. On failure returns NULL, sets *err (NET_ERR_*)
  * and writes a human readable reason into errmsg. `tcp` stays owned by

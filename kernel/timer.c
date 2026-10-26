@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "smp.h"
 #include "latency.h"
 #include "types.h"
 #include "idt.h"
@@ -179,6 +180,10 @@ uint64_t timer_ms64(void) {
 
 uint32_t timer_ms(void) {
     return (uint32_t)timer_ms64();
+}
+
+uint64_t timer_core_now_ms(void) {
+    return timer_ms64();
 }
 
 uint32_t timer_ticks(void) {

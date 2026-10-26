@@ -1,0 +1,35 @@
+qemu-system-x86_64: -chardev socket,id=s0,host=127.0.0.1,port=47429,server=on,wait=on: info: QEMU waiting for connection on: disconnected:tcp:127.0.0.1:47429,server=on
+booting...
+$ selftest memory
+    selftest: checking the system (it runs the systest app a few times)
+    memory above 4 GiB (build 142)
+      ok    RAM above 4 GiB - 5120 MiB found
+    kernel umem: 64 MiB in 16 pieces, 0 of them below 4 GiB
+    all 16 pieces freed
+      ok    kernel umem allocates 64 MiB from above 4 GiB
+      ok    it is given back when the app ends - 0 MiB in use before, 0 after
+    selftest: 3 passed, 0 failed (769 ms)
+$ systest mem 64 high
+    kernel umem: 64 MiB in 16 pieces, 0 of them below 4 GiB
+    all 16 pieces freed
+$ systest heap
+    ordinary and aligned malloc/realloc/free: ok
+    smp: core 1 runs app code (first: systest/t1)
+    smp: core 2 runs app code (first: systest/t2)
+    smp: core 3 runs app code (first: systest/t3)
+    heap pthread startup/destructors/return/exit: ok; cancellation: ENOSYS
+    heap kernel allocation and decoded-image ownership: ok
+    heap lifecycle: passed; live 0, reserved 0 bytes (initial 0)
+$ systest heap
+    ordinary and aligned malloc/realloc/free: ok
+    heap pthread startup/destructors/return/exit: ok; cancellation: ENOSYS
+    heap kernel allocation and decoded-image ownership: ok
+    heap lifecycle: passed; live 0, reserved 0 bytes (initial 0)
+
+results:
+  ok    selftest memory
+  ok    systest mem 64 high
+  ok    systest heap
+  ok    systest heap
+
+Runner exit status: 0

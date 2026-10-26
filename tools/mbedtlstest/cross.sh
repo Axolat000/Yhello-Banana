@@ -22,6 +22,7 @@ allowed = {
     'strchr', 'strrchr', 'strstr',
     'rtc_now_utc', 'rtc_split_time', 'rtc_make_time', 'timer_ms64',
     'tcp_send', 'tcp_recv',
+    'certs_init', 'certs_load_ca_bundle', 'certs_release_ca_bundle',
     '__udivdi3', '__umoddi3', '__udivmoddi4', '__divdi3', '__moddi3',
     '__udivti3',
 }

@@ -1,0 +1,670 @@
+$ sh ports/ffmpeg/build.sh x86_64 build/test/sdk-allocator-ffmpeg-x86_64 audio
+GEN	libavcodec/libavcodec.version
+GEN	libavformat/libavformat.version
+GEN	libavutil/libavutil.version
+GEN	libswresample/libswresample.version
+GEN	libswscale/libswscale.version
+CC	libavformat/aacdec.o
+CC	libavformat/ac3dec.o
+CC	libavformat/allformats.o
+CC	libavformat/apetag.o
+CC	libavformat/asf.o
+CC	libavformat/asf_tags.o
+CC	libavformat/asfcrypt.o
+CC	libavformat/asfdec_f.o
+CC	libavformat/avformat.o
+CC	libavformat/avio.o
+CC	libavformat/aviobuf.o
+CC	libavformat/avlanguage.o
+CC	libavformat/demux.o
+CC	libavformat/demux_utils.o
+CC	libavformat/dovi_isom.o
+CC	libavformat/dump.o
+CC	libavformat/dv.o
+CC	libavformat/file.o
+In file included from src/libavformat/file.c:38:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/unistd.h:47:15: warning: redundant redeclaration of ‘environ’ [-Wredundant-decls]
+   47 | extern char** environ;
+      |               ^~~~~~~
+In file included from src/libavutil/common.h:39,
+                 from src/libavutil/avutil.h:301,
+                 from src/libavutil/opt.h:31,
+                 from src/libavformat/file.c:28:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:58:15: note: previous declaration of ‘environ’ with type ‘char **’
+   58 | extern char** environ;
+      |               ^~~~~~~
+CC	libavformat/flac_picture.o
+CC	libavformat/flacdec.o
+CC	libavformat/format.o
+CC	libavformat/iamf.o
+CC	libavformat/iamf_parse.o
+CC	libavformat/iamf_reader.o
+CC	libavformat/id3v1.o
+CC	libavformat/id3v2.o
+CC	libavformat/img2.o
+CC	libavformat/isom.o
+CC	libavformat/isom_tags.o
+CC	libavformat/matroska.o
+CC	libavformat/matroskadec.o
+CC	libavformat/metadata.o
+CC	libavformat/mov.o
+CC	libavformat/mov_chan.o
+CC	libavformat/mov_esds.o
+CC	libavformat/mp3dec.o
+CC	libavformat/mux.o
+src/libavformat/mov.c: In function ‘mov_read_trak’:
+src/libavformat/mov.c:5139:11: warning: statement will never be executed [-Wswitch-unreachable]
+ 5139 |         st->codecpar->width = 0; /* let decoder init width/height */
+      |         ~~^~~~~~~~~~
+CC	libavformat/mux_utils.o
+CC	libavformat/oggdec.o
+CC	libavformat/oggparsecelt.o
+CC	libavformat/oggparsedirac.o
+CC	libavformat/oggparseflac.o
+CC	libavformat/oggparseogm.o
+CC	libavformat/oggparseopus.o
+CC	libavformat/oggparseskeleton.o
+CC	libavformat/oggparsespeex.o
+CC	libavformat/oggparsetheora.o
+CC	libavformat/oggparsevorbis.o
+CC	libavformat/oggparsevp8.o
+CC	libavformat/options.o
+CC	libavformat/os_support.o
+CC	libavformat/pcm.o
+CC	libavformat/protocols.o
+CC	libavformat/qtpalette.o
+CC	libavformat/rawdec.o
+src/libavformat/rawdec.c:106:12: warning: ‘raw_data_read_header’ defined but not used [-Wunused-function]
+  106 | static int raw_data_read_header(AVFormatContext *s)
+      |            ^~~~~~~~~~~~~~~~~~~~
+CC	libavformat/replaygain.o
+CC	libavformat/riff.o
+CC	libavformat/riffdec.o
+CC	libavformat/rmsipr.o
+CC	libavformat/sdp.o
+CC	libavformat/seek.o
+CC	libavformat/url.o
+CC	libavformat/utils.o
+CC	libavformat/version.o
+CC	libavformat/vorbiscomment.o
+CC	libavformat/wavdec.o
+CC	libavcodec/to_upper4.o
+CC	libavcodec/aac/aacdec.o
+CC	libavcodec/aac/aacdec_ac.o
+CC	libavcodec/aac/aacdec_float.o
+CC	libavcodec/aac/aacdec_lpd.o
+CC	libavcodec/aac/aacdec_tab.o
+CC	libavcodec/aac/aacdec_usac.o
+CC	libavcodec/aac_ac3_parser.o
+CC	libavcodec/aac_parser.o
+CC	libavcodec/aacps_common.o
+CC	libavcodec/aacps_float.o
+CC	libavcodec/aacpsdsp_float.o
+CC	libavcodec/aacsbr.o
+CC	libavcodec/aactab.o
+CC	libavcodec/ac3.o
+CC	libavcodec/ac3_channel_layout_tab.o
+CC	libavcodec/ac3_parser.o
+CC	libavcodec/ac3dec_data.o
+CC	libavcodec/ac3dec_float.o
+CC	libavcodec/ac3dsp.o
+CC	libavcodec/ac3tab.o
+CC	libavcodec/adpcm.o
+src/libavcodec/adpcm.c:760:13: warning: ‘adpcm_swf_decode’ defined but not used [-Wunused-function]
+  760 | static void adpcm_swf_decode(AVCodecContext *avctx, const uint8_t *buf, int buf_size, int16_t *samples)
+      |             ^~~~~~~~~~~~~~~~
+src/libavcodec/adpcm.c:672:12: warning: ‘xa_decode’ defined but not used [-Wunused-function]
+  672 | static int xa_decode(AVCodecContext *avctx, int16_t *out0, int16_t *out1,
+      |            ^~~~~~~~~
+CC	libavcodec/adpcm_data.o
+CC	libavcodec/adts_header.o
+CC	libavcodec/adts_parser.o
+CC	libavcodec/alac.o
+CC	libavcodec/alac_data.o
+CC	libavcodec/alacdsp.o
+CC	libavcodec/allcodecs.o
+CC	libavcodec/avcodec.o
+In file included from src/libavcodec/ac3dec_float.c:38:
+In function ‘spx_strategy’,
+    inlined from ‘decode_audio_block’ at src/libavcodec/ac3dec.c:1142:24:
+src/libavcodec/ac3dec.c:854:37: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  854 |             s->channel_uses_spx[ch] = get_bits1(bc);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~
+In file included from src/libavcodec/ac3dec_float.c:34:
+src/libavcodec/ac3dec.h: In function ‘decode_audio_block’:
+src/libavcodec/ac3dec.h:144:13: note: at offset 7 into destination object ‘channel_uses_spx’ of size 7
+  144 |     uint8_t channel_uses_spx[AC3_MAX_CHANNELS]; ///< channel uses spectral extension        (chinspx)
+      |             ^~~~~~~~~~~~~~~~
+In file included from src/libavcodec/aacsbr.c:383:
+src/libavcodec/aacsbr_template.c: In function ‘read_sbr_grid’:
+src/libavcodec/aacsbr_template.c:728:57: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  728 |             ch_data->t_env[ch_data->bs_num_env - 1 - i] =
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+  729 |                 ch_data->t_env[ch_data->bs_num_env - i] - 2 * get_bits(gb, 2) - 2;
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from src/libavcodec/aacsbr.c:31:
+src/libavcodec/sbr.h:106:24: note: at offset [2147483649, 4294967295] into destination object ‘t_env’ of size 9
+  106 |     uint8_t            t_env[9];
+      |                        ^~~~~
+src/libavcodec/aacsbr_template.c:728:57: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  728 |             ch_data->t_env[ch_data->bs_num_env - 1 - i] =
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+  729 |                 ch_data->t_env[ch_data->bs_num_env - i] - 2 * get_bits(gb, 2) - 2;
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/libavcodec/sbr.h:106:24: note: at offset [2147483649, 4294967294] into destination object ‘t_env’ of size 9
+  106 |     uint8_t            t_env[9];
+      |                        ^~~~~
+src/libavcodec/aacsbr_template.c:728:57: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  728 |             ch_data->t_env[ch_data->bs_num_env - 1 - i] =
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+  729 |                 ch_data->t_env[ch_data->bs_num_env - i] - 2 * get_bits(gb, 2) - 2;
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/libavcodec/sbr.h:106:24: note: at offset [2147483649, 4294967293] into destination object ‘t_env’ of size 9
+  106 |     uint8_t            t_env[9];
+      |                        ^~~~~
+src/libavcodec/aacsbr_template.c:728:57: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  728 |             ch_data->t_env[ch_data->bs_num_env - 1 - i] =
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+  729 |                 ch_data->t_env[ch_data->bs_num_env - i] - 2 * get_bits(gb, 2) - 2;
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/libavcodec/sbr.h:106:24: note: at offset [2147483649, 4294967292] into destination object ‘t_env’ of size 9
+  106 |     uint8_t            t_env[9];
+      |                        ^~~~~
+CC	libavcodec/avdct.o
+CC	libavcodec/avfft.o
+CC	libavcodec/bitstream.o
+CC	libavcodec/bitstream_filters.o
+CC	libavcodec/blockdsp.o
+CC	libavcodec/bsf.o
+CC	libavcodec/bswapdsp.o
+CC	libavcodec/cbrt_data.o
+CC	libavcodec/codec_desc.o
+CC	libavcodec/codec_par.o
+CC	libavcodec/d3d11va.o
+CC	libavcodec/dct32_fixed.o
+CC	libavcodec/dct32_float.o
+CC	libavcodec/decode.o
+CC	libavcodec/dirac.o
+CC	libavcodec/dv_profile.o
+CC	libavcodec/eac3_data.o
+CC	libavcodec/encode.o
+CC	libavcodec/exif.o
+CC	libavcodec/faandct.o
+CC	libavcodec/faanidct.o
+CC	libavcodec/fdctdsp.o
+CC	libavcodec/flac.o
+CC	libavcodec/flac_parser.o
+CC	libavcodec/flacdata.o
+CC	libavcodec/flacdec.o
+CC	libavcodec/flacdsp.o
+CC	libavcodec/fmtconvert.o
+CC	libavcodec/get_buffer.o
+CC	libavcodec/golomb.o
+CC	libavcodec/h264pred.o
+CC	libavcodec/hpeldsp.o
+CC	libavcodec/idctdsp.o
+CC	libavcodec/imgconvert.o
+CC	libavcodec/jfdctfst.o
+CC	libavcodec/jfdctint.o
+CC	libavcodec/jni.o
+CC	libavcodec/jpegtables.o
+CC	libavcodec/jrevdct.o
+src/libavcodec/jrevdct.c:215:28: warning: argument 1 of type ‘int16_t[64]’ {aka ‘short int[64]’} with mismatched bound [-Warray-parameter=]
+  215 | void ff_j_rev_dct(DCTBLOCK data)
+      |                   ~~~~~~~~~^~~~
+In file included from src/libavcodec/jrevdct.c:70:
+src/libavcodec/dct.h:30:28: note: previously declared as ‘int16_t *’ {aka ‘short int *’}
+   30 | void ff_j_rev_dct(int16_t *data);
+      |                   ~~~~~~~~~^~~~
+CC	libavcodec/kbdwin.o
+src/libavcodec/jrevdct.c:953:29: warning: argument 1 of type ‘int16_t[64]’ {aka ‘short int[64]’} with mismatched bound [-Warray-parameter=]
+  953 | void ff_j_rev_dct4(DCTBLOCK data)
+      |                    ~~~~~~~~~^~~~
+src/libavcodec/dct.h:31:29: note: previously declared as ‘int16_t *’ {aka ‘short int *’}
+   31 | void ff_j_rev_dct4(int16_t *data);
+      |                    ~~~~~~~~~^~~~
+src/libavcodec/jrevdct.c:1140:29: warning: argument 1 of type ‘int16_t[64]’ {aka ‘short int[64]’} with mismatched bound [-Warray-parameter=]
+ 1140 | void ff_j_rev_dct2(DCTBLOCK data){
+      |                    ~~~~~~~~~^~~~
+src/libavcodec/dct.h:32:29: note: previously declared as ‘int16_t *’ {aka ‘short int *’}
+   32 | void ff_j_rev_dct2(int16_t *data);
+      |                    ~~~~~~~~~^~~~
+src/libavcodec/jrevdct.c:1155:29: warning: argument 1 of type ‘int16_t[64]’ {aka ‘short int[64]’} with mismatched bound [-Warray-parameter=]
+ 1155 | void ff_j_rev_dct1(DCTBLOCK data){
+      |                    ~~~~~~~~~^~~~
+src/libavcodec/dct.h:33:29: note: previously declared as ‘int16_t *’ {aka ‘short int *’}
+   33 | void ff_j_rev_dct1(int16_t *data);
+      |                    ~~~~~~~~~^~~~
+CC	libavcodec/latm_parser.o
+CC	libavcodec/lcevcdec.o
+CC	libavcodec/mathtables.o
+CC	libavcodec/mjpeg_parser.o
+CC	libavcodec/mediacodec.o
+CC	libavcodec/mjpegdec.o
+CC	libavcodec/mjpegdec_common.o
+CC	libavcodec/mpeg12framerate.o
+CC	libavcodec/mpeg4audio.o
+CC	libavcodec/mpeg4audio_sample_rates.o
+CC	libavcodec/mpegaudio.o
+CC	libavcodec/mpegaudio_parser.o
+CC	libavcodec/mpegaudiodata.o
+CC	libavcodec/mpegaudiodec_common.o
+CC	libavcodec/mpegaudiodec_fixed.o
+CC	libavcodec/mpegaudiodec_float.o
+CC	libavcodec/mpegaudiodecheader.o
+CC	libavcodec/mpegaudiodsp.o
+CC	libavcodec/mpegaudiodsp_data.o
+CC	libavcodec/mpegaudiodsp_fixed.o
+CC	libavcodec/mpegaudiodsp_float.o
+CC	libavcodec/mpegaudiotabs.o
+CC	libavcodec/options.o
+CC	libavcodec/opus/celt.o
+CC	libavcodec/opus/dec.o
+CC	libavcodec/opus/dec_celt.o
+CC	libavcodec/opus/dsp.o
+CC	libavcodec/opus/parse.o
+CC	libavcodec/opus/parser.o
+CC	libavcodec/opus/pvq.o
+CC	libavcodec/opus/rc.o
+CC	libavcodec/opus/silk.o
+CC	libavcodec/opus/tab.o
+CC	libavcodec/packet.o
+CC	libavcodec/parser.o
+CC	libavcodec/parsers.o
+CC	libavcodec/pcm.o
+src/libavcodec/pcm.c: In function ‘pcm_decode_init’:
+src/libavcodec/pcm.c:287:5: warning: ‘sample_fmts’ is deprecated [-Wdeprecated-declarations]
+  287 |     avctx->sample_fmt = avctx->codec->sample_fmts[0];
+      |     ^~~~~
+In file included from src/libavcodec/avcodec.h:41,
+                 from src/libavcodec/pcm.c:34:
+src/libavcodec/codec.h:219:32: note: declared here
+  219 |     const enum AVSampleFormat *sample_fmts; ///< @deprecated use avcodec_get_supported_config()
+      |                                ^~~~~~~~~~~
+CC	libavcodec/profiles.o
+src/libavcodec/pcm.c: At top level:
+src/libavcodec/pcm.c:96:12: warning: ‘pcm_encode_frame’ defined but not used [-Wunused-function]
+   96 | static int pcm_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
+      |            ^~~~~~~~~~~~~~~~
+src/libavcodec/pcm.c:41:20: warning: ‘pcm_encode_init’ defined but not used [-Wunused-function]
+   41 | static av_cold int pcm_encode_init(AVCodecContext *avctx)
+      |                    ^~~~~~~~~~~~~~~
+CC	libavcodec/qsv_api.o
+CC	libavcodec/raw.o
+CC	libavcodec/refstruct.o
+CC	libavcodec/sbrdsp.o
+CC	libavcodec/simple_idct.o
+CC	libavcodec/sinewin.o
+CC	libavcodec/threadprogress.o
+CC	libavcodec/tiff_common.o
+CC	libavcodec/utils.o
+CC	libavcodec/version.o
+CC	libavcodec/videodsp.o
+CC	libavcodec/vlc.o
+CC	libavcodec/vorbis.o
+In function ‘add_level’,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘vlc_multi_gen’ at src/libavcodec/vlc.c:508:5,
+    inlined from ‘ff_vlc_init_multi_from_lengths’ at src/libavcodec/vlc.c:564:11:
+src/libavcodec/vlc.c:443:36: warning: array subscript 3 is above array bounds of ‘uint16_t[3]’ {aka ‘short unsigned int[3]’} [-Warray-bounds=]
+  443 |             if (is16bit) info.val16[curlevel] = sym;
+      |                          ~~~~~~~~~~^~~~~~~~~~
+In file included from src/libavcodec/vlc.c:39:
+src/libavcodec/vlc.h: In function ‘ff_vlc_init_multi_from_lengths’:
+src/libavcodec/vlc.h:45:18: note: while referencing ‘val16’
+   45 |         uint16_t val16[VLC_MULTI_MAX_SYMBOLS / 2];
+      |                  ^~~~~
+In function ‘add_level’,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘vlc_multi_gen’ at src/libavcodec/vlc.c:508:5,
+    inlined from ‘ff_vlc_init_multi_from_lengths’ at src/libavcodec/vlc.c:564:11:
+src/libavcodec/vlc.c:443:36: warning: array subscript 4 is above array bounds of ‘uint16_t[3]’ {aka ‘short unsigned int[3]’} [-Warray-bounds=]
+  443 |             if (is16bit) info.val16[curlevel] = sym;
+      |                          ~~~~~~~~~~^~~~~~~~~~
+src/libavcodec/vlc.h: In function ‘ff_vlc_init_multi_from_lengths’:
+src/libavcodec/vlc.h:45:18: note: while referencing ‘val16’
+   45 |         uint16_t val16[VLC_MULTI_MAX_SYMBOLS / 2];
+      |                  ^~~~~
+In function ‘add_level’,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘add_level’ at src/libavcodec/vlc.c:457:17,
+    inlined from ‘vlc_multi_gen’ at src/libavcodec/vlc.c:508:5,
+    inlined from ‘ff_vlc_init_multi_from_lengths’ at src/libavcodec/vlc.c:564:11:
+src/libavcodec/vlc.c:443:36: warning: array subscript 5 is above array bounds of ‘uint16_t[3]’ {aka ‘short unsigned int[3]’} [-Warray-bounds=]
+  443 |             if (is16bit) info.val16[curlevel] = sym;
+      |                          ~~~~~~~~~~^~~~~~~~~~
+src/libavcodec/vlc.h: In function ‘ff_vlc_init_multi_from_lengths’:
+src/libavcodec/vlc.h:45:18: note: while referencing ‘val16’
+   45 |         uint16_t val16[VLC_MULTI_MAX_SYMBOLS / 2];
+      |                  ^~~~~
+CC	libavcodec/vorbis_data.o
+CC	libavcodec/vorbis_parser.o
+CC	libavcodec/vorbisdec.o
+CC	libavcodec/vorbisdsp.o
+CC	libavcodec/vp8.o
+CC	libavcodec/vp8data.o
+CC	libavcodec/vp8dsp.o
+src/libavcodec/vp8.c: In function ‘decode_mb_row_no_filter’:
+src/libavcodec/vp8.c:2386:30: warning: variable ‘next_td’ set but not used [-Wunused-but-set-variable]
+ 2386 |     VP8ThreadData *prev_td, *next_td, *td = &s->thread_data[threadnr];
+      |                              ^~~~~~~
+src/libavcodec/vp8.c: In function ‘vp78_decode_mb_row_sliced’:
+src/libavcodec/vp8.c:2604:37: warning: unused variable ‘prev_td’ [-Wunused-variable]
+ 2604 |     VP8ThreadData *next_td = NULL, *prev_td = NULL;
+      |                                     ^~~~~~~
+src/libavcodec/vp8.c:2604:20: warning: unused variable ‘next_td’ [-Wunused-variable]
+ 2604 |     VP8ThreadData *next_td = NULL, *prev_td = NULL;
+      |                    ^~~~~~~
+CC	libavcodec/vpx_rac.o
+CC	libavcodec/webp.o
+CC	libavcodec/wma.o
+CC	libavcodec/wma_common.o
+CC	libavcodec/wma_freqs.o
+CC	libavcodec/wmadec.o
+X86ASM	libavcodec/x86/aacpsdsp.o
+src/libavcodec/wmadec.c: In function ‘wma_decode_block’:
+src/libavcodec/wmadec.c:519:30: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  519 |         s->channel_coded[ch] = a;
+      |         ~~~~~~~~~~~~~~~~~~~~~^~~
+In file included from src/libavcodec/wmadec.c:45:
+src/libavcodec/wma.h:112:13: note: at offset 2 into destination object ‘channel_coded’ of size 2
+  112 |     uint8_t channel_coded[MAX_CHANNELS];    ///< true if channel is coded
+      |             ^~~~~~~~~~~~~
+CC	libavcodec/x86/aacpsdsp_init.o
+X86ASM	libavcodec/x86/ac3dsp.o
+STRIP	libavcodec/x86/ac3dsp.o
+X86ASM	libavcodec/x86/ac3dsp_downmix.o
+STRIP	libavcodec/x86/aacpsdsp.o
+CC	libavcodec/x86/ac3dsp_init.o
+X86ASM	libavcodec/x86/alacdsp.o
+CC	libavcodec/x86/alacdsp_init.o
+X86ASM	libavcodec/x86/blockdsp.o
+STRIP	libavcodec/x86/alacdsp.o
+CC	libavcodec/x86/blockdsp_init.o
+X86ASM	libavcodec/x86/bswapdsp.o
+STRIP	libavcodec/x86/blockdsp.o
+CC	libavcodec/x86/bswapdsp_init.o
+CC	libavcodec/x86/constants.o
+X86ASM	libavcodec/x86/dct32.o
+STRIP	libavcodec/x86/bswapdsp.o
+CC	libavcodec/x86/fdct.o
+CC	libavcodec/x86/fdctdsp_init.o
+STRIP	libavcodec/x86/ac3dsp_downmix.o
+X86ASM	libavcodec/x86/flacdsp.o
+CC	libavcodec/x86/flacdsp_init.o
+X86ASM	libavcodec/x86/fmtconvert.o
+STRIP	libavcodec/x86/dct32.o
+X86ASM	libavcodec/x86/fpel.o
+CC	libavcodec/x86/fmtconvert_init.o
+X86ASM	libavcodec/x86/h264_intrapred.o
+STRIP	libavcodec/x86/fmtconvert.o
+X86ASM	libavcodec/x86/h264_intrapred_10bit.o
+STRIP	libavcodec/x86/fpel.o
+CC	libavcodec/x86/h264_intrapred_init.o
+X86ASM	libavcodec/x86/hpeldsp.o
+STRIP	libavcodec/x86/flacdsp.o
+CC	libavcodec/x86/hpeldsp_init.o
+X86ASM	libavcodec/x86/idctdsp.o
+STRIP	libavcodec/x86/hpeldsp.o
+CC	libavcodec/x86/idctdsp_init.o
+STRIP	libavcodec/x86/idctdsp.o
+X86ASM	libavcodec/x86/imdct36.o
+CC	libavcodec/x86/mpegaudiodsp.o
+X86ASM	libavcodec/x86/opusdsp.o
+STRIP	libavcodec/x86/opusdsp.o
+CC	libavcodec/x86/opusdsp_init.o
+X86ASM	libavcodec/x86/sbrdsp.o
+STRIP	libavcodec/x86/sbrdsp.o
+CC	libavcodec/x86/sbrdsp_init.o
+X86ASM	libavcodec/x86/simple_idct10.o
+STRIP	libavcodec/x86/h264_intrapred_10bit.o
+X86ASM	libavcodec/x86/videodsp.o
+STRIP	libavcodec/x86/imdct36.o
+CC	libavcodec/x86/videodsp_init.o
+X86ASM	libavcodec/x86/vorbisdsp.o
+STRIP	libavcodec/x86/videodsp.o
+CC	libavcodec/x86/vorbisdsp_init.o
+STRIP	libavcodec/x86/vorbisdsp.o
+X86ASM	libavcodec/x86/vp8dsp.o
+CC	libavcodec/x86/vp8dsp_init.o
+X86ASM	libavcodec/x86/vp8dsp_loopfilter.o
+STRIP	libavcodec/x86/h264_intrapred.o
+CC	libavcodec/xiph.o
+CC	libswscale/alphablend.o
+CC	libswscale/gamma.o
+CC	libswscale/half2float.o
+CC	libswscale/hscale.o
+STRIP	libavcodec/x86/vp8dsp.o
+CC	libswscale/hscale_fast_bilinear.o
+CC	libswscale/input.o
+CC	libswscale/options.o
+CC	libswscale/output.o
+STRIP	libavcodec/x86/simple_idct10.o
+CC	libswscale/rgb2rgb.o
+CC	libswscale/slice.o
+CC	libswscale/swscale.o
+CC	libswscale/swscale_unscaled.o
+CC	libswscale/utils.o
+STRIP	libavcodec/x86/vp8dsp_loopfilter.o
+CC	libswscale/version.o
+CC	libswscale/vscale.o
+CC	libswscale/x86/hscale_fast_bilinear_simd.o
+X86ASM	libswscale/x86/input.o
+X86ASM	libswscale/x86/output.o
+X86ASM	libswscale/x86/range_convert.o
+STRIP	libswscale/x86/range_convert.o
+CC	libswscale/x86/rgb2rgb.o
+STRIP	libswscale/x86/input.o
+X86ASM	libswscale/x86/rgb_2_rgb.o
+X86ASM	libswscale/x86/scale.o
+STRIP	libswscale/x86/rgb_2_rgb.o
+X86ASM	libswscale/x86/scale_avx2.o
+CC	libswscale/x86/swscale.o
+STRIP	libswscale/x86/scale_avx2.o
+CC	libswscale/x86/yuv2rgb.o
+X86ASM	libswscale/x86/yuv2yuvX.o
+STRIP	libswscale/x86/yuv2yuvX.o
+X86ASM	libswscale/x86/yuv_2_rgb.o
+STRIP	libswscale/x86/yuv_2_rgb.o
+CC	libswscale/yuv2rgb.o
+CC	libswresample/audioconvert.o
+CC	libswresample/dither.o
+CC	libswresample/options.o
+CC	libswresample/rematrix.o
+STRIP	libswscale/x86/scale.o
+CC	libswresample/resample.o
+CC	libswresample/resample_dsp.o
+CC	libswresample/swresample.o
+CC	libswresample/swresample_frame.o
+CC	libswresample/version.o
+X86ASM	libswresample/x86/audio_convert.o
+CC	libswresample/x86/audio_convert_init.o
+X86ASM	libswresample/x86/rematrix.o
+STRIP	libswresample/x86/rematrix.o
+CC	libswresample/x86/rematrix_init.o
+X86ASM	libswresample/x86/resample.o
+CC	libswresample/x86/resample_init.o
+STRIP	libswresample/x86/resample.o
+CC	libavutil/adler32.o
+CC	libavutil/aes.o
+CC	libavutil/aes_ctr.o
+CC	libavutil/ambient_viewing_environment.o
+CC	libavutil/audio_fifo.o
+CC	libavutil/avsscanf.o
+STRIP	libswscale/x86/output.o
+CC	libavutil/avstring.o
+CC	libavutil/base64.o
+STRIP	libswresample/x86/audio_convert.o
+CC	libavutil/blowfish.o
+CC	libavutil/bprint.o
+CC	libavutil/buffer.o
+CC	libavutil/camellia.o
+CC	libavutil/cast5.o
+CC	libavutil/channel_layout.o
+CC	libavutil/cpu.o
+In file included from src/libavutil/cpu.c:49:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/unistd.h:47:15: warning: redundant redeclaration of ‘environ’ [-Wredundant-decls]
+   47 | extern char** environ;
+      |               ^~~~~~~
+In file included from src/libavutil/common.h:39,
+                 from src/libavutil/avutil.h:301,
+                 from src/libavutil/opt.h:31,
+                 from src/libavutil/cpu.c:35:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:58:15: note: previous declaration of ‘environ’ with type ‘char **’
+   58 | extern char** environ;
+      |               ^~~~~~~
+CC	libavutil/crc.o
+CC	libavutil/csp.o
+CC	libavutil/des.o
+CC	libavutil/detection_bbox.o
+CC	libavutil/dict.o
+CC	libavutil/display.o
+CC	libavutil/dovi_meta.o
+CC	libavutil/downmix_info.o
+CC	libavutil/encryption_info.o
+CC	libavutil/error.o
+CC	libavutil/eval.o
+CC	libavutil/executor.o
+CC	libavutil/fifo.o
+CC	libavutil/file.o
+CC	libavutil/file_open.o
+In file included from src/libavutil/file_open.c:27:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/unistd.h:47:15: warning: redundant redeclaration of ‘environ’ [-Wredundant-decls]
+   47 | extern char** environ;
+      |               ^~~~~~~
+In file included from src/libavutil/common.h:39,
+                 from src/libavutil/avutil.h:301,
+                 from src/libavutil/file_open.c:20:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:58:15: note: previous declaration of ‘environ’ with type ‘char **’
+   58 | extern char** environ;
+      |               ^~~~~~~
+CC	libavutil/film_grain_params.o
+CC	libavutil/fixed_dsp.o
+CC	libavutil/float_dsp.o
+CC	libavutil/frame.o
+CC	libavutil/hash.o
+CC	libavutil/hdr_dynamic_metadata.o
+CC	libavutil/hdr_dynamic_vivid_metadata.o
+CC	libavutil/hmac.o
+CC	libavutil/hwcontext.o
+CC	libavutil/hwcontext_stub.o
+CC	libavutil/iamf.o
+CC	libavutil/imgutils.o
+CC	libavutil/integer.o
+CC	libavutil/intmath.o
+CC	libavutil/lfg.o
+CC	libavutil/lls.o
+CC	libavutil/log.o
+CC	libavutil/log2_tab.o
+In file included from src/libavutil/log.c:38:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:58:15: warning: redundant redeclaration of ‘environ’ [-Wredundant-decls]
+   58 | extern char** environ;
+      |               ^~~~~~~
+In file included from src/libavutil/log.c:30:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/unistd.h:47:15: note: previous declaration of ‘environ’ with type ‘char **’
+   47 | extern char** environ;
+      |               ^~~~~~~
+CC	libavutil/lzo.o
+CC	libavutil/mastering_display_metadata.o
+CC	libavutil/mathematics.o
+CC	libavutil/md5.o
+CC	libavutil/mem.o
+In file included from src/libavutil/mem.c:37:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/malloc.h:8:8: warning: redundant redeclaration of ‘memalign’ [-Wredundant-decls]
+    8 | void*  memalign(size_t align, size_t size);
+      |        ^~~~~~~~
+In file included from src/libavutil/mem.c:33:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:17:8: note: previous declaration of ‘memalign’ with type ‘void *(size_t,  size_t)’ {aka ‘void *(long unsigned int,  long unsigned int)’}
+   17 | void*  memalign(size_t align, size_t size);
+      |        ^~~~~~~~
+CC	libavutil/murmur3.o
+CC	libavutil/opt.o
+CC	libavutil/parseutils.o
+CC	libavutil/pixdesc.o
+CC	libavutil/pixelutils.o
+CC	libavutil/random_seed.o
+In file included from src/libavutil/avassert.h:30,
+                 from src/libavutil/random_seed.c:42:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/stdlib.h:58:15: warning: redundant redeclaration of ‘environ’ [-Wredundant-decls]
+   58 | extern char** environ;
+      |               ^~~~~~~
+In file included from src/libavutil/random_seed.c:24:
+/var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/sdk/include/unistd.h:47:15: note: previous declaration of ‘environ’ with type ‘char **’
+   47 | extern char** environ;
+      |               ^~~~~~~
+CC	libavutil/rational.o
+CC	libavutil/rc4.o
+CC	libavutil/reverse.o
+CC	libavutil/ripemd.o
+CC	libavutil/samplefmt.o
+CC	libavutil/sha.o
+CC	libavutil/sha512.o
+CC	libavutil/slicethread.o
+CC	libavutil/spherical.o
+CC	libavutil/stereo3d.o
+CC	libavutil/tea.o
+CC	libavutil/threadmessage.o
+CC	libavutil/time.o
+CC	libavutil/timecode.o
+CC	libavutil/timestamp.o
+CC	libavutil/tree.o
+CC	libavutil/twofish.o
+CC	libavutil/tx.o
+CC	libavutil/tx_double.o
+CC	libavutil/tx_float.o
+CC	libavutil/tx_int32.o
+CC	libavutil/utils.o
+CC	libavutil/uuid.o
+CC	libavutil/version.o
+CC	libavutil/video_enc_params.o
+CC	libavutil/video_hint.o
+CC	libavutil/x86/cpu.o
+X86ASM	libavutil/x86/cpuid.o
+STRIP	libavutil/x86/cpuid.o
+X86ASM	libavutil/x86/fixed_dsp.o
+STRIP	libavutil/x86/fixed_dsp.o
+CC	libavutil/x86/fixed_dsp_init.o
+X86ASM	libavutil/x86/float_dsp.o
+STRIP	libavutil/x86/float_dsp.o
+CC	libavutil/x86/float_dsp_init.o
+X86ASM	libavutil/x86/imgutils.o
+STRIP	libavutil/x86/imgutils.o
+CC	libavutil/x86/imgutils_init.o
+X86ASM	libavutil/x86/lls.o
+STRIP	libavutil/x86/lls.o
+CC	libavutil/x86/lls_init.o
+X86ASM	libavutil/x86/tx_float.o
+CC	libavutil/x86/tx_float_init.o
+CC	libavutil/xga_font_data.o
+CC	libavutil/xtea.o
+AR	libavformat/libavformat.a
+AR	libavcodec/libavcodec.a
+AR	libswscale/libswscale.a
+AR	libswresample/libswresample.a
+STRIP	libavutil/x86/tx_float.o
+AR	libavutil/libavutil.a
+
+Exit status: 0
+
+$ ar t build/test/sdk-allocator-ffmpeg-x86_64/sdklibc/libc.a
+banana.o
+crt0.o
+libc.o
+malloc.o
+math.o
+posix.o
+stdio.o
+x86_64 malloc: 0000000000000680 T malloc
+x86_64 free: 0000000000000720 T free
+x86_64 realloc: 0000000000000920 T realloc
+x86_64 calloc: 0000000000000ae0 T calloc
+x86_64 __malloc_heap: 0000000000000bf0 T __malloc_heap
+x86_64 __malloc_stats: 0000000000000c20 T __malloc_stats

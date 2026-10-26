@@ -79,6 +79,12 @@
 #ifndef ECONNRESET
 #define ECONNRESET   104
 #endif
+#ifndef ECONNABORTED
+#define ECONNABORTED 103
+#endif
+#ifndef ETIME
+#define ETIME        62
+#endif
 #ifndef EISCONN
 #define EISCONN      106
 #endif
@@ -147,6 +153,8 @@ static int net_errno(int e) {
     case NET_ERR_CLOSED:   return -EPIPE;
     case NET_ERR_NOTREADY: case NET_ERR_NODEV: return -ENETDOWN;
     case NET_ERR_INTR:     return -EINTR;
+    case NET_ERR_CERT:     return -ECONNABORTED;
+    case NET_ERR_CLOCK:    return -ETIME;
     default:               return -EPROTO;
     }
 }

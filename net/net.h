@@ -39,6 +39,8 @@ typedef uint32_t ip4_t;
 #define NET_ERR_NODEV     (-9)
 #define NET_ERR_PROTO     (-10)
 #define NET_ERR_INTR      (-11)
+#define NET_ERR_CERT      (-12)
+#define NET_ERR_CLOCK     (-13)
 
 const char* net_strerror(int err);
 
