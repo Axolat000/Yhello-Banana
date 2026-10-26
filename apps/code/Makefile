@@ -14,6 +14,7 @@ CFLAGS  = -I$(TCC)/src/banana -Wno-unused-parameter -Wno-sign-compare
 LIBS_i686   = $(shell gcc -m32 -print-libgcc-file-name)
 LIBS_x86_64 = $(shell gcc -m64 -print-libgcc-file-name)
 
+USE_UTF8PROC = 1
 include ../../sdk/banana.mk
 
 $(TCCB)/x86_64/libbanana.a $(TCCB)/i386/libbanana.a $(TCC)/src/banana/libtcc.c &: $(TCC)/build.sh $(TCC)/config.h $(wildcard ../../sdk/lib/*.c) $(wildcard ../../sdk/include/*.h)

@@ -2,6 +2,7 @@
  * selection, snapshots for undo, find, and syntax colours. */
 #include "code.h"
 #include <ctype.h>
+#include <utf8proc.h>
 
 #define TABW 4
 
@@ -269,17 +270,34 @@ void doc_insert(doc_t* d, const char* s, int n) {
     d->want_vx = doc_vcol(d, d->cy, d->cx);
 }
 
-static int prev_char(const char* s, int x) {
-    if (x <= 0) return 0;
-    x--;
-    while (x > 0 && (s[x] & 0xC0) == 0x80) x--;
-    return x;
-}
 static int next_char(const char* s, int len, int x) {
     if (x >= len) return len;
-    x++;
-    while (x < len && (s[x] & 0xC0) == 0x80) x++;
-    return x;
+    const utf8proc_uint8_t* p = (const utf8proc_uint8_t*)s + x;
+    utf8proc_ssize_t rem = len - x;
+    utf8proc_int32_t cp1, cp2;
+    utf8proc_ssize_t sz1 = utf8proc_iterate(p, rem, &cp1);
+    if (sz1 <= 0) return x + 1;
+    int cur = x + (int)sz1;
+    utf8proc_int32_t state = 0;
+    while (cur < len) {
+        utf8proc_ssize_t sz2 = utf8proc_iterate((const utf8proc_uint8_t*)s + cur, len - cur, &cp2);
+        if (sz2 <= 0) break;
+        if (utf8proc_grapheme_break_stateful(cp1, cp2, &state)) break;
+        cp1 = cp2;
+        cur += (int)sz2;
+    }
+    return cur;
+}
+
+static int prev_char(const char* s, int x) {
+    if (x <= 0) return 0;
+    int pos = 0;
+    while (pos < x) {
+        int next = next_char(s, x, pos);
+        if (next >= x) return pos;
+        pos = next;
+    }
+    return pos;
 }
 
 void doc_backspace(doc_t* d) {
@@ -557,44 +575,110 @@ static int match_at(const char* s, int len, int x, const char* w, int wl, int mc
     return mc ? !strncmp(s + x, w, (size_t)wl) : !strncasecmp(s + x, w, (size_t)wl);
 }
 
+static int match_at_norm(const char* s, int len, int x,
+                         const utf8proc_uint8_t* norm_w, utf8proc_ssize_t norm_wl,
+                         utf8proc_option_t opts, int* out_matched_len) {
+    if (x >= len) return 0;
+    int j = next_char(s, len, x);
+    while (j <= len && j <= x + 4 * (int)norm_wl + 16) {
+        utf8proc_uint8_t* norm_sub = NULL;
+        utf8proc_ssize_t slen = utf8proc_map((const utf8proc_uint8_t*)s + x, j - x, &norm_sub, opts);
+        if (slen == norm_wl && norm_sub && memcmp(norm_sub, norm_w, (size_t)norm_wl) == 0) {
+            free(norm_sub);
+            if (out_matched_len) *out_matched_len = j - x;
+            return 1;
+        }
+        if (norm_sub) free(norm_sub);
+        if (j == len) break;
+        j = next_char(s, len, j);
+    }
+    return 0;
+}
+
 int doc_find(doc_t* d, const char* what, int dir, int mc) {
     int wl = (int)strlen(what);
     if (!wl) return 0;
+    utf8proc_option_t opts = UTF8PROC_STABLE | UTF8PROC_COMPOSE;
+    if (!mc) opts |= UTF8PROC_CASEFOLD;
+    utf8proc_uint8_t* norm_what = NULL;
+    utf8proc_ssize_t norm_wl = utf8proc_map((const utf8proc_uint8_t*)what, wl, &norm_what, opts);
+
     int y = d->cy, x = d->cx;
     if (dir < 0 && doc_has_sel(d)) { int y0, x0, y1, x1; doc_sel_range(d, &y0, &x0, &y1, &x1); y = y0; x = x0; }
     for (int pass = 0; pass <= d->n; pass++) {
         line_t* l = &d->lines[y];
         if (dir > 0) {
-            for (int i = pass == 0 ? x : 0; i + wl <= l->len; i++)
-                if (match_at(l->s, l->len, i, what, wl, mc)) { d->sy = y; d->sx = i; d->cy = y; d->cx = i + wl; return 1; }
+            for (int i = pass == 0 ? x : 0; i < l->len; i = next_char(l->s, l->len, i)) {
+                int mlen = 0;
+                if (norm_what && norm_wl >= 0 && match_at_norm(l->s, l->len, i, norm_what, norm_wl, opts, &mlen)) {
+                    d->sy = y; d->sx = i; d->cy = y; d->cx = i + mlen;
+                    free(norm_what);
+                    return 1;
+                }
+                if (match_at(l->s, l->len, i, what, wl, mc)) {
+                    d->sy = y; d->sx = i; d->cy = y; d->cx = i + wl;
+                    if (norm_what) free(norm_what);
+                    return 1;
+                }
+            }
             y = (y + 1) % d->n;
         } else {
-            for (int i = (pass == 0 ? x : l->len) - 1; i >= 0; i--)
-                if (match_at(l->s, l->len, i, what, wl, mc)) { d->sy = y; d->sx = i; d->cy = y; d->cx = i + wl; return 1; }
+            int start_i = pass == 0 ? prev_char(l->s, x) : prev_char(l->s, l->len);
+            for (int i = start_i; i >= 0; i = prev_char(l->s, i)) {
+                int mlen = 0;
+                if (norm_what && norm_wl >= 0 && match_at_norm(l->s, l->len, i, norm_what, norm_wl, opts, &mlen)) {
+                    d->sy = y; d->sx = i; d->cy = y; d->cx = i + mlen;
+                    free(norm_what);
+                    return 1;
+                }
+                if (match_at(l->s, l->len, i, what, wl, mc)) {
+                    d->sy = y; d->sx = i; d->cy = y; d->cx = i + wl;
+                    if (norm_what) free(norm_what);
+                    return 1;
+                }
+                if (i == 0) break;
+            }
             y = (y + d->n - 1) % d->n;
         }
     }
+    if (norm_what) free(norm_what);
     return 0;
 }
 
 int doc_replace_all(doc_t* d, const char* what, const char* with, int mc) {
     int wl = (int)strlen(what), rl = (int)strlen(with), count = 0;
     if (!wl) return 0;
+    utf8proc_option_t opts = UTF8PROC_STABLE | UTF8PROC_COMPOSE;
+    if (!mc) opts |= UTF8PROC_CASEFOLD;
+    utf8proc_uint8_t* norm_what = NULL;
+    utf8proc_ssize_t norm_wl = utf8proc_map((const utf8proc_uint8_t*)what, wl, &norm_what, opts);
+
     doc_snapshot(d, OP_OTHER);
     for (int y = 0; y < d->n; y++) {
         line_t* l = &d->lines[y];
-        for (int i = 0; i + wl <= l->len; ) {
-            if (match_at(l->s, l->len, i, what, wl, mc)) {
-                line_reserve(l, l->len - wl + rl);
-                memmove(l->s + i + rl, l->s + i + wl, (size_t)(l->len - i - wl));
+        for (int i = 0; i < l->len; ) {
+            int mlen = 0;
+            int matched = 0;
+            if (norm_what && norm_wl >= 0 && match_at_norm(l->s, l->len, i, norm_what, norm_wl, opts, &mlen)) {
+                matched = 1;
+            } else if (match_at(l->s, l->len, i, what, wl, mc)) {
+                matched = 1;
+                mlen = wl;
+            }
+            if (matched) {
+                line_reserve(l, l->len - mlen + rl);
+                memmove(l->s + i + rl, l->s + i + mlen, (size_t)(l->len - i - mlen));
                 memcpy(l->s + i, with, (size_t)rl);
-                l->len += rl - wl;
+                l->len += rl - mlen;
                 l->s[l->len] = 0;
                 i += rl;
                 count++;
-            } else i++;
+            } else {
+                i = next_char(l->s, l->len, i);
+            }
         }
     }
+    if (norm_what) free(norm_what);
     d->sy = -1;
     if (d->cx > d->lines[d->cy].len) d->cx = d->lines[d->cy].len;
     return count;
