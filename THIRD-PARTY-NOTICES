@@ -195,3 +195,13 @@ Copyright 2013 Google LLC
 License: SIL Open Font License, Version 1.1 - the full text is in
 fonts/LICENSE-NotoEmoji. Source: https://github.com/google/fonts/tree/main/ofl/notoemoji
 (NotoEmoji[wght].ttf, sha256 de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551).
+
+
+MediaTek MT7601U radio (net/mt7601u.c, net/mt7601_regs.h)
+OpenBSD if_mtw.c revision 1.13 and mtwreg.h revision 1.2, ISC licence.
+The original notices remain in those files and firmware/mediatek/NOTICES.
+Unmodified MT7601U firmware comes from linux-firmware, SHA-256
+4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046.
+Its separate redistribution terms are in
+firmware/mediatek/LICENCE.ralink_a_mediatek_company_firmware.
+The ISO installs the complete notices at /usr/share/licenses/mt7601u/NOTICES.

@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "theme.h"
 #include "../net/ipv6.h"
+#include "../net/wifi.h"
 #include "settings.h"
 #include "hostname.h"
 #include "gfx.h"
@@ -61,8 +62,8 @@ void shell_power(int reboot);
 #define C_ACCENT TC(0x3A7BD5)
 #define C_SEL    TC(0x2C3E5C)
 
-enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_LANGUAGE, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_COUNT };
-static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Language", "Mouse", "Network", "Date & time", "Startup", "Apps", "About" };
+enum { PG_DISPLAY = 0, PG_THEMES, PG_FONTS, PG_SCREEN, PG_TASKBAR, PG_SOUND, PG_KEYBOARD, PG_LANGUAGE, PG_MOUSE, PG_NETWORK, PG_TIME, PG_STARTUP, PG_APPS, PG_ABOUT, PG_WIFI, PG_COUNT };
+static const char* const PAGE_NAMES[PG_COUNT] = { "Wallpaper", "Themes", "Fonts", "Screen", "Taskbar", "Sound", "Keyboard", "Language", "Mouse", "Network", "Date & time", "Startup", "Apps", "About", "Wi-Fi" };
 
 #define KB_ROW 20                           /* Keyboard: a row of the layout list (two columns) */
 
@@ -995,7 +996,133 @@ static void click_startup(int mx, int my) {
 }
 
 /* typing into the password fields */
+/* Wi-Fi uses the same station core as the CLI; passwords are masked,
+ * held only while editing and wiped on submit/page change/close. */
+static int g_wifi_index,g_wifi_page,g_wifi_ap=-1,g_wifi_focus;
+static char g_wifi_password[65];
+static wifi_radio_t* g_wifi_last;
+static wifi_ap_t g_wifi_selected;
+static void wifi_clear_password(void) {
+    volatile char* p=g_wifi_password;
+    for(unsigned i=0;i<sizeof(g_wifi_password);i++) p[i]=0;
+    g_wifi_focus=0;
+}
+static wifi_radio_t* settings_use_radio(wifi_radio_t* r) {
+    if(r!=g_wifi_last) {
+        wifi_clear_password();g_wifi_ap=-1;g_wifi_page=0;g_wifi_last=r;
+    }
+    return r;
+}
+static wifi_radio_t* settings_radio(void) {
+    int at=0;
+    for(int i=0;i<net_device_count();i++) {
+        wifi_radio_t* r=wifi_from_device(net_device_at(i));
+        if(r && at++==g_wifi_index) return settings_use_radio(r);
+    }
+    g_wifi_index=0;
+    for(int i=0;i<net_device_count();i++) {
+        wifi_radio_t* r=wifi_from_device(net_device_at(i));if(r) return settings_use_radio(r);
+    }
+    return settings_use_radio(NULL);
+}
+static void wifi_display_name(const wifi_ap_t* ap,char name[33]) {
+    for(unsigned i=0;i<ap->ssid_len;i++) name[i]=ap->ssid[i]>=32 && ap->ssid[i]<127?(char)ap->ssid[i]:'?';
+    name[ap->ssid_len]=0;
+}
+static void settings_wifi_connect(void) {
+    wifi_radio_t* r=settings_radio();
+    if(!r || g_wifi_ap<0 || g_wifi_ap>=r->nap) {
+        kstrlcpy(g_status,"Select a scanned network first",sizeof(g_status));return;
+    }
+    wifi_ap_t ap=r->aps[g_wifi_ap];
+    if(memcmp(ap.bssid,g_wifi_selected.bssid,6) || ap.ssid_len!=g_wifi_selected.ssid_len ||
+       memcmp(ap.ssid,g_wifi_selected.ssid,ap.ssid_len)) {
+        wifi_clear_password();g_wifi_ap=-1;
+        kstrlcpy(g_status,"Network changed; select it again",sizeof(g_status));return;
+    }
+    int rc=wifi_connect(r,ap.ssid,ap.ssid_len,g_wifi_password,!ap.privacy);
+    wifi_clear_password();
+    kstrlcpy(g_status,rc?"Cannot join: disconnect first, check password/security, or scan again":
+             "Joining the selected network...",sizeof(g_status));
+}
+static int settings_wifi_key(char c) {
+    if(g_page!=PG_WIFI || !g_wifi_focus) return 0;
+    unsigned n=(unsigned)strlen(g_wifi_password);
+    if(c=='\n') settings_wifi_connect();
+    else if(c==27) wifi_clear_password();
+    else if(c=='\t') { g_wifi_focus=0;g_nav.shown=1; }
+    else if(c=='\b') { if(n) g_wifi_password[n-1]=0; }
+    else if((unsigned char)c>=32 && (unsigned char)c<127 && n<64) {
+        g_wifi_password[n]=c;g_wifi_password[n+1]=0;
+    }
+    g_gen++;return 1;
+}
+static void draw_wifi(void) {
+    int x=cx0(),y=cy0();char line[96];
+    label(x,y,_("Wi-Fi"),C_HEAD);
+    wifi_radio_t* r=settings_radio();
+    if(!r) {
+        label(x,y+30,_("No supported Wi-Fi radio detected."),C_TEXT);
+        label(x,y+58,"Initial driver: MediaTek MT7601U (experimental)",C_DIM);
+        label(x,y+82,"Other requested radio drivers are still pending.",C_DIM);
+        label(x,y+110,"Use lsusb and dmesg to inspect a plugged-in card.",C_DIM);
+        return;
+    }
+    ksnprintf(line,sizeof(line),"%s: %s",r->nd.ifname,wifi_state_name(r));label(x,y+26,line,C_TEXT);
+    button(x,y+50,90,_("Scan"),0);
+    button(x+96,y+50,110,_("Next radio"),0);
+    button(x+212,y+50,110,_("Disconnect"),0);
+    label(x,y+84,_("Network"),C_DIM);label(x+226,y+84,_("Security"),C_DIM);
+    button(x+cw()-92,y+78,42,"<",0);button(x+cw()-46,y+78,42,">",0);
+    int maxpage=r->nap?(r->nap-1)/7:0;if(g_wifi_page>maxpage) g_wifi_page=maxpage;
+    for(int row=0;row<7;row++) {
+        int index=g_wifi_page*7+row;if(index>=r->nap) break;
+        wifi_ap_t* ap=&r->aps[index];int yy=y+108+row*24;
+        uint32_t bg=index==g_wifi_ap?C_SEL:((row&1)?TC(0x242D3A):TC(0x1F252E));
+        gfx_fill_rect(x,yy,cw()-4,22,bg);kbnav_add(&g_nav,x,yy,cw()-4,22);
+        char name[33];wifi_display_name(ap,name);name[26]=0;
+        gfx_draw_text(x+5,yy+7,name,C_TEXT,bg);
+        gfx_draw_text(x+226,yy+7,ap->wpa2?"WPA2":ap->privacy?"Unsupported":"Open",C_DIM,bg);
+        ksnprintf(line,sizeof(line),"%d dBm",ap->rssi);gfx_draw_text(x+cw()-76,yy+7,line,C_DIM,bg);
+    }
+    label(x,y+300,_("Password:"),C_TEXT);
+    kbnav_add(&g_nav,x+100,y+296,300,20);
+    bevel(x+100,y+296,300,20,TC(0x141920),TC(0x10141C),g_wifi_focus?C_ACCENT:TC(0x404B5C));
+    char stars[37];unsigned n=(unsigned)strlen(g_wifi_password);if(n>36) n=36;
+    memset(stars,'*',n);stars[n]=0;gfx_draw_text(x+106,y+302,stars,C_TEXT,TC(0x141920));
+    if(g_wifi_focus && (timer_ms()/500)%2==0) gfx_fill_rect(x+106+n*8,y+300,2,12,C_TEXT);
+    int open=g_wifi_ap>=0 && g_wifi_ap<r->nap && !r->aps[g_wifi_ap].privacy;
+    button(x,y+330,180,open?_("Connect (open)"):_("Connect (WPA2)"),0);
+    label(x,y+364,"2.4 GHz channels 1-11; WPA2-CCMP or explicit open.",C_DIM);
+    label(x,y+386,"Connection priority: Settings > Network.",C_DIM);
+}
+static void click_wifi(int mx,int my) {
+    int x=cx0(),y=cy0();wifi_radio_t* r=settings_radio();if(!r) return;
+    g_wifi_focus=0;
+    if(inside(mx,my,x,y+50,90,20)) {
+        wifi_clear_password();g_wifi_ap=-1;g_wifi_page=0;
+        kstrlcpy(g_status,wifi_scan(r)?"Disconnect before scanning, or wait for the current operation":"Scanning nearby networks...",sizeof(g_status));
+    } else if(inside(mx,my,x+96,y+50,110,20)) {
+        wifi_clear_password();g_wifi_ap=-1;g_wifi_page=0;g_wifi_index++;
+        (void)settings_radio();
+    } else if(inside(mx,my,x+212,y+50,110,20)) {
+        wifi_clear_password();wifi_disconnect(r);
+    } else if(inside(mx,my,x+cw()-92,y+78,42,20)) {
+        if(g_wifi_page>0) g_wifi_page--;
+    } else if(inside(mx,my,x+cw()-46,y+78,42,20)) {
+        if((g_wifi_page+1)*7<r->nap) g_wifi_page++;
+    } else if(inside(mx,my,x+100,y+296,300,20)) g_wifi_focus=1;
+    else if(inside(mx,my,x,y+330,180,20)) settings_wifi_connect();
+    else for(int row=0;row<7;row++) {
+        int index=g_wifi_page*7+row;
+        if(index<r->nap && inside(mx,my,x,y+108+row*24,cw()-4,22)) {
+            wifi_clear_password();g_wifi_ap=index;g_wifi_selected=r->aps[index];g_wifi_focus=r->aps[index].privacy;break;
+        }
+    }
+}
+
 void settings_key(char c) {
+    if (settings_wifi_key(c)) return;
     if (!g_open) return;
     if (fc_active()) { fc_key(c); g_gen++; return; }
     if (g_page == PG_ABOUT && g_pc_focus) {
@@ -1614,6 +1741,7 @@ void settings_draw(const fb_info_t* fi) {
     case PG_LANGUAGE: draw_language(); break;
     case PG_MOUSE:    draw_mouse(); break;
     case PG_NETWORK:  draw_network(); break;
+    case PG_WIFI: draw_wifi(); break;
     case PG_TIME:     draw_time(); break;
     case PG_STARTUP:  draw_startup(); break;
     case PG_APPS:     draw_apps(); break;
@@ -1627,6 +1755,7 @@ void settings_draw(const fb_info_t* fi) {
 /* the keyboard (kbnav.h codes): Tab / arrows move between the controls,
  * Enter / Space click; 0 if it is not for the focus (typing, Esc) */
 int settings_navkey(int code) {
+    if (g_page == PG_WIFI && g_wifi_focus) return 0;
     if (!g_open) return 0;
     g_gen++;
     if (fc_active()) return fc_nav(code);
@@ -1662,7 +1791,7 @@ void settings_click(int mx, int my) {
     /* sidebar */
     if (lx >= 8 && lx < 8 + SIDE_W - 4) {
         int i = (ly - BODY_Y - 4) / ITEM_H;
-        if (ly >= BODY_Y + 4 && i >= 0 && i < PG_COUNT) { g_page = i; g_pc_focus = 0; fc_close(); }
+        if (ly >= BODY_Y + 4 && i >= 0 && i < PG_COUNT) { wifi_clear_password(); g_page = i; g_pc_focus = 0; fc_close(); }
         return;
     }
     if (fc_active()) { fc_click(mx, my); return; }
@@ -1806,6 +1935,8 @@ void settings_click(int mx, int my) {
         click_apps(mx, my);
     } else if (g_page == PG_STARTUP) {
         click_startup(mx, my);
+    } else if (g_page == PG_WIFI) {
+        click_wifi(mx,my);
     } else if (g_page == PG_NETWORK) {
         for (int priority = NET_PRIORITY_AUTO; priority <= NET_PRIORITY_WIFI; priority++) {
             const int bx[] = {110, 196, 312}, bw[] = {80, 110, 100};
@@ -1881,6 +2012,7 @@ void settings_open_page(int page) {
 }
 
 void settings_open(void) {
+    wifi_clear_password();
     char reason[160];g_sleep_available=!acpi_s3_status(reason,sizeof(reason));
     g_open = 1;
     g_pc_focus = g_pc_dirty = 0;
@@ -1891,6 +2023,7 @@ void settings_open(void) {
 }
 
 void settings_close(void) {
+    wifi_clear_password();
     g_open = 0;
     g_pc_focus = 0;
     fc_close();
@@ -1908,7 +2041,7 @@ uint32_t settings_signature(void) {
     if (!g_open) return 0;
     /* the clock, uptime and network status change by themselves */
     if (g_page == PG_APPS && timer_ms() - g_al_scanned > 2000) apps_scan();     /* installed or removed meanwhile */
-    if (g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
+    if (g_page == PG_WIFI || g_page == PG_TIME || g_page == PG_NETWORK || g_page == PG_ABOUT || g_page == PG_STARTUP || g_page == PG_APPS) {
         uint32_t s = timer_ms() / (g_page == PG_STARTUP || g_page == PG_ABOUT ? 500 : 1000);
         if (s != g_tick_s) { g_tick_s = s; g_gen++; }
     }

@@ -85,7 +85,7 @@ flags = ['-O1','-g','-Wall','-Wextra','-Werror','-Ikernel','-Icrypto', '-I'+str(
 if a.bits32:
     flags += ['-m32']
 if a.sanitize:
-    flags += ['-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie']
+    flags += ['-fsanitize=address,undefined','-fno-sanitize-recover=undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie']
 binary = out / 'test'
 subprocess.run([*shlex.split(os.environ.get('CC','cc')), *flags,
                 'tools/tests/wifi_crypto.c','crypto/wifi_crypto.c','crypto/aead.c','crypto/chacha20.c',

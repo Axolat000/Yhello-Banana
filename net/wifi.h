@@ -40,6 +40,8 @@ struct wifi_radio {
     wifi_key_t pair,group[4];
     uint8_t tx[WIFI_FRAME_MAX],rx[WIFI_FRAME_MAX],ethernet[ETH_FRAME_MAX];
 };
+wifi_radio_t* wifi_from_device(netdev_t*);
+void wifi_boot_files(void);
 int wifi_register(wifi_radio_t*);
 void wifi_unregister(wifi_radio_t*);
 int wifi_scan(wifi_radio_t*); /* passive channels 1..11; poll advances asynchronously */

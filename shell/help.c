@@ -342,6 +342,9 @@ static const page_t PAGES[] = {
       "Shows the interfaces, or sets one up with a fixed address (saved in /etc/network.conf). "
       "ifconfig eth1 up pins a card; priority auto/ethernet/wifi selects connected links with DHCP. Auto prefers Ethernet. Changing priority removes a pin/static address. A preferred link must stay ready for 3 seconds; existing connections may need to reconnect. ifconfig reset restores defaults.", NULL,
       "ifconfig\nifconfig eth0 192.168.1.50 netmask 255.255.255.0 gw 192.168.1.1 dns 1.1.1.1", "dhcp, ping" },
+    { "wifi", "network", "wifi [scan [IF] | networks [IF] | connect IF SSID --password-file FILE | connect IF SSID --open | disconnect IF]", "Wi-Fi discovery and WPA2 connection",
+      "Initial experimental hardware driver: MediaTek MT7601U, 2.4 GHz channels 1-11, legacy b/g. Run wifi scan, then connect using a password file or Settings > Wi-Fi. Passwords are not placed on the command line. No WEP/TKIP/WPA3/PMF-required support yet. Network priority remains in ifconfig.",
+      NULL, "wifi scan\nwifi connect wlan0 TestNet --password-file /home/banana/wifi.secret", "ifconfig" },
     { "dhcp", "network", "dhcp", "ask for a new address (DHCP)", NULL, NULL, NULL, "ifconfig" },
     { "ping", "network", "ping [-c N] [-s size] [-i sec] <host>", "is that host there?",
       "Sends ICMP echo requests (4 by default) and prints the replies and times. Ctrl+C stops.",

@@ -19,7 +19,7 @@ flags = ['-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
 if args.bits32:
     flags += ['-m32']
 if args.sanitize:
-    flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
+    flags += ['-fsanitize=address,undefined','-fno-sanitize-recover=undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
 for name in ['net_selection', 'net_connections', 'usb_ethernet']:
     binary = out / name
     subprocess.run([*shlex.split(os.environ.get('CC', 'cc')), *flags,

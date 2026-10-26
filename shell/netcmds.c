@@ -17,6 +17,7 @@
 #include "wpcmd.h"
 #include "../usb/usbcore.h"
 #include "../net/netconf.h"
+#include "../net/wifi.h"
 #include "../net/httpd.h"
 #include "../kernel/config.h"
 #include "../kernel/fsdisk.h"
@@ -225,6 +226,89 @@ static void cmd_dhcp(void) {
     }
     show_ifconfig();
     saved_note(disk);
+}
+
+/* Wi-Fi discovery/join controls. Physical radio hardware is independent of
+ * the active default route; priority is still selected with ifconfig. */
+static wifi_radio_t* wifi_find(const char* name) {
+    for(int i=0;i<net_device_count();i++) {
+        netdev_t* nd=net_device_at(i);
+        wifi_radio_t* r=wifi_from_device(nd);
+        if(r && (!name || !strcmp(nd->ifname,name))) return r;
+    }
+    return NULL;
+}
+static void wifi_name(const wifi_ap_t* ap,char out[33]) {
+    for(unsigned i=0;i<ap->ssid_len;i++) out[i]=ap->ssid[i]>=32 && ap->ssid[i]<127?(char)ap->ssid[i]:'?';
+    out[ap->ssid_len]=0;
+}
+static void cmd_wifi(int argc,char** argv) {
+    if(argc==1) {
+        int count=0;
+        for(int i=0;i<net_device_count();i++) {
+            wifi_radio_t* r=wifi_from_device(net_device_at(i));if(!r) continue;
+            printf_line("%s: %s (%s)\n",r->nd.ifname,r->nd.model,wifi_state_name(r));count++;
+        }
+        if(!count) terminal_writeln("wifi: no supported radio detected (initial experimental driver: MT7601U)");
+        return;
+    }
+    const char* action=argv[1];
+    wifi_radio_t* r=wifi_find(argc>2?argv[2]:NULL);
+    if(!r) { err("wifi","radio not found; run wifi to list interfaces");return; }
+    if((!strcmp(action,"scan") || !strcmp(action,"networks")) && argc<=3) {
+        if(!strcmp(action,"scan")) {
+            if(wifi_scan(r)) { err("wifi","disconnect before scanning, or wait for the current operation");return; }
+            uint32_t start=timer_ms();
+            while(r->state==WIFI_SCAN && timer_ms()-start<15000) {
+                if(net_interrupted()) { wifi_disconnect(r);return; }
+                net_wait(20);
+            }
+        }
+        for(int i=0;i<r->nap;i++) {
+            char name[33];wifi_name(&r->aps[i],name);
+            printf_line("%-32s  channel %u  %d dBm  %s\n",name,r->aps[i].channel,
+                        r->aps[i].rssi,r->aps[i].wpa2?"WPA2-CCMP":r->aps[i].privacy?"unsupported security":"open");
+        }
+        if(!r->nap) terminal_writeln("wifi: no visible network found");
+        return;
+    }
+    if(!strcmp(action,"disconnect") && argc==3) { wifi_disconnect(r);return; }
+    if(!strcmp(action,"connect") && (argc==5 || argc==6)) {
+        int open=argc==5 && !strcmp(argv[4],"--open");
+        if(!open && !(argc==6 && !strcmp(argv[4],"--password-file"))) {
+            terminal_writeln("usage: wifi connect IF SSID --password-file FILE | --open");return;
+        }
+        char password[67]={0};
+        if(!open) {
+            int f=fs_find_file(argv[5]);fs_file_t* file=fs_get_file(f);
+            uint32_t size=file?file->size:0;
+            if(!file || size<8 || size>66 || fs_read(f,0,password,size)!=(int)size) {
+                volatile char* secret=password;
+                for(unsigned i=0;i<sizeof(password);i++) secret[i]=0;
+                err("wifi","cannot read an 8-64 character password/PSK from that file");return;
+            }
+            unsigned n=size;
+            while(n && (password[n-1]=='\n' || password[n-1]=='\r')) password[--n]=0;
+            if(strlen(password)!=n) {
+                volatile char* secret=password;
+                for(unsigned i=0;i<sizeof(password);i++) secret[i]=0;
+                err("wifi","password file contains an embedded NUL");return;
+            }
+        }
+        int result=wifi_connect(r,(const uint8_t*)argv[3],(uint32_t)strlen(argv[3]),password,open);
+        volatile char* secret=password;for(unsigned i=0;i<sizeof(password);i++) secret[i]=0;
+        if(result) { err("wifi","join could not start; scan first and select WPA2-CCMP or an explicitly open network");return; }
+        uint32_t start=timer_ms();
+        while(r->state!=WIFI_DOWN && r->state!=WIFI_UP && timer_ms()-start<15000) {
+            if(net_interrupted()) { wifi_disconnect(r);return; }
+            net_wait(20);
+        }
+        printf_line("%s: %s\n",r->nd.ifname,wifi_state_name(r));
+        if(r->state==WIFI_UP) terminal_writeln("Wi-Fi link ready; ifconfig priority wifi selects it over Ethernet.");
+        return;
+    }
+    terminal_writeln("usage: wifi | wifi scan [IF] | wifi networks [IF] | wifi disconnect IF");
+    terminal_writeln("       wifi connect IF SSID --password-file FILE | --open");
 }
 
 /* ── ping ───────────────────────────────────────────────────────── */
@@ -936,6 +1020,7 @@ int netcmd_dispatch(const char* line) {
     if (argc == 0) return 0;
     const char* c = argv[0];
 
+    if (strcmp(c, "wifi") == 0) { cmd_wifi(argc, argv); return 1; }
     if (strcmp(c, "ntp") == 0) { cmd_ntp(argc, argv); return 1; }
     if (strcmp(c, "ifconfig") == 0)                  { cmd_ifconfig(argc, argv); return 1; }
     if (strcmp(c, "toggle6") == 0) { cmd_toggle6(argc, argv); return 1; }

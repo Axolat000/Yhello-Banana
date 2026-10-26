@@ -4,12 +4,16 @@ on:
     paths:
       - 'net/**'
       - 'crypto/**'
+      - 'firmware/mediatek/**'
       - 'kernel/*.h'
       - 'usb/usbcore.c'
       - 'tools/tests/net_*.c'
       - 'tools/tests/usb_ethernet.c'
       - 'tools/test_network_drivers.py'
       - 'tools/test_wifi_*.py'
+      - 'tools/test_mt7601.py'
+      - 'tools/wifi_test_vectors.py'
+      - 'tools/tests/mt7601.c'
       - 'tools/tests/wifi_*.c'
       - '.github/workflows/network-host.yml'
   workflow_call: {}
@@ -38,3 +42,5 @@ jobs:
         run: python3 tools/test_wifi_crypto.py --sanitize && python3 tools/test_wifi_crypto.py --32
       - name: Wi-Fi association, handshake, replay and malformed frame tests
         run: python3 tools/test_wifi_station.py --sanitize && python3 tools/test_wifi_station.py --32
+      - name: MT7601U radio firmware, USB transport and WPA2 integration model
+        run: python3 tools/test_mt7601.py --sanitize && python3 tools/test_mt7601.py --32

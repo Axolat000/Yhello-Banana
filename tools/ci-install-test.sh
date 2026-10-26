@@ -121,6 +121,7 @@ python3 tools/serialtest.py --log "$logs/serial-preferences.log" \
     --cmd '/apps/terminal/app-x86_64 --show-config ## font=18' \
     --cmd 'cat /home/banana/.config/banana-terminal.conf ## shell=zsh' \
     --cmd 'ifconfig priority ## Network priority: wifi' \
+    --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-preferences.log"
 

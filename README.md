@@ -26,6 +26,13 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental MT7601U Wi-Fi** - native USB radio initialization and embedded
+  firmware connect to a WPA2-CCMP station core, with scan/join controls in
+  Settings > Wi-Fi and the `wifi` command. Initial scope is legacy b/g on
+  2.4 GHz channels 1–11; firmware/USB/access-point models pass in 32-bit and
+  sanitizer builds. Physical RF validation and the remaining requested radio
+  families are pending. See [Wi-Fi setup, limitations and tests](docs/wifi.md).
+
 - **Network priority and multiple adapters** - Settings > Network and
   `ifconfig priority auto|ethernet|wifi` select the preferred connected
   interface, with fallback and a three-second stability check. USB hotplug
@@ -33,7 +40,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
   applications to reconnect. Experimental native ASIX AX88179 and CDC-NCM
   drivers and a separate RTL8153/RTL8156 driver have protocol-model tests;
   RTL8152 retains its hardware-tested path. New-driver physical validation and the
-  requested Wi-Fi drivers remain pending. See [network status and tests](docs/network-priority.md).
+  remaining Wi-Fi families remain pending. See [network status and tests](docs/network-priority.md).
 
 - **Terminal preferences and application fullscreen** - the integrated Terminal
   now saves themes, custom colors, font size, cursor style and a Bash/Zsh/System

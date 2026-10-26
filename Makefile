@@ -371,3 +371,6 @@ sdk: $(EXAMPLE_BPKS)
 	tar czf banana-sdk.tar.gz --transform 's,^sdk,banana-sdk,' --exclude=build --exclude='*.bpk' sdk
 	@echo "banana-sdk.tar.gz: unpack it anywhere, then see banana-sdk/README.md"
 -include $(DEPS)
+
+# Embedded MT7601U firmware is a build input for both kernel architectures.
+net/mt7601u.o net/mt7601u.o64: firmware/mediatek/mt7601u.bin firmware/mediatek/NOTICES

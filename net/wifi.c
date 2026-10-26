@@ -320,6 +320,9 @@ static int wifi_poll(netdev_t* nd) {
     else if(r->state==WIFI_UP && now-r->beacon_ms>=30000) wifi_disconnect(r);
     return received;
 }
+wifi_radio_t* wifi_from_device(netdev_t* nd) {
+    return nd && nd->is_wifi && nd->poll==wifi_poll ? nd->priv : NULL;
+}
 int wifi_register(wifi_radio_t* r) {
     if(!r || !r->ops || !r->ops->poll || !r->ops->send || !r->ops->channel || !r->ops->station) return -1;
     r->state=WIFI_DOWN;r->nap=0;

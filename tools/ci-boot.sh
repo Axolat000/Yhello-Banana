@@ -51,6 +51,8 @@ fi
 python3 tools/serialtest.py --log "$logs/serial.log" \
     --boot-timeout 180 --timeout 180 \
     "${mesa_checks[@]}" \
+    --cmd 'wifi ## no supported radio detected' \
+    --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     --cmd 'selftest boot ## 0 failed' \
     --cmd 'browser --engine ## browser engine: LibJS' \
     --cmd 'selftest browser libjsdom ## 30 passed, 0 failed' \

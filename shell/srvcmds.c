@@ -6,6 +6,7 @@
 #include "../kernel/settings.h"
 #include "../net/upnp.h"
 #include "srvcmds.h"
+#include "../net/wifi.h"
 #include "netcmds.h"
 #include "../kernel/terminal.h"
 #include "../kernel/kstring.h"
@@ -366,6 +367,7 @@ int srvcmd_dispatch(const char* line) {
 }
 
 void services_boot(void) {
+    wifi_boot_files();
     netconf_boot();
     settings_boot();                    /* volume, keyboard layout */
     ipv6_boot();                        /* IPv6 only if it was turned on */
