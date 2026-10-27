@@ -148,7 +148,7 @@ static const page_t PAGES[] = {
       "Also vimdiff and view. Comes with the 64-bit system. Settings: ~/.vimrc.",
       NULL, "vim ~/main.c", "vi, nvim, nano" },
     { "vi", "text", "vi [file]", "vi, the classic Unix editor",
-      "The classic Unix editor: Vim's tiny build, no runtime files (as Debian's vim-tiny) - also ex. Comes "
+      "Independent UTF-8 vi/ex editor (Neatvi), separate from Vim. Comes "
       "with the 64-bit system.", NULL, "vi /etc/motd", "vim, nvim, nano" },
     { "nvim", "text", "nvim [file]", "Neovim (optional: apt install neovim)",
       "Neovim 0.12: Lua configuration and plugins (~/.config/nvim/init.lua), tree-sitter (its parsers for C, Lua, "

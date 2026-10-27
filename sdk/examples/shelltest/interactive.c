@@ -428,6 +428,22 @@ int shelltest_editors(void) {
         put("/tmp/ed-vi.txt", "one\ntwo\nthree\n");
         check("dd, :wq", edit("/bin/vi", "/tmp/ed-vi.txt", "ed-vi.txt", "dd:wq\r"));
         check("the file is a line shorter (cut, not left over)", !strcmp(slurp("/tmp/ed-vi.txt"), "two\nthree\n"));
+        unlink("/tmp/ed-vi-utf8.txt");
+        check("vi inserts UTF-8 and saves", edit("/bin/vi", "/tmp/ed-vi-utf8.txt",
+              "~~~~", "iété banana\x1b:wq\r"));
+        check("vi preserves UTF-8 bytes", !strcmp(slurp("/tmp/ed-vi-utf8.txt"), "été banana\n"));
+        check("vi ships its independent Neatvi licence",
+              strstr(slurp("/apps/vi/LICENSE"), "NEATVI Editor") != NULL);
+        /* ex must start in line mode, not open a Vim screen. */
+        put("/tmp/ed-ex.txt", "first\nsecond\n");
+        char* av[] = { "ex", "/tmp/ed-ex.txt", NULL };
+        if (!start("/bin/ex", av)) {
+            pump(400);
+            type("1d\nwq\n");
+            check("ex line mode saves and exits", finish() == 0);
+            check("ex shares the independent vi editor",
+                  !strcmp(slurp("/tmp/ed-ex.txt"), "second\n"));
+        } else check("ex starts", 0);
     }
     if (access("/bin/nvim", X_OK) == 0) {
         any = 1;

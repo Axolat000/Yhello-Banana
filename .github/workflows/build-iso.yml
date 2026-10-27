@@ -102,6 +102,7 @@ jobs:
             ports/nano/build
             ports/vim/src
             ports/vim/build
+            ports/vi/src
             ports/vi/build
             ports/neovim/src
             ports/neovim/build
@@ -297,6 +298,8 @@ jobs:
   publish-java:
     needs: [ publish-isos, java ]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download java.bpk
         uses: actions/download-artifact@v4
@@ -309,7 +312,6 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Banana OS build ${{ github.run_number }}
           prerelease: true
-          target_commitish: ${{ github.sha }}
           files: java.bpk
 
 
@@ -325,6 +327,8 @@ jobs:
   publish-libjs:
     needs: [publish-isos, libjs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download installable LibJS packages
         uses: actions/download-artifact@v4
@@ -340,7 +344,6 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Banana OS build ${{ github.run_number }}
           prerelease: true
-          target_commitish: ${{ github.sha }}
           fail_on_unmatched_files: true
           files: |
             libjs-packages/*.bpk
@@ -491,7 +494,7 @@ jobs:
     name: External driver modules (${{ matrix.firmware }}, ${{ matrix.bits }}-bit)
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
       contents: read
     strategy:
@@ -504,10 +507,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install headless driver test dependencies
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools gcc-multilib binutils make python3
+          # The Azure mirror can trickle packages without hitting a socket timeout.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools gcc-multilib binutils make python3
       - uses: actions/download-artifact@v4
         with:
           name: boot-iso-standard-${{ github.sha }}

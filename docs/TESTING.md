@@ -487,3 +487,17 @@ the current ISO and user-file persistence on disposable disk images.
 
 Host shims and QEMU checks do not establish physical-controller power-loss,
 GPU, network-adapter or hardware RTC behavior.
+
+### Independent vi/ex regression
+
+The vi package now contains Neatvi, not Vim's tiny build. Vim remains its own
+package with its existing runtime. After installing vi, vim, nano and neovim,
+run `shelltest -e`. In addition to Vim help/syntax and the other editors, it
+checks vi line deletion/truncation, UTF-8 insertion/save, the bundled upstream
+ISC notice, and ex line-mode save/exit. Removing vi must not remove vim.
+
+The LibJS long-interaction regression measures elapsed guest time with
+`performance.now()` rather than the emulated RTC-backed `Date.now()`. QEMU's
+RTC and timer can drift separately under TCG; this must not turn a finite test
+into an apparent hostile loop. The following infinite-loop test still requires
+a CPU quota stop and a surviving independent renderer.

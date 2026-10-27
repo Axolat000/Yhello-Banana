@@ -546,7 +546,9 @@ void web_libjs_dom_tests(void (*report)(const char*,int,const char*)) {
     report("DOM script exceptions remain in the renderer",rc<0,text);
     rc=remote_page_eval(p,"document.getElementById('out').textContent",text,sizeof(text));
     report("DOM remains usable after an exception",!rc&&!strcmp(text,"job 9"),text);
-    rc=remote_page_eval(p,"(()=>{const end=Date.now()+6500;while(Date.now()<end){};return 42})()",text,sizeof(text));
+    /* Elapsed-work checks need the guest monotonic clock. Date.now follows the
+     * emulated RTC, which can drift/re-anchor independently under slow TCG. */
+    rc=remote_page_eval(p,"(()=>{const end=performance.now()+6500;while(performance.now()<end){};return 42})()",text,sizeof(text));
     report("finite LibJS work survives the former short interaction quota",!rc&&!strcmp(text,"42"),rc?p->status:text);
     remote_page_update(p,640);
     uint32_t* pixels=kmalloc(640*160*4);

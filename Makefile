@@ -295,10 +295,8 @@ ports/mesa/build/mesa-x86_64.bpk.z: $(MESA_BPK) mesa-prebuilt-input
 	python3 sdk/tools/bpkg check "$(MESA_BPK)"
 	python3 -c "import sys,zlib; from pathlib import Path; out=Path(sys.argv[2]); tmp=out.with_suffix('.tmp'); tmp.write_bytes(zlib.compress(Path(sys.argv[1]).read_bytes(),9)); tmp.replace(out)" "$(MESA_BPK)" $@
 endif
-# (vi is Vim's tiny build, from ports/vim's source and script)
-ports/vi/build/vi-x86_64.bpk: ports/vim/build.sh
-# (less, zsh, nano, vim and vi are linked with ncurses' library)
-ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk ports/nano/build/nano-x86_64.bpk ports/vim/build/vim-x86_64.bpk ports/vi/build/vi-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
+# (less, zsh, nano and vim are linked with ncurses' library)
+ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk ports/nano/build/nano-x86_64.bpk ports/vim/build/vim-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
 # Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built
 # in the same way: ps & co. (apps/procps)
 APPS64      = procps kcmd

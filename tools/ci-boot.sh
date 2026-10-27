@@ -65,5 +65,8 @@ python3 tools/serialtest.py --log "$logs/serial.log" \
     --cmd 'selftest ram ## 0 failed' \
     --cmd 'pkg install /home/banana/Examples/shelltest.bpk' \
     --cmd 'apt install neovim' \
+    --cmd 'pkg remove vi ## removed vi (Neatvi)' \
+    --cmd 'test -x /bin/vim && test ! -e /bin/vi && echo separate-editors ## separate-editors' \
+    --cmd 'apt install vi' \
     --cmd 'shelltest -e ## shelltest: all passed (0 failed)' -- "${args[@]}" \
     2>&1 | tee "$logs/results.log"

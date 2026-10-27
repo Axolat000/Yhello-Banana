@@ -1,25 +1,18 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Vim 9.2 for Banana OS, on ncurses (ports/ncurses: built first) - two
-# packages from one source, both built in and installed at boot:
-#   vim: the huge feature set (/bin/vim, vimdiff, view), its runtime -
-#        syntax, filetype plugins, indent, colour schemes, :help - in
-#        runtime.zip, unpacked into /usr/share/vim/vim92 ($VIMRUNTIME);
-#        /apps/vim/vimrc (the system vimrc)
-#   vi:  the tiny one (ports/vi/build.sh: VIM_TINY=1) as /bin/vi and ex,
-#        no runtime - as Debian's vim-tiny; /apps/vi/virc (ports/vim/virc)
+# Vim 9.2, with ncurses and its full runtime. vi/ex is the independent
+# Neatvi package built by ports/vi/build.sh.
 #     ports/vim/build.sh <output.bpk>
 [ -n "$1" ] || { echo "usage: $0 <output.bpk>"; exit 1; }
 OUT=$(realpath -m "$1")
 mkdir -p "$(dirname "$OUT")"
-TINY=${VIM_TINY:-0}
 . "$(dirname "$0")/../port.sh"
 port_fetch_git vim 9.2.1225 https://github.com/vim/vim.git v9.2.1225 f9b3d0d8dd1a4345375fb401861d5f60ff7c7df1
 NC=$PORT_DIR/../ncurses/build/x86_64
 [ -f "$NC/lib/libncursesw.a" ] || { echo "vim: build ports/ncurses first"; exit 1; }
 
 # Vim builds in its source tree: a copy for each package
-if [ "$TINY" = 1 ]; then FEAT=tiny RC=/apps/vi/virc DATA=/apps/vi; else FEAT=huge RC=/apps/vim/vimrc DATA=/usr/share; fi
+FEAT=huge RC=/apps/vim/vimrc DATA=/usr/share
 T=$PORT_DIR/build/tree-$FEAT
 CPPFLAGS="-I$NC/include"
 LDFLAGS="-L$NC/lib"
@@ -45,7 +38,6 @@ OPTS="--with-features=$FEAT --with-tlib=ncursesw --disable-gui --without-x --dis
       --disable-canberra --disable-libsodium --disable-gpm --disable-sysmouse --disable-selinux --disable-smack
       --disable-xattr --disable-acl --enable-multibyte --with-compiledby=Banana-OS
       --prefix=/usr --bindir=/bin --datarootdir=$DATA --with-vim-name=vim"
-[ "$TINY" = 1 ] && OPTS="$OPTS --disable-channel --disable-terminal"
 VARS="CPPFLAGS LDFLAGS $(set | sed -n 's/^\(vim_cv_[a-z_0-9]*\)=.*/\1/p' | tr '\n' ' ') ac_cv_small_wchar_t PKG_CONFIG"
 sum=$( (echo "4 $PORT_VER $FEAT $OPTS $RC"; for v in $VARS; do eval "echo $v=\${$v}"; done
         cat "$SDK/tools/banana-configure" "$SDK/tools/banana-config.site" "$SDK/tools/banana-cc"
@@ -55,13 +47,9 @@ if [ ! -f "$T/src/auto/config.mk" ] || [ "$(cat "$T/.configured" 2>/dev/null)" !
     cp -a "$SRC" "$T"
     cd "$T/src"
     for v in $VARS; do export "$v"; done
-    # (the system vimrc: in the package's folder - vi's own, so that it does
-    # not read vim's, nor its runtime, when both are installed)
+    # Keep Vim's system configuration inside its package.
     sed -i "s|^#define SYS_VIMRC_FILE .*|#define SYS_VIMRC_FILE \"$RC\"|" feature.h
     grep -q "$RC" feature.h || echo "#define SYS_VIMRC_FILE \"$RC\"" >> feature.h
-    # (vi, with no runtime: its virc is also what Vim reads when there is no
-    # ~/.vimrc - defaults.vim, which it does not have)
-    [ "$TINY" = 1 ] && echo "#define VIM_DEFAULTS_FILE \"$RC\"" >> feature.h
     BANANA_ARCH=x86_64 CFLAGS="-O2 -g0" "$SDK/tools/banana-configure" ./configure $OPTS >configure.log 2>&1 \
         || { tail -30 configure.log; exit 1; }
     echo "$sum" > "$T/.configured"
@@ -69,14 +57,6 @@ fi
 cd "$T/src"
 B=$T/src                                           # (port_make, port_package work here)
 port_make vim
-
-if [ "$TINY" = 1 ]; then
-    port_package "$OUT" name=vi "title=vi" version=$PORT_VER type=console \
-        "description=vi: the classic Unix text editor - Vim's tiny build, no runtime files (/bin/vi, /bin/ex)" \
-        "author=Bram Moolenaar and the Vim developers" "category=Developer Tools" bin=vi,ex \
-        -- vim "virc=$PORT_DIR/virc"
-    exit 0
-fi
 
 # the runtime, without the translations, the GUI's pieces and the word lists
 # but English's
