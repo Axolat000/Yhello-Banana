@@ -150,7 +150,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install validation dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y python3 qemu-system-x86 ovmf gcc e2fsprogs
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends python3 qemu-system-x86 ovmf gcc e2fsprogs
       - uses: actions/download-artifact@v4
         with:
           name: boot-iso-${{ matrix.variant }}-${{ github.sha }}
@@ -364,7 +367,7 @@ jobs:
     name: Network regression (${{ matrix.model }})
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:
@@ -373,11 +376,16 @@ jobs:
         model: [e1000, e1000e, igb, pcnet, rtl8139, virtio-net-pci, usb-ecm, multi]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 python3
+      - name: Install headless QEMU test dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 python3
       - uses: actions/download-artifact@v4
         with:
           name: boot-iso-standard-${{ github.sha }}
       - name: DHCP, ping, verified 30 MiB download and link failover
+        timeout-minutes: 12
         run: python3 tools/test_network_vm.py --model ${{ matrix.model }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -399,7 +407,7 @@ jobs:
     name: Laptop ACPI and USB-C PD (${{ matrix.firmware }}, ${{ matrix.bits }}-bit)
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:
@@ -411,11 +419,16 @@ jobs:
           - {firmware: uefi, bits: 64}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 ovmf acpica-tools python3
+      - name: Install headless QEMU test dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools python3
       - uses: actions/download-artifact@v4
         with:
           name: boot-iso-standard-${{ github.sha }}
       - name: Battery, backlight, PD contracts and power-role changes via AML
+        timeout-minutes: 12
         run: |
           args=()
           if [ "${{ matrix.bits }}" = 32 ]; then args+=(--32); fi
