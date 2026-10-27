@@ -6,6 +6,9 @@ on:
       - 'third_party/igc/**'
       - 'third_party/rge/**'
       - 'third_party/rtwn/**'
+      - 'third_party/aq/**'
+      - 'tools/test_aqc107.py'
+      - 'tools/tests/aqc107.c'
       - 'firmware/realtek/**'
       - 'tools/test_rtl8188eu.py'
       - 'tools/tests/rtl8188eu.c'
@@ -62,6 +65,8 @@ jobs:
         run: python3 tools/test_rtl8188eu.py --sanitize && python3 tools/test_rtl8188eu.py --32
       - name: Intel I225/I226 native HAL and DMA model
         run: python3 tools/test_igc.py --sanitize && python3 tools/test_igc.py --32
+      - name: AQC107 firmware, PHY, PCI power and independent DMA rings
+        run: python3 tools/test_aqc107.py --sanitize && python3 tools/test_aqc107.py --32
       - name: RTL8125 A/B/D native MAC, PHY, firmware and DMA model
         run: python3 tools/test_r8125.py --sanitize && python3 tools/test_r8125.py --32
       - name: Taskbar Wi-Fi actions, password erasure, hotplug and layout

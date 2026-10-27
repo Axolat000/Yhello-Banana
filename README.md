@@ -26,6 +26,11 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental Aquantia AQC107 Ethernet** - native PCI, flash firmware API
+  2.x/3.x, PHY link setup and independent polled DMA rings for Atlantic B0/B1.
+  Models cover two cards, packet/error bounds, power capabilities and reset
+  failures; physical testing and throughput measurements remain pending.
+  [Hardware scope and tests](third_party/aq/README.md).
 - **Experimental RTL8188EUS Wi-Fi** - a native RTL8188EU USB driver now loads
   firmware, reads EFUSE calibration, initializes MAC/BB/RF and connects through
   the existing WPA2/CCMP station. Sanitizer and 32-bit models exercise real driver

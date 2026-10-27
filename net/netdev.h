@@ -34,6 +34,7 @@ typedef struct netdev {
 /* Drivers: each returns a ready-to-use device, or NULL if its hardware
  * isn't present. */
 netdev_t* e1000_probe(void);
+void aqc107_probe_all(void);    /* experimental Atlantic B0/B1, flash firmware 2.x/3.x */
 void r8125_probe_all(void);     /* independent RTL8125/A/B/D contexts */
 void igc_probe_all(void);       /* independent I225-V/I226-V contexts */
 netdev_t* rtl8139_probe(void);

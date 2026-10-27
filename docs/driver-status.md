@@ -24,7 +24,7 @@ existing RTL8152. No new Wi-Fi/Ethernet adapters were available for physical tes
 | Realtek RTL8168 | Existing r8169 path | Physical testing of the particular device/revision |
 | Realtek RTL8125 | Experimental r8125 A/B/D | Physical hardware, link negotiation and traffic |
 | Broadcom BCM5720 | Pending | Native PCI/PHY/DMA data path |
-| Marvell Aquantia AQC107 | Pending | Native PCI/firmware/DMA data path |
+| Marvell Aquantia AQC107 | Experimental, 1d6a:07b1 B0/B1, firmware 2.x/3.x | Physical hardware, PHY negotiation and traffic |
 | ASIX AX88179 | Experimental, 0b95:1790 | Physical hardware, link negotiation and traffic |
 | ASIX AX88179A | Conditional CDC-NCM/ECM configuration | Vendor-specific protocol remains pending |
 | Realtek RTL8153 | Experimental r8153, documented revisions | Physical hardware, link negotiation and traffic |

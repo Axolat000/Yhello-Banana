@@ -88,8 +88,17 @@ RAM version, negotiates 10/100/1000/2500, and uses independent 32-byte DMA rings
 per card. Polling, MTU 1500, software checksums and memory BAR2 are required.
 Unknown revisions, IO-only cards and RTL8126/8127 are not bound. There is no
 jumbo/VLAN/offload/RSS or hardware-performance claim; physical testing is pending.
-The old RTL8111/8168 and RTL8152 drivers are unchanged. BCM5720 and AQC107 remain
-pending.
+The old RTL8111/8168 and RTL8152 drivers are unchanged. BCM5720 remains pending.
+
+AQC107 (1d6a:07b1), Atlantic B0/B1 with card-resident flash firmware API 2.x/3.x,
+has an experimental native polling driver. It resets firmware/MAC, reads the
+factory MAC through the firmware mailbox, configures PHY autonegotiation and
+uses independent 128-entry RX / 64-entry TX rings per card. It enables bus
+mastering only after ring initialization. Unknown revisions, firmware 1.x,
+host-boot-only devices and other Aquantia IDs are declined. MTU 1500, software
+checksums, no RSS, VLAN stripping, EEE or interrupt handlers. Model validation
+covers two cards; physical link/traffic/performance validation is pending.
+See [AQC107 source and scope](../third_party/aq/README.md).
 A matching device ID alone is not sufficient to declare these supported.
 
 ## Validation

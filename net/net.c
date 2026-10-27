@@ -282,6 +282,7 @@ void net_init(void) {
     memset(&g_if, 0, sizeof(g_if));
     igc_probe_all();
     r8125_probe_all();
+    aqc107_probe_all();
     netdev_t* nd = e1000_probe();
     if (nd) net_register_device(nd);
     nd = r8169_probe();

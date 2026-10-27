@@ -5,6 +5,7 @@ extern const uint8_t mt7601_notices_start[],mt7601_notices_end[];
 extern const uint8_t rtl8188eu_notice_start[],rtl8188eu_notice_end[];
 extern const uint8_t igc_notices_start[],igc_notices_end[];
 extern const uint8_t uacpi_notice_start[],uacpi_notice_end[];
+extern const uint8_t aqc107_notice_start[],aqc107_notice_end[];
 extern const uint8_t r8125_notice_start[],r8125_notice_end[];
 static void install_notice(const char* dir,const char* path,const uint8_t* start,const uint8_t* end) {
     if(fs_mkdir_p(dir)<0) return;
@@ -13,6 +14,8 @@ static void install_notice(const char* dir,const char* path,const uint8_t* start
     if(f>=0) fs_write(f,start,(uint32_t)((uintptr_t)end-(uintptr_t)start));
 }
 void wifi_boot_files(void) {
+    install_notice("/usr/share/licenses/aqc107","/usr/share/licenses/aqc107/NOTICES",
+                   aqc107_notice_start,aqc107_notice_end);
     install_notice("/usr/share/licenses/rtl8188eu","/usr/share/licenses/rtl8188eu/NOTICES",
                    rtl8188eu_notice_start,rtl8188eu_notice_end);
     install_notice("/usr/share/licenses/r8125","/usr/share/licenses/r8125/NOTICES",

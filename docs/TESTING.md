@@ -501,3 +501,15 @@ The LibJS long-interaction regression measures elapsed guest time with
 RTC and timer can drift separately under TCG; this must not turn a finite test
 into an apparent hostile loop. The following infinite-loop test still requires
 a CPU quota stop and a surviving independent renderer.
+
+### AQC107 native Ethernet model
+
+Run `python3 tools/test_aqc107.py --sanitize` and `--32`. Both compile the
+actual frontend and shared hardware initialization, with modeled card-resident
+firmware, registers and DMA completion. Tests cover B0/B1 firmware 2.x/3.x,
+factory MAC, link changes, two simultaneous independent cards, ring wrap/full
+queues, malformed RX/packet chains, firmware/reset/mailbox/semaphore failures,
+unknown PCI/revision/firmware rejection and PCI power/MSI capability handling.
+A failed card loses PCI bus mastering without stopping the other card.
+No controller firmware is flashed. These are protocol/model tests, not physical
+AQC107 verification or throughput measurements.
