@@ -44,6 +44,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get update -qq
           sudo apt-get install -y nasm gcc-multilib binutils xorriso mtools python3 sbsigntool efitools ncurses-bin zsh cmake git
 
@@ -187,6 +188,7 @@ jobs:
       - name: Install validation dependencies
         timeout-minutes: 10
         run: |
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends python3 qemu-system-x86 qemu-utils ovmf gcc e2fsprogs
           # qemu-img is required by ci-install-test.sh; install it explicitly
@@ -246,6 +248,7 @@ jobs:
         run: |
           # (room for OpenJDK's reference build)
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get update -qq
           sudo apt-get install -y gcc-multilib g++ binutils make python3 autoconf zip unzip file libffi-dev \
             mtools fdisk meson ninja-build flex bison python3-mako python3-yaml zlib1g-dev pkg-config \
@@ -419,6 +422,7 @@ jobs:
       - name: Install headless QEMU test dependencies
         timeout-minutes: 10
         run: |
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 python3
       - uses: actions/download-artifact@v4
@@ -462,6 +466,7 @@ jobs:
       - name: Install headless QEMU test dependencies
         timeout-minutes: 10
         run: |
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools python3
       - uses: actions/download-artifact@v4
@@ -509,14 +514,7 @@ jobs:
       - name: Install headless driver test dependencies
         timeout-minutes: 15
         run: |
-          # The Azure mirror can trickle packages without hitting a socket timeout.
-          # Current runners use mirror+file URIs; changing only a direct URI
-          # leaves apt selecting the same slow Azure mirror from that list.
-          sudo sed -i \
-            -e 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' \
-            -e 's|mirror+file:/etc/apt/apt-mirrors-security.txt|https://security.ubuntu.com/ubuntu|g' \
-            -e 's|http[s]*://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list.d/ubuntu.sources
+          sudo python3 tools/ci_apt_mirrors.py
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools gcc-multilib binutils make python3
       - uses: actions/download-artifact@v4
