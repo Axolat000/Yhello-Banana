@@ -73,7 +73,7 @@ static int ath_ordered(const uint8_t*p,unsigned n,unsigned stride){
 static int ath_rom_valid(struct athn_softc*sc){
  struct ar5416_eeprom*e=sc->eep;struct ar5416_base_eep_header*h=&e->baseEepHeader;
  if(!(h->opCapFlags&AR_OPFLAGS_11G)||!h->rxMask||!h->txMask||
-    (h->rxMask&~3u)||(h->txMask&~3u)||h->length>sizeof(*e)||
+    (h->rxMask&~3u)||(h->txMask&~3u)||h->rxMask==2||h->txMask==2||h->length>sizeof(*e)||
     h->length<sizeof(*h)||(h->length&1))return 0;
  unsigned any=0;for(unsigned i=0;i<6;i++)any|=h->macAddr[i];
  if(!any||(h->macAddr[0]&1))return 0;

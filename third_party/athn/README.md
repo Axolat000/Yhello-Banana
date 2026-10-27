@@ -22,7 +22,7 @@ Pinned original files and SHA-256:
 ## Exact initial scope
 
 PCI `168c:002a`, PCIe MAC revision AR9280 2.0 or 2.1, validated native EEPROM
-layout/checksum, unicast factory MAC, calibrated one/two-chain masks and usable
+layout/checksum, unicast factory MAC, calibrated contiguous chain masks (1/3) and usable
 2.4 GHz tables. Unknown MAC revisions, other AR928x/AR922x IDs, malformed
 calibration, unsupported radio switches or reset failures publish no interface.
 AR9380 is a separate implementation and is **not** supported by this driver.

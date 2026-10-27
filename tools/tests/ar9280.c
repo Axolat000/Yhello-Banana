@@ -177,6 +177,8 @@ int main(void){
  init();rom[AR5416_EEP_START_LOC+1]^=1;CHECK(ath_attach(&pd)<0&&!registered);
  init();regs[0][AR_SREV/4]=(AR_SREV_VERSION_9280<<12)|255;CHECK(ath_attach(&pd)<0&&!registered&&!writes);
  init();pd.device=0x0030;CHECK(ath_attach(&pd)<0&&!nalloc);pd.device=0x002a;
+ init();struct ar5416_eeprom*invalid=(void*)(rom+AR5416_EEP_START_LOC);
+ invalid->baseEepHeader.rxMask=2;rom_checksum();CHECK(ath_attach(&pd)<0&&!registered);
  /* Checksum-correct EEPROM corruption must not escape software validation. */
  uint32_t rng=0x928011dd;
  for(unsigned trial=0;trial<1000;trial++){
