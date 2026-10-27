@@ -13,9 +13,9 @@ pathlib.Path(sys.argv[1]).write_text('#include "rtc.h"\n' + text[start:end])
 PY
 for arch in ${ARCHES:-64}; do
     mkdir "$work/$arch"
-    for source in third_party/mbedtls/library/*.c ports/mbedtls/banana_platform.c ports/mbedtls/banana_transport.c "$work/rtc_civil.c" kernel/kstring.c tools/mbedtlstest/test.c; do
+    for source in third_party/mbedtls/library/*.c ports/mbedtls/banana_platform.c ports/mbedtls/banana_transport.c ports/mbedtls/banana_ca.c net/tls.c "$work/rtc_civil.c" kernel/kstring.c tools/mbedtlstest/test.c; do
         gcc -m"$arch" -O2 -ffreestanding -nostdinc -fno-builtin -DNDEBUG \
-            -I kernel -I net -I ports/mbedtls -I ports/mbedtls/libc \
+            -I . -I kernel -I net -I ports/mbedtls -I ports/mbedtls/libc \
             -I third_party/mbedtls/include -DMBEDTLS_CONFIG_FILE='"banana_config.h"' \
             -Wall -Wextra -Werror -c "$source" -o "$work/$arch/$(basename "$source" .c).o"
     done

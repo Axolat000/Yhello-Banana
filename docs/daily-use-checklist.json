@@ -2357,6 +2357,34 @@
     ]
   },
   {
+    "id": "base-18-sdk-heap-evaluation",
+    "title": "Qualify the process-local SDK heap under desktop load",
+    "priority": "P1",
+    "domain": "System",
+    "kind": "Consolidate",
+    "goal": "Verify that moving SDK allocation into each process improves daily-use responsiveness without losing memory or thread-lifecycle correctness.",
+    "depends": [
+      "base-18"
+    ],
+    "relatedTasks": [
+      "base-18"
+    ],
+    "planningReason": "The adaptation of upstream 46446439da13 replaces kernel malloc calls with a single-lock process-local heap. Host mapping and thread substitutes cannot qualify Banana pthread lifecycle, demand paging, swap, or desktop latency. The prior dependency named a controller execution task absent from this versioned checklist and failed integration link validation. Depend on the existing base-18 task for load instrumentation and memory-pressure policy; retain the pinned upstream commit as provenance, not as a checklist ID. Keep base-18 history intact and schedule this linked qualification only after the allocator adaptation is integrated, independent review, and controller validation. Validation must resolve every checklist link to a distinct existing task and find no dependency cycles; all lifecycle and before/after measurement criteria remain required.",
+    "evidence": "sdk/lib/malloc.c uses anonymous mappings and one lock; kernel/uspace.c reserves addresses before first-touch physical allocation. Resident mappings were previously absent from app_snapshot accounting.",
+    "acceptance": "Repeat identical workloads on the parent kernel-allocator baseline and adapted SDK, with pinned VM configuration and application rebuilds. Record syscall counts, allocations/second, resident and reserved bytes, swap use, and input latency p50/p95/max; explain regressions and retain logs. No corruption, leaked mappings after process teardown, or deadlock across pthread startup, destructors, the existing ENOSYS cancellation contract/exit, cross-thread frees, pressure, and swap. Verify kernel-owned HTTP and decoded-image buffers.",
+    "deliverable": "Reproducible Banana VM qualification and before/after performance report, with measured follow-up fixes if needed.",
+    "steps": [
+      "Add reproducible allocation workloads and counters for kernel malloc/free/realloc and vm_map/vm_unmap; measure throughput and virtual/resident memory separately on baseline and adapted builds.",
+      "Exercise real pthread startup, destructor allocation, the existing cancellation contract/exit, process teardown, HTTP/image ownership, forced memory pressure, and swap with data checks and leak accounting.",
+      "Run base-18 copy/download/audio/browser scenarios under the same VM configuration; compare input latency and desktop responsiveness, document regressions, and propose measured improvements rather than speculative caches."
+    ],
+    "tests": [
+      "Run randomized allocation preservation and mapping/unmapping failure injection on the host; retain explicit limits of substitutes.",
+      "Run BIOS and UEFI Banana VMs with SMP and reduced RAM; repeat lifecycle/ownership/pressure/swap scenarios and require no corruption, leaks or global stalls.",
+      "Capture before/after syscall count, throughput, virtual reservation, resident memory, swap use, and desktop latency with workload seeds, durations, RAM/core configuration and logs."
+    ]
+  },
+  {
     "id": "base-17-tcp-throughput",
     "priority": "P2",
     "domain": "Network",
@@ -2384,6 +2412,105 @@
       "tools/test_tcp.py",
       "tools/tests/tcp_sim.c"
     ]
+  },
+  {
+    "id": "base-17-cross-core-clock",
+    "priority": "P1",
+    "domain": "Système",
+    "title": "Qualify cross-core TSC clock synchronization and per-AP offset tracking",
+    "evidence": "Adaptation of upstream commit 1b842a643383 established serialized boot-time AP TSC sampling, minimum-round-trip offset qualification, per-AP synchronization state, and timer_core_now_ms() in kernel/smp.c and kernel/timer.c. Long-term qualification under hardware drift and physical hardware validation remain to be tracked.",
+    "planningReason": "Following adaptation of upstream commit 1b842a643383 with the alternative design (software offset tracking and bounded qualification without raw TSC writes), this task formalizes continuous qualification of cross-core clock monotonicity under extended drift and physical hardware qualification without modifying started base-17 tasks.",
+    "goal": "Ensure all logical processor cores share a monotonic, drift-bounded clock timeline across long-running workloads, task migration, and hypervisors.",
+    "acceptance": "Cross-core clock reads remain monotonically nondecreasing across thread migration; drift over time is bounded within qualification thresholds; failed AP cores gracefully fall back to PIT/IRQ monotonic clocking.",
+    "deliverable": "Cross-core clock calibration and drift monitoring reports, regression test suites in tools/test_cross_core_clock.py, and documentation in docs/CROSS-CORE-CLOCK.md.",
+    "depends": [
+      "base-17"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "kernel/smp.c",
+      "kernel/smp.h",
+      "kernel/timer.c",
+      "kernel/timer.h",
+      "tools/test_cross_core_clock.py",
+      "docs/CROSS-CORE-CLOCK.md"
+    ],
+    "steps": [
+      "Validate serialized boot-time TSC qualification across QEMU SMP configurations (2 to 8 cores) and physical multi-socket hardware.",
+      "Implement continuous drift monitoring and recalibration thresholds for AP cores running high-frequency workloads.",
+      "Demonstrate graceful fallback to PIT/IRQ monotonic clocking when qualification thresholds fail or counters become desynchronized."
+    ],
+    "tests": [
+      "Run tools/test_cross_core_clock.py across simulated AP offsets and jitter.",
+      "Execute QEMU multi-core selftest suites and verify monotonic timestamps across migrating worker threads.",
+      "Measure sampling error and drift over time and verify fallback when qualification thresholds are exceeded."
+    ]
+  },
+  {
+    "id": "base-12-sdk-utf8-qualification",
+    "priority": "P1",
+    "domain": "Applications",
+    "title": "Qualify SDK restartable UTF-8 encoding and conversion state ABI",
+    "evidence": "Upstream commit c8ddcc75df2e introduced restartable UTF-8 encoding/decoding in sdk/lib/utf8.c and comprehensive scalar and byte split tests. Upstream additionally proposed enlarging mbstate_t to 8 bytes and importing a heavy LLVMpipe/C++ runtime port. The adapted solution preserves the existing 4-byte mbstate_t public ABI, encodes restart state in bits 0-24, and fixes string conversion wrappers (mbsrtowcs, mbstowcs).",
+    "planningReason": "Following adaptation of upstream commit c8ddcc75df2e with the alternative design (preserving the 4-byte public mbstate_t layout and omitting premature LLVMpipe/C++ stream ports), this task formalizes continuous qualification of SDK UTF-8 conversion correctness, thread-local state isolation, and binary compatibility across SDK consumers without modifying started base-12 tasks.",
+    "goal": "Ensure all SDK and OS consumers benefit from conformant, restartable UTF-8 encoding and decoding without ABI regressions or memory corruptions across threads.",
+    "acceptance": "Full Unicode scalar space (U+0000..U+10FFFF excluding surrogates), all prefix cuts/splits, overlong encodings, surrogates, and out-of-range codepoints pass with AddressSanitizer and UndefinedBehaviorSanitizer; 4-byte mbstate_t layout is preserved on i686 and x86_64; string conversion wrappers update source pointers and error state faithfully.",
+    "deliverable": "SDK UTF-8 test harness and regression test scripts in tools/test_sdk_utf8.py and tools/tests/test_sdk_utf8.c.",
+    "depends": [
+      "base-12"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "sdk/lib/utf8.c",
+      "sdk/lib/unix.c",
+      "sdk/include/wchar.h",
+      "tools/test_sdk_utf8.py",
+      "tools/tests/test_sdk_utf8.c"
+    ],
+    "steps": [
+      "Verify restartable UTF-8 decoding (mbrtowc) and encoding (wcrtomb) across all 1,112,064 Unicode codepoints and fragmented byte splits.",
+      "Validate bounds checking, overlong sequence rejection, surrogate exclusion, and out-of-range error handling with EILSEQ errno semantics.",
+      "Verify public 4-byte mbstate_t ABI stability on i686 and x86_64 and thread-local state isolation."
+    ],
+    "tests": [
+      "Run tools/test_sdk_utf8.py under AddressSanitizer and UndefinedBehaviorSanitizer.",
+      "Verify clean compilation of 32-bit (i686) and 64-bit (x86_64) SDK applications against sdk/banana.mk.",
+      "Verify mbsinit() state reporting and string conversion wrappers (mbsrtowcs, mbstowcs)."
+    ],
+    "rank": 46
+  },
+  {
+    "id": "base-29-virtio-scsi-qualification",
+    "priority": "P2",
+    "domain": "Données",
+    "title": "Qualify virtio-scsi storage controller and disk durability",
+    "evidence": "Adapted upstream virtio-scsi support from commit bf5c5f99cd732c514675511283f0db4ba1b0d6c2 with bounded read/write, atomic locking, completion validation, DMA buffer quarantine on timeout, and truthful cache flush semantics without unapproved renderer or SDHCI ADMA2/eMMC changes.",
+    "planningReason": "Following adaptation of upstream commit bf5c5f99cd73 according to the analyst alternative, this follow-up under base-29 tracks qualification of virtio-scsi disk discovery, installation, multi-target/LUN configurations, fault injection, and filesystem durability paths.",
+    "goal": "Ensure virtio-scsi storage devices are fully qualified for installation, multi-target LUN topologies, and crash-consistent durability under QEMU and KVM.",
+    "acceptance": "QEMU legacy and modern virtio-scsi configurations pass partition discovery, multi-target/LUN access, bounded block transfers, error recovery, and ext4 durability verification without data corruption.",
+    "deliverable": "Virtio-SCSI integration test suite and qualification evidence.",
+    "depends": [
+      "base-29"
+    ],
+    "kind": "Consolider",
+    "files": [
+      "kernel/virtio_scsi.c",
+      "kernel/virtio_scsi.h",
+      "tools/test_scsi.py",
+      "tools/tests/test_virtio_scsi.c"
+    ],
+    "steps": [
+      "Build both 32-bit and 64-bit kernels and verify virtio-scsi device detection on legacy and modern PCI transports.",
+      "Validate multi-target and non-zero LUN topologies (such as Proxmox default SCSI single at LUN 1).",
+      "Inject delayed, missing, malformed, and short completions to verify DMA buffer quarantine and controller fail-safe behavior.",
+      "Verify truthful SYNCHRONIZE CACHE error handling and integration with fd_sync and filesystem durability contracts."
+    ],
+    "tests": [
+      "Run python3 tools/test_scsi.py to verify request layout, timeout quarantine, used descriptor validation, resid checking, and truthful flush.",
+      "Boot QEMU with virtio-scsi-pci drive attached and verify disk discovery and partition scanning.",
+      "Verify regression of IDE, AHCI, NVMe, virtio-blk, and SD operation."
+    ],
+    "rank": 47
   },
   {
     "id": "base-kheap-integrity",

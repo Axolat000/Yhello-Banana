@@ -336,7 +336,7 @@ static stream_t* open_stream(const url_t* u, const http_request_t* req, http_res
             return NULL;
         }
         kstrlcpy(resp->tls_cipher, tls_cipher_name(s->tls), sizeof(resp->tls_cipher));
-        info(req, "TLS 1.3 connection using %s (certificate NOT verified)", resp->tls_cipher);
+        info(req, "TLS connection established using %s (server certificate verified)", resp->tls_cipher);
     }
     *rcp = NET_OK;
     return s;

@@ -40,6 +40,8 @@ MBEDTLS_FLAGS = -DNDEBUG -I ports/mbedtls -I ports/mbedtls/libc -I third_party/m
                 -DMBEDTLS_CONFIG_FILE=\"banana_config.h\"
 $(MBEDTLS_SRCS:.c=.o): CFLAGS += $(MBEDTLS_FLAGS)
 $(MBEDTLS_SRCS:.c=.o64): CFLAGS64 += $(MBEDTLS_FLAGS)
+net/tls.o: CFLAGS += $(MBEDTLS_FLAGS)
+net/tls.o64: CFLAGS64 += $(MBEDTLS_FLAGS)
 
 ASM_SRCS   = boot/boot.asm kernel/isr.asm kernel/task_switch.asm kernel/appcall.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm
 ASM_SRCS64 = boot/boot64.asm kernel/isr64.asm kernel/task_switch64.asm kernel/appcall64.asm kernel/exbin.asm kernel/frameworkbin.asm kernel/fontbin.asm kernel/appbin.asm kernel/smp_tramp.asm

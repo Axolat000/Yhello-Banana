@@ -17,6 +17,7 @@ void rtc_boot(void);                     /* the saved settings (whether the chip
 
 /* the local time now (the time zone's, kernel/tz.c): -1 if there is no clock */
 int rtc_read_datetime(rtc_datetime_t* out);
+int rtc_read_hardware(rtc_datetime_t* out); /* CMOS value, without cached elapsed time or timezone conversion */
 
 /* Seconds since 1970-01-01 00:00 of the local time (the dates of files are
  * kept in these, as FAT keeps them); rtc_now_utc(): of UTC. 0 if there is

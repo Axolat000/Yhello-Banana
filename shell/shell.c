@@ -4,6 +4,7 @@
 #include "../kernel/keyboard.h"
 #include "../kernel/utf8.h"
 #include "../kernel/fs.h"
+#include "../kernel/certs.h"
 #include "../kernel/sysinfo.h"
 #include "../kernel/timer.h"
 #include "../kernel/daemon.h"
@@ -1192,7 +1193,7 @@ static const char* const known_cmds[] = {
     /* shell/moncmds.c */
     "free", "swap", "latency", "df", "htop", "sched", "renice", "lscpu", "sensors", "gamepad", "ipv6", "toggle6", "ping6", "firewall", "kptest", "lsgpu", "brightness", "resolution", "drivers", "driver",
     /* shell/fscmds.c */
-    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck",
+    "chmod", "chown", "chgrp", "ln", "readlink", "stat", "fsck", "e2fsck", "zip", "unzip", "clip", "screenshot", "backup",
     /* kernel/vmtools.c */
     "vmtools",
     /* shell/help.c */
@@ -1755,8 +1756,8 @@ static void cmd_install(const char* args) {
 
     if (found == 0) {
         terminal_write_color(
-            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe or virtio disk\n"
-            "to the VM - besides the boot CD - then try again.\n",
+            "install: no hard disk found. Attach a (blank) IDE, SATA, NVMe, virtio or SCSI\n"
+            "disk to the VM - besides the boot CD - then try again.\n",
             VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
         return;
     }
@@ -2697,6 +2698,8 @@ void shell_run(void) {
     if (loaded <= 0) {
         fs_init();
         examples_seed();          /* the SDK example apps in ~/Examples */
+    } else {
+        certs_init();             /* ensure system CA bundle is present on existing installs */
     }
     if (loaded < 0)
         terminal_write_color(

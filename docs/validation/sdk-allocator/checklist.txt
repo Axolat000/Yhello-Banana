@@ -1,0 +1,2 @@
+Validated docs/daily-use-checklist.json: 52 unique IDs; depends, relatedTasks and replacedBy resolve without self-links; dependency graph is acyclic.
+No checklist changes in this review retry; base-18-sdk-heap-evaluation remains incomplete.

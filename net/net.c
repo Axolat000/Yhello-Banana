@@ -39,6 +39,8 @@ const char* net_strerror(int err) {
     case NET_ERR_NODEV:    return "no network card found";
     case NET_ERR_PROTO:    return "protocol error";
     case NET_ERR_INTR:     return "interrupted";
+    case NET_ERR_CERT:     return "certificate verification failed";
+    case NET_ERR_CLOCK:    return "system clock not set (cannot verify certificate dates)";
     default:               return "unknown error";
     }
 }

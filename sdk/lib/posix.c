@@ -208,8 +208,17 @@ static int aligned_add(void* p, void* raw, size_t size) {
     return 0;
 }
 
+int __malloc_heap(void);                           /* malloc.c */
+void* __malloc_aligned(size_t align, size_t n);
+
 int posix_memalign(void** out, size_t align, size_t size) {
     if (!out || align < sizeof(void*) || (align & (align - 1))) return EINVAL;
+    if (__malloc_heap()) {                              /* (the app's heap aligns blocks itself) */
+        void* p = __malloc_aligned(align, size);
+        if (!p) return ENOMEM;
+        *out = p;
+        return 0;
+    }
     if (align <= 16) {
         void* p = malloc(size);
         if (!p) return ENOMEM;
@@ -227,11 +236,11 @@ int posix_memalign(void** out, size_t align, size_t size) {
 void* aligned_alloc(size_t align, size_t size) { void* p; return posix_memalign(&p, align, size) ? NULL : p; }
 void* memalign(size_t align, size_t size) { return aligned_alloc(align, size); }
 
-/* (libc.c: free and realloc know these blocks) */
+/* malloc.c: free and realloc know these fallback blocks. */
 int __aligned_block(void* p, void** raw, size_t* size, int remove) {
-    /* (only pointers aligned to 32 or more are ever added; g_alive is read
-     * unlocked: p's own entry, if any, was added before p was handed out) */
-    if (((uintptr_t)p & 31) || !g_alive) return 0;
+    /* Only pointers aligned to 32 or more are ever added. Table state is
+     * read under the lock, including during simultaneous fallback first use. */
+    if ((uintptr_t)p & 31) return 0;
     int found = 0;
     aligned_lock();
     if (g_acap) {

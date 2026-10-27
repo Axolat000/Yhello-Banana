@@ -363,3 +363,10 @@ Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
 64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
 BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
 maps; those larger guest sizes were not run on this host.
+
+### Process-local SDK allocator
+
+See [sdk-allocator.md](sdk-allocator.md) for the VM contract, accounting semantics,
+host regression command, `systest heap` checks, and remaining qualification scope.
+Retained build and Banana BIOS/UEFI execution evidence, source fingerprints and
+replay commands are in [the allocator validation report](validation/sdk-allocator/README.md).

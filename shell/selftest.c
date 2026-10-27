@@ -18,6 +18,7 @@
 #include "../kernel/hmem.h"
 #include "../kernel/smp.h"
 #include "../kernel/zip.h"
+#include "../kernel/backup.h"
 #include "../kernel/clipboard.h"
 #include "../kernel/screenshot.h"
 #include "../kernel/session.h"
@@ -110,13 +111,13 @@ static void t_memory(void) {
     char note[96];
     if (total < (64ull << 20)) {
         skip("RAM above 4 GiB", "none here (QEMU: MEM=8G tools/dev.sh run)");
-        report("an app gets 64 MiB and every byte holds", run("mem", "64", NULL) == 0, "");
+        report("SDK heap allocates 64 MiB and every byte holds", run("mem", "64", NULL) == 0, "");
         return;
     }
     ksnprintf(note, sizeof(note), "%u MiB found", (uint32_t)(total >> 20));
     report("RAM above 4 GiB", 1, note);
     uint64_t before = hmem_used_bytes();
-    report("an app's 64 MiB come from above 4 GiB", run("mem", "64", "high") == 0, "");
+    report("kernel umem allocates 64 MiB from above 4 GiB", run("mem", "64", "high") == 0, "");
     ksnprintf(note, sizeof(note), "%u MiB in use before, %u after", (uint32_t)(before >> 20), (uint32_t)(hmem_used_bytes() >> 20));
     report("it is given back when the app ends", hmem_used_bytes() <= before, note);
 }
@@ -656,10 +657,171 @@ static void t_session(void) {
     report("session restore configuration toggle", enabled && disabled && session_restore_is_enabled(), "");
 }
 
+static void t_backup(void) {
+    section("versioned backup archives (BBA format, metadata, distinct volume)");
+    if (fs_find_dir("/tmp/btest") >= 0) fs_delete("/tmp/btest", 1);
+    fs_mkdir_p("/tmp/btest/tree/docs");
+    fs_mkdir_p("/tmp/btest/tree/accentué_répertoire");
+
+    const char* txt1 = "Banana OS daily-use backup test payload 1";
+    const char* txt2 = "Second document with special characters: éàèçù and newlines\n";
+    fs_write_path("/tmp/btest/tree/docs/file1.txt", txt1, (uint32_t)strlen(txt1));
+    fs_write_path("/tmp/btest/tree/accentué_répertoire/fichier_fêté.txt", txt2, (uint32_t)strlen(txt2));
+    fs_symlink("docs/file1.txt", "/tmp/btest/tree/link_to_file1");
+
+    char err[128] = "";
+    backup_stats_t st;
+    const char* sources[1] = { "/tmp/btest/tree" };
+
+    int rc = backup_create("/tmp/btest/backup.bba", sources, 1, 0, NULL, NULL, &st, err, sizeof(err));
+    report("create uncompressed versioned backup archive", rc == 0 && st.file_count == 2 && st.symlink_count == 1, err);
+
+    backup_stats_t vst;
+    rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify archive metadata, SHA-256 hashes and trailer", rc == 0 && vst.file_count == 2 && vst.symlink_count == 1, err);
+
+    /* Test compressed backup */
+    backup_stats_t cst;
+    rc = backup_create("/tmp/btest/backup_comp.bba", sources, 1, BBA_FLAG_DEFLATE, NULL, NULL, &cst, err, sizeof(err));
+    report("create compressed (deflate) versioned backup archive", rc == 0 && cst.file_count == 2, err);
+    rc = backup_verify("/tmp/btest/backup_comp.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify compressed archive checksums and inflated payloads", rc == 0 && vst.file_count == 2, err);
+
+    /* Test corruption detection */
+    int fi = fs_find_file("/tmp/btest/backup.bba");
+    fs_file_t* fl = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (fl && fl->content && fl->size > 50) {
+        char bak_copy[512];
+        uint32_t cpy_sz = fl->size < sizeof(bak_copy) ? fl->size : sizeof(bak_copy);
+        memcpy(bak_copy, fl->content, cpy_sz);
+
+        /* Flip byte in middle of payload to trigger checksum mismatch */
+        ((uint8_t*)fl->content)[40] ^= 0x55;
+        rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+        report("detect tampered payload (CRC/SHA-256 mismatch)", rc != 0, "");
+
+        /* Restore original data */
+        memcpy(fl->content, bak_copy, cpy_sz);
+    }
+
+    /* Test truncation detection */
+    if (fl && fl->content && fl->size > 20) {
+        uint32_t orig_sz = fl->size;
+        fl->size -= 10;
+        rc = backup_verify("/tmp/btest/backup.bba", NULL, NULL, &vst, err, sizeof(err));
+        report("detect truncated archive (missing/bad trailer)", rc != 0, "");
+        fl->size = orig_sz;
+    }
+
+    /* Test exclusion of caches and temporary files */
+    fs_mkdir_p("/tmp/btest/tree/.cache");
+    fs_mkdir_p("/tmp/btest/tree/tmp");
+    fs_write_path("/tmp/btest/tree/.cache/cached_blob.bin", "cached_data", 11);
+    fs_write_path("/tmp/btest/tree/tmp/scratch.tmp", "temp_data", 9);
+    fs_write_path("/tmp/btest/tree/docs/notes.txt~", "editor_backup", 13);
+    fs_write_path("/tmp/btest/tree/docs/old.bak", "old_backup", 10);
+    fs_write_path("/tmp/btest/tree/docs/real.txt", "valid_document", 14);
+
+    backup_stats_t xst;
+    err[0] = '\0';
+    rc = backup_create("/tmp/btest/backup_filtered.bba", sources, 1, 0, NULL, NULL, &xst, err, sizeof(err));
+    report("explicitly ignore caches and temporary files (.cache, tmp, *.bak, *~)",
+           rc == 0 && xst.file_count == 3 && xst.skipped_count >= 4, err);
+
+    err[0] = '\0';
+    rc = backup_verify("/tmp/btest/backup_filtered.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify filtered archive preserves valid files and omits caches",
+           rc == 0 && vst.file_count == 3 && vst.symlink_count == 1, err);
+
+    /* Test default backup of /home and selected configs */
+    backup_stats_t def_st;
+    err[0] = '\0';
+    rc = backup_system_default("/tmp/btest/backup_default.bba", 0, NULL, 0, &def_st, err, sizeof(err));
+    report("backup /home and system configurations (--default)",
+           rc == 0 && def_st.file_count > 0, err);
+
+    err[0] = '\0';
+    rc = backup_verify("/tmp/btest/backup_default.bba", NULL, NULL, &vst, err, sizeof(err));
+    report("verify default backup integrity and contents", rc == 0 && vst.file_count == def_st.file_count, err);
+
+    /* Test restoring into an alternative target directory */
+    backup_stats_t rst;
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/restored_alt", 0, NULL, NULL, &rst, err, sizeof(err));
+    report("restore backup into alternative target directory",
+           rc == 0 && rst.file_count == 2 && rst.symlink_count == 1, err);
+
+    /* Verify restored file content, accented filenames, and symlink target */
+    int rfi1 = fs_find_file("/tmp/btest/restored_alt/tree/docs/file1.txt");
+    fs_file_t* rfl1 = rfi1 >= 0 ? fs_get_file(rfi1) : NULL;
+    int rfi2 = fs_find_file("/tmp/btest/restored_alt/tree/accentué_répertoire/fichier_fêté.txt");
+    fs_file_t* rfl2 = rfi2 >= 0 ? fs_get_file(rfi2) : NULL;
+    char link_tgt[FS_PATH_LEN] = "";
+    int rlnk = fs_readlink("/tmp/btest/restored_alt/tree/link_to_file1", link_tgt, sizeof(link_tgt));
+    int content_match = rfl1 && rfl1->content && !strcmp(rfl1->content, txt1) &&
+                        rfl2 && rfl2->content && !strcmp(rfl2->content, txt2) &&
+                        rlnk > 0 && !strcmp(link_tgt, "docs/file1.txt");
+    report("verify restored contents, accented paths, and symbolic links", content_match, "");
+
+    /* Test corrupted archive detection before overwriting destination */
+    /* Create a target file that should NOT be modified when corrupt archive is passed */
+    fs_mkdir_p("/tmp/btest/safe_target");
+    fs_write_path("/tmp/btest/safe_target/important.txt", "unmodified_original", 19);
+
+    /* Tamper with backup.bba and attempt restore into safe_target */
+    if (fl && fl->content && fl->size > 50) {
+        char bak_copy[512];
+        uint32_t cpy_sz = fl->size < sizeof(bak_copy) ? fl->size : sizeof(bak_copy);
+        memcpy(bak_copy, fl->content, cpy_sz);
+
+        ((uint8_t*)fl->content)[40] ^= 0x55;
+        err[0] = '\0';
+        rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/safe_target", BBA_RESTORE_OVERWRITE, NULL, NULL, &rst, err, sizeof(err));
+        report("reject corrupt archive before restoring or overwriting destination", rc != 0, err);
+
+        /* Verify safe_target/important.txt was preserved and untouched */
+        int sfi = fs_find_file("/tmp/btest/safe_target/important.txt");
+        fs_file_t* sfl = sfi >= 0 ? fs_get_file(sfi) : NULL;
+        report("destination preserved untouched on corrupt archive detection",
+               sfl && sfl->content && !strcmp(sfl->content, "unmodified_original"), "");
+
+        memcpy(fl->content, bak_copy, cpy_sz);
+    }
+
+    /* Test truncated archive detection before overwriting destination */
+    if (fl && fl->content && fl->size > 20) {
+        uint32_t orig_sz = fl->size;
+        fl->size -= 10;
+        err[0] = '\0';
+        rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest/safe_target", BBA_RESTORE_OVERWRITE, NULL, NULL, &rst, err, sizeof(err));
+        report("reject truncated archive before destination modification", rc != 0, err);
+        fl->size = orig_sz;
+    }
+
+    /* Test compressed (deflate) archive restore */
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup_comp.bba", "/tmp/btest/restored_comp", 0, NULL, NULL, &rst, err, sizeof(err));
+    int crfi1 = fs_find_file("/tmp/btest/restored_comp/tree/docs/file1.txt");
+    fs_file_t* crfl1 = crfi1 >= 0 ? fs_get_file(crfi1) : NULL;
+    report("restore compressed backup and verify inflated file contents",
+           rc == 0 && crfl1 && crfl1->content && !strcmp(crfl1->content, txt1), err);
+
+    /* Test fresh root / installation restore simulation */
+    /* Delete the original /tmp/btest/tree directory completely, then restore backup.bba to /tmp/btest/tree */
+    fs_delete("/tmp/btest/tree", 1);
+    int gone = (fs_find_dir("/tmp/btest/tree") < 0);
+    err[0] = '\0';
+    rc = backup_restore("/tmp/btest/backup.bba", "/tmp/btest", 0, NULL, NULL, &rst, err, sizeof(err));
+    int restored_back = (fs_find_file("/tmp/btest/tree/docs/file1.txt") >= 0);
+    report("recover deleted directory tree from backup archive", gone && rc == 0 && restored_back, err);
+
+    fs_delete("/tmp/btest", 1);
+}
+
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "heap") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | heap | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "heap") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "backup") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | heap | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | backup | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -697,6 +859,8 @@ int selftest_cmd(int argc, char** argv) {
         t_ram();
     } else if (only && !strcmp(only, "zip")) {
         t_zip();
+    } else if (only && !strcmp(only, "backup")) {
+        t_backup();
     } else if (only && !strcmp(only, "clipboard")) {
         t_clip();
     } else if (only && !strcmp(only, "keyboard")) {
@@ -741,6 +905,7 @@ int selftest_cmd(int argc, char** argv) {
             t_ram();
             t_posix(NULL);
             t_zip();
+            t_backup();
             t_clip();
             t_session();
             t_swap();
@@ -750,6 +915,7 @@ int selftest_cmd(int argc, char** argv) {
             else skip("IPv6", "off; selftest ipv6 runs temporary local checks");
         }
         if (only && !strcmp(only, "session")) t_session();
+        if (only && !strcmp(only, "backup")) t_backup();
     }
 
     char line[96];

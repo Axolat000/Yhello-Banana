@@ -6,7 +6,12 @@
 void     timer_init(void);          /* PIT channel 0 at 1 kHz, driven by IRQ0 */
 uint32_t timer_ticks(void);         /* 100 Hz ticks since init (10 ms each) */
 uint64_t timer_ms64(void);          /* monotonic milliseconds without 32-bit wrap */
-uint32_t timer_ms(void);            /* milliseconds since init (from the TSC when it is usable) */
+uint32_t timer_ms(void);            /* milliseconds since init, excluding time in S3 */
+uint64_t timer_core_now_ms(void);   /* synchronized monotonic ms accounting for core offset */
+uint64_t timer_counter(void);       /* shared monotonic nanoseconds, including on other cores */
+uint64_t timer_counter_per_ms(void);/* 1000000: counter units per millisecond */
+const char* timer_clock_source(void);
+int timer_has_hardware_clock(void);
 uint64_t timer_tsc_per_ms(void);    /* the TSC's rate, measured at init (0: not usable) */
 uint32_t timer_irq_count(void);     /* timer interrupts so far: do they arrive? */
 void     timer_poll(void);          /* kept for callers; a no-op under IRQs */
