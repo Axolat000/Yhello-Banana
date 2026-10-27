@@ -9,6 +9,28 @@ permissions:
   contents: write
 
 jobs:
+  release-tag:
+    name: Reserve exact source revision for release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Reserve or verify the immutable build tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="build-$GITHUB_RUN_NUMBER"
+          # Reserve while this push is at main's head. GitHub's workflow-file
+          # permission guard can reject tagging older revisions at publish time.
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>/dev/null); then
+            test "$existing" = "$GITHUB_SHA" || { echo "Build tag points to another commit"; exit 1; }
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" --silent
+          fi
+
   build:
     needs: [libjs, mesa]
     runs-on: ubuntu-24.04
@@ -450,9 +472,18 @@ jobs:
 
   publish-isos:
     name: Publish validated standard and Mesa ISOs
-    needs: [build, boot, network, network-host, power, power-host]
+    needs: [release-tag, build, boot, network, network-host, power, power-host]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
+      - name: Verify release tag matches the tested source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/build-$GITHUB_RUN_NUMBER" --jq '.object.sha')
+          test "$actual" = "$GITHUB_SHA" || { echo "Refusing mismatched release tag"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           pattern: boot-iso-*-${{ github.sha }}
@@ -463,7 +494,8 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Banana OS build ${{ github.run_number }}
           prerelease: true
-          target_commitish: ${{ github.sha }}
+          # Tag was reserved and verified above; omit target_commitish so the
+          # release API does not re-check old workflow files against main.
           fail_on_unmatched_files: true
           files: |
             Banana_OS.iso
