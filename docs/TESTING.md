@@ -513,3 +513,10 @@ unknown PCI/revision/firmware rejection and PCI power/MSI capability handling.
 A failed card loses PCI bus mastering without stopping the other card.
 No controller firmware is flashed. These are protocol/model tests, not physical
 AQC107 verification or throughput measurements.
+
+### BCM5720 native Ethernet model
+
+See [BCM5720 scope and tests](bcm5720.md). Run
+`python3 tools/test_bcm5720.py --sanitize` and `--32` for the actual reset,
+PHY and DMA frontend with error injection, mutated RX completions and two
+independent functions. Physical copper/firmware interoperability is pending.

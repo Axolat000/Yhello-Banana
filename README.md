@@ -26,6 +26,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental Broadcom BCM5720 Ethernet** - independently written native
+  A0 copper driver with boot-firmware handshake, PHY negotiation and polled DMA.
+  Active BMC/APE management profiles are declined before reset. Sanitizer and
+  32-bit models cover malformed completions and two independent cards;
+  [physical validation is pending](docs/bcm5720.md).
+
 - **Experimental Aquantia AQC107 Ethernet** - native PCI, flash firmware API
   2.x/3.x, PHY link setup and independent polled DMA rings for Atlantic B0/B1.
   Models cover two cards, packet/error bounds, power capabilities and reset
