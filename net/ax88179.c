@@ -56,7 +56,7 @@ static int ax_config(usb_device_t* d, int c, ax_eps_t* e) {
     return usb_walk_config(d,c,ax_eps,e)>=0 && e->done ? 0 : -1;
 }
 static int ax_probe(usb_device_t* d) {
-    if (d->desc.idVendor!=0x0b95 || d->desc.idProduct!=0x1790) return -1;
+    if (d->desc.idVendor!=0x0b95 || d->desc.idProduct!=0x1790 || d->desc.bcdDevice!=0x0100) return -1;
     for(int c=0;c<USB_MAX_CONFIGS;c++) {
         ax_eps_t e;
         if(d->configs[c] && !ax_config(d,c,&e)) return c;
@@ -136,6 +136,7 @@ static int ax_encap(usbnet_t* u,uint8_t* out,const uint8_t* frame,uint32_t n) {
     return (int)n+8;
 }
 static int ax_attach(usb_device_t* d) {
+    if(d->desc.idVendor!=0x0b95 || d->desc.idProduct!=0x1790 || d->desc.bcdDevice!=0x0100) return -1;
     ax_eps_t e;
     if(ax_config(d,d->active_config,&e)) return -1;
     usbnet_t* u=kzalloc(sizeof(*u)); ax_priv_t* a=kzalloc(sizeof(*a));
@@ -178,7 +179,8 @@ static int ax_attach(usb_device_t* d) {
     return 0;
 fail:
     ax_wr(u,AX_RX_CTL,0,2);
-    kfree(a); kfree(u); return -1;
+    if(!u->submitted) { kfree(a); kfree(u); }
+    return -1;
 }
 static void ax_detach(usb_device_t* d) {
     if(d->drvdata) usbnet_stop(d->drvdata);

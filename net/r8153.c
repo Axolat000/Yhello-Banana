@@ -734,8 +734,8 @@ static int ure_attach(usb_device_t* d) {
     klog("r8153: version %04x initialized; experimental physical hardware support\n",s->version);
     return 0;
 fail:
-    /* Queued URBs exist only after a successful usbnet_start. */
-    kfree(s); kfree(u); return -1;
+    if(!u->submitted) { kfree(s); kfree(u); }
+    return -1;
 }
 static void ure_detach(usb_device_t* d) { if(d->drvdata) usbnet_stop(d->drvdata); }
 const usb_driver_t r8153_driver={"r8153",ure_probe,ure_attach,0,ure_detach};

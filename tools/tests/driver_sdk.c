@@ -46,7 +46,7 @@ static int builtin_probe(usb_device_t* d) { return d->desc.idVendor==0xbeef?0:-1
 static int builtin_attach(usb_device_t* d) { (void)d;return 0; }
 #define BUILTIN(n) const usb_driver_t n={#n,builtin_probe,builtin_attach,NULL,NULL}
 BUILTIN(hub_driver);BUILTIN(mt7601u_driver);BUILTIN(rtl8188eu_driver);BUILTIN(r8152_driver);BUILTIN(r8153_driver);
-BUILTIN(cdc_ncm_driver);BUILTIN(ax88179_driver);BUILTIN(cdc_ecm_driver);BUILTIN(xpad_driver);
+BUILTIN(cdc_ncm_driver);BUILTIN(ax88179_driver);BUILTIN(ax88179a_driver);BUILTIN(cdc_ecm_driver);BUILTIN(xpad_driver);
 BUILTIN(uaudio_driver);BUILTIN(adb_driver);BUILTIN(hid_driver);BUILTIN(usb_storage_driver);
 void* kmalloc(size_t n) { allocs++;return calloc(1,n); }
 void kfree(void* p) { if(p) { allocs--;free(p); } }

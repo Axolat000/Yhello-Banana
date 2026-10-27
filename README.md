@@ -26,6 +26,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental AX88179A/B vendor Ethernet** - separate revision-matched
+  initialization, PHY negotiation and 64-bit packet framing. Startup failures
+  cannot publish a half-initialized USB network interface; queued transfer
+  objects remain valid. Existing RTL8152/8153 and AX88179 regression models pass.
+  [Scope, sources and physical-test status](third_party/asix/README.md).
+
 - **Experimental Broadcom BCM5720 Ethernet** - independently written native
   A0 copper driver with boot-firmware handshake, PHY negotiation and polled DMA.
   Active BMC/APE management profiles are declined before reset. Sanitizer and

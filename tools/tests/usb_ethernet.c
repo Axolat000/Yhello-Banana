@@ -16,6 +16,9 @@ static uint32_t now=5000, txlen;
 static uint8_t txdata[32768], last_rx[1514], macregs[256], phyregs[64];
 static int short_read, bad_write, fail_request=-1, ep_fail, formats=3;
 static int proto, link_at_registration;
+static unsigned submit_fail,submit_error,register_full,mdio_after_submit;
+static unsigned mode_calls,reload_calls,power_calls,control_calls,fail_control_at;
+static usb_xfer_t* held_rx[USBNET_RX_N];
 static usbnet_t* device;
 static usb_device_t* active;
 static int format_calls, input_calls, filter_calls, interface_calls;
@@ -47,7 +50,7 @@ void net_rx(netdev_t* nd,const uint8_t* frame,uint32_t n) {
     received++; memcpy(last_rx,frame,n);
 }
 void net_register_device(netdev_t* nd) {
-    registered++; device=(usbnet_t*)nd; nd->present=1;
+    registered++; device=(usbnet_t*)nd; nd->present=!register_full;
     link_at_registration=nd->link_up(nd);
 }
 void net_unregister_device(netdev_t* nd) { nd->present=0; }
@@ -61,6 +64,11 @@ int usb_open_endpoint(usb_device_t* d,const usb_ep_desc_t* ep) {
 }
 int usb_submit(usb_xfer_t* x) {
     CHECK(x->dev && x->dev->present); submits++;
+    if(x->ep&0x80){
+        if(submits<=USBNET_RX_N)held_rx[submits-1]=x;
+        if(submits==submit_fail)return -1;
+        if(submits==submit_error){x->status=USB_XFER_ERROR;return 0;}
+    }
     x->status=USB_XFER_PENDING; x->actual=0;
     if(!(x->ep&0x80)) {
         if(x->len) { CHECK(x->len<=sizeof(txdata)); memcpy(txdata,x->buf,x->len); txlen=x->len; }
@@ -86,6 +94,7 @@ static void put16(uint8_t* p,uint32_t v) { p[0]=v; p[1]=v>>8; }
 static void put32(uint8_t* p,uint32_t v) { put16(p,v); put16(p+2,v>>16); }
 int usb_control(usb_device_t* d,uint8_t type,uint8_t req,uint16_t value,uint16_t index,void* data,uint16_t n) {
     CHECK(d->present);
+    if(++control_calls==fail_control_at)return -1;
     if(req==fail_request) return -1;
     if(type==USB_RECIP_IFACE && req==USB_REQ_SET_INTERFACE) { interface_calls++; return 0; }
     if(proto==3 && (type&0x60)==USB_TYPE_VENDOR) {
@@ -108,6 +117,27 @@ int usb_control(usb_device_t* d,uint8_t type,uint8_t req,uint16_t value,uint16_t
         for(unsigned i=0;i<n;i++) if(index&(1u<<(i%8))) regs[off+i]=src[i];
         rtl_bank=rtl_pla[0xe86c]|(uint16_t)rtl_pla[0xe86d]<<8;
         return n;
+    }
+    if(proto==4 && (type&0x60)==USB_TYPE_VENDOR) {
+        if(bad_write&&!(type&USB_DIR_IN))return -1;
+        if(req==8){CHECK(value==1&&index==0&&n==0);mode_calls++;return 0;}
+        if(req==6){CHECK(value==0&&index==0&&n==0);reload_calls++;return 0;}
+        if(req==0xc0){CHECK(value==0x500&&index==0&&n==0);return 0;}
+        if(req==0x31){CHECK(value==0&&index==0&&n==1&&*(uint8_t*)data==2);power_calls++;return 1;}
+        if(req==0x81){
+            CHECK(value==0x3404&&index==0&&n==4);
+            if(type&USB_DIR_IN)put32(data,0x6700);
+            else CHECK((*(uint32_t*)data&0x6700)==0x6100);
+            return short_read?3:4;
+        }
+        CHECK(req==1||req==2);
+        if(req==2&&mdio_after_submit&&submits)return -1;
+        uint8_t* regs=req==1?macregs:phyregs;
+        uint32_t off=req==1?value:index*2;
+        CHECK(req==1||value==3);
+        CHECK(off+n<=(req==1?sizeof(macregs):sizeof(phyregs)));
+        if(type&USB_DIR_IN){memcpy(data,regs+off,n);return short_read?n-1:n;}
+        memcpy(regs+off,data,n);return n;
     }
     if(proto==1 && (type&0x60)==USB_TYPE_VENDOR) {
         uint8_t* regs=req==1?macregs:phyregs;
@@ -139,6 +169,7 @@ int usb_control(usb_device_t* d,uint8_t type,uint8_t req,uint16_t value,uint16_t
 }
 #include "../../net/usbnet.c"
 #include "../../net/ax88179.c"
+#include "../../net/ax88179a.c"
 #include "../../net/cdc_ncm.c"
 #include "../../net/cdc_ecm.c"
 #include "../../net/r8152.c"
@@ -165,13 +196,15 @@ static void reset(usb_device_t* d,int protocol) {
     nalloc=0;
     memset(d,0,sizeof(*d)); memset(macregs,0,sizeof(macregs)); memset(phyregs,0,sizeof(phyregs));
     d->present=1; d->speed=USB_SPEED_SUPER;
-    d->desc.idVendor=0x0b95; d->desc.idProduct=0x1790; d->active_config=0;
+    d->desc.idVendor=0x0b95; d->desc.idProduct=0x1790; d->desc.bcdDevice=0x0100; d->active_config=0;
     d->configs[0]=protocol==2?ncm_config:vendor_config;
     /* Keep declared lengths tied to actual descriptor sizes. */
     put16(d->configs[0]+2,protocol==2?sizeof(ncm_config):sizeof(vendor_config));
     proto=protocol; received=registered=submits=irqs=0; device=0; active=d;
     short_read=bad_write=ep_fail=0; fail_request=-1; formats=3;
     format_calls=input_calls=filter_calls=interface_calls=0; input_limit=0;
+    submit_fail=submit_error=register_full=mdio_after_submit=0;
+    mode_calls=reload_calls=power_calls=control_calls=fail_control_at=0;memset(held_rx,0,sizeof(held_rx));
     uint8_t mac[6]={2,0xaa,0xbb,0xcc,0xdd,0xee}; memcpy(macregs+0x10,mac,6);
 }
 static void receive(usbnet_t* u,const uint8_t* b,uint32_t n) {
@@ -325,8 +358,108 @@ static void test_realtek(void) {
     reset_realtek(&d,0x5c00); ep_fail=1;
     CHECK(r8153_driver.attach(&d)<0 && !registered);
 }
+
+static uint8_t a79_config_bytes[]={
+ 9,2,32,0,1,1,0,0x80,50,
+ 9,4,0,0,2,0xff,0xff,0,0,
+ 7,5,0x82,2,0,4,0,7,5,3,2,0,4,0
+};
+static void reset_a79(usb_device_t*d){
+ reset(d,4);d->desc.bcdDevice=0x0200;d->configs[0]=a79_config_bytes;
+ a79_config_bytes[22]=a79_config_bytes[29]=0;
+ a79_config_bytes[23]=a79_config_bytes[30]=4;
+ macregs[5]=0x60;put16(phyregs+4,0x362);put16(phyregs+6,0x5f60);
+}
+static void a79_link_model(unsigned speed,unsigned full){
+ put16(phyregs+2,0x24);
+ put16(phyregs+10,speed==100?(full?0x100:0x80):(full?0x40:0x20));
+ put16(phyregs+20,speed==1000?0x800:0);
+ now+=1100;
+}
+static void test_a79(void){
+ usb_device_t d;reset_a79(&d);
+ CHECK(ax88179a_driver.probe(&d)==0&&ax88179_driver.probe(&d)<0);
+ CHECK(!ax88179a_driver.attach(&d));d.driver=&ax88179a_driver;
+ CHECK(registered==1&&!link_at_registration&&mode_calls==1&&reload_calls==1&&power_calls==1);
+ unsigned init_controls=control_calls;
+ CHECK(macregs[0x2b]==0&&macregs[0x35]==0&&macregs[0x34]==0&&macregs[0xcc]==1);
+ CHECK(device->ep_in==0x82&&device->ep_out==3&&device->rx_size==49152);
+ for(unsigned speed=10;speed<=1000;speed*=10)for(unsigned full=0;full<2;full++){
+  if(speed==1000&&!full)continue;
+  a79_link_model(speed,full);CHECK(device->nd.link_up(&device->nd));
+  CHECK(a79_get32(macregs+0xb7)%256==3);
+  CHECK((macregs[0x22]&3)==((speed==1000?1:0)|(full?2:0)));
+ }
+ uint8_t frame[1514];memset(frame,0x5a,sizeof(frame));
+ for(unsigned n=14;n<=1514;n++){
+  CHECK(!device->nd.send(&device->nd,frame,n));
+  unsigned payload=n<60?60:n;
+  uint32_t header=a79_get32(txdata);
+  CHECK((header&0x1fffff)==payload&&((header>>21)&127)==((payload+(payload>>8))&127));
+  CHECK((txlen&7)==0&&txlen==((payload+15)&~7u));
+  CHECK(!memcmp(txdata+8,frame,n));
+  for(unsigned i=n;i<txlen-8;i++)CHECK(txdata[8+i]==0);
+ }
+ CHECK(device->nd.send(&device->nd,frame,1515)<0);
+ uint8_t rx[256]={0};memcpy(rx,frame,60);memcpy(rx+64,frame,60);
+ put32(rx+128,(60u<<16)|0x800);put32(rx+136,(60u<<16)|0x800);
+ put32(rx+144,(128u<<13)|2);
+ receive(device,rx,152);CHECK(received==2&&!memcmp(last_rx,frame,60));
+ put32(rx+128,(60u<<16));receive(device,rx,152);CHECK(received==3);
+ put32(rx+128,(60u<<16)|0x80000000u|0x800);receive(device,rx,152);CHECK(received==4);
+ put32(rx+128,(60u<<16)|0x800);
+ put32(rx+136,(3000u<<16)|0x800);receive(device,rx,152);CHECK(received==4);
+ put32(rx+136,(60u<<16)|0x800);
+ put32(rx+140,1u<<24);receive(device,rx,152);CHECK(received==4);
+ put32(rx+140,0);put32(rx+128,(60u<<16)|0xc00);receive(device,rx,152);CHECK(received==4);
+ put32(rx+128,(60u<<16)|0x800);
+ fuzz_packets(device,rx,152);
+ put16(phyregs+2,0);now+=1100;CHECK(!device->nd.link_up(&device->nd));
+ put16(phyregs+2,65535);now+=1100;CHECK(!device->nd.link_up(&device->nd));
+ ax88179a_driver.detach(&d);CHECK(!device->nd.present);
+ for(unsigned fail=1;fail<=init_controls;fail++){
+  reset_a79(&d);fail_control_at=fail;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ }
+ reset_a79(&d);short_read=1;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ reset_a79(&d);bad_write=1;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ for(unsigned revision=0x100;revision<=0x500;revision+=0x100)if(revision!=0x200){
+  reset_a79(&d);d.desc.bcdDevice=revision;CHECK(ax88179a_driver.probe(&d)<0);
+ }
+ reset_a79(&d);macregs[5]=0x70;CHECK(ax88179a_driver.attach(&d)<0&&!mode_calls&&!registered);
+ reset_a79(&d);macregs[0x10]=1;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ reset_a79(&d);put16(phyregs+4,65535);CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ reset_a79(&d);ep_fail=1;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ for(unsigned at=1;at<=USBNET_RX_N;at++){
+  reset_a79(&d);submit_fail=at;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+  CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+  reset_a79(&d);submit_error=at;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+  CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ }
+ reset_a79(&d);register_full=1;CHECK(ax88179a_driver.attach(&d)<0&&registered==1);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ reset_a79(&d);mdio_after_submit=1;CHECK(ax88179a_driver.attach(&d)<0&&!registered);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ for(unsigned sp=USB_SPEED_FULL;sp<=USB_SPEED_SUPER;sp++){
+  if(sp!=USB_SPEED_FULL&&sp!=USB_SPEED_HIGH&&sp!=USB_SPEED_SUPER)continue;
+  reset_a79(&d);d.speed=sp;unsigned m=sp==USB_SPEED_FULL?64:sp==USB_SPEED_HIGH?512:1024;
+  put16(a79_config_bytes+22,m);put16(a79_config_bytes+29,m);
+  CHECK(!ax88179a_driver.attach(&d));a79_link_model(100,1);CHECK(device->nd.link_up(&device->nd));
+ }
+ reset_a79(&d);put16(a79_config_bytes+22,512);CHECK(ax88179a_driver.probe(&d)<0);
+ reset_a79(&d);d.configs[0]=ncm_config;CHECK(ax88179a_driver.probe(&d)<0&&cdc_ncm_driver.probe(&d)==0);
+ /* The same startup safety applies to pre-existing adapters. */
+ reset(&d,1);submit_fail=2;CHECK(ax88179_driver.attach(&d)<0&&!registered);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ reset(&d,2);submit_fail=2;CHECK(cdc_ncm_driver.attach(&d)<0&&!registered);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ reset_realtek(&d,0x5c00);submit_fail=2;CHECK(r8153_driver.attach(&d)<0&&!registered);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+ reset_realtek(&d,0x4c00);submit_fail=2;CHECK(r8152_driver.attach(&d)<0&&!registered);
+ CHECK(held_rx[0]&&held_rx[0]->dev==&d);
+}
+
 int main(void) {
-    test_ax(); test_ncm(); test_realtek();
+    test_ax(); test_ncm(); test_realtek(); test_a79();
     usb_device_t d; reset(&d,1);
     printf("USB Ethernet models: %u checks passed\n",checks);
     return 0;

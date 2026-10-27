@@ -24,6 +24,7 @@ typedef struct usbnet {
     usb_xfer_t    rx[USBNET_RX_N];
     usb_xfer_t    tx[USBNET_TX_N];
     usb_xfer_t    txz[USBNET_TX_N];
+    int           submitted;       /* retain this object after any URB submission */
     int           link;            /* cached link state */
     uint32_t      link_checked_ms;
 
@@ -36,7 +37,9 @@ typedef struct usbnet {
     void* priv;
 } usbnet_t;
 
-/* allocates buffers, queues the receive transfers, registers the netdev */
+/* Allocates buffers, queues every receive transfer, then registers the netdev.
+ * On failure with submitted != 0, retain u, priv and buffers: HCDs may still
+ * own embedded transfers. A negative get_link result aborts registration. */
 int  usbnet_start(usbnet_t* u);
 void usbnet_stop(usbnet_t* u);
 

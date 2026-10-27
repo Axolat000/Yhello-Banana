@@ -520,3 +520,11 @@ See [BCM5720 scope and tests](bcm5720.md). Run
 `python3 tools/test_bcm5720.py --sanitize` and `--32` for the actual reset,
 PHY and DMA frontend with error injection, mutated RX completions and two
 independent functions. Physical copper/firmware interoperability is pending.
+
+### AX88179A vendor framing and USB startup
+
+`python3 tools/test_network_drivers.py --sanitize` and `--32` now include
+AX88179A/B native vendor mode, all TX frame lengths, link modes, three USB
+speeds, aggregate fuzzing, exact silicon matching and failed RX submissions.
+Failed initialization retains embedded URBs for all affected existing USB
+Ethernet frontends. See [ASIX scope and source provenance](../third_party/asix/README.md).

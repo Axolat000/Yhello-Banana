@@ -58,7 +58,7 @@ static int usbnet_link_up(netdev_t* nd) {
     usbnet_t* u = (usbnet_t*)nd;
     if (!nd->present) return 0;
     if (u->get_link && timer_ms() - u->link_checked_ms > 1000) {
-        u->link = u->get_link(u);
+        u->link = u->get_link(u) > 0;
         u->link_checked_ms = timer_ms();
     }
     return u->link;
@@ -80,7 +80,11 @@ int usbnet_start(usbnet_t* u) {
         u->tx[i].status = u->txz[i].status = USB_XFER_OK;
         if (!u->tx[i].buf) return -1;
     }
-    for (int i = 0; i < USBNET_RX_N; i++) usb_submit(&u->rx[i]);
+    for (int i = 0; i < USBNET_RX_N; i++) {
+        u->submitted = 1;
+        if (usb_submit(&u->rx[i]) != 0 ||
+            (u->rx[i].status != USB_XFER_PENDING && u->rx[i].status != USB_XFER_OK)) return -1;
+    }
 
     u->nd.is_usb = 1;
     u->nd.send = usbnet_send;
@@ -88,9 +92,10 @@ int usbnet_start(usbnet_t* u) {
     u->nd.link_up = usbnet_link_up;
     u->nd.irq = 0xFF;
     u->link = u->get_link ? u->get_link(u) : 1;
+    if (u->link < 0) return -1;
     u->link_checked_ms = timer_ms();
     net_register_device(&u->nd);
-    return 0;
+    return u->nd.present ? 0 : -1;
 }
 
 void usbnet_stop(usbnet_t* u) {

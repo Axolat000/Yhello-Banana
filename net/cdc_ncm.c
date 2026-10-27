@@ -201,7 +201,8 @@ static int ncm_attach(usb_device_t* d) {
     klog("cdc_ncm: NTB16 initialized, waiting for a link notification\n");
     return 0;
 fail:
-    kfree(p); kfree(u); return -1;
+    if(!u->submitted) { kfree(p); kfree(u); }
+    return -1;
 }
 static void ncm_detach(usb_device_t* d) {
     if(d->drvdata) usbnet_stop(d->drvdata);
