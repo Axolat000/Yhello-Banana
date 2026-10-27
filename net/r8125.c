@@ -186,7 +186,10 @@ static int r8125_attach(const pci_dev_t* pd) {
     c->nd.model=type==MAC_R25?"Realtek RTL8125 (experimental)":type==MAC_R25B?"Realtek RTL8125B (experimental)":"Realtek RTL8125D (experimental)";
     c->nd.irq=0xff;c->nd.priv=c;c->nd.send=r8125_send;c->nd.poll=r8125_poll;
     c->nd.link_up=r8125_carrier;c->nd.set_multicast=r8125_multicast;
-    pci_enable(pd); /* start DMA only after initialization and ring setup */
+    pci_enable(pd);
+    /* The generic helper clears INTx-disable for interrupt-driven devices. */
+    uint16_t poll_command=pci_read16(pd->bus,pd->dev,pd->fn,4);
+    pci_write16(pd->bus,pd->dev,pd->fn,4,poll_command|0x400u); /* start DMA only after initialization and ring setup */
     net_register_device(&c->nd);klog("r8125: experimental RTL8125 interface registered\n");return 0;
 fail:
     /* MMIO may be unresponsive: PCI config still stops future bus mastering. */

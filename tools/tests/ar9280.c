@@ -35,7 +35,7 @@ uint32_t timer_ms(void){return now;}
 static void ath_wait_us(unsigned us){now+=(us+999)/1000;}
 void random_bytes(void*p,uint32_t n){for(uint32_t i=0;i<n;i++)((uint8_t*)p)[i]=64+i;}
 void net_irq_notify(void){}
-void net_register_device(netdev_t*n){CHECK(n->irq==0xff&&!n->is_usb);registered++;n->present=!register_full;radio=n->priv;}
+void net_register_device(netdev_t*n){CHECK(commands[((ath_native_t*)((wifi_radio_t*)n->priv)->hw)->pci.dev&1]&0x400u);CHECK(n->irq==0xff&&!n->is_usb);registered++;n->present=!register_full;radio=n->priv;}
 void net_unregister_device(netdev_t*n){n->present=0;}
 void net_rx(netdev_t*n,const uint8_t*b,uint32_t len){CHECK(n==&radio->nd&&b&&len>=14&&len<=1514);received++;}
 static unsigned card(struct athn_softc*s){ath_native_t*c=s->priv;CHECK(c->pci.dev<2);return c->pci.dev;}
@@ -83,7 +83,7 @@ void pci_write16(uint8_t b,uint8_t d,uint8_t f,uint8_t off,uint16_t v){
  if(off==4){commands[d]=v;return;}pcfg[d][off]=v;pcfg[d][off+1]=v>>8;
 }
 uintptr_t pci_bar(const pci_dev_t*p,int n,int*io){CHECK(n==0);*io=0;return(uintptr_t)regs[p->dev];}
-void pci_enable_from(const pci_dev_t*p,const char*file){CHECK(p&&file);commands[p->dev]|=7;enabled++;}
+void pci_enable_from(const pci_dev_t*p,const char*file){CHECK(p&&file);commands[p->dev]=(commands[p->dev]|7)&~0x400u;enabled++;}
 static pci_dev_t pd={.vendor=0x168c,.device=0x002a,.class_code=2,.subclass=0x80};
 int pci_scan(int(*cb)(const pci_dev_t*,void*),void*arg){
  for(unsigned i=0;i<2;i++){pci_dev_t p=pd;p.dev=i;int r=cb(&p,arg);if(r)return r;}return 0;

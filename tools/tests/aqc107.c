@@ -45,12 +45,12 @@ void* kmalloc_aligned(size_t n,size_t align){
  CHECK(allocn<64);allocs[allocn++]=p;return p;
 }
 void klog(const char*f,...){(void)f;}
-void net_register_device(netdev_t*n){registered++;n->present=!register_full;}
+void net_register_device(netdev_t*n){CHECK(commands[((aq_native_t*)n->priv)->pci.dev&1]&0x400u);registered++;n->present=!register_full;}
 void net_rx(netdev_t*n,const uint8_t*b,uint32_t len){CHECK(n&&b&&len>=14&&len<=1514);received++;}
 uint16_t pci_read16(uint8_t b,uint8_t d,uint8_t f,uint8_t off){(void)b;(void)d;(void)f;if(off==0)return 0x1d6a;if(off==4)return commands[d&1];CHECK(!(off&1));return pcfg[off]|(uint16_t)pcfg[off+1]<<8;}
 void pci_write16(uint8_t b,uint8_t d,uint8_t f,uint8_t off,uint16_t v){(void)b;(void)d;(void)f;CHECK(!(off&1));if(off==4)commands[d&1]=v;else {pcfg[off]=v;pcfg[off+1]=v>>8;if(off==0x44)pm_written=v;}}
 uintptr_t pci_bar(const pci_dev_t*p,int n,int*io){(void)p;CHECK(n==0);*io=0;return (uintptr_t)(p->dev&1?regs1:regs);}
-void pci_enable_from(const pci_dev_t*p,const char*file){CHECK(p&&file);enabled++;commands[p->dev&1]|=7;}
+void pci_enable_from(const pci_dev_t*p,const char*file){CHECK(p&&file);enabled++;commands[p->dev&1]=(commands[p->dev&1]|7)&~0x400u;}
 int pci_scan(int(*cb)(const pci_dev_t*,void*),void*arg){
  for(unsigned i=0;i<2;i++){
   pci_dev_t p={.dev=i,.vendor=0x1d6a,.device=0x07b1,.class_code=2};

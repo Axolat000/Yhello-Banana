@@ -30,12 +30,12 @@ void* kmalloc_aligned(size_t n,size_t a) {
     CHECK(nalloc<8);allocations[nalloc++]=p;return p;
 }
 void klog(const char* f,...) { (void)f; }
-void net_register_device(netdev_t* nd) { CHECK(registered<8);devs[registered++]=nd;nd->present=1; }
+void net_register_device(netdev_t* nd) { CHECK(models[((r8125_t*)nd->priv)->pci.dev].command&0x400u); CHECK(registered<8);devs[registered++]=nd;nd->present=1; }
 void net_rx(netdev_t* nd,const uint8_t* b,uint32_t n) { CHECK(nd && n>=14 && n<=1514 && b[0]==0xa5);received++; }
 void rge_delay_us(uint32_t n) { elapsed+=n;CHECK(elapsed<300000000); }
 uint16_t pci_read16(uint8_t b,uint8_t d,uint8_t f,uint8_t o) { (void)b;(void)f;return o==4?(uint16_t)models[d].command:0; }
 void pci_write16(uint8_t b,uint8_t d,uint8_t f,uint8_t o,uint16_t v) { (void)b;(void)f;CHECK(o==4);models[d].command=v; }
-void pci_enable_from(const pci_dev_t* pd,const char* file) { CHECK(pd && file);enabled++;models[pd->dev].command|=7; }
+void pci_enable_from(const pci_dev_t* pd,const char* file) { CHECK(pd && file);enabled++;models[pd->dev].command=(models[pd->dev].command|7)&~0x400u; }
 uintptr_t pci_bar(const pci_dev_t* pd,int bar,int* io) { CHECK(bar==2);*io=0;return (uintptr_t)&models[pd->dev]; }
 int pci_scan(int(*cb)(const pci_dev_t*,void*),void* arg) {
     for(unsigned i=0;i<6;i++) {

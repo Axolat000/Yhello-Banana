@@ -339,7 +339,10 @@ static int bc_attach(const pci_dev_t*p){
  /* One unused producer entry distinguishes full from empty. */
  c->rxpost=BC_RX-1;
  __sync_synchronize();bc_write(c,0x26c,c->rxpost);
- pci_enable(p);net_register_device(&c->nd);
+ pci_enable(p);
+    /* The generic helper clears INTx-disable for interrupt-driven devices. */
+    uint16_t poll_command=pci_read16(p->bus,p->dev,p->fn,4);
+    pci_write16(p->bus,p->dev,p->fn,4,poll_command|0x400u);net_register_device(&c->nd);
  if(!c->nd.present)goto fail;
  return 0;
 fail:

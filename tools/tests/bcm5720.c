@@ -64,7 +64,7 @@ void*kmalloc_aligned(size_t n,size_t align){
  void*p=0;if(posix_memalign(&p,align,n))return 0;CHECK(allocn<16);allocs[allocn++]=p;return p;
 }
 void klog(const char*f,...){(void)f;}
-void net_register_device(netdev_t*n){registered++;n->present=!register_full;}
+void net_register_device(netdev_t*n){CHECK(commands[((bcm5720_t*)n->priv)->pci.dev&1]&0x400u);registered++;n->present=!register_full;}
 void net_rx(netdev_t*n,const uint8_t*b,uint32_t len){
  CHECK(n&&b&&len>=14&&len<=ETH_FRAME_MAX);CHECK(b[0]==0x7a);received++;
 }
@@ -107,7 +107,7 @@ void pci_enable_from(const pci_dev_t*p,const char*file){
   CHECK(c->rx[i][2]==(i<<16|BC_BUF)&&c->rx[i][7]==i);
   CHECK((((uint64_t)c->rx[i][0]<<32)|c->rx[i][1])==(uintptr_t)c->rxbuf[i]);
  }
- commands[p->dev]|=7;enabled++;
+ commands[p->dev]=(commands[p->dev]|7)&~0x400u;enabled++;
 }
 static pci_dev_t pd={.vendor=0x14e4,.device=0x165f,.class_code=2};
 int pci_scan(int(*cb)(const pci_dev_t*,void*),void*arg){

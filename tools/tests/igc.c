@@ -46,7 +46,7 @@ int pci_scan(int (*cb)(const pci_dev_t*,void*),void* arg) {
     return 0;
 }
 uintptr_t pci_bar(const pci_dev_t* pd,int bar,int* io) { CHECK(bar==0);*io=0;return (uintptr_t)&models[pd->dev]; }
-void pci_enable_from(const pci_dev_t* pd,const char* file) { CHECK(pd->dev<2 && file);enabled++; }
+void pci_enable_from(const pci_dev_t* pd,const char* file) { CHECK(pd->dev<2 && file);enabled++;models[pd->dev].command=(models[pd->dev].command|7)&~0x400u; }
 uint16_t pci_read16(uint8_t b,uint8_t d,uint8_t f,uint8_t off) {
     (void)b;(void)f;CHECK(off==4);return models[d].command;
 }

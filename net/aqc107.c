@@ -194,7 +194,10 @@ static int aq_attach(const pci_dev_t*p){
  memcpy(c->nd.mac,sc->sc_enaddr.ether_addr_octet,6);
  c->nd.name="aqc107";c->nd.model="Aquantia AQC107 (experimental)";
  c->nd.irq=0xff;c->nd.priv=c;c->nd.poll=aq_poll;c->nd.send=aq_send;c->nd.link_up=aq_carrier;c->nd.set_multicast=aq_multicast;
- pci_enable(p);net_register_device(&c->nd);
+ pci_enable(p);
+    /* The generic helper clears INTx-disable for interrupt-driven devices. */
+    uint16_t poll_command=pci_read16(p->bus,p->dev,p->fn,4);
+    pci_write16(p->bus,p->dev,p->fn,4,poll_command|0x400u);net_register_device(&c->nd);
  if(!c->nd.present)goto fail;
  return 0;
 fail:aq_stop(c);klog("aqc107: firmware/reset failed; no interface registered\n");return -1;

@@ -339,6 +339,9 @@ static int ath_attach(const pci_dev_t*p){
  c->radio.nd.name="ath9280";c->radio.nd.model="Atheros AR9280 2.0 (experimental 2.4 GHz)";
  if(ath_channel(&c->radio,1))goto fail;
  pci_enable(p);
+    /* The generic helper clears INTx-disable for interrupt-driven devices. */
+    uint16_t poll_command=pci_read16(p->bus,p->dev,p->fn,4);
+    pci_write16(p->bus,p->dev,p->fn,4,poll_command|0x400u);
  if(wifi_register(&c->radio))goto fail;
  return 0;
 fail:ath_stop(c);klog("ath9280: unsupported silicon/EEPROM or radio initialization failure\n");return -1;
