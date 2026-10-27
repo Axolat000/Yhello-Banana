@@ -389,3 +389,5 @@ kernel/aml_host.o kernel/aml_host.o64: third_party/uacpi/LICENSE
 net/igc.o net/igc.o64: third_party/igc/NOTICES
 
 net/mt7601u.o net/mt7601u.o64: firmware/mediatek/mt7601u.bin firmware/mediatek/NOTICES
+
+net/rtl8188eu.o net/rtl8188eu.o64: firmware/realtek/rtl8188eufw.bin firmware/realtek/NOTICES

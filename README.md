@@ -26,6 +26,11 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental RTL8188EUS Wi-Fi** - a native RTL8188EU USB driver now loads
+  firmware, reads EFUSE calibration, initializes MAC/BB/RF and connects through
+  the existing WPA2/CCMP station. Sanitizer and 32-bit models exercise real driver
+  code; physical RF validation is pending. Legacy 2.4 GHz channels 1–11 only.
+  [All requested controller statuses](docs/driver-status.md), [Wi-Fi limits](docs/wifi.md).
 - **Independent vi/ex editor** - `vi` and `ex` now use
   [Neatvi](ports/vi/README.md), separately from Vim and its configuration.
   UTF-8 editing, saving, line deletion and ex mode are tested in the OS;

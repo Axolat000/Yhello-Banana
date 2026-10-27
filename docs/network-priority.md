@@ -60,15 +60,15 @@ working on physical hardware by the project owner; the new revisions still need
 physical validation. Unknown versions (including 7420/8153D) are declined.
 
 The requested Wi-Fi chipsets (Intel AX200/AX210/BE200/7260, Atheros AR9280/AR9380,
-Realtek RTL8188EUS/RTL8811CU) do **not** yet have working
+Realtek RTL8811CU) do **not** yet have working
 radio drivers in Banana OS. A native station core now implements passive 2.4 GHz
 discovery, open-system association, WPA2-PSK/CCMP handshake, group rekey and
 software CCMP. It is tested against an independent simulated access point,
 including retransmissions, key-reinstallation/replay attempts, invalid MICs,
-timeouts and malformed frames. It is now connected to an experimental MT7601U USB radio driver, with the
+timeouts and malformed frames. It is now connected to experimental MT7601U and RTL8188EUS USB radio drivers, with the
 firmware included in the OS and Settings/CLI controls. Physical RF validation
 is still pending; see [Wi-Fi setup and limits](wifi.md). Wi-Fi priority is infrastructure
-for other drivers. MT7601U is the initial experimental radio implementation. A future radio must
+for other drivers. MT7601U and RTL8188EUS now have experimental native radio implementations. A future radio must
 report carrier only after association/authentication; an unconnected radio or
 one without a carrier callback cannot win automatic selection.
 

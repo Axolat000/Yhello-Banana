@@ -1,8 +1,9 @@
 # Wi-Fi implementation and hardware status
 
-The initial experimental native radio driver is **MediaTek MT7601U**
-(reference USB ID `148f:7601`). It uses the native Banana OS USB stack and
-station core. It has not yet been validated with a physical dongle.
+The experimental native radio drivers are **MediaTek MT7601U**
+(reference USB ID `148f:7601`) and **Realtek RTL8188EUS / RTL8188EU**
+(`0bda:8179`). Both use the native USB stack and station core. Neither has
+yet been validated with a physical dongle.
 
 The driver's model boots the actual embedded firmware through the vendor/USB
 protocol, exercises EEPROM, RF/BBP calibration and channel setup, then performs
@@ -55,7 +56,7 @@ Settings > Network or `ifconfig priority auto|ethernet|wifi` controls selection.
   use-after-free, but repeated unplug/replug can consume additional memory.
 
 The requested Intel AX200/AX210/7260/BE200, Atheros AR9280/AR9380 and Realtek
-RTL8188EUS/RTL8811CU radio drivers are still pending. Their device IDs are not
+RTL8811CU radio drivers are still pending. Their device IDs are not
 added as false working network interfaces.
 
 ## Firmware, provenance and tests
@@ -106,3 +107,31 @@ Native flyout tests (`tools/test_nettray.py --sanitize` and `--32`) cover action
 with simulated radios, key input, stale scan results, hot unplug, password
 erasure, paging and layout. They complement the station/driver tests; physical
 Wi-Fi validation is still pending.
+
+## Realtek RTL8188EUS
+
+The initial RTL8188EU driver reads the logical EFUSE map, validates its MAC/USB
+identity and power calibration, loads the embedded firmware, initializes LLT,
+MAC/BB/RF, performs IQ/LC calibration and sets legacy 20 MHz channel power.
+One to three bulk-OUT queues and a bulk-IN data/report pipe are supported.
+Raw 802.11 packets feed the same passive scan and WPA2/CCMP station as MT7601U.
+Hardware sequence generation and cipher offload stay disabled. Basic response
+rates/slot time follow the selected AP; TX reports adapt among legacy rates.
+Malformed aggregates and out-of-bounds EFUSE maps are rejected.
+
+Only the reference USB ID is bound: RTL8188CU, FTV and RTL8811CU are different
+hardware and are not claimed. The same 2.4 GHz channels 1–11 / legacy b/g limits
+apply; no HT throughput, 5/6 GHz, WPA3 or periodic temperature recalibration.
+PHY/calibration readiness and bounded USB handshakes are required before a
+network interface is registered. Physical RF/antenna/power/interoperability
+validation remains pending.
+
+Firmware SHA-256:
+`1241ddbfc87f0495e0bf09d8b94c94680b60a3d8eeab89462b3c4d8d3e8a1ee0`
+(13,904 unmodified bytes). The pinned source and licence are documented in
+[third_party/rtwn/README.md](../third_party/rtwn/README.md).
+Complete notices are installed at `/usr/share/licenses/rtl8188eu/NOTICES`.
+Run `tools/test_rtl8188eu.py --sanitize` and `--32`: the native driver/HAL,
+embedded firmware and actual station core run against USB/register/OTP models
+and independent WPA2 access-point vectors, including malformed DMA aggregates,
+OTP corruption, failed initialization and controller-owned TX buffers.

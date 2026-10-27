@@ -5,6 +5,10 @@ on:
       - 'net/**'
       - 'third_party/igc/**'
       - 'third_party/rge/**'
+      - 'third_party/rtwn/**'
+      - 'firmware/realtek/**'
+      - 'tools/test_rtl8188eu.py'
+      - 'tools/tests/rtl8188eu.c'
       - 'tools/test_r8125.py'
       - 'tools/tests/r8125.c'
       - 'tools/test_igc.py'
@@ -54,6 +58,8 @@ jobs:
         run: python3 tools/test_wifi_station.py --sanitize && python3 tools/test_wifi_station.py --32
       - name: MT7601U radio firmware, USB transport and WPA2 integration model
         run: python3 tools/test_mt7601.py --sanitize && python3 tools/test_mt7601.py --32
+      - name: RTL8188EUS firmware, calibration, USB and WPA2 integration model
+        run: python3 tools/test_rtl8188eu.py --sanitize && python3 tools/test_rtl8188eu.py --32
       - name: Intel I225/I226 native HAL and DMA model
         run: python3 tools/test_igc.py --sanitize && python3 tools/test_igc.py --32
       - name: RTL8125 A/B/D native MAC, PHY, firmware and DMA model

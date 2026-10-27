@@ -54,6 +54,7 @@ python3 tools/serialtest.py --log "$logs/serial.log" \
     --cmd 'laptop ## ACPI AML: ready' \
     --cmd 'usbc ## no ready ACPI UCSI interface' \
     --cmd 'wifi ## no supported radio detected' \
+    --cmd 'cat /usr/share/licenses/rtl8188eu/NOTICES ## Copyright (c) 2010, Realtek' \
     --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     --cmd 'cat /usr/share/licenses/igc/NOTICES ## Copyright 2021 Intel Corp' \
     --cmd 'cat /usr/share/licenses/r8125/NOTICES ## Copyright (c) 2026 Realtek' \
