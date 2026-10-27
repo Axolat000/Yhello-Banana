@@ -26,6 +26,14 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Standalone Driver SDK with network and laptop services** - hardware modules
+  now have versioned Ethernet, Wi-Fi station, USB transport, firmware and cached
+  battery/backlight/UCSI interfaces. The original ABI remains compatible.
+  `make driver-sdk` exports `banana-driver-sdk.tar.gz` separately from the
+  application SDK. See [Driver SDK](driver-sdk/README.md). This API milestone
+  does not declare the remaining requested chipsets implemented.
+
+
 - **Taskbar Wi-Fi controls** - the network flyout lists nearby networks, accepts
   a masked WPA2 password and connects/disconnects compatible radios. It shares
   Settings' station core, supports multiple radios and keyboard input, and erases
@@ -243,7 +251,7 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 - **Media Player** - videos and music through **FFmpeg** (7.1, ported to Banana OS: [ports/ffmpeg](ports/ffmpeg/build.sh)): MP4, MKV, WebM, AVI, MOV, MPEG, OGG, FLV, WMV with H.264, H.265/HEVC, VP8, VP9, MPEG-4 (DivX/Xvid), MPEG-1/2, Theora, WMV and AAC, MP3, Opus, Vorbis, FLAC, AC-3, ALAC sound. The picture keeps to the sound's clock (late frames are dropped), seek bar, pause, keyboard and media keys, album covers for songs. Double-click a video in Files, or `mediaplayer file.mp4`. On the 64-bit kernel FFmpeg's SIMD code (SSE2...SSE4) is used
 - **Music** - a music library player after [Amethyst](https://github.com/Geoxor/Amethyst): the songs of `~/Music`, `~/Downloads`, the home folder and USB sticks with their tags and covers, *Songs* / *Albums* (a grid of covers) / *Artists* / *Liked songs* / *Queue*, search as you type, shuffle and repeat, **gapless** playback, a 6-band **equalizer** with presets, a spectrum **visualizer** (*Now playing*), and the media keys from anywhere on the desktop. (Amethyst itself is an Electron app - a whole Chromium - which cannot run here; this is a native player made the same way.)
 - **Graphics drivers** - real drivers instead of only the firmware's framebuffer: **VMware SVGA II** (VMware, VirtualBox's VMSVGA / VBoxSVGA, QEMU `-vga vmware`), **virtio-gpu** (QEMU / KVM `-vga virtio` and `-device virtio-gpu-pci`, which has no firmware framebuffer at all), **Bochs / QEMU / VirtualBox VBoxVGA** (and `bochs-display`), **Intel GMA 950** and **HD Graphics 2000 / 3000 / 2500 / 4000** (Sandy Bridge, Ivy Bridge). Resolution changes, the mouse pointer drawn by the graphics card, vertical-blank waits and a laptop panel's backlight (`brightness`) where the card has them - see [Graphics drivers](#graphics-drivers); `lsgpu`, `resolution`
-- **Driver Kit: drivers from hardware makers** - drivers are kernel modules built outside Banana OS with [sdk/driver](sdk/driver/banana_driver.h): a `.bpk` of type `driver`, installed with `pkg install`, loaded at every boot. PCI, ports, device memory, DMA memory, interrupts, tasks, and registering PCI drivers and displays - a display module replaces the built-in driver of its card. Two examples: a QEMU `edu` device driver and a display driver - see [Driver Kit](#driver-kit)
+- **Driver Kit: drivers from hardware makers** - drivers are kernel modules built outside Banana OS with [driver-sdk](driver-sdk/banana_driver.h): a `.bpk` of type `driver`, installed with `pkg install`, loaded at every boot. PCI, ports, device memory, DMA memory, interrupts, tasks, and registering PCI drivers and displays - a display module replaces the built-in driver of its card. Four examples: QEMU `edu`, a display module, SDK telemetry and a QEMU USB data demo - see [Driver Kit](#driver-kit)
 - **Function keys** - F1-F12, the Windows key (Start menu), Alt+F4 (closes the window in front; with none, *Shut down*), F11 (a terminal fills the screen), F2 / F5 in Files (rename, refresh), F5 in the browser, F3 in Notepad, and the **media keys** (laptops: Fn + F-key): volume up / down / mute work everywhere, with the level on the screen, play / pause / next / previous go to Music. PS/2 and USB keyboards; apps get `BANANA_KEY_F1`... and the media keys
 - **`$PATH`** - commands that are not built in are looked for in the folders of `$PATH` (`/bin:/apps:/home/banana/bin` by default): programs (SDK ELF files) and shell scripts run by name, `/apps` holds the installed apps; `export PATH=...` changes it, `which` / `type` say where a command is
 - **ACPI power-off** - `shutdown` and Start > Shut down turn the computer off the ACPI way (the FADT's registers and the DSDT's `\_S5_` sleep type, switching ACPI on first if the firmware left it off): VMware, VirtualBox, QEMU and real PCs
@@ -1089,17 +1097,20 @@ At boot every display controller gets the driver that knows it (`lsgpu` shows th
 
 ## Driver Kit
 
-Hardware makers (or anyone) can write drivers for Banana OS without changing it: [sdk/driver/banana_driver.h](sdk/driver/banana_driver.h) is the whole interface. A driver is a position-independent program of the kernel's own (ring 0, no floating point) with one entry point, `int banana_driver_main(const banana_driver_api_t* api)`; the table gives it the kernel log, PCI configuration space and BARs (mapped), I/O ports, device memory, ordinary and DMA memory, timing, shared interrupt lines, tasks, and two ways to plug in: `register_pci_driver()` (the devices of its ID list, probed right away) and `register_display()` (it becomes the screen - a display module takes over from the built-in driver of its card).
+Hardware makers (or anyone) can write drivers for Banana OS without changing it: [driver-sdk/banana_driver.h](driver-sdk/banana_driver.h) is the whole interface. A driver is a position-independent program of the kernel's own (ring 0, no floating point) with one entry point, `int banana_driver_main(const banana_driver_api_t* api)`; the table gives it the kernel log, PCI configuration space and BARs (mapped), I/O ports, device memory, ordinary and DMA memory, timing, shared interrupt lines, tasks, and two ways to plug in: `register_pci_driver()` (the devices of its ID list, probed right away) and `register_display()` (it becomes the screen - a display module takes over from the built-in driver of its card).
 
 ```make
 DRIVER      = acme-gpu
 TITLE       = ACME Graphics 9000
 VERSION     = 1.0
 SRCS        = acme.c
-include /path/to/banana-sdk/driver/driver.mk
+include /path/to/banana-driver-sdk/driver.mk
 ```
 
-`make` builds it for both kernels into `acme-gpu.bpk` (type `driver`); on Banana OS `pkg install acme-gpu.bpk` installs it and loads it, and it is loaded again at every boot. `drivers` lists the drivers, what each module drives and its state; `driver load <file>` loads a driver file for testing. Examples in [sdk/driver/examples](sdk/driver/examples): `edu` (QEMU's `-device edu` teaching device: registers, an interrupt, a task) and `bochsfb` (a display driver for the Bochs / QEMU VGA). `make driver-examples` builds them.
+`make` builds it for both kernels into `acme-gpu.bpk` (type `driver`); on Banana OS `pkg install acme-gpu.bpk` installs it and loads it, and it is loaded again at every boot. `drivers` lists the drivers, what each module drives and its state; `driver load <file>` loads a driver file for testing. Examples in [driver-sdk/examples](driver-sdk/examples): `edu` (QEMU's `-device edu` teaching device: registers, an interrupt, a task) and `bochsfb` (a display driver for the Bochs / QEMU VGA). `make driver-examples` builds them. The separate `make driver-sdk` target exports `banana-driver-sdk.tar.gz`.
+The application `make sdk` target exports `banana-sdk.tar.gz` without driver headers.
+The [Driver SDK guide](driver-sdk/README.md) documents versioned Ethernet, raw Wi-Fi,
+USB, firmware and laptop-provider services, callback contexts and lifetime rules.
 
 ## Available Commands
 

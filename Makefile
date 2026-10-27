@@ -222,7 +222,7 @@ clean:
 	for e in $(EXAMPLES); do $(MAKE) -s -C sdk/examples/$$e clean; done
 	rm -f $(EXAMPLE_BPKZ)
 	for a in $(APPS) $(APPS64) terminal webworker; do $(MAKE) -s -C apps/$$a clean; done
-	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C sdk/driver/examples/$$d clean; done
+	for d in $(DRIVER_EXAMPLES); do $(MAKE) -s -C driver-sdk/examples/$$d clean; done
 	rm -f banana-sdk.tar.gz
 	rm -f $(OBJS) $(OBJS64) $(DEPS) kernel.bin kernel64.bin Banana_OS.iso build/builtin-meta-*.bin build/libjsworker-x86_64.bpk.z
 	rm -rf isoroot
@@ -363,14 +363,14 @@ build/builtin-meta-%.bin: tools/mkbuiltinmeta.py $(foreach a,$(APPS),apps/$(a)/$
 	      $(foreach a,$(APPS64),$(a).bpk=apps/$(a)/$(a)-x86_64.bpk.z)) \
 	    $(foreach e,$(EXAMPLES),$(e).bpk=sdk/examples/$(e)/$(e).bpk.z)
 
-# the Driver Kit's examples (sdk/driver/examples): packages, not in the kernel
-DRIVER_EXAMPLES = edu bochsfb
+# the Driver Kit's examples (driver-sdk/examples): packages, not in the kernel
+DRIVER_EXAMPLES = edu bochsfb sdk-probe usb-serial-demo
 .PHONY: driver-examples
 driver-examples:
-	for d in $(DRIVER_EXAMPLES); do $(MAKE) -C sdk/driver/examples/$$d; done
+	for d in $(DRIVER_EXAMPLES); do $(MAKE) -C driver-sdk/examples/$$d; done
 kernel/fontbin.o kernel/fontbin.o64: $(wildcard fonts/*.ttf)
 
-.PHONY: examples sdk
+.PHONY: examples sdk driver-sdk
 examples: $(EXAMPLE_BPKS)
 
 # banana-sdk.tar.gz: everything needed to build apps on another Linux machine
@@ -378,6 +378,10 @@ sdk: $(EXAMPLE_BPKS)
 	tar czf banana-sdk.tar.gz --transform 's,^sdk,banana-sdk,' --exclude=build --exclude='*.bpk' sdk
 	@echo "banana-sdk.tar.gz: unpack it anywhere, then see banana-sdk/README.md"
 -include $(DEPS)
+
+# Standalone hardware kit; intentionally independent from app builds.
+driver-sdk:
+	python3 tools/export_driver_sdk.py
 
 # Embedded driver notices and firmware are inputs for both architectures.
 net/r8125.o net/r8125.o64: third_party/rge/NOTICES

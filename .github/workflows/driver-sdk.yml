@@ -1,0 +1,33 @@
+name: Standalone Driver SDK tests
+on:
+  pull_request:
+    paths:
+      - 'driver-sdk/**'
+      - 'kernel/driver*'
+      - 'kernel/laptop.*'
+      - 'usb/usbcore.*'
+      - 'tools/*driver_sdk*'
+      - 'tools/tests/driver_sdk.c'
+      - '.github/workflows/driver-sdk.yml'
+  workflow_call: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcc-multilib
+      - name: Native optional service and USB lifecycle tests
+        run: python3 tools/test_driver_sdk.py --sanitize && python3 tools/test_driver_sdk.py --32
+      - name: Build all examples without the application SDK
+        run: python3 tools/test_driver_sdk_export.py
+      - name: Export standalone Driver SDK
+        run: make driver-sdk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver-sdk-${{ github.sha }}
+          path: banana-driver-sdk.tar.gz
+          if-no-files-found: error
+          retention-days: 3

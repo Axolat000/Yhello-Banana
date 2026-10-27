@@ -2960,7 +2960,7 @@ void shell_run(void) {
     builtin_apps_install();         /* Media Player, Music (kernel/builtin_apps.c) */
     builtin_release();              /* installed: the packages on the disk, their RAM to the heap */
     boottime_mark("driver modules");
-    drivers_load_installed();       /* (installed with pkg: sdk/driver) */
+    drivers_load_installed();       /* (installed with pkg: driver-sdk) */
 
     boottime_mark("settings, servers");
     /* saved network settings, services enabled at boot (shell/srvcmds.c) */

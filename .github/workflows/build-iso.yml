@@ -141,6 +141,18 @@ jobs:
           make LIBJS_WORKER_BPK="$PWD/libjs-packages/libjsworker-x86_64.bpk" "${mesa_args[@]}"
           rm -f ~/.banana-secureboot/banana-sb.key
 
+      - name: Export application SDK independently
+        if: matrix.variant == 'standard'
+        run: make sdk
+      - name: Retain application SDK
+        if: matrix.variant == 'standard'
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-sdk-${{ github.sha }}
+          path: banana-sdk.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Name the Mesa ISO
         if: matrix.variant == 'mesa'
         run: mv Banana_OS.iso Banana_OS-mesa.iso
@@ -470,9 +482,55 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  driver-sdk-host:
+    uses: ./.github/workflows/driver-sdk.yml
+    permissions:
+      contents: read
+
+  driver-sdk-vm:
+    name: External driver modules (${{ matrix.firmware }}, ${{ matrix.bits }}-bit)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {firmware: bios, bits: 64}
+          - {firmware: bios, bits: 32}
+          - {firmware: uefi, bits: 64}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install headless driver test dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends qemu-system-x86 ovmf acpica-tools gcc-multilib binutils make python3
+      - uses: actions/download-artifact@v4
+        with:
+          name: boot-iso-standard-${{ github.sha }}
+      - name: Load frozen ABI module and SDK USB/laptop examples
+        timeout-minutes: 12
+        run: |
+          args=()
+          if [ "${{ matrix.bits }}" = 32 ]; then args+=(--32); fi
+          python3 tools/test_driver_sdk_vm.py --firmware "${{ matrix.firmware }}" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: driver-vm-${{ matrix.firmware }}-${{ matrix.bits }}-${{ github.sha }}
+          path: |
+            build/logs/driver-sdk-*/*.log
+            build/logs/driver-sdk-*/*.txt
+            build/logs/driver-sdk-*/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
   publish-isos:
     name: Publish validated standard and Mesa ISOs
-    needs: [release-tag, build, boot, network, network-host, power, power-host]
+    needs: [release-tag, build, boot, network, network-host, power, power-host, driver-sdk-host, driver-sdk-vm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -488,6 +546,12 @@ jobs:
         with:
           pattern: boot-iso-*-${{ github.sha }}
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: application-sdk-${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver-sdk-${{ github.sha }}
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
@@ -500,9 +564,14 @@ jobs:
           files: |
             Banana_OS.iso
             Banana_OS-mesa.iso
+            banana-sdk.tar.gz
+            banana-driver-sdk.tar.gz
           body: |
             - **Banana_OS.iso**: standard BIOS/UEFI image.
             - **Banana_OS-mesa.iso**: the same OS with the 64-bit Mesa runtime, Intel Crocus/Iris (Core 1st–10th generation), VirGL and software fallback. The combined Mesa/LibJS profile is tested with 1 GiB RAM.
+
+            - **banana-sdk.tar.gz**: application SDK.
+            - **banana-driver-sdk.tar.gz**: independent hardware Driver SDK (PCI, Ethernet/Wi-Fi, USB and laptop services).
 
             Intel acceleration is experimental and has not been validated on physical Intel GPUs. Run `gpu3d test`, then `gpu3d on` and `glinfo`; `gpu3d off` restores software rendering.
 

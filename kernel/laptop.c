@@ -3,6 +3,7 @@
  * tasks; UI clients read cached snapshots. One legacy ACPI EC and one UCSI PPM.
  * UCSI 1.1/1.2 only until newer layouts have dedicated tests. */
 #include "laptop.h"
+#include "driver_ext.h"
 #include "aml_host.h"
 #include "smp.h"
 #include "task.h"
@@ -367,16 +368,21 @@ void laptop_get_info(laptop_info_t* out) {
     /* BSP cooperative tasks: this copy never yields, so readers see one state. */
     memcpy(out,&info,sizeof(*out));
     out->usbc.ops=NULL;out->usbc.ctx=NULL;
+    driver_power_merge(out);
 }
 int laptop_backlight(int percent) {
-    if(!panel) return -1;
+    if(!panel) return driver_power_backlight(percent);
     if(percent<0) return info.brightness;
     if(percent>100) return -1;
     brightness_request=percent;info.brightness_pending=1;info.generation++;
     return percent;
 }
 int laptop_backlight_step(int delta) {
-    if(!panel || info.brightness<0 || !delta) return -1;
+    if(!delta) return -1;
+    if(!panel || info.brightness<0) {
+        int value=driver_power_backlight(-1);if(value<0) return -1;
+        value+=delta;return driver_power_backlight(value<0?0:value>100?100:value);
+    }
     int current=info.brightness,best=current;
     for(unsigned i=0;i<panel_nlevels;i++) {
         int level=(int)panel_levels[i];

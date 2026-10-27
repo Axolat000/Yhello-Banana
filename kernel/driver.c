@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Driver modules: hardware drivers made outside Banana OS (the Driver
- * Kit, sdk/driver/), loaded into the kernel. See sdk/driver/banana_driver.h
+ * Kit, driver-sdk/), loaded into the kernel. See driver-sdk/banana_driver.h
  * for what a driver sees; this is the kernel's side: the loader, the
  * table of calls, the PCI drivers they register and the displays. */
 #define BANANA_KERNEL
-#include "../sdk/driver/banana_driver.h"
+#include "../driver-sdk/banana_driver.h"
 #include "driver.h"
+#include "driver_ext.h"
 #include "app.h"
 #include "fb.h"
 #include "fs.h"
@@ -83,23 +84,27 @@ static int pci_get_cb(const pci_dev_t* d, void* ctx) {
     return 0;
 }
 static int d_pci_get(int index, bdrv_pci_t* out) {
+    if(!out) return -1;
     pci_get_ctx_t c = { 0, index, out };
     return index >= 0 && pci_scan(pci_get_cb, &c) ? 0 : -1;
 }
 static uint32_t d_pci_read(const bdrv_pci_t* d, int off, int width) {
-    if (off < 0 || off > 255) return 0xFFFFFFFFu;
+    if (!d || d->dev>31 || d->fn>7 || (width!=1 && width!=2 && width!=4) || off<0 || off>256-width || (off&(width-1))) return 0xFFFFFFFFu;
     uint32_t v = pci_read32(d->bus, d->dev, d->fn, (uint8_t)(off & ~3));
     v >>= (off & 3) * 8;
     return width == 1 ? v & 0xFF : width == 2 ? v & 0xFFFF : v;
 }
-static void d_pci_write(const bdrv_pci_t* d, int off, int width, uint32_t val) {
-    if (off < 0 || off > 255) return;
-    if (width == 4) { pci_write32(d->bus, d->dev, d->fn, (uint8_t)off, val); return; }
-    uint32_t v = pci_read32(d->bus, d->dev, d->fn, (uint8_t)(off & ~3));
-    int sh = (off & 3) * 8;
-    uint32_t mask = (width == 1 ? 0xFFu : 0xFFFFu) << sh;
-    v = (v & ~mask) | ((val << sh) & mask);
-    pci_write32(d->bus, d->dev, d->fn, (uint8_t)(off & ~3), v);
+static void d_pci_write(const bdrv_pci_t* d,int off,int width,uint32_t val) {
+    if(!d || d->dev>31 || d->fn>7 || (width!=1 && width!=2 && width!=4) || off<0 || off>256-width || (off&(width-1))) return;
+    /* Byte/word writes must not echo neighbouring W1C status bits. */
+    uint32_t flags=irq_save();
+    uint32_t address=0x80000000u|((uint32_t)d->bus<<16)|((uint32_t)d->dev<<11)|
+                     ((uint32_t)d->fn<<8)|((uint32_t)off&~3u);
+    outl(0xcf8,address);
+    if(width==1) outb((uint16_t)(0xcfc+(off&3)),(uint8_t)val);
+    else if(width==2) outw((uint16_t)(0xcfc+(off&3)),(uint16_t)val);
+    else outl(0xcfc,val);
+    irq_restore(flags);
 }
 static uint64_t d_pci_bar(const bdrv_pci_t* b, int bar, int* is_io) {
     pci_dev_t d;
@@ -124,6 +129,7 @@ static void d_out(uint16_t port, int width, uint32_t v) {
 }
 
 static void* d_mmio_map(uint64_t phys, uint64_t size) {
+    if(!phys || !size || size>~(uint64_t)0-phys) return NULL;
 #ifndef __x86_64__
     if (phys + size > (4ull << 30)) return NULL;
 #endif
@@ -135,7 +141,7 @@ static void d_free(void* p) { if (p) kfree(p); }
  * piece of it is its own physical address (never freed: drivers keep it) */
 static void* d_alloc_dma(unsigned long size, unsigned long align, uint64_t* phys) {
     if (align < 16) align = 16;
-    if (align & (align - 1)) return NULL;
+    if ((align & (align - 1)) || !size || size>~0ul-align) return NULL;
     uint8_t* raw = kmalloc(size + align);
     if (!raw) return NULL;
     uint8_t* p = (uint8_t*)(((uintptr_t)raw + align - 1) & ~(uintptr_t)(align - 1));
@@ -179,11 +185,15 @@ static struct { void (*fn)(void*); void* arg; } g_tasks[TASK_SLOTS];
 TT(0) TT(1) TT(2) TT(3) TT(4) TT(5) TT(6) TT(7)
 static void (*const TASK_TR[TASK_SLOTS])(void) = { task_tr_0, task_tr_1, task_tr_2, task_tr_3, task_tr_4, task_tr_5, task_tr_6, task_tr_7 };
 static int d_task_create(const char* name, void (*fn)(void*), void* arg) {
+    if(!fn) return -1;
     for (int i = 0; i < TASK_SLOTS; i++)
         if (!g_tasks[i].fn) {
             g_tasks[i].arg = arg;
             g_tasks[i].fn = fn;
-            return task_create(name ? name : "driver", TASK_TR[i]) < 0 ? -1 : 0;
+            if(task_create(name ? name : "driver", TASK_TR[i])<0) {
+                g_tasks[i].fn=NULL;g_tasks[i].arg=NULL;return -1;
+            }
+            return 0;
         }
     return -1;
 }
@@ -194,6 +204,9 @@ static int matches(const bdrv_pci_id_t* id, const pci_dev_t* d) {
            (id->class_code == 0xFF || id->class_code == d->class_code) && (id->subclass == 0xFF || id->subclass == d->subclass);
 }
 static int probe_cb(const pci_dev_t* d, void* ctx) {
+    /* Displays historically allow a module to replace the built-in display.
+     * Other module drivers must not reinitialize hardware already in use. */
+    if(d->class_code!=0x03 && pci_driver_of(d->bus,d->dev,d->fn)) return 0;
     pdrv_t* p = ctx;
     for (int i = 0; i < p->drv.nids; i++) {
         if (!matches(&p->drv.ids[i], d)) continue;
@@ -311,6 +324,7 @@ static void api_init(void) {
     g_api.task_create = d_task_create;
     g_api.register_pci_driver = d_register_pci_driver;
     g_api.register_display = d_register_display;
+    g_api.extension = driver_extension;
 }
 
 /* ── loading ──────────────────────────────────────────────────────── */
@@ -366,7 +380,7 @@ void drivers_list(void) {
     ksnprintf(line, sizeof(line), "Display: %s (driver %s)", g ? g->name : "the firmware's framebuffer", g ? g->driver : "none");
     terminal_writeln(line);
     terminal_writeln("Built-in drivers also run sound, network, USB and storage: see lsaudio, ifconfig, lsusb, disks");
-    terminal_writeln(g_nmods ? "Driver modules:" : "Driver modules: none (pkg install a driver .bpk; see sdk/driver)");
+    terminal_writeln(g_nmods ? "Driver modules:" : "Driver modules: none (pkg install a driver .bpk; see driver-sdk)");
     for (int i = 0; i < g_nmods; i++) {
         ksnprintf(line, sizeof(line), "  %-14s %s%s", g_mods[i].name, g_mods[i].status == 0 ? "loaded" : "failed to start",
                   g_mods[i].status == 0 ? "" : " (see the kernel log)");

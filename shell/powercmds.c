@@ -23,7 +23,7 @@ void cmd_laptop(const char* args) {
              b->remaining,b->full,b->design,b->unit?"mAh":"mWh",b->rate,b->unit?"mA":"mW");
         if(b->minutes>=0) line("  estimated remaining: %d minutes\n",b->minutes);
     }
-    if(p.brightness>=0) line("ACPI backlight: %d%%%s\n",p.brightness,p.brightness_pending?" (change queued)":"");
+    if(p.brightness>=0) line("Panel backlight: %d%%%s\n",p.brightness,p.brightness_pending?" (change queued)":"");
     line("AML allocations: %u KiB; sample age: %u ms\n",p.aml_bytes/1024,(uint32_t)(timer_ms()-p.updated_ms));
 }
 void cmd_usbc(const char* args) {

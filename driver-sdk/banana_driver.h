@@ -7,7 +7,7 @@
  * written and shipped by whoever makes it.
  *
  * A driver is a small program of the kernel's own (it runs in ring 0,
- * with the kernel, not as an app): built with sdk/driver/driver.mk into a
+ * with the kernel, not as an app): built with driver-sdk/driver.mk into a
  * .bpk package of type "driver", installed with `pkg install`, and loaded
  * at every boot (and right after it is installed). Its entry point,
  *
@@ -34,7 +34,7 @@
  */
 
 #ifdef BANANA_KERNEL                     /* (the kernel's own build, kernel/driver.c) */
-#include "../../kernel/types.h"
+#include "../kernel/types.h"
 #else
 #include <stdint.h>
 #endif
@@ -131,7 +131,21 @@ typedef struct banana_driver_api {
     int (*register_pci_driver)(const bdrv_pci_driver_t* d);   /* probes the devices now; how many it took */
     /* the screen: it becomes the active display (dev: the card) */
     int (*register_display)(bdrv_display_t* d, const bdrv_pci_t* dev);
+
+    /* Appended optional discovery; original version-1 table offsets stay fixed.
+     * NULL if ID/version/minimum size is unavailable. Check table size first. */
+    const void* (*extension)(uint32_t id,uint32_t min_version,uint32_t min_size);
 } banana_driver_api_t;
+
+#include "banana_driver_ext.h"
+#define BDRV_API_V1_SIZE __builtin_offsetof(banana_driver_api_t,extension)
+static inline const void* bdrv_extension(const banana_driver_api_t* api,uint32_t id,
+                                        uint32_t version,uint32_t size) {
+    if(!api || api->magic!=BANANA_DRV_MAGIC || api->version!=BANANA_DRV_VERSION ||
+       api->size<__builtin_offsetof(banana_driver_api_t,extension)+sizeof(api->extension) ||
+       !api->extension) return 0;
+    return api->extension(id,version,size);
+}
 
 /* the driver's own entry point */
 int banana_driver_main(const banana_driver_api_t* api);

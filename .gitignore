@@ -39,3 +39,5 @@ build/ports64.h
 
 # Optional release variant
 Banana_OS-mesa.iso
+
+/banana-driver-sdk.tar.gz

@@ -169,3 +169,7 @@ int main(void) {
     printf("ACPI host/EC: %u checks passed\n",checks);
     return 0;
 }
+
+/* Module providers are tested independently by driver_sdk.c. */
+void driver_power_merge(laptop_info_t* out) { (void)out; }
+int driver_power_backlight(int percent) { (void)percent;return -1; }

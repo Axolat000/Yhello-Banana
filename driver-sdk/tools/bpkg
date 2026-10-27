@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+"""Source-tree entry to the common BPK packager.
+The exported standalone Driver SDK replaces this entry with the complete tool.
+"""
+from pathlib import Path
+import runpy
+tool=Path(__file__).resolve().parents[2]/"sdk/tools/bpkg"
+if not tool.is_file():raise SystemExit("Common packager missing; use the standalone Driver SDK archive")
+runpy.run_path(str(tool),run_name="__main__")

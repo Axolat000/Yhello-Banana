@@ -9,7 +9,7 @@
 #     DESCRIPTION = Display driver for the ACME Graphics 9000
 #     AUTHOR      = ACME Inc.
 #     SRCS        = acme.c
-#     include /path/to/banana-sdk/driver/driver.mk
+#     include /path/to/banana-driver-sdk/driver.mk
 #
 # `make` builds the driver for both CPUs Banana OS runs on (i686 and
 # x86_64) and packs them into $(DRIVER).bpk (type=driver). On Banana OS,
@@ -20,7 +20,7 @@
 # python3.
 
 BDK := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
-SDK := $(BDK)/..
+PACKAGER := $(BDK)/tools/bpkg
 
 DRIVER      ?= driver
 TITLE       ?= $(DRIVER)
@@ -28,6 +28,7 @@ VERSION     ?= 1.0
 DESCRIPTION ?=
 AUTHOR      ?=
 SRCS        ?= driver.c
+DATA        ?=
 BUILD       ?= build
 
 CC     ?= gcc
@@ -40,7 +41,7 @@ PYTHON ?= python3
 DRV_CFLAGS = -ffreestanding -fno-stack-protector -fpie -fvisibility=hidden -nostdlib -nostdinc \
              -fno-asynchronous-unwind-tables -fno-exceptions -mgeneral-regs-only \
              -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra \
-             -I$(BDK) -I$(SDK)/include $(CFLAGS)
+             -I$(BDK) -I$(BDK)/include $(CFLAGS)
 CFLAGS_i686   = -m32 -march=i686
 CFLAGS_x86_64 = -m64 -mno-red-zone -mcmodel=small
 LDFLAGS_i686   = -m elf_i386
@@ -62,16 +63,16 @@ vpath %.c $(sort $(dir $(SRCS)))
 .PHONY: all clean
 all: $(DRIVER).bpk
 
-$(BUILD)/i686/%.o: %.c
+$(BUILD)/i686/%.o: %.c $(BDK)/banana_driver.h $(BDK)/banana_driver_ext.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_i686) $(DRV_CFLAGS) -c $< -o $@
-$(BUILD)/x86_64/%.o: %.c
+$(BUILD)/x86_64/%.o: %.c $(BDK)/banana_driver.h $(BDK)/banana_driver_ext.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_x86_64) $(DRV_CFLAGS) -c $< -o $@
-$(BUILD)/i686/bdk_%.o: $(BDK)/%.c
+$(BUILD)/i686/bdk_%.o: $(BDK)/%.c $(BDK)/banana_driver.h $(BDK)/banana_driver_ext.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_i686) $(DRV_CFLAGS) -fno-builtin -c $< -o $@
-$(BUILD)/x86_64/bdk_%.o: $(BDK)/%.c
+$(BUILD)/x86_64/bdk_%.o: $(BDK)/%.c $(BDK)/banana_driver.h $(BDK)/banana_driver_ext.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_x86_64) $(DRV_CFLAGS) -fno-builtin -c $< -o $@
 
@@ -85,9 +86,9 @@ $(BUILD)/manifest: $(MAKEFILE_LIST)
 	@printf 'name=%s\ntitle=%s\nversion=%s\ntype=driver\ndescription=%s\nauthor=%s\n' \
 	    '$(DRIVER)' '$(TITLE)' '$(VERSION)' '$(DESCRIPTION)' '$(AUTHOR)' > $@
 
-$(DRIVER).bpk: $(BUILD)/manifest $(BUILD)/driver-i686 $(BUILD)/driver-x86_64
-	$(PYTHON) $(SDK)/tools/bpkg pack -o $@ $^
-	@$(PYTHON) $(SDK)/tools/bpkg check $@
+$(DRIVER).bpk: $(BUILD)/manifest $(BUILD)/driver-i686 $(BUILD)/driver-x86_64 $(DATA)
+	$(PYTHON) $(PACKAGER) pack -o $@ $^
+	@$(PYTHON) $(PACKAGER) check $@
 
 clean:
 	rm -rf $(BUILD) $(DRIVER).bpk

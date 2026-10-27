@@ -112,6 +112,7 @@ typedef struct usb_device {
     char              product[48];
     const struct usb_driver* driver;
     void*             drvdata;
+    uint32_t          generation;     /* new attachment, even when a slot is reused */
 } usb_device_t;
 
 /* One bulk / interrupt transfer. Submitted with usb_submit(); `status`
@@ -181,6 +182,9 @@ void usb_stack_init(void);                 /* find controllers, enumerate */
 void usb_poll(void);                       /* safe to call often */
 void usb_rescan(void);
 int  usb_register_hc(usb_hc_t* hc);
+/* Persistent module drivers run after built-ins. Rebind unclaimed devices in
+ * usbd task context; already-bound devices are never stolen. */
+int usb_register_driver(const usb_driver_t* driver);
 /* HC drivers call this for a newly addressed device on a root port */
 usb_device_t* usb_new_device(usb_hc_t* hc, int port, int speed, uint8_t address,
                              uint16_t ep0_mps, void* hcpriv);

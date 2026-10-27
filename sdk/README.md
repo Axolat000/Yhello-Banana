@@ -268,8 +268,10 @@ system), an atomic `sigsuspend` and `pause`, and the process list
 ### Drivers
 
 Hardware drivers are not apps: they run inside the kernel. The Driver Kit
-in [driver/](driver/banana_driver.h) builds them (`driver/driver.mk`,
-examples in `driver/examples`) into `.bpk` packages of type `driver`.
+in the separate [Banana OS Driver SDK](https://github.com/qcom-toolbox/Banana-OS/tree/main/driver-sdk)
+builds them into `.bpk` packages of type `driver`. Get `banana-driver-sdk.tar.gz`
+or run `make driver-sdk` in the source repository. Driver headers, examples and
+build rules are not part of the application SDK archive.
 
 ### Rules of the road
 

@@ -5,7 +5,7 @@
 #include "types.h"
 
 /*
- * Driver modules (the Banana OS Driver Kit: sdk/driver/banana_driver.h):
+ * Driver modules (the Banana OS Driver Kit: driver-sdk/banana_driver.h):
  * hardware drivers built outside Banana OS, installed as .bpk packages of
  * type "driver" and loaded into the kernel at boot.
  */

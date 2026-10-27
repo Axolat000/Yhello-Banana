@@ -37,6 +37,16 @@ static usb_hc_t*    g_hcs[MAX_HC];
 static int          g_hc_count;
 static usb_device_t g_devs[USB_MAX_DEVICES];
 static int          g_in_poll;
+#define MODULE_USB_DRIVERS 16
+static const usb_driver_t* g_module_drivers[MODULE_USB_DRIVERS];
+static int g_module_count,g_reprobe;
+static uint32_t g_device_generation;
+int usb_register_driver(const usb_driver_t* driver) {
+    if(!driver || !driver->name || !driver->probe || !driver->attach) return -1;
+    for(int i=0;i<g_module_count;i++) if(g_module_drivers[i]==driver) { g_reprobe=1;return 0; }
+    if(g_module_count==MODULE_USB_DRIVERS) return -1;
+    g_module_drivers[g_module_count++]=driver;g_reprobe=1;return 0;
+}
 
 /* The "usbd" task finds the devices on the ports (at boot and when one is
  * plugged in) and sets them up. That used to happen inside the boot itself:
@@ -182,8 +192,8 @@ static int enumerate(usb_device_t* d) {
 }
 
 static void bind_driver(usb_device_t* d) {
-    for (int i = 0; i < DRIVER_COUNT; i++) {
-        const usb_driver_t* drv = g_drivers[i];
+    for (int i = 0; i < DRIVER_COUNT+g_module_count; i++) {
+        const usb_driver_t* drv = i<DRIVER_COUNT?g_drivers[i]:g_module_drivers[i-DRIVER_COUNT];
         int cfg = drv->probe(d);
         if (cfg < 0 || cfg >= USB_MAX_CONFIGS || !d->configs[cfg]) continue;
         uint8_t value = ((usb_config_desc_t*)d->configs[cfg])->bConfigurationValue;
@@ -225,6 +235,8 @@ usb_device_t* usb_new_child(usb_hc_t* hc, usb_device_t* parent, int port, int sp
     memset(d, 0, sizeof(*d));
     d->used = 1;
     d->present = 1;
+    if(!++g_device_generation) ++g_device_generation;
+    d->generation=g_device_generation;
     d->hc = hc;
     d->hcpriv = hcpriv;
     d->port = port;
@@ -272,6 +284,13 @@ void usb_poll(void) {
         if (g_hcs[i]->port_change && g_hcs[i]->ops->rescan) {
             g_hcs[i]->port_change = 0;
             g_hcs[i]->ops->rescan(g_hcs[i]);
+        }
+    }
+    if(g_reprobe && in_usbd()) {
+        g_reprobe=0;
+        for(int i=0;i<USB_MAX_DEVICES;i++) {
+            usb_device_t* d=&g_devs[i];
+            if(d->used && d->present && !d->driver) bind_driver(d);
         }
     }
     for (int i = 0; i < USB_MAX_DEVICES; i++) {

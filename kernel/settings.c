@@ -1007,7 +1007,7 @@ static void draw_power(void) {
     int x=cx0(),y=cy0();char line[160];
     laptop_info_t p;laptop_get_info(&p);
     label(x,y,_("Power & USB-C"),C_HEAD);
-    label(x,y+24,p.runtime?_("Firmware power services ready"):_("Firmware power information unavailable"),C_DIM);
+    label(x,y+24,(p.runtime || p.battery_count || p.ac_present || p.brightness>=0 || p.lid>=0)?_("Firmware power services ready"):_("Firmware power information unavailable"),C_DIM);
     ksnprintf(line,sizeof(line),"AC power: %s   Lid: %s",!p.ac_present?"not reported":p.ac_online?"connected":"disconnected",
               p.lid<0?"not reported":p.lid?"open":"closed");
     label(x,y+44,line,C_TEXT);
