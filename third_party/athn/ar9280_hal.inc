@@ -1513,7 +1513,7 @@ static void
 ar5008_set_viterbi_mask(struct athn_softc *sc, int bin)
 {
 	uint32_t mask[4], reg;
-	uint8_t m[62], p[62];	/* XXX use bit arrays? */
+	uint8_t m[62] = {0}, p[62] = {0}; /* DC entry is not filled by the negative-bin loop. */
 	int i, bit, cur;
 
 	/* Compute pilot mask. */

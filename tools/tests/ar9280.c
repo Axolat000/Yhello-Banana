@@ -154,6 +154,10 @@ int main(void){
  inject(UNICAST8,sizeof(UNICAST8),AR_RXS8_CRC_ERR);CHECK(received==3);
  CHECK(ath_channel(radio,0)<0&&ath_channel(radio,12)<0);
 
+ for(int bin=-900;bin<=900;bin+=100){
+  ar5008_set_viterbi_mask(&c->hal,bin);
+  CHECK(!(regs[0][AR_PHY_MASK_CTL/4]&(1u<<30)));
+ }
  /* Repeated valid packets exercise hardware descriptor ownership and wrap. */
  for(unsigned i=0;i<100;i++)CHECK(!radio->nd.send(&radio->nd,eth,sizeof(eth)));
  CHECK(c->txprod<ATH_TXN);
