@@ -528,3 +528,10 @@ AX88179A/B native vendor mode, all TX frame lengths, link modes, three USB
 speeds, aggregate fuzzing, exact silicon matching and failed RX submissions.
 Failed initialization retains embedded URBs for all affected existing USB
 Ethernet frontends. See [ASIX scope and source provenance](../third_party/asix/README.md).
+
+### AR9280 native radio and station
+
+`python3 tools/test_ar9280.py --sanitize` and `--32` exercise the actual
+EEPROM/radio/calibration HAL, private PCI DMA frontend and WPA2/CCMP station.
+See [AR9280 scope, source hashes and model coverage](../third_party/athn/README.md).
+Physical RF and throughput remain unverified.

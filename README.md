@@ -26,6 +26,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental Atheros AR9280 Wi-Fi** - native PCI DMA, EEPROM calibration,
+  radio initialization and WPA2/CCMP station integration without external firmware.
+  Models pass in 32/64 bits with malformed EEPROM/descriptor tests. Initial
+  scope is MAC 2.0/2.1 and legacy 2.4 GHz channels 1-11; physical RF is untested.
+  [Driver details and limits](third_party/athn/README.md).
+
 - **Experimental AX88179A/B vendor Ethernet** - separate revision-matched
   initialization, PHY negotiation and 64-bit packet framing. Startup failures
   cannot publish a half-initialized USB network interface; queued transfer
