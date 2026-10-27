@@ -141,17 +141,97 @@ static void t_limits(void) {
     report("24 apps at once", started == 24 && peak >= 24 && app_count() == base, note);
 }
 
+/* A temporary cooperative checker runs while systest's app threads allocate.
+ * It returns when that workload completes; no background service is retained. */
+static volatile int heap_watch_stop, heap_watch_done;
+static unsigned heap_watch_checks;
+static int heap_watch_bad;
+static char heap_watch_error[128];
+
+static void heap_watch(void) {
+    while (!heap_watch_stop) {
+        heap_watch_bad = kheap_check(heap_watch_error, sizeof(heap_watch_error));
+        heap_watch_checks++;
+        if (heap_watch_bad) break;
+        task_sleep_ms(10);
+    }
+    heap_watch_done = 1;
+}
+
 static void t_cores(void) {
     section("system calls on every core (build 144)");
     int n = cpu_count();
+    heap_watch_stop = heap_watch_done = heap_watch_bad = 0;
+    heap_watch_checks = 0;
+    int watcher = task_create("heap-check", heap_watch);
     int rc = run("cores", NULL, NULL);
+    heap_watch_stop = 1;
+    if (watcher >= 0) {
+        while (!heap_watch_done) task_sleep_ms(1);
+    }
     char note[96];
+    ksnprintf(note, sizeof(note), "%u checks during app allocations", heap_watch_checks);
+    report("heap integrity during multicore workload", watcher >= 0 && heap_watch_checks && !heap_watch_bad,
+           heap_watch_bad ? heap_watch_error : note);
     if (rc < 100) { report("threads calling malloc / free / a lock", 0, "wrong totals or a crash"); return; }
     int cores = rc - 100;
     ksnprintf(note, sizeof(note), "on %d of %d core%s", cores, n, n == 1 ? "" : "s");
     report("threads calling malloc / free / a lock", 1, note);
     if (n < 2) skip("they spread over the cores", "one core here (QEMU: SMP=4)");
     else report("they spread over the cores", cores >= 2, cores >= 2 ? "" : "all stayed on one core");
+}
+
+/* Deterministic data preservation, independent of host/VM timing. */
+static int heap_pattern(const void* ptr, uint32_t n, uint8_t byte) {
+    const uint8_t* p = ptr;
+    for (uint32_t i = 0; i < n; i++) if (p[i] != byte) return 0;
+    return 1;
+}
+
+static void t_heap(void) {
+    section("the kernel's heap");
+    char err[128];
+    int bad = kheap_check(err, sizeof(err));
+    report("heap headers, regions, accounting and bins", !bad, err);
+    if (bad) return;
+    enum { LIVE = 512, ROUNDS = 4000 };
+    void** live = kmalloc(LIVE * sizeof(void*));
+    if (!live) { report("heap stress", 0, "out of memory"); return; }
+    int fail = 0;
+    for (int i = 0; i < LIVE; i++) {
+        uint32_t n = 16 + (uint32_t)i * 37 % 2048;
+        live[i] = kmalloc(n);
+        if (!live[i]) fail = 1;
+        else memset(live[i], (uint8_t)i, n);
+    }
+    for (int i = 0; i < LIVE; i += 2) { kfree(live[i]); live[i] = NULL; }
+    bad = kheap_check(err, sizeof(err));
+    if (bad) { report("fragmented heap integrity", 0, err); return; }
+    for (int i = 0; i < ROUNDS && !fail; i++) {
+        uint32_t n = 16 + (uint32_t)i * 53 % 4096;
+        uint8_t* p = kmalloc_aligned(n, 64);
+        if (!p) { fail = 1; break; }
+        if ((uintptr_t)p & 63) fail = 1;
+        memset(p, (uint8_t)i, n);
+        uint8_t* grown = krealloc(p, n + 4096);
+        if (!grown) { kfree(p); fail = 1; break; }
+        if (!heap_pattern(grown, n, (uint8_t)i)) fail = 1;
+        kfree(grown);
+        if (i % 512 == 0) {
+            bad = kheap_check(err, sizeof(err));
+            if (bad) { report("heap integrity during stress", 0, err); return; }
+            task_yield();
+        }
+    }
+    for (int i = 1; i < LIVE; i += 2) {
+        uint32_t n = 16 + (uint32_t)i * 37 % 2048;
+        if (live[i] && !heap_pattern(live[i], n, (uint8_t)i)) fail = 1;
+        kfree(live[i]);
+    }
+    kfree(live);
+    bad = kheap_check(err, sizeof(err));
+    report("aligned allocation, realloc and retained data", !fail, fail ? "allocation or data failure" : "4000 rounds among 256 live blocks");
+    report("heap integrity after cleanup", !bad, err);
 }
 
 /* Install the matching built-in test, even if an older package is on disk. */
@@ -740,8 +820,8 @@ static void t_backup(void) {
 
 int selftest_cmd(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
-    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "backup") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
-        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | backup | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
+    if (only && strcmp(only, "ring3") && strcmp(only, "memory") && strcmp(only, "ram") && strcmp(only, "limits") && strcmp(only, "cores") && strcmp(only, "heap") && strcmp(only, "ipv6") && strcmp(only, "opencl") && strcmp(only, "posix") && strcmp(only, "browser") && strcmp(only, "mouse") && strcmp(only, "boot") && strcmp(only, "zip") && strcmp(only, "clipboard") && strcmp(only, "session") && strcmp(only, "backup") && strcmp(only, "swap") && strcmp(only, "time") && strcmp(only, "keyboard")) {
+        terminal_writeln("usage: selftest [ring3 | memory | ram | limits | cores | heap | opencl | browser [swm] | mouse [demo] | boot | posix [part] | zip | clipboard | session | backup | swap | time | keyboard | ipv6 [host [port]]]   (filesystems: fstest <mount point>)");
         return 1;
     }
     if(only && !strcmp(only,"mouse") && (argc>3 || (argc==3 && strcmp(argv[2],"demo")))) {
@@ -773,6 +853,7 @@ int selftest_cmd(int argc, char** argv) {
                      only && !strcmp(only, "swap") ? "selftest: checking compressed memory" :
                      only && !strcmp(only, "time") ? "selftest: checking time zones and the clock" :
                      only && !strcmp(only, "keyboard") ? "selftest: checking the keyboard layouts" :
+                     only && !strcmp(only, "heap") ? "selftest: checking the kernel's heap" :
                      "selftest: checking the system (it runs the systest app a few times)");
     if(only && !strcmp(only,"ram")) {
         t_ram();
@@ -786,6 +867,8 @@ int selftest_cmd(int argc, char** argv) {
         t_keyboard();
     } else if (only && !strcmp(only, "time")) {
         t_time();
+    } else if (only && !strcmp(only, "heap")) {
+        t_heap();
     } else if (only && !strcmp(only, "swap")) {
         if (install() == 0) t_swap();
     } else if(only && !strcmp(only,"boot")) {
@@ -813,6 +896,7 @@ int selftest_cmd(int argc, char** argv) {
         if (!only || !strcmp(only, "memory")) t_memory();
         if (!only || !strcmp(only, "limits")) t_limits();
         if (!only || !strcmp(only, "cores")) t_cores();
+        if (!only || !strcmp(only, "heap")) t_heap();
         if (!only) {
             t_opencl();
             browser_test_run(report);

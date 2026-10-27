@@ -102,7 +102,7 @@ def main():
 
     PROMPT_RE = re.compile(r'(\$\s*$|\[y/N\]\s*$|\[1-\d+, Enter cancels\]\s*$)')
 
-    def wait_prompt(since, timeout):
+    def wait_prompt(since, timeout, boot_reprompt=False):
         """the shell's prompt or question prompt, with nothing more coming: True"""
         end = time.time() + timeout
         quiet = None
@@ -130,7 +130,7 @@ def main():
     results = []
     try:
         print("booting...", flush=True)
-        if not wait_prompt(0, a.boot_timeout):
+        if not wait_prompt(0, a.boot_timeout, boot_reprompt=True):
             print("no shell prompt on the serial console (log: %s)" % a.log)
             print(text[-1500:])
             return 1

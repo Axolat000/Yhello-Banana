@@ -1,0 +1,8 @@
+# Run with a disposable FAT32 virtio disk mounted at /mnt/virtio and SMP=4.
+selftest heap ## 0 failed
+selftest cores ## 0 failed
+fstest -k /mnt/virtio ## 0 failed
+selftest heap ## 0 failed
+drop_caches ## drop_caches:
+selftest heap ## 0 failed
+selftest cores ## 0 failed

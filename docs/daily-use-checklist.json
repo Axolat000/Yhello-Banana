@@ -2511,5 +2511,44 @@
       "Verify regression of IDE, AHCI, NVMe, virtio-blk, and SD operation."
     ],
     "rank": 47
+  },
+  {
+    "id": "base-kheap-integrity",
+    "priority": "P2",
+    "domain": "System",
+    "title": "Kernel heap integrity diagnostics and stress verification",
+    "goal": "Provide bounded, region-aware kernel heap integrity diagnostics and deterministic stress validation without changing the existing 32-bin allocation strategy or success semantics.",
+    "evidence": "Inspection of pinned upstream a4b2e406812dbd2973736a3a8b444588624a2845 and fork base 316de84 confirms the fork already has 32 size bins, exact-fit scanning and bin-based aligned allocation. Upstream benchmarks against pre-bin d9c9071 do not establish a fork improvement. Appended heap regions may lie below the initial heap (kernel/builtin_apps.c). The candidate adaptation and its execution evidence are documented in docs/KHEAP-INTEGRITY.md; independent review and controller validation remain required.",
+    "planningReason": "Preserve the existing allocator and allocation success behavior, including the exact 528-byte fit skipped by upstream rounded searches. Adapt only integrity diagnostics and deterministic data-preservation tests. Bounded traversal must replace upstream unbounded bin-membership scans, and region sentinels must replace global address-order assumptions. This proposed P2 task records the bounded goal for controller reconciliation with the current upstream adaptation; it does not assert completion or authorize duplicate scheduling.",
+    "depends": [],
+    "acceptance": "The diagnostic accepts appended regions above and below the initial heap, validates links, bin membership/classes and byte accounting, and terminates on injected cycles. Real-code tests cover exact-fit size boundaries, exhaustion, realloc preservation and alignment on both pointer widths where runnable. QEMU checks cover cache activity and multicore allocations. Record skips separately from passes and omit unsupported performance claims.",
+    "deliverable": "Region-aware kheap_check() diagnostics in kernel/kheap.c, selftest heap command in shell, host test harness tools/tests/kheap.c and tools/test_kheap.py.",
+    "steps": [
+      "Add a read-only kheap_check diagnostic with bounded physical/bin traversal, region-sentinel handling and byte-accounting verification; retain the fork allocation paths.",
+      "Add deterministic real-kheap host tests, including corruption injection confined to the test translation unit, 528-byte exact fits and guaranteed below/above regions.",
+      "Expose selftest heap and verify it in BIOS/UEFI QEMU with filesystem-cache activity and multicore allocation; record logs and any unavailable host or hardware execution."
+    ],
+    "tests": [
+      "python3 tools/test_kheap.py: explicit per-width PASS, SKIP or FAIL and bounded execution.",
+      "Build both kernels and run selftest heap in BIOS/UEFI QEMU; run selftest cores with SMP=4 and heap checks during the workload.",
+      "Exercise filesystem caches using fstest on a disposable virtual disk, then selftest heap before and after drop_caches.",
+      "Any later optimization benchmark must use fork HEAD as its baseline, never obsolete unbinned upstream d9c9071."
+    ],
+    "files": [
+      "kernel/kheap.c",
+      "kernel/kheap.h",
+      "shell/help.c",
+      "shell/selftest.c",
+      "tools/test_kheap.py",
+      "tools/tests/kheap.c",
+      "tools/tests/kheap_stub/kstring.h",
+      "tools/tests/kheap_stub/smp.h",
+      "tools/tests/kheap_stub/spinlock.h",
+      "tools/tests/kheap_stub/types.h",
+      "docs/TESTING.md",
+      "docs/KHEAP-INTEGRITY.md",
+      "tools/tests/kheap-qemu.cmds",
+      "tools/serialtest.py"
+    ]
   }
 ]
