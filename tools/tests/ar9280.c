@@ -51,7 +51,7 @@ static uint32_t ath_read(struct athn_softc*s,uint32_t reg){
  if(reg==AR_EEPROM_STATUS_DATA)return rom_stuck?AR_EEPROM_STATUS_DATA_BUSY:rom[rom_at];
  if(reg==AR_RTC_STATUS)return rtc_stuck?0:AR_RTC_STATUS_ON;
  if(reg==AR_RTC_RC&&reset_stuck)return AR_RTC_RC_MAC_WARM;
- if(reg==AR_GPIO_IN_OUT&&radio_off)return 0;
+ if(reg==AR_GPIO_IN_OUT)return radio_off?0:0x000ffc00u;
  return regs[k][reg/4];
 }
 static void ath_write(struct athn_softc*s,uint32_t reg,uint32_t v){
@@ -198,6 +198,16 @@ int main(void){
   else CHECK(!registered&&!(commands[0]&4));
  }
 
+
+ /* Radio-kill GPIO must be configured before checking its pin, and polled. */
+ init();struct ar5416_eeprom*rf=(void*)(rom+AR5416_EEP_START_LOC);
+ rf->baseEepHeader.rfSilent=AR_EEP_RFSILENT_ENABLED;rom_checksum();
+ CHECK(!ath_attach(&pd));c=radio->hw;
+ CHECK(regs[0][AR_GPIO_INPUT_EN_VAL/4]&AR_GPIO_INPUT_EN_VAL_RFSILENT_BB);
+ CHECK(regs[0][AR_PHY_TEST/4]&AR_PHY_TEST_RFSILENT_BB);
+ radio_off=1;now+=500;ath_poll(radio);CHECK(!c->hal.ok&&!(commands[0]&4));
+ init();rf=(void*)(rom+AR5416_EEP_START_LOC);rf->baseEepHeader.rfSilent=AR_EEP_RFSILENT_ENABLED;
+ rom_checksum();radio_off=1;CHECK(ath_attach(&pd)<0&&!registered&&!(commands[0]&4));
  /* Signed offsets on both sides of the default exercise clamped PDADC shifts. */
  for(int offset=-10;offset<=0;offset++){
   init();struct ar5416_eeprom*e=(void*)(rom+AR5416_EEP_START_LOC);

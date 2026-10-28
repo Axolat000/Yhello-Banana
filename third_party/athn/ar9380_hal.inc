@@ -2736,6 +2736,8 @@ athn_hw_reset(struct athn_softc *sc, struct ieee80211_channel *c,
 
 	/* Write init values to hardware. */
 	ops->hw_init(sc, c, extc);
+    /* The PHY init table may overwrite the RF-kill BB routing. */
+    if(sc->flags&ATHN_FLAG_RFSILENT)ops->rfsilent_init(sc);
 
 	/*
 	 * Only >=AR9280 2.0 parts are capable of encrypting unicast

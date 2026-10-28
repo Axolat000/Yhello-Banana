@@ -234,7 +234,10 @@ int main(void){
  init();template_rom(&e);e.baseEepHeader.rfSilent=AR_EEP_RFSILENT_ENABLED;raw_rom(&e);
  radio_off=1;CHECK(ath_attach(&pd)<0&&!registered&&!(commands[0]&4));
  init();template_rom(&e);e.baseEepHeader.rfSilent=AR_EEP_RFSILENT_ENABLED;raw_rom(&e);
- CHECK(!ath_attach(&pd));c=radio->hw;radio_off=1;now+=500;ath_poll(radio);
+ CHECK(!ath_attach(&pd));c=radio->hw;
+ CHECK(regs[0][AR_GPIO_INPUT_EN_VAL/4]&AR_GPIO_INPUT_EN_VAL_RFSILENT_BB);
+ CHECK(regs[0][AR_PHY_TEST/4]&AR_PHY_TEST_RFSILENT_BB);
+ radio_off=1;now+=500;ath_poll(radio);
  CHECK(!c->hal.ok&&!(commands[0]&4));
  init();CHECK(!ath_attach(&pd));
  /* Full-width periodic calibration samples, including INT32_MIN. */

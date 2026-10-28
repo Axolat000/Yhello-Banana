@@ -210,6 +210,7 @@ static int ath_channel(wifi_radio_t*r,unsigned ch){
  uint16_t cmd=pci_read16(c->pci.bus,c->pci.dev,c->pci.fn,4);
  pci_write16(c->pci.bus,c->pci.dev,c->pci.fn,4,cmd&~4u);
  sc->sc_ic.ic_bss->ni_chan=&c->chan[ch-1];sc->curchan=&c->chan[ch-1];
+ if(sc->flags&ATHN_FLAG_RFSILENT)sc->ops.rfsilent_init(sc);
  if(athn_hw_reset(sc,&c->chan[ch-1],NULL,1)||!sc->ok){ath_stop(c);return -1;}
  athn_disable_interrupts(sc);
  for(int k=0;k<sc->kc_entries;k++)athn_reset_key(sc,k);
