@@ -12,7 +12,7 @@ existing RTL8152. No new Wi-Fi/Ethernet adapters were available for physical tes
 | Intel AX210 | Pending | Firmware transport, calibration and radio data path |
 | Intel BE200 | Pending | Firmware transport, calibration and radio data path |
 | Atheros AR9280 | Experimental, 168c:002a, MAC 2.0/2.1, native station | Physical RF; initial legacy 2.4 GHz channels 1-11 only |
-| Atheros AR9380 | Pending | PCI DMA, radio/calibration and native station integration |
+| Atheros AR9380 | Experimental, 168c:0030, MAC 2.2, native station | Physical RF; initial legacy 2.4 GHz channels 1-11 only; [profile](../third_party/athn/AR9380.md) |
 | Realtek RTL8188EUS | Experimental RTL8188EU, 0bda:8179 | Physical RF; initial legacy 2.4 GHz b/g only |
 | Realtek RTL8811CU | Pending | Different chipset/firmware; not covered by RTL8188EU |
 | MediaTek MT7601U | Experimental, 148f:7601 | Physical RF; initial legacy 2.4 GHz b/g only |

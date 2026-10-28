@@ -9,6 +9,8 @@ on:
       - 'third_party/aq/**'
       - 'third_party/asix/**'
       - 'third_party/athn/**'
+      - 'tools/test_ar9380.py'
+      - 'tools/tests/ar9380*.c'
       - 'tools/test_ar9280.py'
       - 'tools/tests/ar9280.c'
       - 'tools/test_bcm5720.py'
@@ -71,6 +73,8 @@ jobs:
         run: python3 tools/test_rtl8188eu.py --sanitize && python3 tools/test_rtl8188eu.py --32
       - name: AR9280 EEPROM, radio calibration, PCI DMA and WPA2 integration
         run: python3 tools/test_ar9280.py --sanitize && python3 tools/test_ar9280.py --32
+      - name: AR9380 compressed EEPROM, calibration, separate DMA FIFOs and WPA2
+        run: python3 tools/test_ar9380.py --sanitize && python3 tools/test_ar9380.py --32
       - name: Intel I225/I226 native HAL and DMA model
         run: python3 tools/test_igc.py --sanitize && python3 tools/test_igc.py --32
       - name: BCM5720 reset, PHY, management exclusion and independent DMA rings

@@ -1,4 +1,4 @@
-# AR9280 hardware routines and native frontend
+# Atheros hardware routines and native frontends
 
 The hardware-only routines/structures are adapted from OpenBSD sys/dev/ic at
 commit `d2dd70ac0a5fe22ca102dd594dce32a1fe581c76`. Original ISC notices are
@@ -25,7 +25,7 @@ PCI `168c:002a`, PCIe MAC revision AR9280 2.0 or 2.1, validated native EEPROM
 layout/checksum, unicast factory MAC, calibrated contiguous chain masks (1/3) and usable
 2.4 GHz tables. Unknown MAC revisions, other AR928x/AR922x IDs, malformed
 calibration, unsupported radio switches or reset failures publish no interface.
-AR9380 is a separate implementation and is **not** supported by this driver.
+AR9380 uses its own frontend and HAL; see [the AR9380 profile](AR9380.md).
 
 The shared native station scans passively on channels 1-11 and implements open
 or WPA2-PSK/CCMP networks using software crypto. This profile uses legacy b/g
@@ -68,3 +68,10 @@ loop compensation, pending TX ownership, reset/EEPROM/calibration failures,
 periodic calibration and two independent cards. Host tests cannot establish
 physical RF, regulatory interoperability, sensitivity or throughput; no
 physical AR9280 was available.
+
+Additional pinned original AR9380 files at the same commit:
+
+- ar9003.c: 36a76e6894e5b2075168211a8c8c24d12ec40345b6c64a76a8218cc750d4fede
+- ar9003reg.h: e9e5de3d1c09472492166f7576d7077afb6ec04dccb96cf164d9bd4eaf0d9042
+- ar9380.c: 4fb05e01a5091b516586a6167e13693e1c563e59bf04369448f247cd11b16131
+- ar9380reg.h: beb39c1a8e4e7c534bb0d310906c083ff3375da539892ee440a1114bd073d0d6

@@ -57,6 +57,7 @@ python3 tools/serialtest.py --log "$logs/serial.log" \
     --cmd 'cat /usr/share/licenses/rtl8188eu/NOTICES ## Copyright (c) 2010, Realtek' \
     --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     --cmd 'cat /usr/share/licenses/igc/NOTICES ## Copyright 2021 Intel Corp' \
+    --cmd 'cat /usr/share/licenses/ar9380/NOTICES ## Copyright (c) 2010 Atheros' \
     --cmd 'cat /usr/share/licenses/ar9280/NOTICES ## Copyright (c) 2008-2009 Atheros' \
     --cmd 'cat /usr/share/licenses/ax88179a/NOTICES ## Copyright (c) 2022    ASIX' \
     --cmd 'cat /usr/share/licenses/aqc107/NOTICES ## Copyright (C) 2014-2017 aQuantia' \

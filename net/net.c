@@ -285,6 +285,7 @@ void net_init(void) {
     aqc107_probe_all();
     bcm5720_probe_all();
     ath9280_probe_all();
+    ath9380_probe_all();
     netdev_t* nd = e1000_probe();
     if (nd) net_register_device(nd);
     nd = r8169_probe();

@@ -16,6 +16,8 @@ static void install_notice(const char* dir,const char* path,const uint8_t* start
     if(f>=0) fs_write(f,start,(uint32_t)((uintptr_t)end-(uintptr_t)start));
 }
 void wifi_boot_files(void) {
+    install_notice("/usr/share/licenses/ar9380","/usr/share/licenses/ar9380/NOTICES",
+                   ar9280_notice_start,ar9280_notice_end);
     install_notice("/usr/share/licenses/ar9280","/usr/share/licenses/ar9280/NOTICES",
                    ar9280_notice_start,ar9280_notice_end);
     install_notice("/usr/share/licenses/ax88179a","/usr/share/licenses/ax88179a/NOTICES",
