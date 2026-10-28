@@ -395,3 +395,5 @@ net/rtl8188eu.o net/rtl8188eu.o64: firmware/realtek/rtl8188eufw.bin firmware/rea
 net/ar9280.o net/ar9280.o64: third_party/athn/NOTICES
 net/ax88179a.o net/ax88179a.o64: third_party/asix/NOTICES
 net/aqc107.o net/aqc107.o64: third_party/aq/NOTICES
+
+net/rtl8811cu.o net/rtl8811cu.o64: firmware/realtek/rtw8821c_fw.bin third_party/rtw88/NOTICES

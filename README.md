@@ -26,6 +26,12 @@ Banana OS 0.6 is a minimal x86 operating system written from scratch (no Linux k
 
 ## Latest additions
 
+- **Experimental RTL8811CU Wi-Fi** - separate native firmware/DDMA, EFUSE,
+  radio/channel and WPA2/CCMP station path. USB lifetime and malformed packet
+  models pass in 32/64 bits. Initial scope is selected high-speed USB boards,
+  2.4 GHz at the lowest AP-supported legacy rate and TX gain; physical RF remains untested.
+  [Exact scope, sources and limitations](third_party/rtw88/README.md).
+
 - **Experimental Atheros AR9380 Wi-Fi** - native PCIe radio/calibration and
   WPA2/CCMP station with separate RX FIFOs and a checked TX completion ring.
   EEPROM/OTP reconstruction and malformed DMA tests pass in 32/64 bits.

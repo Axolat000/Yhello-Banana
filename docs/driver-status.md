@@ -14,7 +14,7 @@ existing RTL8152. No new Wi-Fi/Ethernet adapters were available for physical tes
 | Atheros AR9280 | Experimental, 168c:002a, MAC 2.0/2.1, native station | Physical RF; initial legacy 2.4 GHz channels 1-11 only |
 | Atheros AR9380 | Experimental, 168c:0030, MAC 2.2, native station | Physical RF; initial legacy 2.4 GHz channels 1-11 only; [profile](../third_party/athn/AR9380.md) |
 | Realtek RTL8188EUS | Experimental RTL8188EU, 0bda:8179 | Physical RF; initial legacy 2.4 GHz b/g only |
-| Realtek RTL8811CU | Pending | Different chipset/firmware; not covered by RTL8188EU |
+| Realtek RTL8811CU | Experimental native rtw8821c USB path, c811/8811, cut C/D, RFE 0/6 | Physical RF; initial 2.4 GHz / lowest legacy rate and TX gain; [exact profile](../third_party/rtw88/README.md) |
 | MediaTek MT7601U | Experimental, 148f:7601 | Physical RF; initial legacy 2.4 GHz b/g only |
 | Intel I219-V | Existing e1000e path | Physical testing of the particular device/revision |
 | Intel I211-AT | Existing igb path | Physical testing of the particular device/revision |
