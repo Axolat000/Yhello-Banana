@@ -1,5 +1,12 @@
 # 🍌 Banana OS 0.6
 
+- **Programs on installed disks:** executable files stay pinned while their
+  address spaces are allocated, including allocation failures. Disk read errors
+  return an I/O error. Bash now stops if its binary/script probe cannot read
+  the file, instead of attempting to parse its contents. Fault-injection
+  regressions exercise both fixes; installation/update CI also executes commands
+  after dropping the disk cache.
+
 - **Sandy Bridge context memory fix:** Intel Gen6 now reserves the ring,
   extended and pipeline context sizes from the correct hardware fields.
   The regression models an 8 KiB context with a different power-context

@@ -14,7 +14,7 @@ port_fetch bash 5.2.37 9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014
 
 # GCC 14 rejects Bash's undeclared legacy bcopy calls in its glob matcher.
 # memmove has the same overlap-safe behavior and is declared by the SDK.
-python3 - "$SRC/lib/glob/sm_loop.c" "$SRC/lib/glob/smatch.c" "$SRC/lib/termcap/tparam.c" <<'PY'
+python3 - "$SRC/lib/glob/sm_loop.c" "$SRC/lib/glob/smatch.c" "$SRC/lib/termcap/tparam.c" "$SRC/execute_cmd.c" <<'PY'
 from pathlib import Path
 import sys
 for name in sys.argv[1:]:
@@ -25,8 +25,20 @@ for name in sys.argv[1:]:
     s = s.replace("bcopy (p, cc, p1 - p)", "memmove (cc, p, p1 - p)")
     if p.name == "tparam.c" and "#include <unistd.h>" not in s:
         s = "#include <unistd.h> /* write, for GCC 14 */\n" + s
+    if p.name == "execute_cmd.c" and "Banana OS: unreadable is not a script" not in s:
+        needle = "  if (sample_len == 0)\n"
+        assert s.count(needle) == 1
+        s = s.replace(needle,
+            "  /* Banana OS: unreadable is not a script. A failed probe must not\n"
+            "     skip binary detection and feed executable bytes to the parser. */\n"
+            "  if (sample_len < 0)\n"
+            "    {\n"
+            "      file_error (command);\n"
+            "      return (EX_NOEXEC);\n"
+            "    }\n\n" + needle)
     p.write_text(s)
 PY
+python3 "$PORT_DIR/../../tools/test_bash_exec.py" "$SRC"
 
 # what configure cannot find out by running a program (cross-compiling),
 # as it is on Banana OS

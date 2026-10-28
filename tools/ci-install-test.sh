@@ -71,6 +71,8 @@ echo "== 2. Booting standalone from installed disk ($firmware)"
 python3 tools/serialtest.py --log "$logs/serial-diskboot.log" \
     --boot-timeout 180 --timeout 180 \
     --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
+    --cmd 'drop_caches ## drop_caches:' \
+    --cmd "bash -c 'gpu3d status; /bin/echo disk-commands-ok' ## disk-commands-ok" \
     -- "${base_qemu[@]}" \
        -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-diskboot.log"
@@ -105,6 +107,8 @@ python3 tools/serialtest.py --log "$logs/serial-after-update.log" \
     --cmd 'pkg remove bash ## integrated OS component' \
     --cmd 'pkg remove zsh ## integrated OS component' \
     --cmd 'cat /home/banana/ci-persist.txt ## banana-ci-persistence' \
+    --cmd 'drop_caches ## drop_caches:' \
+    --cmd "bash -c 'gpu3d status; /bin/echo disk-commands-ok' ## disk-commands-ok" \
     --cmd '/apps/terminal/app-x86_64 --set theme solarized' \
     --cmd '/apps/terminal/app-x86_64 --set font 18' \
     --cmd '/apps/terminal/app-x86_64 --set shell zsh' \
@@ -121,6 +125,8 @@ python3 tools/serialtest.py --log "$logs/serial-preferences.log" \
     --cmd '/apps/terminal/app-x86_64 --show-config ## font=18' \
     --cmd 'cat /home/banana/.config/banana-terminal.conf ## shell=zsh' \
     --cmd 'ifconfig priority ## Network priority: wifi' \
+    --cmd 'drop_caches ## drop_caches:' \
+    --cmd "bash -c 'gpu3d status; /bin/echo disk-commands-ok' ## disk-commands-ok" \
     --cmd 'cat /usr/share/licenses/mt7601u/NOTICES ## Copyright (c) 2013, Ralink' \
     -- "${base_qemu[@]}" -drive "file=$disk_img,format=raw,if=ide" \
     2>&1 | tee "$logs/results-preferences.log"

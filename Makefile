@@ -295,6 +295,8 @@ ports/mesa/build/mesa-x86_64.bpk.z: $(MESA_BPK) mesa-prebuilt-input
 	python3 sdk/tools/bpkg check "$(MESA_BPK)"
 	python3 -c "import sys,zlib; from pathlib import Path; out=Path(sys.argv[2]); tmp=out.with_suffix('.tmp'); tmp.write_bytes(zlib.compress(Path(sys.argv[1]).read_bytes(),9)); tmp.replace(out)" "$(MESA_BPK)" $@
 endif
+# The Bash binary/script fault-injection test runs before packaging the port.
+ports/bash/build/bash-x86_64.bpk: tools/test_bash_exec.py tools/tests/bash_exec.c
 # (less, zsh, nano and vim are linked with ncurses' library)
 ports/less/build/less-x86_64.bpk ports/zsh/build/zsh-x86_64.bpk ports/nano/build/nano-x86_64.bpk ports/vim/build/vim-x86_64.bpk: ports/ncurses/build/ncurses-x86_64.bpk
 # Banana OS's own Unix programs (apps/<name>, sdk/banana.mk), 64-bit, built

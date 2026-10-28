@@ -3510,6 +3510,19 @@ static int copy_strv(char* const* v, char*** out, int* n) {
 }
 #endif
 
+/* Keep the executable's bytes resident before any address-space or heap
+ * allocation can reclaim the disk cache. fs_get_file returns an unloaded,
+ * zero-filled entry after an I/O error: that is EIO, not a shell script. */
+static fs_file_t* pin_program(int fi) {
+    fs_pin(fi);
+    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
+    if (!f || !f->used || !f->loaded || !f->content) {
+        fs_unpin(fi);
+        return NULL;
+    }
+    return f;
+}
+
 static int a_proc_exec(const char* path, char* const* argv, char* const* envp) {
 #ifdef __x86_64__
     app_proc_t* p = cur();
@@ -3526,7 +3539,7 @@ static int a_proc_exec(const char* path, char* const* argv, char* const* envp) {
         int fi = fs_find_file(file);
         if (fi < 0) { rc = fs_find_dir(file) >= 0 ? -13 : -2; break; }       /* EACCES, ENOENT */
         fs_file_t* f = fs_get_file(fi);
-        if (!f || !f->content) { rc = -5; break; }
+        if (!f || !f->loaded || !f->content) { rc = -5; break; }
         const char* c = (const char*)f->content;
         if (f->size < 2 || c[0] != '#' || c[1] != '!') break;
         if (depth == 4) { rc = -40; break; }            /* ELOOP */
@@ -3568,8 +3581,12 @@ static int a_proc_exec(const char* path, char* const* argv, char* const* envp) {
     }
     if (rc) { kfree(kargv); kfree(kenv); return rc; }
     int fi = fs_find_file(file);
-    fs_file_t* f = fi >= 0 ? fs_get_file(fi) : NULL;
-    if (!f || elf_span((const uint8_t*)f->content, f->size) == 0) { kfree(kargv); kfree(kenv); return -8; }
+    fs_file_t* f = pin_program(fi);
+    if (!f) { kfree(kargv); kfree(kenv); return fi < 0 ? -2 : -5; }
+    if (elf_span((const uint8_t*)f->content, f->size) == 0) {
+        fs_unpin(fi);
+        kfree(kargv); kfree(kenv); return -8;
+    }
     /* the new program into a new space, the old one kept until it is loaded */
     struct {
         uspace_t* us; umem_t* mem; banana_entry_t entry; uintptr_t base, code_lo, code_hi;
@@ -3581,7 +3598,6 @@ static int a_proc_exec(const char* path, char* const* argv, char* const* envp) {
     p->mem = p->us ? umem_create(p->us) : NULL;
     p->stack = NULL;
     char err[96];
-    fs_pin(fi);
     int bad = !p->mem || load_program(p, (const uint8_t*)f->content, f->size, argc, kargv, kenv, err, sizeof(err)) != 0;
     fs_unpin(fi);
     kfree(kenv);
@@ -4741,24 +4757,22 @@ static app_proc_t* prepare(const char* path, int argc, char** argv, char** envp,
     p->id = id;
     p->seq = ++g_seq;
     p->pgid = p->sid = p->seq;                          /* (its own group and session; no parent) */
-    fs_file_t* f = fs_get_file(fi);
+    fs_file_t* f = pin_program(fi);
     if (!f) { kstrlcpy(err, "cannot read it", (size_t)ecap); return NULL; }
 #ifdef __x86_64__
     p->us = uspace_create();
-    if (!p->us) { kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+    if (!p->us) { fs_unpin(fi); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
 #endif
     p->mem = umem_create(p->us);
-    if (!p->mem) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
-    if (fd_std(p) != 0) { discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+    if (!p->mem) { fs_unpin(fi); discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
+    if (fd_std(p) != 0) { fs_unpin(fi); discard(p); kstrlcpy(err, "out of memory", (size_t)ecap); return NULL; }
 #ifdef __x86_64__
-    fs_pin(fi);
     int bad = load_program(p, (const uint8_t*)f->content, f->size, argc, argv, envp, err, ecap) != 0;
     fs_unpin(fi);
     if (bad) { discard(p); return NULL; }
 #else
     (void)envp;
     uint8_t* image;
-    fs_pin(fi);
     int bad = load_elf(p->mem, (const uint8_t*)f->content, f->size, &image, &p->entry, &p->base, &p->code_lo, &p->code_hi, 0, err, ecap) != 0;
     fs_unpin(fi);
     if (bad) { discard(p); return NULL; }

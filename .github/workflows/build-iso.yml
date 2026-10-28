@@ -490,6 +490,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  command-host:
+    uses: ./.github/workflows/kcmd-output-host.yml
+    permissions:
+      contents: read
+
   driver-sdk-host:
     uses: ./.github/workflows/driver-sdk.yml
     permissions:
@@ -539,7 +544,7 @@ jobs:
 
   publish-isos:
     name: Publish validated standard and Mesa ISOs
-    needs: [release-tag, build, boot, network, network-host, power, power-host, driver-sdk-host, driver-sdk-vm]
+    needs: [release-tag, build, boot, network, network-host, power, power-host, command-host, driver-sdk-host, driver-sdk-vm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
