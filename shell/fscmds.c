@@ -7,6 +7,7 @@
 #include "../kernel/fsdisk.h"
 #include "../kernel/rtc.h"
 #include "../kernel/zip.h"
+#include "../kernel/backup.h"
 #include "../kernel/clipboard.h"
 #include "../kernel/screenshot.h"
 
@@ -499,6 +500,168 @@ static void cmd_screenshot(int argc, char** argv) {
     }
 }
 
+/* ── backup: creates versioned backup archives (.bba) ───────────────── */
+
+static void cmd_backup(int argc, char** argv) {
+    if (argc < 2) {
+        terminal_writeln("usage: backup [-v <mnt>] [-c] [-all] <archive.bba> <source> [source2 ...]");
+        terminal_writeln("       backup [-c] [-v [mnt]] --default [archive.bba]   (backs up /home & /etc configs)");
+        terminal_writeln("       backup -verify <archive.bba>");
+        terminal_writeln("       backup -restore [-f] <archive.bba> [target_dir]");
+        return;
+    }
+
+    if (!strcmp(argv[1], "-restore") || !strcmp(argv[1], "-x")) {
+        if (argc < 3) {
+            terminal_writeln("usage: backup -restore [-f] <archive.bba> [target_dir]");
+            return;
+        }
+        int overwrite = 0;
+        int arg_idx = 2;
+        if (!strcmp(argv[arg_idx], "-f") || !strcmp(argv[arg_idx], "--force")) {
+            overwrite = 1;
+            arg_idx++;
+        }
+        if (arg_idx >= argc) {
+            terminal_writeln("usage: backup -restore [-f] <archive.bba> [target_dir]");
+            return;
+        }
+        const char* arc = argv[arg_idx++];
+        const char* dest = (arg_idx < argc) ? argv[arg_idx] : "/";
+        char err[128] = "";
+        backup_stats_t st;
+        uint32_t rflags = overwrite ? BBA_RESTORE_OVERWRITE : 0;
+        if (backup_restore(arc, dest, rflags, NULL, NULL, &st, err, sizeof(err)) == 0) {
+            char msg[FS_PATH_LEN + 160];
+            ksnprintf(msg, sizeof(msg), "backup: restored %s into %s (%u files, %u dirs, %u symlinks, %u skipped, %u bytes)",
+                      arc, dest, st.file_count, st.dir_count, st.symlink_count, st.skipped_count, (uint32_t)st.total_uncompressed_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: restore failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
+        return;
+    }
+
+    if (!strcmp(argv[1], "-verify") || !strcmp(argv[1], "-t")) {
+        if (argc < 3) { terminal_writeln("usage: backup -verify <archive.bba>"); return; }
+        const char* arc = argv[2];
+        char err[128] = "";
+        backup_stats_t st;
+        if (backup_verify(arc, NULL, NULL, &st, err, sizeof(err)) == 0) {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: verified %s (%u files, %u dirs, %u symlinks, %u uncompressed bytes)",
+                      arc, st.file_count, st.dir_count, st.symlink_count, (uint32_t)st.total_uncompressed_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: verify failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
+        return;
+    }
+
+    const char* vol_mnt = NULL;
+    uint32_t flags = 0;
+    int is_default = 0;
+    int arg_start = 1;
+
+    while (arg_start < argc && argv[arg_start][0] == '-') {
+        if (!strcmp(argv[arg_start], "-c")) {
+            flags |= BBA_FLAG_DEFLATE;
+            arg_start++;
+        } else if (!strcmp(argv[arg_start], "-all") || !strcmp(argv[arg_start], "--no-exclude")) {
+            flags |= BBA_FLAG_NO_EXCLUDE;
+            arg_start++;
+        } else if (!strcmp(argv[arg_start], "-v")) {
+            arg_start++;
+            if (arg_start < argc && argv[arg_start][0] != '-') {
+                vol_mnt = argv[arg_start++];
+            } else {
+                vol_mnt = ""; /* auto-detect */
+            }
+        } else if (!strcmp(argv[arg_start], "--default") || !strcmp(argv[arg_start], "-default")) {
+            is_default = 1;
+            arg_start++;
+        } else {
+            break;
+        }
+    }
+
+    if (is_default) {
+        const char* dest_arc = (arg_start < argc) ? argv[arg_start] : NULL;
+        char out_path[FS_PATH_LEN] = "";
+        char err[128] = "";
+        backup_stats_t st;
+        if (backup_system_default(dest_arc, flags, out_path, sizeof(out_path), &st, err, sizeof(err)) == 0) {
+            char msg[FS_PATH_LEN + 160];
+            ksnprintf(msg, sizeof(msg), "backup: default backup created %s (%u files, %u dirs, %u symlinks, %u skipped, %u bytes)",
+                      out_path, st.file_count, st.dir_count, st.symlink_count, st.skipped_count, (uint32_t)st.archive_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: default backup failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
+        return;
+    }
+
+    if (vol_mnt) {
+        if (arg_start >= argc) {
+            terminal_writeln("backup: missing source path(s) to back up");
+            return;
+        }
+        const char* sources[32];
+        int nsrc = 0;
+        for (int i = arg_start; i < argc && nsrc < 32; i++) sources[nsrc++] = argv[i];
+
+        char out_path[FS_PATH_LEN] = "";
+        char err[128] = "";
+        backup_stats_t st;
+        const char* target_mnt = (vol_mnt[0] != '\0') ? vol_mnt : NULL;
+        if (backup_to_volume(target_mnt, sources, nsrc, flags, out_path, sizeof(out_path), &st, err, sizeof(err)) == 0) {
+            char msg[FS_PATH_LEN + 128];
+            ksnprintf(msg, sizeof(msg), "backup: created %s (%u files, %u bytes) on external volume",
+                      out_path, st.file_count, (uint32_t)st.archive_bytes);
+            terminal_writeln(msg);
+        } else {
+            char msg[160];
+            ksnprintf(msg, sizeof(msg), "backup: failed: %s", err);
+            terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+            terminal_putchar('\n');
+        }
+        return;
+    }
+
+    if (argc - arg_start < 2) {
+        terminal_writeln("usage: backup [-c] <archive.bba> <source> [source2 ...]");
+        return;
+    }
+
+    const char* archive_path = argv[arg_start++];
+    const char* sources[32];
+    int nsrc = 0;
+    for (int i = arg_start; i < argc && nsrc < 32; i++) sources[nsrc++] = argv[i];
+
+    char err[128] = "";
+    backup_stats_t st;
+    if (backup_create(archive_path, sources, nsrc, flags, NULL, NULL, &st, err, sizeof(err)) == 0) {
+        char msg[160];
+        ksnprintf(msg, sizeof(msg), "backup: archive %s written (%u files, %u dirs, %u symlinks, %u bytes)",
+                  archive_path, st.file_count, st.dir_count, st.symlink_count, (uint32_t)st.archive_bytes);
+        terminal_writeln(msg);
+    } else {
+        char msg[160];
+        ksnprintf(msg, sizeof(msg), "backup: failed: %s", err);
+        terminal_write_color(msg, VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
+        terminal_putchar('\n');
+    }
+}
+
 int fscmd_dispatch(const char* line) {
     char* buf = (char*)kmalloc(1024);
     if (!buf) return 0;
@@ -517,6 +680,7 @@ int fscmd_dispatch(const char* line) {
     else if (strcmp(argv[0], "unzip") == 0) cmd_unzip(argc, argv);
     else if (strcmp(argv[0], "clip") == 0) cmd_clip(argc, argv, line);
     else if (strcmp(argv[0], "screenshot") == 0) cmd_screenshot(argc, argv);
+    else if (strcmp(argv[0], "backup") == 0) cmd_backup(argc, argv);
     else done = 0;
     kfree(buf);
     return done;

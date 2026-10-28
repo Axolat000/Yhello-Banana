@@ -133,6 +133,16 @@ static const page_t PAGES[] = {
       "-d chooses destination directory; -q suppresses desktop notification.",
       "-d|destination directory\n-q|quiet, no desktop notification",
       "screenshot\nscreenshot -d /home/banana/Desktop", "clip, startx" },
+    { "backup", "files", "backup [-v [mnt]] [-c] [-all] [--default [arc]] <arc.bba> <src>...", "versioned backup archive (.bba)",
+      "Creates, verifies, or restores a versioned backup archive (BBA1 format) preserving paths, sizes, SHA-256 hashes, "
+      "permissions, uid/gid, symlinks and dates. Explicitly ignores temporary files and cache directories (.cache, /tmp, *.tmp, *.bak, *~). "
+      "--default backs up /home and system configurations (/etc). "
+      "-v stores a copy onto a distinct external volume (/mnt/...). "
+      "-verify validates trailer, CRC32 and SHA-256 integrity without modifying files. "
+      "-restore restores an archive into an alternative destination directory or fresh installation, verifying integrity before overwriting files (-f to overwrite). "
+      "-c enables deflate compression. -all disables exclusions.",
+      "-v [mnt]|write directly onto external volume\n-c|compress file entries (deflate)\n--default [arc]|backup /home and /etc\n-all|include temporary/cache files\n-verify arc|verify archive integrity and hashes\n-restore [-f] arc [dir]|restore archive into target directory (-f overwrite)",
+      "backup --default /tmp/home_backup.bba\nbackup /tmp/mybackup.bba ~/Documents\nbackup -v /mnt/usb ~/Documents\nbackup -verify /tmp/mybackup.bba\nbackup -restore /tmp/mybackup.bba /tmp/restored", "zip, stat, fstest" },
     /* ── text ── */
     { "cat", "text", "cat <file>", "print a file",
       "Prints a text file. Binary files are refused (they would fill the screen with noise).", NULL,
@@ -161,7 +171,7 @@ static const page_t PAGES[] = {
       "Lists the drives: IDE, SATA (AHCI), NVMe and virtio disks and CD/DVD drives, with their size and model.",
       NULL, NULL, "install, mount, df" },
     { "lsblk", "disks", "lsblk", "the drives, their partitions and where they are mounted",
-      "Lists every drive - the installed disk, CD drives, extra IDE / SATA / NVMe / virtio disks, USB "
+      "Lists every drive - the installed disk, CD drives, extra IDE / SATA / NVMe / virtio / SCSI disks, USB "
       "sticks, SD cards - and under each its partitions (MBR primary and logical, or GPT) with their "
       "size, filesystem, mount point and type. Names like sata1p2 are what mount and umount take.",
       NULL, "lsblk", "mount, umount, df, disks" },
@@ -421,14 +431,15 @@ static const page_t PAGES[] = {
       "clean shutdown, clock, backups), VMMouse (the pointer follows the host's), VMware's tools channel "
       "and VirtualBox's VMMDev. off / on take effect from the next start; time compares the host's clock with this one.",
       NULL, "vmtools\nvmtools time", "selftest" },
-    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
+    { "selftest", "vm", "selftest [ring3|memory|ram|limits|cores|heap|opencl|browser [swm]|mouse [demo]|boot|posix [part]|ipv6 [host [port]]]", "check the system",
       "Runs the built-in checks - one ok / FAIL / skip line each, then the number failed. Alone it runs "
-      "ring3, memory, limits, cores, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
+      "ring3, memory, limits, cores, heap, OpenCL, offline browser and POSIX checks; a part name runs only that part. The app side is "
       "the systest example, installed from the kernel's own copy. All the tests: docs/TESTING.md.",
       "ring3|an app runs in user mode (64-bit kernel)\n"
       "memory|RAM above 4 GiB: 64 MiB for an app, given back after\n"
       "limits|60 threads, 60 open files, 24 apps at once\n"
       "cores|malloc / free / a lock from threads on every core\n"
+      "heap|heap integrity and data preservation across aligned allocation and realloc\n"
       "opencl|the cltest example: barriers, local memory, vectors...\n"
       "browser|offline Tailwind, React, Vue, Alpine, Astro, grid and WebP checks\n"
       "boot|shared BIOS/UEFI graphical menu rendering, clipping and fallback checks\n"

@@ -25,6 +25,11 @@ uint32_t kheap_largest_free(void);
 /* called when an allocation finds no room, to free some (need: bytes in
  * one block) before it tries again - fs.c drops cached file data */
 void kheap_set_reclaim(uint32_t (*reclaim)(uint32_t need));
+/* Explicit, potentially expensive diagnostic: 0 if healthy, 1 on the first
+ * detected error (copied to err when non-NULL and cap > 0). The physical list
+ * must be readable; corrupt bin pointers are checked before dereferencing. */
+int      kheap_check(char* err, int cap);
+
 /* [lo, hi) becomes heap too (memory the kernel image no longer needs) */
 void kheap_add_region(uintptr_t lo, uintptr_t hi);
 

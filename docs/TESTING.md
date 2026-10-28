@@ -47,7 +47,7 @@ has to run as an app is done by `systest` (`sdk/examples/systest`), installed
 from the copy built into the kernel; each of its modes' exit code is the result.
 
 ```
-selftest                 ring3, memory, limits, cores, OpenCL, offline browser,
+selftest                 ring3, memory, limits, cores, heap, OpenCL, offline browser,
                          POSIX and IPv6 (if enabled) checks
 selftest ring3           an app runs in user mode (64-bit kernel; skipped on 32-bit)
 selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every byte
@@ -56,7 +56,11 @@ selftest memory          RAM above 4 GiB: an app gets 64 MiB from there, every b
 selftest limits          an app with 60 threads, an app with 60 files open,
                          24 apps at once
 selftest cores           threads calling malloc / free / a lock on every core, and
-                         whether they spread over the cores (SMP=4 in QEMU)
+                         whether they spread over the cores (SMP=4 in QEMU), with a
+                         temporary heap integrity checker during the workload
+selftest heap            heap headers, region sentinels, byte accounting and free bins;
+                         4000 aligned allocation/realloc rounds with retained data
+                         checked among 256 live blocks (no timing threshold)
 selftest opencl          installs and runs the cltest example: build errors in the
                          log, vadd, a 2D Mandelbrot range, atomics, math built-ins,
                          __local arguments, barrier(), local arrays, float4 / int /
@@ -272,6 +276,21 @@ flags, long messages, clipped and padded framebuffers (nothing drawn outside
 them). It writes preview PNGs and reports to `build/test/crashscreen/` without
 booting anything; prints `PASS` when every check holds.
 
+### `tools/test_kheap.py`
+
+The kernel's heap (`kernel/kheap.c`) on Linux, with stand-in headers
+(`tools/tests/kheap_stub`): deterministic allocation, free, realloc, alignment,
+region addition (above and below initial heap), exact-fit behavior (including
+528 bytes), corruption diagnostics (bin cycles, bad links, accounting errors),
+and 120000 deterministic mixed operations. Both pointer widths are compiled when
+host toolchains are available; unavailable runtimes are explicitly reported as
+SKIP. Each suite has a 120-second timeout. Logs: `build/test/kheap/{64,32}/`.
+The test includes a copy of the real allocator to inject corruption into private
+state; production builds expose no fault-injection API. Stand-in locks make this
+a single-threaded host test, not proof of SMP behavior. See
+[KHEAP-INTEGRITY.md](KHEAP-INTEGRITY.md) for adaptation decisions, diagnostic
+limits, and QEMU validation.
+
 ## A full check before a release
 
 ```
@@ -281,6 +300,7 @@ MEM=8G tools/dev.sh apps
 tools/test-exfat.sh
 tools/test_opencl.sh x86_64 && tools/test_opencl.sh i686
 python3 tools/test_crashscreen.py
+python3 tools/test_kheap.py
 ```
 
 Then inside Banana OS: `selftest`, `selftest ipv6 example.com`, `fsck -f` on an
@@ -343,3 +363,10 @@ Build 169 validation: all 17 in-OS checks passed with 8 GiB assigned under
 64-bit BIOS, 64-bit UEFI and 32-bit BIOS. Neofetch reported 8191 MB under
 BIOS and 8185 MB under UEFI. The host checks also cover synthetic 24/64 GiB
 maps; those larger guest sizes were not run on this host.
+
+### Process-local SDK allocator
+
+See [sdk-allocator.md](sdk-allocator.md) for the VM contract, accounting semantics,
+host regression command, `systest heap` checks, and remaining qualification scope.
+Retained build and Banana BIOS/UEFI execution evidence, source fingerprints and
+replay commands are in [the allocator validation report](validation/sdk-allocator/README.md).

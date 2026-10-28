@@ -1,0 +1,37 @@
+qemu-system-x86_64: -chardev socket,id=s0,host=127.0.0.1,port=39933,server=on,wait=on: info: QEMU waiting for connection on: disconnected:tcp:127.0.0.1:39933,server=on
+booting...
+$ selftest memory
+    selftest: checking the system (it runs the systest app a few times)
+    memory above 4 GiB (build 142)
+      skip  RAM above 4 GiB - none here (QEMU: MEM=8G tools/dev.sh run)
+    ordinary and aligned malloc/realloc/free: ok
+    SDK heap: 64 MiB in 16 pieces (virtual addresses)
+    all 16 pieces freed
+      ok    SDK heap allocates 64 MiB and every byte holds
+    selftest: 1 passed, 0 failed (836 ms)
+$ systest mem 4 high
+    kernel umem: 4 MiB in 1 pieces, 1 of them below 4 GiB
+    all 1 pieces freed
+    physical high-RAM check failed: 1 pieces below 4 GiB
+$ systest heap
+    ordinary and aligned malloc/realloc/free: ok
+    heap pthread startup/destructors/return/exit: ok; cancellation: ENOSYS
+    heap kernel allocation and decoded-image ownership: ok
+    heap lifecycle: passed; live 0, reserved 0 bytes (initial 0)
+    banana@banana-os-0.6:/home/banana$ smp: core 1 runs app code (first: systest/t1)
+    smp: core 2 runs app code (first: systest/t3)
+    smp: core 3 runs app code (first: systest/t5)
+
+$ systest heap
+    ordinary and aligned malloc/realloc/free: ok
+    heap pthread startup/destructors/return/exit: ok; cancellation: ENOSYS
+    heap kernel allocation and decoded-image ownership: ok
+    heap lifecycle: passed; live 0, reserved 0 bytes (initial 0)
+
+results:
+  ok    selftest memory
+  ok    systest mem 4 high
+  ok    systest heap
+  ok    systest heap
+
+Runner exit status: 0

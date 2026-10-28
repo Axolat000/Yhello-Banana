@@ -32,6 +32,11 @@
 #include "uspace.h"
 #include "idt.h"
 #include "uvm.h"
+
+#ifdef __x86_64__
+/* SDK allocation ownership depends on this address boundary. */
+_Static_assert(BANANA_VM_BASE == UVM_BASE, "SDK and kernel VM boundaries must match");
+#endif
 #include "meminfo.h"
 #include "hmem.h"
 #include "upage.h"
@@ -584,6 +589,124 @@ static int a_fd_sync(int fd) {
     return -5;                              /* EIO: storage I/O error */
 }
 
+/* ── advisory file locking (flock, version 23) ───────────────────────
+ * Shared between processes and threads; locks belong to an open file
+ * description (identified by (mnt, node) on installed/external storage,
+ * or mnt 0 / fidx on RAM files). Releasing happens automatically on descriptor
+ * close or application exit. */
+
+#define FLOCK_MAX 256
+
+typedef struct {
+    int      used;
+    uint16_t mnt;
+    uint32_t node;
+    int      fidx;     /* fallback for RAM files (node == 0) */
+    int      type;     /* BANANA_LOCK_SH or BANANA_LOCK_EX */
+    int      owner_id; /* app proc id */
+    int      owner_fd; /* descriptor number */
+} flock_entry_t;
+
+static flock_entry_t g_flocks[FLOCK_MAX];
+
+static int file_identity_match(const flock_entry_t* e, uint16_t mnt, uint32_t node, int fidx) {
+    if (!e->used) return 0;
+    if (node != 0) return e->mnt == mnt && e->node == node;
+    return e->mnt == mnt && e->fidx == fidx;
+}
+
+static void flock_release_desc(int owner_id, int owner_fd) {
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        if (g_flocks[i].used && g_flocks[i].owner_id == owner_id && g_flocks[i].owner_fd == owner_fd) {
+            g_flocks[i].used = 0;
+        }
+    }
+}
+
+static void flock_release_owner(int owner_id) {
+    for (int i = 0; i < FLOCK_MAX; i++) {
+        if (g_flocks[i].used && g_flocks[i].owner_id == owner_id) {
+            g_flocks[i].used = 0;
+        }
+    }
+}
+
+static int a_flock(int fd, int op) {
+    app_proc_t* p = cur();
+    if (!p) return -9;                      /* EBADF */
+    if (fd >= 0 && fd <= 2) return -22;      /* EINVAL: terminal */
+    afd_t* f = get_fd(p, fd);
+    if (!f) return -9;                      /* EBADF */
+    if (f->sock) return -22;                 /* EINVAL: sockets not flockable */
+    fs_file_t* ff = fs_file_info(f->fidx);
+    if (!ff || !ff->used) return -9;         /* EBADF: file invalid/deleted */
+
+    int act = op & ~BANANA_LOCK_NB;
+    int nb = (op & BANANA_LOCK_NB) != 0;
+    if (act != BANANA_LOCK_SH && act != BANANA_LOCK_EX && act != BANANA_LOCK_UN) {
+        return -22;                          /* EINVAL: unknown operation */
+    }
+
+    uint16_t mnt = ff->mnt;
+    uint32_t node = ff->node;
+    int fidx = f->fidx;
+
+    if (act == BANANA_LOCK_UN) {
+        flock_release_desc(p->id, fd);
+        return 0;
+    }
+
+    for (;;) {
+        int conflict = 0;
+        int my_entry = -1;
+
+        for (int i = 0; i < FLOCK_MAX; i++) {
+            if (!file_identity_match(&g_flocks[i], mnt, node, fidx)) continue;
+            if (g_flocks[i].owner_id == p->id && g_flocks[i].owner_fd == fd) {
+                my_entry = i;
+                continue;
+            }
+            if (act == BANANA_LOCK_EX) {
+                /* Exclusive lock requested: any other lock (SH or EX) is a conflict */
+                conflict = 1;
+                break;
+            } else if (act == BANANA_LOCK_SH) {
+                /* Shared lock requested: another EX lock is a conflict */
+                if (g_flocks[i].type == BANANA_LOCK_EX) {
+                    conflict = 1;
+                    break;
+                }
+            }
+        }
+
+        if (conflict) {
+            if (nb) return -11;              /* EWOULDBLOCK / EAGAIN */
+            breathe(p, 1);
+            continue;
+        }
+
+        /* Lock granted: update existing entry or find free slot */
+        if (my_entry >= 0) {
+            g_flocks[my_entry].type = act;
+            return 0;
+        }
+
+        for (int i = 0; i < FLOCK_MAX; i++) {
+            if (!g_flocks[i].used) {
+                g_flocks[i].used = 1;
+                g_flocks[i].mnt = mnt;
+                g_flocks[i].node = node;
+                g_flocks[i].fidx = fidx;
+                g_flocks[i].type = act;
+                g_flocks[i].owner_id = p->id;
+                g_flocks[i].owner_fd = fd;
+                return 0;
+            }
+        }
+        return -46;                          /* ENOLCK: lock table exhausted */
+    }
+}
+
 static int a_open(const char* path, int flags) {
     app_proc_t* p = cur();
     if (!p || !path || !*path) return -1;
@@ -658,9 +781,13 @@ static int a_close(int fd) {
     afd_t* f = get_fd(cur(), fd);
     app_proc_t* p = cur();
     if (!f) {
-        if (p && fd >= 3 && fd < APP_FD_MAX + 3) p->fds[fd - 3].used = 0;
+        if (p && fd >= 3 && fd < APP_FD_MAX + 3) {
+            flock_release_desc(p->id, fd);
+            p->fds[fd - 3].used = 0;
+        }
         return -1;
     }
+    if (p) flock_release_desc(p->id, fd);
     if (f->sock) { usock_close(f->sock); f->sock = NULL; }
     else if (f->fidx >= 0) fs_unpin(f->fidx);
     f->used = 0;
@@ -1876,6 +2003,7 @@ static void spec_init(void) {
     SPEC(time_utc, "", 0);
     SPEC(utc_offset, "i", 0);
     SPEC(fd_sync, "i", 0);
+    SPEC(flock, "ii", 0);
     SPEC(pkg_install, "sbi", 0);
     SPEC(app_run, "siibi", 0);          /* argv: checked in it */
     SPEC(repo_update, "bi", 0);
@@ -2383,6 +2511,7 @@ static void api_init(void) {
     g_api.time_utc = G(a_time_utc);
     g_api.utc_offset = G(a_utc_offset);
     g_api.fd_sync = G(a_fd_sync);
+    g_api.flock = G(a_flock);
     g_api.pkg_install = G(a_pkg_install);
     g_api.app_run = G(a_app_run);
     g_api.repo_update = G(a_repo_update);
@@ -2663,6 +2792,7 @@ static void discard(app_proc_t* p) {
 
 static void release(app_proc_t* p) {
     stop_threads(p);
+    flock_release_owner(p->id);
     for (int i = 0; i < APP_FD_MAX; i++)            /* its sockets close (connections end) */
         if (p->fds[i].used && p->fds[i].sock) { usock_close(p->fds[i].sock); p->fds[i].sock = NULL; }
         else if (p->fds[i].used && p->fds[i].fidx >= 0) { fs_unpin(p->fds[i].fidx); p->fds[i].used = 0; }
@@ -2845,6 +2975,16 @@ int app_spawn(const char* path, int argc, char** argv, char* err, int ecap) {
     return 0;
 }
 
+/* Kernel allocation bytes plus resident anonymous mapping pages. This is
+ * neither virtual reservation size nor total process RSS (see allocator.md). */
+static uint32_t app_mem_bytes(app_proc_t* p) {
+    uint64_t n = umem_used(p->mem);
+#ifdef __x86_64__
+    n += uvm_resident(p->us);
+#endif
+    return n > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
 int app_count(void) {
     int n = 0;
     for (int i = 0; i < APP_MAX; i++) if (g_procs[i].used) n++;
@@ -2857,7 +2997,7 @@ void app_list(void) {
     for (int i = 0; i < APP_MAX; i++) {
         app_proc_t* p = &g_procs[i];
         if (!p->used) continue;
-        uint32_t mem = umem_used(p->mem);
+        uint32_t mem = app_mem_bytes(p);
         ksnprintf(line, sizeof(line), "  %-16s pid %-3d %s  %u KiB allocated", p->name, p->pid,
                   p->own_task ? "desktop " : "terminal", mem / 1024);
         terminal_writeln(line);
@@ -2875,7 +3015,7 @@ int app_snapshot(app_info_t* out, int max) {
         kstrlcpy(out[n].name, p->name, sizeof(out[n].name));
         out[n].pid = p->pid;
         out[n].desktop = p->own_task;
-        out[n].mem = umem_used(p->mem);
+        out[n].mem = app_mem_bytes(p);
         out[n].threads = 1;
         for (int t = 0; t < APP_THREADS; t++) if (p->threads[t].used && !p->threads[t].done) out[n].threads++;
         n++;

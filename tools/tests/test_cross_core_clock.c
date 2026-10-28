@@ -70,6 +70,22 @@ int main(void) {
     assert(g_test_sync[2].qualified == 0 && g_test_sync[2].error_code == 1);
     printf("PASS: Qualification thresholds and fallback state verified\n");
 
-    printf("All 5 cross-core synchronization tests passed.\n");
+    /* 6. Multi-core qualification topology matrix (2 to 8 cores, multi-socket) */
+    for (int cores = 2; cores <= 8; cores++) {
+        for (int c = 1; c < cores; c++) {
+            g_test_sync[c].qualified = 1;
+            /* AP offset within +/- 200 ms simulated boot latency differences */
+            g_test_sync[c].offset = (int64_t)(c * 1500000) * (c % 2 == 0 ? -1 : 1);
+            g_test_sync[c].rtt_min = 1000 + c * 250; /* Low RTT < 5 ms max */
+            g_test_sync[c].error_code = 0;
+
+            uint64_t simulated_ap_tsc = bsp_tsc0 + 50000000 - g_test_sync[c].offset;
+            uint64_t calculated_ms = sim_core_time_ms(simulated_ap_tsc, bsp_tsc0, per_ms, g_test_sync[c].offset);
+            assert(calculated_ms == 20); /* 50M cycles / 2.5M cycles/ms = 20 ms */
+        }
+    }
+    printf("PASS: Multi-core qualification matrix (2 to 8 cores) verified\n");
+
+    printf("All 6 cross-core synchronization tests passed.\n");
     return 0;
 }

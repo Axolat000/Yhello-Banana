@@ -26,16 +26,18 @@ int fsdisk_sync_wait(void) {
 _Static_assert(__builtin_offsetof(banana_api_t, fd_sync) ==
                __builtin_offsetof(banana_api_t, utc_offset) + sizeof(void*),
                "fd_sync must follow the v21 tail");
-_Static_assert(sizeof(banana_api_t) ==
+_Static_assert(__builtin_offsetof(banana_api_t, flock) ==
                __builtin_offsetof(banana_api_t, fd_sync) + sizeof(void*),
-               "fd_sync must be the ABI tail");
+               "flock must follow the v22 tail");
 
 int main(void) {
-    assert(BANANA_API_VERSION == 22);
+    assert(BANANA_API_VERSION == 23);
     banana_api_t old = { .size = __builtin_offsetof(banana_api_t, fd_sync) };
     assert(!BANANA_HAS(&old, fd_sync));
+    assert(!BANANA_HAS(&old, flock));
     old.size = sizeof(old);
     assert(BANANA_HAS(&old, fd_sync));
+    assert(BANANA_HAS(&old, flock));
 #ifdef __x86_64__
     spec_init();
     unsigned slot = __builtin_offsetof(banana_api_t, fd_sync) / sizeof(void*);

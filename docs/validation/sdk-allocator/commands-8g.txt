@@ -1,0 +1,5 @@
+# The kernel must allocate identity-mapped high RAM, not merely high virtual addresses.
+selftest memory ## 0 failed
+systest mem 64 high ## kernel umem: 64 MiB in 16 pieces, 0 of them below 4 GiB
+systest heap ## heap lifecycle: passed
+systest heap ## heap lifecycle: passed

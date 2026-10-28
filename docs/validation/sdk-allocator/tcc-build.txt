@@ -1,0 +1,43 @@
+tcc: built into /var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/build/test/sdk-allocator-tcc
+
+$ ar t build/test/sdk-allocator-tcc/i386/libbanana.a
+banana.o
+crt0.o
+libc.o
+malloc.o
+math.o
+mman.o
+posix.o
+pthread.o
+setjmp.o
+signal.o
+socket.o
+stdio.o
+i386 malloc: 00000062 T malloc
+i386 free: 000000c0 T free
+i386 realloc: 00000128 T realloc
+i386 calloc: 00000248 T calloc
+i386 __malloc_heap: 0000001b T __malloc_heap
+i386 __malloc_stats: 0000002b T __malloc_stats
+
+$ ar t build/test/sdk-allocator-tcc/x86_64/libbanana.a
+banana.o
+crt0.o
+libc.o
+malloc.o
+math.o
+mman.o
+posix.o
+pthread.o
+setjmp.o
+signal.o
+socket.o
+stdio.o
+x86_64 malloc: 0000000000001250 T malloc
+x86_64 free: 000000000000131f T free
+x86_64 realloc: 0000000000001422 T realloc
+x86_64 calloc: 0000000000001701 T calloc
+x86_64 __malloc_heap: 00000000000018a8 T __malloc_heap
+x86_64 __malloc_stats: 00000000000018de T __malloc_stats
+
+Both fresh archives contain exactly one definition of each allocator entry point. Exit status: 0

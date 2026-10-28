@@ -1,0 +1,96 @@
+install prefix            /var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/build/test/sdk-allocator-ffmpeg-i686/install
+source path               /var/lib/yhello/worktrees/upstream-46446439da13f6664de67d9314b212544559a0b3-s1/ports/ffmpeg/src/ffmpeg-7.1
+C compiler                gcc
+C library
+ARCH                      x86 (generic)
+big-endian                no
+runtime cpu detection     no
+standalone assembly       no
+x86 assembler             nasm
+MMX enabled               yes
+MMXEXT enabled            yes
+3DNow! enabled            yes
+3DNow! extended enabled   yes
+SSE enabled               yes
+SSSE3 enabled             yes
+AESNI enabled             yes
+AVX enabled               yes
+AVX2 enabled              yes
+AVX-512 enabled           yes
+AVX-512ICL enabled        yes
+XOP enabled               yes
+FMA3 enabled              yes
+FMA4 enabled              yes
+i686 features enabled     yes
+CMOV is fast              yes
+EBX available             yes
+EBP available             no
+debug symbols             no
+strip symbols             yes
+optimize for size         no
+optimizations             yes
+static                    yes
+shared                    no
+postprocessing support    no
+network support           no
+threading support         no
+safe bitstream reader     yes
+texi2html enabled         no
+perl enabled              yes
+pod2man enabled           yes
+makeinfo enabled          no
+makeinfo supports HTML    no
+xmllint enabled           yes
+
+External libraries:
+
+External libraries providing hardware acceleration:
+
+Libraries:
+avcodec                 avutil                  swscale
+avformat                swresample
+
+Programs:
+
+Enabled decoders:
+aac                     mp2                     pcm_s24le
+aac_latm                mp2float                pcm_s32le
+ac3                     mp3                     pcm_u8
+adpcm_ima_wav           mp3float                vorbis
+adpcm_ms                opus                    vp8
+alac                    pcm_alaw                webp
+eac3                    pcm_f32le               wmav1
+flac                    pcm_mulaw               wmav2
+mjpeg                   pcm_s16be
+mp1                     pcm_s16le
+
+Enabled encoders:
+
+Enabled hwaccels:
+
+Enabled parsers:
+aac                     flac                    opus
+aac_latm                mjpeg                   vorbis
+ac3                     mpegaudio
+
+Enabled demuxers:
+aac                     flac                    mp3
+ac3                     matroska                ogg
+asf                     mov                     wav
+
+Enabled muxers:
+
+Enabled protocols:
+file
+
+Enabled filters:
+
+Enabled bsfs:
+
+Enabled indevs:
+
+Enabled outdevs:
+
+License: LGPL version 2.1 or later
+
+WARNING: Threading support was disabled or is not available on the target platform. This means that not only is this build not multi-threaded, but also that the libraries from this build MUST NOT be used in a multi-threaded environment.

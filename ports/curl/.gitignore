@@ -1,0 +1,4 @@
+# Ignore downloaded sources, build artifacts, and locks
+src/
+build/
+*.lock

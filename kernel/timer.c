@@ -10,34 +10,31 @@
 #include "gui.h"
 #include "audio.h"
 #include "splash.h"
+#include "smp.h"
+#include "kstring.h"
+#include "timer_math.h"
 
-/*
- * PIT channel 0, mode 2 (rate generator) at 1 kHz, counted by IRQ0.
- *
- * This used to poll the PIT counter for wraps, which only advanced time
- * while something was actively spinning on timer_poll() - so every wait
- * in the kernel had to be a busy loop. With the interrupt counting
- * milliseconds for us, waits can `hlt` and the CPU actually idles.
- * timer_ticks() keeps its old 100 Hz meaning, since the rest of the
- * kernel (uptime, clock, top's CPU%) is written against 10 ms ticks.
- *
- * The time itself (timer_ms) comes from the CPU's time stamp counter, not
- * from counting the interrupts: virtual machines deliver timer interrupts
- * late while the guest is idle and then several at once to catch up (on
- * VirtualBox, when the mouse moves), so a clock counting them ran slow,
- * then fast - and an app timing its music with ticks_ms() slowed down and
- * skipped. The TSC's rate is measured once at boot against PIT channel 2,
- * polled (no interrupts involved). The interrupt count is the fallback.
- */
-
-#define PIT_CH0   0x40
-#define PIT_CH2   0x42
-#define PIT_CMD   0x43
-#define PIT_HZ    1000
-#define PIT_BASE  1193182u
-
-static volatile uint64_t g_ms = 0;          /* timer interrupts so far */
-static uint64_t g_tsc0, g_tsc_per_ms;       /* 0: no usable TSC, g_ms is the clock */
+/* IRQ0 still wakes sleepers at 1 kHz. Elapsed time comes from a shared
+ * hardware counter, not the CPU's TSC: even a hypervisor advertising an
+ * invariant TSC can inherit a broken counter from its host. HPET is the
+ * first choice, then the ACPI PM timer; IRQ counting is the last fallback.
+ * HPET comparators/routing are untouched: the PIT/local APIC delivers IRQ0. */
+#define PIT_CH0 0x40
+#define PIT_CH2 0x42
+#define PIT_CMD 0x43
+#define PIT_HZ 1000
+#define PIT_BASE 1193182u
+static volatile uint32_t g_ms;
+static volatile uint32_t* g_hpet;
+static uint32_t g_period_fs, g_mask;
+static uint16_t g_pm_port;
+static int g_hpet64;
+static uint64_t g_origin, g_ns_base;
+/* Only IRQ0 writes the extension. Readers on every core use a sequence
+ * counter, so a 24/32-bit rollover never exposes a torn 64-bit epoch. */
+static volatile uint32_t g_seq, g_last;
+static volatile uint64_t g_elapsed, g_irq_ns;
+static uint64_t g_tsc_per_ms;
 
 static inline uint64_t tsc_now(void) {
     uint32_t lo, hi;
@@ -45,58 +42,117 @@ static inline uint64_t tsc_now(void) {
     return ((uint64_t)hi << 32) | lo;
 }
 
-/* TSC cycles in 50 ms of PIT channel 2 (one-shot, its output polled), 0 if it never ends */
 static uint64_t tsc_over_50ms(void) {
     uint8_t p61 = inb(0x61);
-    outb(0x61, (uint8_t)((p61 & ~0x02) | 0x01));   /* gate on, speaker off */
-    outb(PIT_CMD, 0xB0);                            /* channel 2, lo/hi, mode 0 */
-    uint16_t count = (uint16_t)(PIT_BASE / 20u);    /* 50 ms */
+    outb(0x61, (uint8_t)((p61 & ~0x02) | 0x01));
+    outb(PIT_CMD, 0xB0);
+    uint16_t count = (uint16_t)(PIT_BASE / 20u);
     outb(PIT_CH2, (uint8_t)count);
-    outb(PIT_CH2, (uint8_t)(count >> 8));           /* counting starts */
+    outb(PIT_CH2, (uint8_t)(count >> 8));
     uint64_t t0 = tsc_now(), t1;
-    /* (a PIT that never ends it: given up after ~2.5 s even at 4 GHz, not ~100 s of port reads) */
-    while (!(inb(0x61) & 0x20))                     /* OUT2 goes high at 0 */
+    while (!(inb(0x61) & 0x20))
         if (tsc_now() - t0 > 10000000000ull) { outb(0x61, p61); return 0; }
     t1 = tsc_now();
     outb(0x61, p61);
     return t1 - t0;
 }
 
-static void cpuid(uint32_t leaf, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
-    __asm__ volatile("cpuid" : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d) : "a"(leaf), "c"(0));
-}
-
-/* A TSC good for a clock: one that runs at a constant rate (CPUID's
- * "invariant TSC") or a virtual machine's. On older processors (Pentium M,
- * Core Duo, Core 2...) it speeds up and slows down with power saving or
- * stops in sleep states: the interrupts stay the clock there. */
-static int tsc_is_clock(void) {
-    uint32_t a, b, c, d;
-    cpuid(1, &a, &b, &c, &d);
-    if (c & (1u << 31)) return 1;                   /* a hypervisor */
-    cpuid(0x80000000u, &a, &b, &c, &d);
-    if (a < 0x80000007u) return 0;
-    cpuid(0x80000007u, &a, &b, &c, &d);
-    return (d >> 8) & 1;                            /* invariant TSC */
-}
-
-static int g_tsc_clock;                             /* timer_ms() reads the TSC */
-
 static void calibrate_tsc(void) {
     uint64_t a = tsc_over_50ms(), b = tsc_over_50ms();
-    uint64_t c = a < b ? a : b;                     /* (the less disturbed one) */
+    uint64_t c = a < b ? a : b;
     uint64_t per = c / 50u;
-    if (!a || !b || per < 10000u || per > 20000000u) return;    /* 10 MHz .. 20 GHz, else unusable */
-    if ((a > b ? a - b : b - a) > c / 20u) return;              /* two measures 5 % apart: unusable */
-    g_tsc_per_ms = per;                             /* (run-time accounting uses it in any case) */
-    g_tsc0 = tsc_now();
-    g_tsc_clock = tsc_is_clock();
+    if (!a || !b || per < 10000u || per > 20000000u) return;
+    if ((a > b ? a - b : b - a) > c / 20u) return;
+    g_tsc_per_ms = per;
 }
 
 uint64_t timer_tsc_per_ms(void) { return g_tsc_per_ms; }
+
+static uint32_t u32(const uint8_t* p) { uint32_t v; memcpy(&v,p,4); return v; }
+static uint64_t u64(const uint8_t* p) { return u32(p) | (uint64_t)u32(p+4)<<32; }
+static int table_ok(const uint8_t* p, unsigned minimum) {
+    if (!p || (uintptr_t)p<4096 || (uint64_t)(uintptr_t)p>(1ull<<32)-36) return 0;
+    unsigned n=u32(p+4);
+    if(n<minimum || n>4096 || n>(1ull<<32)-(uintptr_t)p) return 0;
+    uint8_t sum=0;for(unsigned i=0;i<n;i++)sum+=p[i];return !sum;
+}
+static uint64_t hpet_read(void) {
+    if(!g_hpet64)return g_hpet[0xf0/4];
+#ifdef __x86_64__
+    return *(volatile uint64_t*)(g_hpet+0xf0/4);
+#else
+    uint32_t hi,lo,again;
+    do { hi=g_hpet[0xf4/4];lo=g_hpet[0xf0/4];again=g_hpet[0xf4/4]; } while(hi!=again);
+    return (uint64_t)hi<<32 | lo;
+#endif
+}
+static uint32_t narrow_read(void) { return g_hpet?(uint32_t)hpet_read():inl(g_pm_port); }
+static int counter_moves(void) {
+    uint32_t first=narrow_read();
+    for(unsigned i=0;i<100000;i++)if(narrow_read()!=first)return 1;
+    return 0;
+}
+static void choose_clock(void) {
+    const uint8_t* h=acpi_find_table("HPET");
+    if(table_ok(h,56) && h[40]==0 && !h[42]) {
+        uint64_t address=u64(h+44);
+        if(address>=4096 && address<=(1ull<<32)-0x400 && !(address&7)) {
+            g_hpet=(volatile uint32_t*)(uintptr_t)address;
+            uint32_t cap=g_hpet[0],old=g_hpet[0x10/4];g_period_fs=g_hpet[1];
+            if((cap&0xff) && g_period_fs && g_period_fs<=100000000u) {
+                g_hpet64=!!(cap&(1u<<13));g_hpet[0x10/4]=old|1;
+                if(counter_moves()) { g_mask=0xffffffffu;return; }
+                g_hpet[0x10/4]=old;
+            }
+            g_hpet=NULL;g_hpet64=0;
+        }
+    }
+    const uint8_t* f=acpi_find_table("FACP");
+    if(table_ok(f,116) && !(u32(f+112)&(1u<<20))) {
+        uint64_t port=u32(f+76);
+        if(u32(f+4)>=220 && f[208]==1 && f[209]>=32 && !f[210] && u64(f+212))port=u64(f+212);
+        if(port && port<=65532 && f[91]>=4) {
+            g_pm_port=(uint16_t)port;g_mask=u32(f+112)&(1u<<8)?0xffffffffu:0xffffffu;
+            if(counter_moves())return;
+            g_pm_port=0;
+        }
+    }
+}
+int timer_has_hardware_clock(void) { return g_hpet || g_pm_port; }
+const char* timer_clock_source(void) {
+    return g_hpet?(g_hpet64?"HPET 64-bit":"HPET 32-bit"):g_pm_port?"ACPI PM timer":"timer interrupts";
+}
+static void clock_reset(uint64_t ns) {
+    g_ns_base=ns;
+    g_origin=g_hpet64?hpet_read():0;
+    g_last=(g_hpet || g_pm_port)?narrow_read():0;
+    g_elapsed=0;g_irq_ns=0;g_seq=0;
+}
+uint64_t timer_counter(void) {
+    if(g_hpet64)return g_ns_base+timer_hpet_ns(hpet_read()-g_origin,g_period_fs);
+    uint32_t seq,last,raw;uint64_t elapsed;
+    do {
+        seq=__atomic_load_n(&g_seq,__ATOMIC_ACQUIRE);
+        if(seq&1)continue;
+        last=g_last;elapsed=(g_hpet || g_pm_port)?g_elapsed:g_irq_ns;
+        raw=(g_hpet || g_pm_port)?narrow_read():last;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if(seq==__atomic_load_n(&g_seq,__ATOMIC_RELAXED))break;
+    } while(1);
+    if(!g_hpet && !g_pm_port)return g_ns_base+elapsed;
+    elapsed+=timer_wrap_delta(raw,last,g_mask);
+    return g_ns_base+(g_hpet?timer_hpet_ns(elapsed,g_period_fs):timer_pm_ns(elapsed));
+}
+uint64_t timer_counter_per_ms(void) { return 1000000ull; } /* nanoseconds */
 uint32_t timer_irq_count(void) { return g_ms; }
 
 static void timer_irq(void) {
+    __atomic_add_fetch(&g_seq,1,__ATOMIC_ACQ_REL);
+    if(!g_hpet64 && (g_hpet || g_pm_port)) {
+        uint32_t now=narrow_read();g_elapsed+=timer_wrap_delta(now,g_last,g_mask);g_last=now;
+    }
+    g_irq_ns+=1000000ull;
+    __atomic_add_fetch(&g_seq,1,__ATOMIC_RELEASE);
     if (latency_enabled) latency_timer();
     g_ms++;
     serial_kick();      /* drain the serial console's output queue */
@@ -108,6 +164,8 @@ static void timer_irq(void) {
 
 void timer_init(void) {
     calibrate_tsc();
+    choose_clock();clock_reset(0);
+    klog("clock: %s (shared across cores)\n",timer_clock_source());
     uint32_t divisor = PIT_BASE / PIT_HZ;
     outb(PIT_CMD, 0x34);                 /* channel 0, lo/hi byte, mode 2 */
     outb(PIT_CH0, (uint8_t)(divisor & 0xFF));
@@ -117,26 +175,16 @@ void timer_init(void) {
 }
 
 uint64_t timer_ms64(void) {
-    if (g_tsc_clock) return (tsc_now() - g_tsc0) / g_tsc_per_ms;
-    /* IRQ0 updates the fallback on the kernel CPU; prevent a torn i386 read. */
-    uint32_t flags = irq_save();
-    uint64_t ms = g_ms;
-    irq_restore(flags);
-    return ms;
+    return timer_counter() / 1000000ull;
+}
+
+uint32_t timer_ms(void) {
+    return (uint32_t)timer_ms64();
 }
 
 uint64_t timer_core_now_ms(void) {
-    if (g_tsc_clock) {
-        int cpu = cpu_id();
-        int64_t off = smp_tsc_core_offset(cpu);
-        int64_t adj = (int64_t)(tsc_now() - g_tsc0) + off;
-        if (adj < 0) adj = 0;
-        return (uint64_t)adj / g_tsc_per_ms;
-    }
     return timer_ms64();
 }
-
-uint32_t timer_ms(void) { return (uint32_t)timer_core_now_ms(); }
 
 uint32_t timer_ticks(void) {
     return timer_ms() / 10u;

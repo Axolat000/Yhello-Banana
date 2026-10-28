@@ -8,7 +8,7 @@ extern "C" {
 #define LOCK_EX 2
 #define LOCK_NB 4
 #define LOCK_UN 8
-int flock(int fd, int op);       /* (always granted) */
+int flock(int fd, int op);
 #ifdef __cplusplus
 }
 #endif
