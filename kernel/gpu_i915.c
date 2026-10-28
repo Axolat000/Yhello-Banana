@@ -454,7 +454,10 @@ static uint32_t ctx_size(void) {
     uint32_t b = 0;
     if (H.gen == 6) {
         uint32_t r = rd(R_CXT_SIZE6);
-        b = (((r >> 24) & 0x3F) + ((r >> 6) & 0x3F) + (r & 0x3F)) * 64u;
+        /* CXT_SIZE: RING is bits 23:18; bits 29:24 are the
+         * separate power context, which MI_SET_CONTEXT does not save.
+         * Linux v6.12 intel_gt_regs.h: GEN6_CXT_TOTAL_SIZE. */
+        b = (((r >> 18) & 0x3F) + ((r >> 6) & 0x3F) + (r & 0x3F)) * 64u;
     } else if (H.gen == 7) {
         if (H.hsw) return 17u * 4096u;                      /* HSW_CXT_TOTAL_SIZE */
         uint32_t r = rd(R_CXT_SIZE7);

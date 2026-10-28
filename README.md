@@ -1,5 +1,14 @@
 # 🍌 Banana OS 0.6
 
+- **Sandy Bridge context memory fix:** Intel Gen6 now reserves the ring,
+  extended and pipeline context sizes from the correct hardware fields.
+  The regression models an 8 KiB context with a different power-context
+  size and catches the former 4 KiB allocation before the fix.
+  `gpu3d on` permits acceleration; use `glinfo`'s renderer to confirm
+  whether an application actually uses Intel or software rendering.
+  Physical Intel performance and the reported installed-disk command failure
+  still require confirmation on the affected PC.
+
 **Mesa ISO:** prereleases also include `Banana_OS-mesa.iso` with Intel Crocus/Iris (Core 1st–10th generation), VirGL and software OpenGL. The combined Mesa/LibJS profile is tested with 1 GiB RAM. Intel acceleration remains experimental: see [GPU.md](GPU.md#mesa-iso-in-prereleases) for setup, tests and hardware limits.
 
 Hybrid images share the BIOS and UEFI kernel data to avoid storing duplicate

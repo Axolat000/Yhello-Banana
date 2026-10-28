@@ -26,7 +26,15 @@ static void* arena_take(uint64_t n, uint64_t align) {
 }
 void* kmalloc(size_t n) { return arena_take(n ? n : 1, 16); }
 void* kzalloc(size_t n) { void* p = kmalloc(n); memset(p, 0, n); return p; }
-void* kmalloc_aligned(size_t n, size_t a) { return arena_take(n, a); }
+static struct { void* ptr; size_t bytes; } aligned_blocks[4096];
+static unsigned aligned_count;
+void* kmalloc_aligned(size_t n, size_t a) {
+    void* p = arena_take(n, a);
+    if (aligned_count >= 4096) { printf("too many aligned blocks\n"); exit(2); }
+    aligned_blocks[aligned_count].ptr = p;
+    aligned_blocks[aligned_count++].bytes = n;
+    return p;
+}
 void  kfree(void* p) { (void)p; }
 static void* freelist[65536];
 static int nfree;
@@ -124,6 +132,14 @@ static void ctxreg_note(uint32_t r) {
 static uint32_t* xlate(uint32_t a, int ppgtt);
 static void ctx_save(void) {
     if (!ctx_cur) return;
+    /* The real engine saves the whole hardware context, not just this
+     * model's small register sample. Check its destination allocation. */
+    uint32_t* base = xlate(ctx_cur, 0);
+    size_t need = gen == 6 ? 8192 : hsw ? 17u * 4096u : 8192;
+    int fits = 0;
+    for (unsigned k = 0; k < aligned_count; k++)
+        if (aligned_blocks[k].ptr == base && aligned_blocks[k].bytes >= need) fits = 1;
+    if (!fits) { printf("model: hardware context save exceeds its allocation\n"); bad_writes++; }
     uint32_t* img = xlate(ctx_cur + 0x400, 0);
     if (!img) return;
     img[0] = nctxreg;
@@ -139,7 +155,7 @@ static void ctx_load(uint32_t a, int inhibit) {
 }
 /* what the GPU's registers say before the driver touches them */
 static void model_regs(void) {
-    if (gen == 6) REG(0x21A0) = 63u << 6 | 63u;                 /* CXT_SIZE: 126 x 64 bytes */
+    if (gen == 6) REG(0x21A0) = 1u << 24 | 63u << 18 | 60u << 6 | 2u; /* ring + extended + pipeline = 125 cache lines; POWER is not RING */
     if (gen == 7) REG(0x21A8) = 100u << 9 | 20u;                /* GEN7_CXT_SIZE: 120 x 64 bytes */
     if (gen == 8 || gen == 9) REG(0x9120) = 1u << 25 | (gen == 8 ? 0u : 1u << 23);   /* FUSE2: slice 0; (gen 9: subslice 3 off) */
     if (gen == 9) REG(0xA26C) = 2u << 1;                        /* CTC_MODE: 24 MHz / 2 */
