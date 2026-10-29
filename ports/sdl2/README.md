@@ -6,7 +6,9 @@ compatible. Do not install it over official SDL headers or use it to claim
 that an arbitrary SDL game is supported.
 
 The adapter uses the existing Banana SDK. No kernel, SDK ABI, system library,
-default Makefile, boot configuration or ISO contents are changed. Building it
+default Makefile, boot configuration or ISO contents are changed by the adapter.
+The separate review-ISO workflow now consumes the audited LibJS worker from
+its existing Debian build job, matching the release pipeline. Building it
 creates static libraries; only an application explicitly linking one uses it.
 The code is adapted from the Yhello-Banana SDL experiment and restricted to
 the independently tested subset below. The original broader implementation's
@@ -17,9 +19,11 @@ audio, threading, OpenGL, controller and pretend-success paths are not imported.
 - Video/timer/event initialization; unsupported subsystem flags fail explicitly.
 - One software window using `bwin`, title changes and user-driven resizing.
 - Opaque 32-bit XRGB surfaces, fill, clipped copy and overlapping self-blits.
+  Destination clip rectangles are honored and retained until the window is resized.
   Surface allocations are limited to 64 MiB; unsupported formats/alpha fail.
 - Close, resize, focus, ASCII key-press, mouse button/motion and wheel events.
-  Right/middle button numbers are translated, not copied blindly.
+  Right/middle button numbers and wheel direction are translated, not copied blindly.
+  Wheel events are explicitly enabled on the native window.
 - Non-consuming `SDL_PollEvent(NULL)`, bounded event waits and millisecond
   timers extending the SDK's 32-bit monotonic counter. At least one timer query
   per 49.7-day wrap is required; no extension can infer completely missed wraps.
@@ -35,6 +39,15 @@ are not tracked and remain zero. Public structures expose only this subset;
 linking binaries built against the upstream SDL headers is unsupported.
 Chocolate Doom and other third-party applications are **not qualified** by this
 contribution. A native SDL backend and real application qualification are future work.
+
+## GPU compatibility
+
+This subset always draws in software. It neither opens a DRM device nor loads
+Mesa. Passing `SDL_WINDOW_OPENGL` to `SDL_CreateWindow` fails before a native
+window is created; SDL OpenGL contexts and hardware rendering are unsupported.
+Other applications keep their existing Mesa/i915 paths. A successful software
+demo does not qualify physical Intel acceleration or fix the outstanding
+installed-machine GPU/command problem.
 
 ## Build only when requested
 

@@ -88,14 +88,27 @@ static int valid_surface(const SDL_Surface *s) {
            s->pitch >= s->w * 4 && !(s->pitch & 3) &&
            (size_t)s->h <= SIZE_MAX / (size_t)s->pitch;
 }
+/* Public clip rectangles are intersected with the actual allocation. */
+static void clip_bounds(const SDL_Surface *s, int64_t *left, int64_t *top,
+                        int64_t *right, int64_t *bottom) {
+    *left = s->clip_rect.x > 0 ? s->clip_rect.x : 0;
+    *top = s->clip_rect.y > 0 ? s->clip_rect.y : 0;
+    *right = (int64_t)s->clip_rect.x + s->clip_rect.w;
+    *bottom = (int64_t)s->clip_rect.y + s->clip_rect.h;
+    if (*right > s->w) *right = s->w;
+    if (*bottom > s->h) *bottom = s->h;
+    if (s->clip_rect.w <= 0 || s->clip_rect.h <= 0) *right = *left, *bottom = *top;
+}
 int SDL_FillRect(SDL_Surface *s, const SDL_Rect *r, Uint32 color) {
     if (!valid_surface(s)) return SDL_SetError("Invalid surface");
     int64_t x = r ? r->x : 0, y = r ? r->y : 0;
     int64_t right = x + (r ? r->w : s->w), bottom = y + (r ? r->h : s->h);
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (right > s->w) right = s->w;
-    if (bottom > s->h) bottom = s->h;
+    int64_t cl, ct, cr, cb;
+    clip_bounds(s, &cl, &ct, &cr, &cb);
+    if (x < cl) x = cl;
+    if (y < ct) y = ct;
+    if (right > cr) right = cr;
+    if (bottom > cb) bottom = cb;
     for (int64_t row = y; row < bottom; row++) {
         Uint32 *pixels = (Uint32 *)((Uint8 *)s->pixels + (size_t)row * s->pitch);
         for (int64_t col = x; col < right; col++) pixels[col] = color & 0x00ffffffu;
@@ -109,12 +122,14 @@ int SDL_BlitSurface(SDL_Surface *src, const SDL_Rect *r, SDL_Surface *dst, SDL_R
     int64_t dx = target ? target->x : 0, dy = target ? target->y : 0;
     if (sx < 0) { w += sx; dx -= sx; sx = 0; }
     if (sy < 0) { h += sy; dy -= sy; sy = 0; }
-    if (dx < 0) { w += dx; sx -= dx; dx = 0; }
-    if (dy < 0) { h += dy; sy -= dy; dy = 0; }
+    int64_t cl, ct, cr, cb;
+    clip_bounds(dst, &cl, &ct, &cr, &cb);
+    if (dx < cl) { int64_t n = cl - dx; w -= n; sx += n; dx = cl; }
+    if (dy < ct) { int64_t n = ct - dy; h -= n; sy += n; dy = ct; }
     if (w > src->w - sx) w = src->w - sx;
-    if (w > dst->w - dx) w = dst->w - dx;
+    if (w > cr - dx) w = cr - dx;
     if (h > src->h - sy) h = src->h - sy;
-    if (h > dst->h - dy) h = dst->h - dy;
+    if (h > cb - dy) h = cb - dy;
     if (w <= 0 || h <= 0) { if (target) target->w = target->h = 0; return 0; }
     int backwards = src->pixels == dst->pixels && dy > sy;
     for (int64_t i = 0; i < h; i++) {
@@ -140,6 +155,7 @@ SDL_Window *SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint
     if ((flags & SDL_WINDOW_RESIZABLE) && bwin_resizable(&win->native, 32, 32) < 0) {
         bwin_close(&win->native); free(win); SDL_SetError("Resizable windows unavailable"); return NULL;
     }
+    bwin_wheel(&win->native);
     window = win;
     setup_surface(&win->surface, win->native.w, win->native.h, win->native.px, 1);
     return win;
@@ -159,7 +175,9 @@ void SDL_SetWindowTitle(SDL_Window *win, const char *title) {
 }
 SDL_Surface *SDL_GetWindowSurface(SDL_Window *win) {
     if (!win || win != window) return NULL;
-    setup_surface(&win->surface, win->native.w, win->native.h, win->native.px, 1);
+    if (win->surface.w != win->native.w || win->surface.h != win->native.h ||
+            win->surface.pixels != win->native.px)
+        setup_surface(&win->surface, win->native.w, win->native.h, win->native.px, 1);
     return &win->surface;
 }
 int SDL_UpdateWindowSurface(SDL_Window *win) {
@@ -194,7 +212,8 @@ static int translate(const banana_event_t *b, SDL_Event *e) {
         e->button.button = b->button == 2 ? SDL_BUTTON_RIGHT : b->button == 3 ? SDL_BUTTON_MIDDLE : SDL_BUTTON_LEFT;
         e->button.clicks = 1; e->button.x = b->x; e->button.y = b->y; break;
     case BANANA_EV_WHEEL:
-        e->type = SDL_MOUSEWHEEL; e->wheel.windowID = SDL_GetWindowID(window); e->wheel.y = b->y; break;
+        e->type = SDL_MOUSEWHEEL; e->wheel.windowID = SDL_GetWindowID(window); /* Banana's positive direction is toward the user; SDL's is away. */
+        e->wheel.y = b->y == INT_MIN ? INT_MAX : -b->y; break;
     default: return 0;
     }
     return 1;

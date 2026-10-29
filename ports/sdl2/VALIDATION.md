@@ -1,8 +1,9 @@
 # Validation record (2026-10-28)
 
 SDK/source baseline: upstream `808c17e01f9d1d2166d159cc4c1031bf47a5480e`.
-All proposed additions are under `ports/sdl2/` plus the path-filtered optional
-host-check workflow. Existing kernel, SDK, root Makefile, loader and default
+The adapter additions are under `ports/sdl2/` plus the path-filtered optional
+host-check workflow. Review also repairs the existing review-ISO workflow to
+consume the audited LibJS worker instead of building it with missing dependencies. Existing kernel, SDK, root Makefile, loader and default
 image inputs are unchanged.
 
 ## Host and cross-build
@@ -60,3 +61,16 @@ never installed or ran this adapter. Full x86_64 boot/RAM command qualification
 is therefore **not claimed**; the successful SDL smoke and post-app shell tests
 are distinct from that existing baseline issue. Original stock sources and
 serial-test tools are not changed by this contribution.
+
+
+## Maintainer review (2026-10-29)
+
+- Fixed clipping to the public destination clip rectangle, including preservation
+  across repeated window-surface queries.
+- Enabled native wheel events and translated their direction to SDL's convention.
+- Added explicit OpenGL-window refusal before native window creation.
+- New regressions fail against the original adapter and pass on x86_64
+  ASan/UBSan and native i686; both static archives and the demo package rebuild.
+- Existing Crocus (Gen5/6/7/7.5) and Iris (Gen8/9/9.5/11) hosted Intel models
+  render 30 frames per profile with no stray GPU writes or GPU resets.
+  These are model tests, not physical Intel hardware qualification.

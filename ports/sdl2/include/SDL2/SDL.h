@@ -49,6 +49,7 @@ typedef union {
 #define SDL_INIT_EVENTS 0x00004000u
 #define SDL_WINDOWPOS_UNDEFINED 0x1fff0000
 #define SDL_WINDOWPOS_CENTERED 0x2fff0000
+#define SDL_WINDOW_OPENGL 0x00000002u /* recognized but unsupported */
 #define SDL_WINDOW_SHOWN 0x00000004u
 #define SDL_WINDOW_RESIZABLE 0x00000020u
 #define SDL_QUIT 0x100u
